@@ -1,0 +1,303 @@
+import { useEffect, useState, useRef, useCallback } from "react";
+import { getDb } from "../../db";
+
+interface KDSItem {
+  name: string;
+  quantity: number;
+  notes: string | null;
+}
+
+interface KDSOrder {
+  id: string;
+  table_name: string | null;
+  order_type: string;
+  status: string;
+  items: KDSItem[];
+  created_at: string;
+  notes: string | null;
+}
+
+const STATUS_FLOW: Record<string, string> = {
+  PENDING: "PREPARING",
+  PREPARING: "READY",
+  READY: "SERVED",
+};
+
+const STATUS_LABELS: Record<string, string> = {
+  PENDING: "قيد الانتظار",
+  PREPARING: "قيد التحضير",
+  READY: "جاهز",
+  SERVED: "مخدم",
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  PENDING: "border-r-4 border-amber-500",
+  PREPARING: "border-r-4 border-blue-500",
+  READY: "border-r-4 border-emerald-500",
+  SERVED: "border-r-4 border-slate-300 opacity-60",
+};
+
+const STATUS_BG: Record<string, string> = {
+  PENDING: "bg-amber-50",
+  PREPARING: "bg-blue-50",
+  READY: "bg-emerald-50",
+};
+
+const ORDER_TYPE_LABELS: Record<string, string> = {
+  DINE_IN: "داخلي",
+  TAKEAWAY: "طلبات خارجية",
+  DELIVERY: "توصيل",
+  ONLINE: "أونلاين",
+};
+
+function fmtTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" });
+}
+
+function elapsed(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(diff / 60000);
+  const s = Math.floor((diff % 60000) / 1000);
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+export default function KDSPage() {
+  const [orders, setOrders] = useState<KDSOrder[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<string>("all");
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const playAlert = () => {
+    try {
+      if (!audioRef.current) {
+        audioRef.current = new Audio("data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACAf39/f4B/f3+AgH9/f3+AgH9/f4B/f3+AgH9/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+AgH9/f4B/f3+");
+      }
+      audioRef.current.play().catch(() => {});
+    } catch {}
+  };
+
+  const fetchOrders = useCallback(async () => {
+    try {
+      const db = await getDb();
+      const rows = await db
+        .selectFrom("orders")
+        .leftJoin("tables", "tables.id", "orders.table_id")
+        .select([
+          "orders.id",
+          "tables.name as table_name",
+          "orders.status",
+          "orders.order_type",
+          "orders.created_at",
+          "orders.discount_reason as notes",
+        ])
+        .where("orders.status", "in", ["PENDING", "PREPARING", "READY"])
+        .orderBy("orders.created_at", "asc")
+        .execute();
+
+      const kdsOrders: KDSOrder[] = [];
+
+      for (const row of rows) {
+        const items = await db
+          .selectFrom("order_items")
+          .innerJoin("menu_items", "menu_items.id", "order_items.menu_item_id")
+          .select(["menu_items.name", "order_items.quantity", "order_items.notes"])
+          .where("order_items.order_id", "=", row.id)
+          .where("order_items.voided", "=", 0)
+          .execute();
+        kdsOrders.push({
+          id: row.id,
+          table_name: row.table_name,
+          order_type: row.order_type,
+          status: row.status,
+          items: items.map((i) => ({ name: i.name, quantity: i.quantity, notes: i.notes })),
+          created_at: row.created_at,
+          notes: row.notes,
+        });
+      }
+
+      setOrders((prev) => {
+        const currCount = kdsOrders.filter((o) => o.status === "PENDING").length;
+        const prevCountVal = prev.filter((o) => o.status === "PENDING").length;
+        if (currCount > prevCountVal) playAlert();
+        return kdsOrders;
+      });
+    } catch {
+      setError("حدث خطأ في تحميل الطلبات");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchOrders();
+    const interval = setInterval(fetchOrders, 10000);
+    return () => clearInterval(interval);
+  }, [fetchOrders]);
+
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
+
+  const handleStatusChange = async (orderId: string, currentStatus: string) => {
+    const nextStatus = STATUS_FLOW[currentStatus] as "PREPARING" | "READY" | "SERVED" | undefined;
+    if (!nextStatus) return;
+    try {
+      const db = await getDb();
+      await db
+        .updateTable("orders")
+        .set({ status: nextStatus, last_modified: new Date().toISOString() })
+        .where("id", "=", orderId)
+        .execute();
+      await fetchOrders();
+    } catch {
+      setError("حدث خطأ في تحديث الحالة");
+    }
+  };
+
+  const filteredOrders = activeTab === "all"
+    ? orders
+    : orders.filter((o) => o.status === activeTab);
+
+  if (loading) {
+    return <div className="flex items-center justify-center h-full text-slate-500 font-arabic">جاري التحميل...</div>;
+  }
+
+  const pendingCount = orders.filter((o) => o.status === "PENDING").length;
+  const preparingCount = orders.filter((o) => o.status === "PREPARING").length;
+  const readyCount = orders.filter((o) => o.status === "READY").length;
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden" dir="rtl">
+      <div className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h1 className="text-lg font-bold text-slate-900">شاشة المطبخ</h1>
+          <span className="text-xs text-slate-500 font-mono">تحديث تلقائي كل ١٠ ثوان</span>
+        </div>
+        <div className="flex gap-4">
+          <div className="flex items-center gap-1 text-sm">
+            <span className="inline-block w-3 h-3 rounded-full bg-amber-500" />
+            <span className="font-arabic text-slate-500">انتظار: {pendingCount}</span>
+          </div>
+          <div className="flex items-center gap-1 text-sm">
+            <span className="inline-block w-3 h-3 rounded-full bg-blue-500" />
+            <span className="font-arabic text-slate-500">تحضير: {preparingCount}</span>
+          </div>
+          <div className="flex items-center gap-1 text-sm">
+            <span className="inline-block w-3 h-3 rounded-full bg-emerald-600" />
+            <span className="font-arabic text-slate-500">جاهز: {readyCount}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex gap-2 px-6 py-3 bg-white border-b border-slate-200">
+        {["all", "PENDING", "PREPARING", "READY"].map((t) => (
+          <button key={t} onClick={() => setActiveTab(t)} className={`px-4 py-1.5 rounded-lg text-sm font-arabic transition-colors ${activeTab === t ? "bg-emerald-600 text-white shadow-sm" : "bg-white text-slate-500 hover:bg-slate-200"}`}>
+            {t === "all" ? "الكل" : STATUS_LABELS[t] ?? t}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-6">
+        {error && (
+          <div className="mb-4 bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-700 font-arabic">{error}</div>
+        )}
+        {filteredOrders.length === 0 ? (
+          <div className="flex items-center justify-center h-64">
+            <div className="text-center">
+              <p className="text-4xl mb-2">🍳</p>
+              <p className="text-slate-500 font-arabic">لا توجد طلبات في المطبخ</p>
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {filteredOrders.map((order) => (
+              <div key={order.id} className={`bg-white rounded-2xl shadow-sm overflow-hidden ${STATUS_COLORS[order.status]}`}>
+                <div className={`p-4 ${STATUS_BG[order.status] || "bg-white"}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg font-bold text-slate-900 font-arabic">
+                        {order.table_name || `#${order.id.slice(0, 6)}`}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-arabic bg-white/80 text-slate-500">
+                        {ORDER_TYPE_LABELS[order.order_type] || order.order_type}
+                      </span>
+                    </div>
+                    <span className="font-mono text-xs text-slate-500">
+                      {fmtTime(order.created_at)}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs text-slate-500 font-arabic">
+                      <span className="font-mono">{elapsed(order.created_at)}</span> منذ الطلب
+                    </span>
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-arabic font-medium ${
+                      order.status === "PENDING" ? "bg-amber-100 text-amber-700" :
+                      order.status === "PREPARING" ? "bg-blue-100 text-blue-700" :
+                      "bg-emerald-100 text-emerald-600"
+                    }`}>
+                      {STATUS_LABELS[order.status] || order.status}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    {order.items.map((item, idx) => (
+                      <div key={idx} className="flex items-center justify-between bg-white/60 rounded-lg px-3 py-2">
+                        <div className="flex items-center gap-2">
+                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 text-xs font-bold font-mono">
+                            {item.quantity}
+                          </span>
+                          <span className="font-arabic text-sm text-slate-900">{item.name}</span>
+                        </div>
+                        {item.notes && (
+                          <span className="text-[10px] text-amber-600 font-arabic bg-amber-50 px-1.5 py-0.5 rounded">
+                            {item.notes}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {order.notes && (
+                    <div className="mt-2 text-xs text-slate-400 font-arabic bg-white/40 rounded-lg px-3 py-1.5">
+                      📝 {order.notes}
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-3 border-t border-slate-200">
+                  {order.status === "PENDING" && (
+                    <button onClick={() => handleStatusChange(order.id, order.status)} className="w-full h-10 rounded-xl bg-blue-600 text-white text-sm font-bold hover:bg-blue-700 transition-colors shadow-sm">
+                      بدء التحضير
+                    </button>
+                  )}
+                  {order.status === "PREPARING" && (
+                    <button onClick={() => handleStatusChange(order.id, order.status)} className="w-full h-10 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors shadow-sm">
+                      تم التجهيز
+                    </button>
+                  )}
+                  {order.status === "READY" && (
+                    <div className="flex gap-2">
+                      <button onClick={() => handleStatusChange(order.id, order.status)} className="flex-1 h-10 rounded-xl bg-slate-200 text-slate-500 text-sm font-bold hover:bg-slate-300 transition-colors">
+                        تم التقديم
+                      </button>
+                      <button onClick={() => handleStatusChange(order.id, "PREPARING")} className="px-4 h-10 rounded-xl bg-amber-100 text-amber-700 text-sm font-bold hover:bg-amber-200 transition-colors">
+                        إعادة
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

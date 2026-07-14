@@ -1,0 +1,362 @@
+import { useEffect, useState, useCallback } from "react";
+import { getDb } from "../../db";
+import { useCurrency } from "../../hooks/useCurrency";
+import { z } from "zod";
+import { sql } from "kysely";
+import { useAuthStore } from "../../stores/authStore";
+
+interface DebtorRow {
+  id: string;
+  name: string;
+  phone: string;
+  email: string | null;
+  address: string | null;
+  notes: string | null;
+  total_debt_cents: number;
+  total_paid_cents: number;
+  balance_cents: number;
+  last_transaction_at: string | null;
+  is_active: number;
+}
+
+interface DebtEntryRow {
+  id: string;
+  debtor_id: string;
+  order_id: string | null;
+  amount_cents: number;
+  type: "DEBT" | "PAYMENT";
+  notes: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+interface DebtorDetail {
+  debtor: DebtorRow;
+  entries: DebtEntryRow[];
+}
+
+const debtorSchema = z.object({
+  name: z.string().min(1, "الاسم مطلوب").max(100),
+  phone: z.string().min(1, "رقم الهاتف مطلوب"),
+  email: z.string().email("بريد غير صالح").optional().or(z.literal("")),
+  address: z.string().optional().default(""),
+  notes: z.string().optional().default(""),
+});
+
+type DebtorForm = z.infer<typeof debtorSchema>;
+
+const emptyForm: DebtorForm = { name: "", phone: "", email: "", address: "", notes: "" };
+
+function fmtDateTime(iso: string | null): string {
+  if (!iso) return "-";
+  return new Date(iso).toLocaleString("ar-SA", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+export default function DebtPage() {
+  const { fmt } = useCurrency();
+  const user = useAuthStore((s) => s.user);
+  const [debtors, setDebtors] = useState<DebtorRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const [showModal, setShowModal] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [form, setForm] = useState<DebtorForm>(emptyForm);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  const [detail, setDetail] = useState<DebtorDetail | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+
+  const [payModal, setPayModal] = useState<DebtorRow | null>(null);
+  const [payAmount, setPayAmount] = useState("");
+  const [payNotes, setPayNotes] = useState("");
+
+  const filtered = debtors.filter((d) => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return true;
+    return d.name.toLowerCase().includes(q) || d.phone.includes(q);
+  });
+
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const db = await getDb();
+      const rows = await db.selectFrom("debtors").selectAll().where("is_active", "=", 1).orderBy("name", "asc").execute();
+      setDebtors(rows);
+    } catch {
+      setError("حدث خطأ في تحميل الديون");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  const openAdd = () => { setEditId(null); setForm(emptyForm); setFormErrors({}); setShowModal(true); };
+
+  const openEdit = (d: DebtorRow) => {
+    setEditId(d.id);
+    setForm({ name: d.name, phone: d.phone, email: d.email ?? "", address: d.address ?? "", notes: d.notes ?? "" });
+    setFormErrors({});
+    setShowModal(true);
+  };
+
+  const save = async () => {
+    const parsed = debtorSchema.safeParse(form);
+    if (!parsed.success) {
+      const errs: Record<string, string> = {};
+      for (const issue of parsed.error.issues) { const f = issue.path[0] as string; errs[f] = issue.message; }
+      setFormErrors(errs);
+      return;
+    }
+    setSaving(true);
+    try {
+      const db = await getDb();
+      const data = { name: parsed.data.name, phone: parsed.data.phone, email: parsed.data.email || null, address: parsed.data.address || null, notes: parsed.data.notes || null };
+      if (editId) {
+        await db.updateTable("debtors").set({ ...data, last_modified: new Date().toISOString() }).where("id", "=", editId).execute();
+      } else {
+        await db.insertInto("debtors").values({ id: crypto.randomUUID(), ...data, total_debt_cents: 0, total_paid_cents: 0, balance_cents: 0, is_active: 1, sync_version: 1, last_modified: new Date().toISOString(), sync_status: "pending" }).execute();
+      }
+      setShowModal(false);
+      await fetchAll();
+    } catch {
+      setFormErrors({ _form: "حدث خطأ في الحفظ" });
+    } finally { setSaving(false); }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteId) return;
+    try {
+      const db = await getDb();
+      await db.updateTable("debtors").set({ is_active: 0, last_modified: new Date().toISOString() }).where("id", "=", deleteId).execute();
+      setDeleteId(null);
+      await fetchAll();
+    } catch { setError("حدث خطأ في الحذف"); }
+  };
+
+  const openDetail = async (debtor: DebtorRow) => {
+    try {
+      const db = await getDb();
+      const entries = await db.selectFrom("debt_entries").selectAll().where("debtor_id", "=", debtor.id).orderBy("created_at", "desc").limit(50).execute();
+      setDetail({ debtor, entries });
+      setDetailOpen(true);
+    } catch { setError("حدث خطأ في تحميل التفاصيل"); }
+  };
+
+  const handlePay = async () => {
+    if (!payModal) return;
+    const cents = Math.round(parseFloat(payAmount || "0") * 100);
+    if (cents <= 0) return;
+    try {
+      const db = await getDb();
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      await db.insertInto("debt_entries").values({ id, debtor_id: payModal.id, order_id: null, amount_cents: cents, type: "PAYMENT", notes: payNotes || null, created_by: user?.id ?? "unknown", created_at: now, sync_version: 1, last_modified: now, sync_status: "pending" }).execute();
+      await db.updateTable("debtors").set({ total_paid_cents: sql`total_paid_cents + ${cents}`, balance_cents: sql`balance_cents - ${cents}`, last_transaction_at: now, last_modified: now }).where("id", "=", payModal.id).execute();
+      setPayModal(null);
+      setPayAmount("");
+      setPayNotes("");
+      await fetchAll();
+      if (detail && detail.debtor.id === payModal.id) {
+        openDetail(payModal);
+      }
+    } catch { setError("حدث خطأ في تسجيل الدفعة"); }
+  };
+
+  if (loading) {
+    return <div className="flex items-center justify-center h-full text-slate-500 font-arabic">جاري التحميل...</div>;
+  }
+
+  if (error) {
+    return <div className="flex items-center justify-center h-full text-red-500 font-arabic">{error}</div>;
+  }
+
+  return (
+    <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-bold text-slate-900">إدارة الديون</h1>
+        <div className="flex gap-2">
+          <button onClick={openAdd} className="h-10 px-4 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors">+ إضافة مدين</button>
+        </div>
+      </div>
+
+      <input
+        type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+        placeholder="ابحث بالاسم أو الهاتف..."
+        className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+      />
+
+      <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-slate-200 text-slate-400 font-arabic">
+              <th className="text-right p-3 font-medium">الاسم</th>
+              <th className="text-right p-3 font-medium">الهاتف</th>
+              <th className="text-center p-3 font-medium">إجمالي الديون</th>
+              <th className="text-center p-3 font-medium">المدفوع</th>
+              <th className="text-center p-3 font-medium">المتبقي</th>
+              <th className="text-right p-3 font-medium">آخر معاملة</th>
+              <th className="text-center p-3 font-medium">إجراءات</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((d) => (
+              <tr key={d.id} className="border-b border-slate-200 hover:bg-white cursor-pointer" onClick={() => openDetail(d)}>
+                <td className="p-3 font-arabic text-slate-900 font-medium">{d.name}</td>
+                <td className="p-3 font-mono text-slate-500" dir="ltr">{d.phone}</td>
+                <td className="p-3 text-center font-mono text-red-500 font-bold">{fmt(d.total_debt_cents)}</td>
+                <td className="p-3 text-center font-mono text-emerald-600 font-bold">{fmt(d.total_paid_cents)}</td>
+                <td className={`p-3 text-center font-mono font-bold ${d.balance_cents > 0 ? "text-red-600" : "text-green-600"}`}>{fmt(d.balance_cents)}</td>
+                <td className="p-3 font-arabic text-slate-400 text-xs">{fmtDateTime(d.last_transaction_at)}</td>
+                <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center justify-center gap-1">
+                    <button onClick={() => { setPayModal(d); setPayAmount(""); setPayNotes(""); }} className="p-1.5 rounded-lg text-xs text-emerald-600 hover:bg-emerald-50 transition-colors" title="تسديد">💰</button>
+                    <button onClick={() => openEdit(d)} className="p-1.5 rounded-lg text-xs text-amber-600 hover:bg-amber-50 transition-colors" title="تعديل">✏️</button>
+                    <button onClick={() => setDeleteId(d.id)} className="p-1.5 rounded-lg text-xs text-red-500 hover:bg-red-50 transition-colors" title="حذف">🗑️</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {filtered.length === 0 && (
+              <tr><td colSpan={7} className="p-6 text-center text-slate-500 font-arabic">{searchQuery ? "لا توجد نتائج" : "لا يوجد مدينون"}</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {showModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
+            <h2 className="text-lg font-bold font-arabic text-slate-900">{editId ? "تعديل مدين" : "إضافة مدين"}</h2>
+            <div className="space-y-3">
+              {(["name", "phone", "email", "address", "notes"] as (keyof DebtorForm)[]).map((field) => (
+                <div key={field}>
+                  <label className="block text-sm font-arabic text-slate-900 mb-1">
+                    {field === "name" ? "الاسم *" : field === "phone" ? "رقم الهاتف *" : field === "email" ? "البريد الإلكتروني" : field === "address" ? "العنوان" : "ملاحظات"}
+                  </label>
+                  {field === "notes" ? (
+                    <textarea value={form[field]} onChange={(e) => setForm((p) => ({ ...p, [field]: e.target.value }))} rows={3} className="w-full px-4 py-2 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500 resize-none" />
+                  ) : (
+                    <input
+                      type={field === "email" ? "email" : "text"}
+                      value={form[field]} onChange={(e) => setForm((p) => ({ ...p, [field]: e.target.value }))}
+                      className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                      dir={field === "phone" ? "ltr" : "rtl"}
+                    />
+                  )}
+                  {formErrors[field] && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors[field]}</p>}
+                </div>
+              ))}
+              {formErrors._form && <p className="text-sm text-red-500 font-arabic">{formErrors._form}</p>}
+            </div>
+            <div className="flex gap-3 justify-end pt-2">
+              <button onClick={() => setShowModal(false)} className="h-10 px-6 rounded-xl bg-white text-slate-900 font-arabic text-sm hover:bg-slate-200 transition-colors">إلغاء</button>
+              <button onClick={save} disabled={saving} className="h-10 px-6 rounded-xl bg-emerald-600 text-white font-arabic text-sm hover:bg-emerald-700 transition-colors disabled:opacity-50">{saving ? "جاري الحفظ..." : "حفظ"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
+            <h2 className="text-lg font-bold font-arabic text-slate-900">تأكيد الحذف</h2>
+            <p className="text-sm font-arabic text-slate-500">هل أنت متأكد من حذف هذا المدين؟</p>
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setDeleteId(null)} className="h-10 px-6 rounded-xl bg-white text-slate-900 font-arabic text-sm hover:bg-slate-200 transition-colors">إلغاء</button>
+              <button onClick={confirmDelete} className="h-10 px-6 rounded-xl bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors">حذف</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {payModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
+            <h2 className="text-lg font-bold font-arabic text-slate-900">تسديد دفعة</h2>
+            <p className="text-sm font-arabic text-slate-500">المدين: <span className="font-bold">{payModal.name}</span></p>
+            <p className="text-sm font-arabic text-slate-400">المتبقي: <span className="font-mono font-bold text-red-600">{fmt(payModal.balance_cents)}</span></p>
+            <input type="number" min="0" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder="المبلغ" className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500" dir="ltr" />
+            <input type="text" value={payNotes} onChange={(e) => setPayNotes(e.target.value)} placeholder="ملاحظات (اختياري)" className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500" />
+            <div className="flex gap-2 pt-2">
+              <button onClick={handlePay} disabled={!payAmount || parseFloat(payAmount) <= 0} className="flex-1 h-10 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors disabled:opacity-40">تسديد</button>
+              <button onClick={() => setPayModal(null)} className="px-6 h-10 rounded-xl border border-slate-200 text-slate-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {detailOpen && detail && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div className="bg-black/30 flex-1" onClick={() => setDetailOpen(false)} />
+          <div className="w-full max-w-lg bg-white shadow-2xl h-full overflow-y-auto animate-slide-in-left">
+            <div className="p-6 space-y-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-bold font-arabic text-slate-900">{detail.debtor.name}</h2>
+                <button onClick={() => setDetailOpen(false)} className="p-2 rounded-lg text-slate-500 hover:bg-white transition-colors">✕</button>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-red-50 rounded-xl p-3 text-center">
+                  <p className="text-2xl font-bold text-red-600 font-mono">{fmt(detail.debtor.total_debt_cents)}</p>
+                  <p className="text-xs text-red-700 font-arabic mt-1">إجمالي الديون</p>
+                </div>
+                <div className="bg-emerald-50 rounded-xl p-3 text-center">
+                  <p className="text-2xl font-bold text-emerald-600 font-mono">{fmt(detail.debtor.total_paid_cents)}</p>
+                  <p className="text-xs text-emerald-600 font-arabic mt-1">المدفوع</p>
+                </div>
+                <div className={`rounded-xl p-3 text-center ${detail.debtor.balance_cents > 0 ? "bg-red-50" : "bg-emerald-50"}`}>
+                  <p className={`text-2xl font-bold font-mono ${detail.debtor.balance_cents > 0 ? "text-red-600" : "text-emerald-600"}`}>{fmt(detail.debtor.balance_cents)}</p>
+                  <p className="text-xs font-arabic mt-1">المتبقي</p>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl p-4 space-y-2 shadow-sm">
+                <h3 className="font-bold font-arabic text-sm text-slate-900">سجل المعاملات</h3>
+                {detail.entries.length > 0 ? (
+                  <div className="space-y-1">
+                    {detail.entries.map((e) => (
+                      <div key={e.id} className="flex justify-between items-center text-xs py-1.5 border-b border-slate-200 last:border-0">
+                        <div className="flex items-center gap-2">
+                          <span className={`inline-block w-2 h-2 rounded-full ${e.type === "DEBT" ? "bg-red-400" : "bg-emerald-400"}`} />
+                          <span className="font-arabic text-slate-400">{e.type === "DEBT" ? "دين" : "دفعة"}</span>
+                          <span className="font-arabic text-slate-500">{fmtDateTime(e.created_at)}</span>
+                        </div>
+                        <span className={`font-mono font-bold ${e.type === "DEBT" ? "text-red-500" : "text-emerald-600"}`}>
+                          {e.type === "DEBT" ? "+" : "-"}{fmt(e.amount_cents)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-500 font-arabic">لا توجد معاملات</p>
+                )}
+              </div>
+
+              <div className="bg-white rounded-2xl p-4 space-y-2">
+                <h3 className="font-bold font-arabic text-sm text-slate-900">معلومات الاتصال</h3>
+                <div className="space-y-1 text-sm">
+                  <div className="flex justify-between"><span className="text-slate-400 font-arabic">الهاتف</span><span className="font-mono text-slate-900" dir="ltr">{detail.debtor.phone}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400 font-arabic">البريد</span><span className="text-slate-900">{detail.debtor.email || "-"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400 font-arabic">العنوان</span><span className="text-slate-900">{detail.debtor.address || "-"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400 font-arabic">ملاحظات</span><span className="text-slate-900">{detail.debtor.notes || "-"}</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes slideInLeft { from { transform: translateX(100%); } to { transform: translateX(0); } }
+        .animate-slide-in-left { animation: slideInLeft 0.2s ease-out; }
+      `}</style>
+    </div>
+  );
+}
