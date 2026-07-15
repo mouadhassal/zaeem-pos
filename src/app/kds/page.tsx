@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
+import { IconChefHat, IconNote } from "@tabler/icons-react";
 import { getDb } from "../../db";
 
 interface KDSItem {
@@ -31,16 +32,16 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  PENDING: "border-r-4 border-amber-500",
-  PREPARING: "border-r-4 border-blue-500",
-  READY: "border-r-4 border-emerald-500",
-  SERVED: "border-r-4 border-slate-300 opacity-60",
+  PENDING: "border-r-4 border-warn",
+  PREPARING: "border-r-4 border-ink-500",
+  READY: "border-r-4 border-ok",
+  SERVED: "border-r-4 border-ink-300 opacity-60",
 };
 
 const STATUS_BG: Record<string, string> = {
-  PENDING: "bg-amber-50",
-  PREPARING: "bg-blue-50",
-  READY: "bg-emerald-50",
+  PENDING: "bg-surface-alt",
+  PREPARING: "bg-surface-alt",
+  READY: "bg-accent-soft",
 };
 
 const ORDER_TYPE_LABELS: Record<string, string> = {
@@ -165,7 +166,7 @@ export default function KDSPage() {
     : orders.filter((o) => o.status === activeTab);
 
   if (loading) {
-    return <div className="flex items-center justify-center h-full text-slate-500 font-arabic">جاري التحميل...</div>;
+    return <div className="flex items-center justify-center h-full text-ink-500 font-arabic">جاري التحميل...</div>;
   }
 
   const pendingCount = orders.filter((o) => o.status === "PENDING").length;
@@ -174,30 +175,30 @@ export default function KDSPage() {
 
   return (
     <div className="flex flex-col h-full overflow-hidden" dir="rtl">
-      <div className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between">
+      <div className="bg-surface border-b border-ink-200 px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <h1 className="text-lg font-bold text-slate-900">شاشة المطبخ</h1>
-          <span className="text-xs text-slate-500 font-mono">تحديث تلقائي كل ١٠ ثوان</span>
+          <h1 className="text-lg font-bold text-ink-900">شاشة المطبخ</h1>
+          <span className="text-xs text-ink-500 font-mono">تحديث تلقائي كل ١٠ ثوان</span>
         </div>
         <div className="flex gap-4">
           <div className="flex items-center gap-1 text-sm">
-            <span className="inline-block w-3 h-3 rounded-full bg-amber-500" />
-            <span className="font-arabic text-slate-500">انتظار: {pendingCount}</span>
+            <span className="inline-block w-3 h-3 rounded-full bg-warn" />
+            <span className="font-arabic text-ink-500">انتظار: {pendingCount}</span>
           </div>
           <div className="flex items-center gap-1 text-sm">
-            <span className="inline-block w-3 h-3 rounded-full bg-blue-500" />
-            <span className="font-arabic text-slate-500">تحضير: {preparingCount}</span>
+            <span className="inline-block w-3 h-3 rounded-full bg-ink-500" />
+            <span className="font-arabic text-ink-500">تحضير: {preparingCount}</span>
           </div>
           <div className="flex items-center gap-1 text-sm">
-            <span className="inline-block w-3 h-3 rounded-full bg-emerald-600" />
-            <span className="font-arabic text-slate-500">جاهز: {readyCount}</span>
+            <span className="inline-block w-3 h-3 rounded-full bg-ok" />
+            <span className="font-arabic text-ink-500">جاهز: {readyCount}</span>
           </div>
         </div>
       </div>
 
-      <div className="flex gap-2 px-6 py-3 bg-white border-b border-slate-200">
+      <div className="flex gap-2 px-6 py-3 bg-surface border-b border-ink-200">
         {["all", "PENDING", "PREPARING", "READY"].map((t) => (
-          <button key={t} onClick={() => setActiveTab(t)} className={`px-4 py-1.5 rounded-lg text-sm font-arabic transition-colors ${activeTab === t ? "bg-emerald-600 text-white shadow-sm" : "bg-white text-slate-500 hover:bg-slate-200"}`}>
+          <button key={t} onClick={() => setActiveTab(t)} className={`px-4 py-1.5 rounded-lg text-sm font-arabic transition-colors ${activeTab === t ? "bg-ink-900 text-white shadow-sm" : "bg-surface text-ink-500 hover:bg-ink-200"}`}>
             {t === "all" ? "الكل" : STATUS_LABELS[t] ?? t}
           </button>
         ))}
@@ -205,42 +206,42 @@ export default function KDSPage() {
 
       <div className="flex-1 overflow-y-auto p-6">
         {error && (
-          <div className="mb-4 bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-700 font-arabic">{error}</div>
+          <div className="mb-4 bg-danger-soft border border-danger-soft rounded-xl p-3 text-sm text-danger font-arabic">{error}</div>
         )}
         {filteredOrders.length === 0 ? (
           <div className="flex items-center justify-center h-64">
             <div className="text-center">
-              <p className="text-4xl mb-2">🍳</p>
-              <p className="text-slate-500 font-arabic">لا توجد طلبات في المطبخ</p>
+              <IconChefHat className="w-10 h-10 mx-auto mb-2 text-ink-300" stroke={1.5} />
+              <p className="text-ink-500 font-arabic">لا توجد طلبات في المطبخ</p>
             </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {filteredOrders.map((order) => (
-              <div key={order.id} className={`bg-white rounded-2xl shadow-sm overflow-hidden ${STATUS_COLORS[order.status]}`}>
-                <div className={`p-4 ${STATUS_BG[order.status] || "bg-white"}`}>
+              <div key={order.id} className={`bg-surface rounded-2xl shadow-sm overflow-hidden ${STATUS_COLORS[order.status]}`}>
+                <div className={`p-4 ${STATUS_BG[order.status] || "bg-surface"}`}>
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
-                      <span className="text-lg font-bold text-slate-900 font-arabic">
+                      <span className="text-lg font-bold text-ink-900 font-arabic">
                         {order.table_name || `#${order.id.slice(0, 6)}`}
                       </span>
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-arabic bg-white/80 text-slate-500">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-arabic bg-surface text-ink-500">
                         {ORDER_TYPE_LABELS[order.order_type] || order.order_type}
                       </span>
                     </div>
-                    <span className="font-mono text-xs text-slate-500">
+                    <span className="font-mono text-xs text-ink-500">
                       {fmtTime(order.created_at)}
                     </span>
                   </div>
 
                   <div className="flex items-center justify-between mb-3">
-                    <span className="text-xs text-slate-500 font-arabic">
+                    <span className="text-xs text-ink-500 font-arabic">
                       <span className="font-mono">{elapsed(order.created_at)}</span> منذ الطلب
                     </span>
                     <span className={`px-2 py-0.5 rounded-full text-xs font-arabic font-medium ${
-                      order.status === "PENDING" ? "bg-amber-100 text-amber-700" :
-                      order.status === "PREPARING" ? "bg-blue-100 text-blue-700" :
-                      "bg-emerald-100 text-emerald-600"
+                      order.status === "PENDING" ? "bg-surface text-warn" :
+                      order.status === "PREPARING" ? "bg-surface text-ink-600" :
+                      "bg-surface text-ok"
                     }`}>
                       {STATUS_LABELS[order.status] || order.status}
                     </span>
@@ -248,15 +249,15 @@ export default function KDSPage() {
 
                   <div className="space-y-1.5">
                     {order.items.map((item, idx) => (
-                      <div key={idx} className="flex items-center justify-between bg-white/60 rounded-lg px-3 py-2">
+                      <div key={idx} className="flex items-center justify-between bg-surface rounded-lg px-3 py-2">
                         <div className="flex items-center gap-2">
-                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 text-xs font-bold font-mono">
+                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-surface-alt text-ink-700 text-xs font-bold font-mono">
                             {item.quantity}
                           </span>
-                          <span className="font-arabic text-sm text-slate-900">{item.name}</span>
+                          <span className="font-arabic text-sm text-ink-900">{item.name}</span>
                         </div>
                         {item.notes && (
-                          <span className="text-[10px] text-amber-600 font-arabic bg-amber-50 px-1.5 py-0.5 rounded">
+                          <span className="text-[10px] text-warn font-arabic bg-surface-alt px-1.5 py-0.5 rounded">
                             {item.notes}
                           </span>
                         )}
@@ -265,29 +266,30 @@ export default function KDSPage() {
                   </div>
 
                   {order.notes && (
-                    <div className="mt-2 text-xs text-slate-400 font-arabic bg-white/40 rounded-lg px-3 py-1.5">
-                      📝 {order.notes}
+                    <div className="mt-2 flex items-center gap-1.5 text-xs text-ink-400 font-arabic bg-surface rounded-lg px-3 py-1.5">
+                      <IconNote className="w-3.5 h-3.5 shrink-0" stroke={1.75} />
+                      {order.notes}
                     </div>
                   )}
                 </div>
 
-                <div className="p-3 border-t border-slate-200">
+                <div className="p-3 border-t border-ink-200">
                   {order.status === "PENDING" && (
-                    <button onClick={() => handleStatusChange(order.id, order.status)} className="w-full h-10 rounded-xl bg-blue-600 text-white text-sm font-bold hover:bg-blue-700 transition-colors shadow-sm">
+                    <button onClick={() => handleStatusChange(order.id, order.status)} className="w-full h-10 rounded-xl bg-ink-800 text-white text-sm font-bold hover:bg-ink-900 transition-colors shadow-sm">
                       بدء التحضير
                     </button>
                   )}
                   {order.status === "PREPARING" && (
-                    <button onClick={() => handleStatusChange(order.id, order.status)} className="w-full h-10 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors shadow-sm">
+                    <button onClick={() => handleStatusChange(order.id, order.status)} className="w-full h-10 rounded-xl bg-ok text-white text-sm font-bold hover:bg-ok transition-colors shadow-sm">
                       تم التجهيز
                     </button>
                   )}
                   {order.status === "READY" && (
                     <div className="flex gap-2">
-                      <button onClick={() => handleStatusChange(order.id, order.status)} className="flex-1 h-10 rounded-xl bg-slate-200 text-slate-500 text-sm font-bold hover:bg-slate-300 transition-colors">
+                      <button onClick={() => handleStatusChange(order.id, order.status)} className="flex-1 h-10 rounded-xl bg-ink-200 text-ink-500 text-sm font-bold hover:bg-ink-300 transition-colors">
                         تم التقديم
                       </button>
-                      <button onClick={() => handleStatusChange(order.id, "PREPARING")} className="px-4 h-10 rounded-xl bg-amber-100 text-amber-700 text-sm font-bold hover:bg-amber-200 transition-colors">
+                      <button onClick={() => handleStatusChange(order.id, "PREPARING")} className="px-4 h-10 rounded-xl bg-surface-alt text-warn text-sm font-bold hover:bg-ink-200 transition-colors">
                         إعادة
                       </button>
                     </div>
