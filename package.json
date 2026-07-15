@@ -7,9 +7,18 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:chaos": "cargo test --manifest-path src-tauri/Cargo.toml --test chaos -- --ignored"
   },
   "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.2.7",
+    "@fontsource/ibm-plex-sans": "^5.2.8",
+    "@fontsource/ibm-plex-sans-arabic": "^5.2.9",
+    "@fontsource/tajawal": "^5.2.7",
+    "@tabler/icons-react": "^3.44.0",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-sql": "^2.0.0",
     "@zaeem/types": "workspace:*",

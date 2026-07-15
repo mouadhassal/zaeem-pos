@@ -1,4 +1,4 @@
-import { Grid3X3, Sofa } from "lucide-react";
+import { IconArrowsJoin2, IconArmchair2 } from "@tabler/icons-react";
 
 interface TableData {
   id: string;
@@ -15,18 +15,18 @@ interface Props {
 }
 
 const statusColors: Record<string, string> = {
-  FREE: "bg-emerald-500",
-  OCCUPIED: "bg-red-500",
-  MERGED: "bg-blue-500",
+  FREE: "bg-ok",
+  OCCUPIED: "bg-danger",
+  MERGED: "bg-ink-600",
 };
 
 export default function TableBar({ tables, selectedId, onSelect, onMerge }: Props) {
   if (tables.length === 0) return null;
 
   return (
-    <div className="h-14 bg-white border-t border-slate-200 flex items-center gap-1 px-3 overflow-x-auto no-scrollbar shrink-0" dir="rtl">
-      <div className="flex items-center gap-1 ml-2 text-xs text-slate-400 shrink-0">
-        <Sofa className="w-3.5 h-3.5" />
+    <div className="h-14 bg-surface border-t border-ink-200 flex items-center gap-1 px-3 overflow-x-auto no-scrollbar shrink-0" dir="rtl">
+      <div className="flex items-center gap-1 ml-2 text-xs text-ink-400 shrink-0">
+        <IconArmchair2 className="w-3.5 h-3.5" />
         <span>الطاولات</span>
       </div>
       {tables.map((t) => (
@@ -35,8 +35,8 @@ export default function TableBar({ tables, selectedId, onSelect, onMerge }: Prop
           onClick={() => onSelect(t)}
           className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-xs font-medium transition-colors shrink-0 ${
             selectedId === t.id
-              ? "bg-emerald-50 text-emerald-700 border border-emerald-300"
-              : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
+              ? "bg-ink-900 text-white border border-ink-900"
+              : "bg-surface text-ink-600 border border-ink-200 hover:bg-ink-50"
           }`}
         >
           <span className={`w-2 h-2 rounded-sm ${statusColors[t.status]}`} />
@@ -45,9 +45,9 @@ export default function TableBar({ tables, selectedId, onSelect, onMerge }: Prop
       ))}
       <button
         onClick={onMerge}
-        className="flex items-center gap-1 px-3 py-1.5 rounded-sm text-xs font-medium bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors shrink-0"
+        className="flex items-center gap-1 px-3 py-1.5 rounded-sm text-xs font-medium bg-surface text-ink-600 border border-ink-200 hover:bg-ink-50 transition-colors shrink-0"
       >
-        <Grid3X3 className="w-3.5 h-3.5" />
+        <IconArrowsJoin2 className="w-3.5 h-3.5" />
         دمج
       </button>
     </div>

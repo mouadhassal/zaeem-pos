@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { getDb } from "../db";
 
-const CURRENCY_SYMBOLS: Record<string, string> = {
+export const CURRENCY_SYMBOLS: Record<string, string> = {
   SAR: "ر.س",
   SYP: "ل.س",
   IQD: "د.ع",

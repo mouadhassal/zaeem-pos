@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import * as deliveryService from "../../lib/deliveryService";
-import { X, Car, Star, Phone } from "lucide-react";
+import { IconX as X, IconCar as Car, IconStar as Star, IconPhone as Phone } from "@tabler/icons-react";
 
 interface Driver {
   id: string;
@@ -31,20 +31,20 @@ export default function DriverSelectModal({ selectedId, onSelect, onClose }: Pro
 
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-white rounded-2xl shadow-elevated w-[420px] max-h-[80vh] overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-          <h2 className="font-bold text-lg text-slate-900">اختيار سائق التوصيل</h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+      <div className="bg-surface rounded-2xl border border-ink-600 w-[420px] max-h-[80vh] overflow-hidden">
+        <div className="px-6 py-4 border-b border-ink-200 flex items-center justify-between">
+          <h2 className="font-bold text-lg text-ink-900">اختيار سائق التوصيل</h2>
+          <button onClick={onClose} className="text-ink-400 hover:text-ink-600">
             <X className="w-5 h-5" />
           </button>
         </div>
         <div className="p-4 space-y-2 overflow-y-auto max-h-[60vh]">
           {loading ? (
             <div className="flex justify-center py-8">
-              <div className="w-6 h-6 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+              <div className="w-6 h-6 border-2 border-ink-200 border-t-accent rounded-full animate-spin" />
             </div>
           ) : drivers.length === 0 ? (
-            <div className="text-center py-8 text-slate-400">
+            <div className="text-center py-8 text-ink-400">
               <Car className="w-10 h-10 mx-auto mb-2" />
               <p>لا يوجد سائقين متاحين حالياً</p>
               <p className="text-xs mt-1">تأكد من إضافة سائقين في قسم التوصيل</p>
@@ -59,17 +59,17 @@ export default function DriverSelectModal({ selectedId, onSelect, onClose }: Pro
                   onClick={() => onSelect(d.id)}
                   className={`w-full p-3 rounded-xl border-2 text-right transition-all ${
                     isSelected
-                      ? "border-emerald-500 bg-emerald-50"
-                      : "border-slate-200 hover:border-emerald-200 hover:bg-emerald-50"
+                      ? "border-accent bg-accent-soft"
+                      : "border-ink-200 hover:border-accent hover:bg-accent-soft"
                   }`}
                 >
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600 font-bold shrink-0">
+                    <div className="w-10 h-10 rounded-full bg-accent-soft flex items-center justify-center text-accent-text font-bold shrink-0">
                       {d.name[0]}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="font-semibold text-slate-800">{d.name}</div>
-                      <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
+                      <div className="font-semibold text-ink-800">{d.name}</div>
+                      <div className="flex items-center gap-2 text-xs text-ink-500 mt-0.5">
                         <span className="flex items-center gap-1">
                           <Car className="w-3 h-3" />
                           {d.vehicle_type === "MOTORCYCLE" ? "دراجة نارية" : d.vehicle_type === "CAR" ? "سيارة" : d.vehicle_type === "VAN" ? "فان" : "شاحنة"}
@@ -80,14 +80,14 @@ export default function DriverSelectModal({ selectedId, onSelect, onClose }: Pro
                       <div className="flex items-center gap-2 mt-0.5">
                         <span className="flex items-center gap-0.5">
                           {Array.from({ length: 5 }, (_, i) => (
-                            <Star key={i} className={`w-3 h-3 ${i < stars ? "text-amber-400 fill-amber-400" : "text-slate-200"}`} />
+                            <Star key={i} className={`w-3 h-3 ${i < stars ? "text-accent fill-accent" : "text-ink-200"}`} />
                           ))}
                         </span>
-                        <span className="text-xs text-slate-400">{d.total_deliveries} توصيلة</span>
+                        <span className="text-xs text-ink-400">{d.total_deliveries} توصيلة</span>
                       </div>
                     </div>
                     {isSelected && (
-                      <span className="px-2 py-0.5 bg-emerald-500 text-white text-xs rounded-full">مختار</span>
+                      <span className="px-2 py-0.5 bg-accent text-white text-xs rounded-full">مختار</span>
                     )}
                   </div>
                 </button>
@@ -95,10 +95,10 @@ export default function DriverSelectModal({ selectedId, onSelect, onClose }: Pro
             })
           )}
         </div>
-        <div className="px-6 py-4 border-t border-slate-200">
+        <div className="px-6 py-4 border-t border-ink-200">
           <button
             onClick={onClose}
-            className="w-full h-12 rounded-xl bg-white text-slate-900 font-bold hover:bg-slate-100 transition-colors"
+            className="w-full h-12 rounded-xl bg-surface text-ink-900 font-bold hover:bg-ink-100 transition-colors"
           >
             {selectedId ? "تأكيد" : "إلغاء"}
           </button>

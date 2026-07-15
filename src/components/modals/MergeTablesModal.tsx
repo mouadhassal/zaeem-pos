@@ -30,17 +30,17 @@ export default function MergeTablesModal({ tables, selectedTableId, onMerge, onC
 
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-white rounded-2xl shadow-elevated w-[500px]">
-        <div className="px-6 py-4 border-b border-slate-200">
-          <h2 className="font-arabic font-bold text-lg text-slate-900">دمج الطاولات</h2>
-          <p className="font-arabic text-sm text-slate-400 mt-1">
+      <div className="bg-surface rounded-2xl border border-ink-600 w-[500px]">
+        <div className="px-6 py-4 border-b border-ink-200">
+          <h2 className="font-arabic font-bold text-lg text-ink-900">دمج الطاولات</h2>
+          <p className="font-arabic text-sm text-ink-400 mt-1">
             اختر الطاولات للدمج. الأولى ستكون الطاولة الرئيسية.
           </p>
         </div>
 
         <div className="p-6">
           {occupiedTables.length < 2 ? (
-            <p className="font-arabic text-slate-500 text-center py-8">
+            <p className="font-arabic text-ink-500 text-center py-8">
               تحتاج طاولتين على الأقل للدمج
             </p>
           ) : (
@@ -54,10 +54,10 @@ export default function MergeTablesModal({ tables, selectedTableId, onMerge, onC
                       onClick={() => toggleTable(table.id)}
                       className={`h-16 rounded-xl font-arabic font-bold transition-all ${
                         idx === 0
-                          ? "bg-emerald-600 text-white ring-2 ring-emerald-300"
+                          ? "bg-accent text-white"
                           : idx > 0
-                          ? "bg-amber-50 border-2 border-amber-300 text-amber-700"
-                          : "bg-white text-slate-500 hover:bg-slate-200"
+                          ? "bg-surface-alt border-2 border-warn text-warn"
+                          : "bg-surface text-ink-500 hover:bg-ink-200"
                       }`}
                     >
                       {table.name}
@@ -70,7 +70,7 @@ export default function MergeTablesModal({ tables, selectedTableId, onMerge, onC
               </div>
 
               {selected.length > 1 && (
-                <div className="bg-amber-50 rounded-xl p-3 text-sm font-arabic text-amber-800">
+                <div className="bg-surface-alt rounded-xl p-3 text-sm font-arabic text-text-2">
                   سيتم دمج {selected.length} طاولات إلى الطاولة الرئيسية
                 </div>
               )}
@@ -78,17 +78,17 @@ export default function MergeTablesModal({ tables, selectedTableId, onMerge, onC
           )}
         </div>
 
-        <div className="px-6 py-4 border-t border-slate-200 flex gap-3">
+        <div className="px-6 py-4 border-t border-ink-200 flex gap-3">
           <button
             onClick={onCancel}
-            className="flex-1 h-12 rounded-xl bg-white text-slate-900 font-arabic font-bold hover:bg-slate-200"
+            className="flex-1 h-12 rounded-xl bg-surface text-ink-900 font-arabic font-bold hover:bg-ink-200"
           >
             إلغاء
           </button>
           <button
             onClick={() => targetTable && onMerge(selected, targetTable)}
             disabled={selected.length < 2}
-            className="flex-1 h-12 rounded-xl bg-emerald-600 text-white font-arabic font-bold hover:bg-emerald-700 disabled:opacity-50"
+            className="flex-1 h-12 rounded-xl bg-accent text-white font-arabic font-bold hover:bg-accent-text disabled:opacity-50"
           >
             دمج
           </button>

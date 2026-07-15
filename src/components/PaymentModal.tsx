@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { IconX, IconCash, IconCreditCard, IconWallet, IconCircleCheck } from "@tabler/icons-react";
 import { useCartStore } from "../stores/cartStore";
 import { openCashDrawer } from "../lib/printer";
 import { getDb } from "../db";
@@ -100,27 +101,25 @@ export default function PaymentModal({ onClose, onSuccess }: Props) {
 
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-white rounded-2xl shadow-elevated w-[520px] overflow-hidden" dir="rtl">
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-          <h2 className="font-arabic font-bold text-lg text-slate-900">الدفع</h2>
+      <div className="bg-surface rounded-2xl border border-ink-600 w-[520px] overflow-hidden" dir="rtl">
+        <div className="px-6 py-4 border-b border-ink-200 flex items-center justify-between">
+          <h2 className="font-arabic font-bold text-lg text-ink-900">الدفع</h2>
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-lg hover:bg-white flex items-center justify-center"
+            className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center transition-colors"
           >
-            <svg className="w-5 h-5 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M18 6L6 18M6 6l12 12" />
-            </svg>
+            <IconX className="w-5 h-5 text-ink-500" stroke={1.75} />
           </button>
         </div>
 
-        <div className="px-6 py-4 bg-white">
+        <div className="px-6 py-4 bg-surface">
           <div className="flex justify-between items-center mb-1">
-            <span className="font-arabic text-slate-400 text-sm">الإجمالي</span>
-            <span className="font-mono font-bold text-xl text-slate-900">
+            <span className="font-arabic text-ink-400 text-sm">الإجمالي</span>
+            <span className="font-mono font-bold text-xl text-ink-900">
               {fmt(totalCents)}
             </span>
           </div>
-          <div className="font-arabic text-xs text-slate-500">
+          <div className="font-arabic text-xs text-ink-500">
             {useCartStore.getState().tableName
               ? `طاولة ${useCartStore.getState().tableName} · `
               : ""}
@@ -129,44 +128,31 @@ export default function PaymentModal({ onClose, onSuccess }: Props) {
         </div>
 
         <div className="px-6 pt-4">
-          <div className="flex gap-2 bg-white rounded-xl p-1">
-            {(["CASH", "CARD", "WALLET", "CREDIT"] as PaymentMethod[]).map((m) => (
-              <button
-                key={m}
-                onClick={() => setMethod(m)}
-                className={`flex-1 py-2.5 rounded-lg font-arabic font-medium text-sm transition-all flex items-center justify-center gap-1.5 ${
-                  method === m
-                    ? "bg-white text-emerald-700 shadow-sm"
-                    : "text-slate-400 hover:text-slate-900"
-                }`}
-              >
-                {m === "CASH" ? (
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <rect x="1" y="4" width="22" height="16" rx="2" /><path d="M1 10h22" />
-                  </svg>
-                ) : m === "CARD" ? (
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <rect x="1" y="4" width="22" height="16" rx="2" /><path d="M1 10h22" />
-                  </svg>
-                ) : m === "WALLET" ? (
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M21 12V7H5a2 2 0 010-4h14v4M3 5v14a2 2 0 002 2h16v-5M18 12a2 2 0 000 4h4v-4h-4z" />
-                  </svg>
-                ) : (
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M12 2a10 10 0 100 20 10 10 0 000-20z" /><path d="M12 6v4m0 4h.01" />
-                  </svg>
-                )}
-                {m === "CASH" ? "نقدي" : m === "CARD" ? "بطاقة" : m === "WALLET" ? "محفظة" : "دين"}
-              </button>
-            ))}
+          <div className="flex gap-2 bg-surface-alt rounded-xl p-1">
+            {(["CASH", "CARD", "WALLET", "CREDIT"] as PaymentMethod[]).map((m) => {
+              const MethodIcon = m === "CASH" ? IconCash : m === "CARD" ? IconCreditCard : m === "WALLET" ? IconWallet : IconCircleCheck;
+              return (
+                <button
+                  key={m}
+                  onClick={() => setMethod(m)}
+                  className={`flex-1 py-2.5 rounded-lg font-arabic font-medium text-sm transition-all flex items-center justify-center gap-1.5 ${
+                    method === m
+                      ? "bg-surface text-ink-900 shadow-sm"
+                      : "text-ink-400 hover:text-ink-900"
+                  }`}
+                >
+                  <MethodIcon className="w-4 h-4" stroke={1.75} />
+                  {m === "CASH" ? "نقدي" : m === "CARD" ? "بطاقة" : m === "WALLET" ? "محفظة" : "دين"}
+                </button>
+              );
+            })}
           </div>
         </div>
 
         {method === "CASH" && (
           <div className="px-6 py-4">
             <div className="mb-3">
-              <label className="font-arabic text-sm text-slate-500 mb-1.5 block">
+              <label className="font-arabic text-sm text-ink-500 mb-1.5 block">
                 المبلغ المستلم
               </label>
               <div className="relative">
@@ -175,12 +161,12 @@ export default function PaymentModal({ onClose, onSuccess }: Props) {
                   inputMode="decimal"
                   value={receivedStr}
                   onChange={(e) => setReceivedStr(e.target.value)}
-                  className="w-full h-14 text-right font-mono text-2xl font-bold text-slate-900 bg-white border-2 border-slate-200 rounded-xl px-4 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 outline-none transition-all"
+                  className="w-full h-14 text-right font-mono text-2xl font-bold text-ink-900 bg-surface border-2 border-ink-200 rounded-xl px-4 focus:border-accent outline-none transition-all"
                   placeholder="٠"
                   autoFocus
                   dir="ltr"
                 />
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 font-arabic text-slate-500">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 font-arabic text-ink-500">
                   {symbol}
                 </span>
               </div>
@@ -191,7 +177,7 @@ export default function PaymentModal({ onClose, onSuccess }: Props) {
                 <button
                   key={amt}
                   onClick={() => setReceivedStr((amt / 100).toString())}
-                  className="h-10 rounded-lg bg-white font-mono font-medium text-slate-900 hover:bg-emerald-50 hover:text-emerald-700 transition-colors"
+                  className="h-10 rounded-lg bg-surface-alt font-mono font-medium text-ink-900 hover:bg-accent-soft hover:text-accent-text transition-colors"
                 >
                   {formatCompact(amt)}
                 </button>
@@ -201,19 +187,19 @@ export default function PaymentModal({ onClose, onSuccess }: Props) {
             <div
               className={`rounded-xl p-4 flex justify-between items-center transition-colors ${
                 receivedCents > 0 && sufficient
-                  ? "bg-emerald-50"
+                  ? "bg-accent-soft"
                   : receivedCents > 0 && !sufficient
-                  ? "bg-red-50"
-                  : "bg-white"
+                  ? "bg-danger-soft"
+                  : "bg-surface-alt"
               }`}
             >
               <span
                 className={`font-arabic font-medium ${
                   receivedCents > 0 && sufficient
-                    ? "text-emerald-800"
+                    ? "text-accent-text"
                     : receivedCents > 0 && !sufficient
-                    ? "text-red-600"
-                    : "text-slate-400"
+                    ? "text-danger"
+                    : "text-ink-400"
                 }`}
               >
                 {receivedCents > 0 && !sufficient
@@ -223,10 +209,10 @@ export default function PaymentModal({ onClose, onSuccess }: Props) {
               <span
                 className={`font-mono font-bold text-2xl ${
                   receivedCents > 0 && sufficient
-                    ? "text-emerald-700"
+                    ? "text-accent-text"
                     : receivedCents > 0 && !sufficient
-                    ? "text-red-500"
-                    : "text-slate-500"
+                    ? "text-danger"
+                    : "text-ink-500"
                 }`}
               >
                 {receivedCents > 0 ? fmt(sufficient ? changeCents : totalCents - receivedCents) : "---"}
@@ -238,7 +224,7 @@ export default function PaymentModal({ onClose, onSuccess }: Props) {
         {method === "CREDIT" && (
           <div className="px-6 py-4 space-y-3">
             <div>
-              <label className="font-arabic text-sm text-slate-500 mb-1.5 block">
+              <label className="font-arabic text-sm text-ink-500 mb-1.5 block">
                 رقم هاتف العميل
               </label>
               <input
@@ -246,42 +232,42 @@ export default function PaymentModal({ onClose, onSuccess }: Props) {
                 inputMode="numeric"
                 value={debtorPhone}
                 onChange={(e) => setDebtorPhone(e.target.value)}
-                className="w-full h-14 text-right font-mono text-lg bg-white border-2 border-slate-200 rounded-xl px-4 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 outline-none transition-all"
+                className="w-full h-14 text-right font-mono text-lg bg-surface border-2 border-ink-200 rounded-xl px-4 focus:border-accent outline-none transition-all"
                 placeholder="٠٧٧٠xxxxxxx"
                 autoFocus
                 dir="ltr"
               />
             </div>
             {debtorName && (
-              <div className="bg-emerald-50 rounded-xl p-3 flex items-center justify-between">
-                <span className="font-arabic text-sm text-emerald-800">العميل: {debtorName}</span>
-                <span className="font-mono text-sm text-emerald-600 font-bold">{fmt(totalCents)}</span>
+              <div className="bg-accent-soft rounded-xl p-3 flex items-center justify-between">
+                <span className="font-arabic text-sm text-accent-text">العميل: {debtorName}</span>
+                <span className="font-mono text-sm text-accent-text font-bold">{fmt(totalCents)}</span>
               </div>
             )}
             {!debtorName && debtorPhone.trim().length >= 8 && !showNewDebtorForm && (
               <div className="space-y-2">
-                <p className="text-sm text-red-500 font-arabic">رقم الهاتف غير موجود</p>
+                <p className="text-sm text-danger font-arabic">رقم الهاتف غير موجود</p>
                 <button
                   onClick={() => setShowNewDebtorForm(true)}
-                  className="w-full h-10 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors"
+                  className="w-full h-10 rounded-xl bg-accent text-white text-sm font-bold hover:bg-accent-text transition-colors"
                 >
                   إضافة مدين جديد
                 </button>
               </div>
             )}
             {showNewDebtorForm && (
-              <div className="bg-white rounded-xl border border-slate-200 p-3 space-y-2">
+              <div className="bg-surface-alt rounded-xl border border-ink-200 p-3 space-y-2">
                 <input
                   type="text"
                   value={newDebtorName}
                   onChange={(e) => setNewDebtorName(e.target.value)}
                   placeholder="اسم المدين *"
-                  className="w-full h-10 px-3 rounded-lg bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-3 rounded-lg bg-surface border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-accent"
                 />
                 <div className="flex gap-2">
                   <button
                     onClick={() => { setShowNewDebtorForm(false); setNewDebtorName(""); }}
-                    className="flex-1 h-9 rounded-lg bg-white text-slate-500 text-sm font-arabic hover:bg-slate-200 transition-colors"
+                    className="flex-1 h-9 rounded-lg bg-surface text-ink-500 text-sm font-arabic hover:bg-ink-200 transition-colors"
                   >
                     إلغاء
                   </button>
@@ -310,7 +296,7 @@ export default function PaymentModal({ onClose, onSuccess }: Props) {
                       }
                     }}
                     disabled={!newDebtorName.trim()}
-                    className="flex-1 h-9 rounded-lg bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors disabled:opacity-50"
+                    className="flex-1 h-9 rounded-lg bg-accent text-white text-sm font-bold hover:bg-accent-text transition-colors disabled:opacity-50"
                   >
                     حفظ
                   </button>
@@ -322,35 +308,33 @@ export default function PaymentModal({ onClose, onSuccess }: Props) {
 
         {method !== "CASH" && method !== "CREDIT" && (
           <div className="px-6 py-12 text-center">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-emerald-50 flex items-center justify-center">
-              <svg className="w-8 h-8 text-emerald-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M22 11.08V12a10 10 0 11-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
-              </svg>
+            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-accent-soft flex items-center justify-center">
+              <IconCircleCheck className="w-8 h-8 text-accent-text" stroke={1.75} />
             </div>
-            <p className="font-arabic text-slate-900 font-medium mb-2">
+            <p className="font-arabic text-ink-900 font-medium mb-2">
               {method === "CARD" ? "استخدام جهاز البطاقة" : "الدفع بالمحفظة"}
             </p>
-            <p className="font-arabic text-sm text-slate-500">
+            <p className="font-arabic text-sm text-ink-500">
               {method === "CARD" ? "يرجى تمرير البطاقة على الجهاز" : "سيتم خصم المبلغ من المحفظة"}
             </p>
           </div>
         )}
 
         {error && (
-          <p className="px-6 pb-2 text-red-500 text-sm text-center font-arabic">{error}</p>
+          <p className="px-6 pb-2 text-danger text-sm text-center font-arabic">{error}</p>
         )}
 
-        <div className="px-6 py-4 border-t border-slate-200 flex gap-3">
+        <div className="px-6 py-4 border-t border-ink-200 flex gap-3">
           <button
             onClick={onClose}
-            className="flex-1 h-14 rounded-xl bg-white text-slate-900 font-arabic font-bold hover:bg-slate-200 transition-colors"
+            className="flex-1 h-14 rounded-xl bg-surface text-ink-900 font-arabic font-bold hover:bg-ink-200 transition-colors"
           >
             إلغاء
           </button>
           <button
             onClick={handleConfirm}
             disabled={!sufficient || processing}
-            className="flex-1 h-14 rounded-xl bg-emerald-600 text-white font-arabic font-bold hover:bg-emerald-700 shadow-lg shadow-emerald-600\/20 active:scale-[0.98] transition-all disabled:opacity-50 disabled:shadow-none"
+            className="flex-1 h-14 rounded-xl bg-accent text-white font-arabic font-bold hover:bg-accent-text shadow-sh-3 active:scale-[0.98] transition-all disabled:opacity-50 disabled:shadow-none"
           >
             {processing ? "...جارٍ" : "تأكيد وطباعة"}
           </button>

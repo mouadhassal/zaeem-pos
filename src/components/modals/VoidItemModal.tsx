@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { getDb } from "../../db";
+import { verifyPassword } from "../../lib/auth";
 
 interface Props {
   itemName: string;
@@ -11,33 +13,62 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
   const [reason, setReason] = useState("");
   const [showPin, setShowPin] = useState(false);
   const [pin, setPin] = useState("");
+  const [pinError, setPinError] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState(false);
 
   const needsManager = itemPriceCents > 2000;
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     if (!reason.trim()) return;
     if (needsManager && !showPin) {
       setShowPin(true);
       return;
+    }
+    if (needsManager) {
+      setVerifying(true);
+      setPinError(null);
+      try {
+        const db = await getDb();
+        const manager = await db
+          .selectFrom("users")
+          .select(["password_hash"])
+          .where("role", "in", ["MANAGER", "ADMIN", "OWNER"])
+          .where("is_active", "=", 1)
+          .executeTakeFirst();
+        if (!manager) {
+          setPinError("لا يوجد مدير متاح");
+          return;
+        }
+        const valid = await verifyPassword(pin, manager.password_hash);
+        if (!valid) {
+          setPinError("كلمة مرور المدير غير صحيحة");
+          return;
+        }
+      } catch {
+        setPinError("حدث خطأ أثناء التحقق");
+        return;
+      } finally {
+        setVerifying(false);
+      }
     }
     onConfirm(reason.trim());
   };
 
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-white rounded-2xl shadow-elevated w-[420px] overflow-hidden">
-        <div className="px-6 py-4 bg-red-50 border-b border-red-100">
-          <h2 className="font-arabic font-bold text-lg text-red-700">إلغاء الصنف</h2>
-          <p className="font-arabic text-sm text-red-500 mt-1">{itemName}</p>
+      <div className="bg-surface rounded-2xl border border-ink-600 w-[420px] overflow-hidden">
+        <div className="px-6 py-4 bg-danger-soft border-b border-danger-soft">
+          <h2 className="font-arabic font-bold text-lg text-danger">إلغاء الصنف</h2>
+          <p className="font-arabic text-sm text-danger mt-1">{itemName}</p>
         </div>
 
         <div className="p-6 space-y-4">
           <div>
-            <label className="font-arabic text-sm text-slate-500 mb-1.5 block">سبب الإلغاء *</label>
+            <label className="font-arabic text-sm text-ink-500 mb-1.5 block">سبب الإلغاء *</label>
             <select
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              className="w-full h-12 rounded-xl border-2 border-slate-200 px-4 font-arabic text-sm focus:border-red-400 outline-none"
+              className="w-full h-12 rounded-xl border-2 border-ink-200 px-4 font-arabic text-sm focus:border-danger outline-none"
             >
               <option value="">اختر سبباً</option>
               <option value="خطأ في الطلب">خطأ في الطلب</option>
@@ -54,39 +85,43 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               placeholder="اكتب سبب الإلغاء..."
-              className="w-full h-12 rounded-xl border-2 border-slate-200 px-4 font-arabic text-sm outline-none focus:border-red-400"
+              className="w-full h-12 rounded-xl border-2 border-ink-200 px-4 font-arabic text-sm outline-none focus:border-danger"
             />
           )}
 
           {showPin && (
             <div>
-              <label className="font-arabic text-sm text-slate-500 mb-1.5 block">
+              <label className="font-arabic text-sm text-ink-500 mb-1.5 block">
                 كلمة مرور المدير (أكثر من ٢٠٠٠ د.ع)
               </label>
               <input
                 type="password"
                 value={pin}
-                onChange={(e) => setPin(e.target.value)}
-                className="w-full h-12 rounded-xl border-2 border-slate-200 px-4 font-mono text-sm outline-none focus:border-red-400"
+                onChange={(e) => { setPin(e.target.value); setPinError(null); }}
+                onKeyDown={(e) => { if (e.key === "Enter") handleConfirm(); }}
+                className="w-full h-12 rounded-xl border-2 border-ink-200 px-4 font-mono text-sm outline-none focus:border-danger"
                 autoFocus
               />
+              {pinError && (
+                <p className="text-danger text-sm mt-1.5 font-arabic">{pinError}</p>
+              )}
             </div>
           )}
         </div>
 
-        <div className="px-6 py-4 border-t border-slate-200 flex gap-3">
+        <div className="px-6 py-4 border-t border-ink-200 flex gap-3">
           <button
             onClick={onCancel}
-            className="flex-1 h-12 rounded-xl bg-white text-slate-900 font-arabic font-bold hover:bg-slate-200"
+            className="flex-1 h-12 rounded-xl bg-surface text-ink-900 font-arabic font-bold hover:bg-ink-200"
           >
             رجوع
           </button>
           <button
             onClick={handleConfirm}
-            disabled={!reason.trim() || (needsManager && showPin && !pin)}
-            className="flex-1 h-12 rounded-xl bg-red-600 text-white font-arabic font-bold hover:bg-red-700 disabled:opacity-50"
+            disabled={!reason.trim() || verifying || (needsManager && showPin && !pin)}
+            className="flex-1 h-12 rounded-xl bg-danger text-white font-arabic font-bold hover:bg-danger disabled:opacity-50"
           >
-            تأكيد الإلغاء
+            {verifying ? "جاري التحقق..." : "تأكيد الإلغاء"}
           </button>
         </div>
       </div>
