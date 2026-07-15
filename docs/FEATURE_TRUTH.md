@@ -221,15 +221,17 @@
 | Issue | Status | Evidence |
 |-------|--------|----------|
 | Seed users with known passwords (`admin123`) | **KNOWN REGRESSION** | `lib.rs:598-630` — 4 users seeded on first run |
-| Password hash comparison in renderer | **KNOWN REGRESSION** | `auth.ts` — `verifyPassword()` uses bcryptjs compare in frontend |
+| Password hash comparison in renderer | **PARTIALLY FIXED (2026-07-16)** | `shift/page.tsx`'s manager-override check no longer fetches `password_hash`/`manager_pin_hash` into the frontend — replaced with Rust command `verify_manager_override` (`lib.rs`) that compares server-side and returns only a bool. **`VoidItemModal.tsx` and `ManagerPinModal.tsx` still do the old client-side-hash pattern** — deliberately left alone per T1.0a review decision; the real fix (a Rust-issued, time-boxed elevation token) is T1.4, not this interim patch. Do not consider this regression closed until T1.4 lands. |
 | `lib/license.ts` returns `active` unconditionally | **KNOWN REGRESSION** | `license.ts:12-13` — always returns `{ status: "active", daysRemaining: 365 }` |
-| `CSP: null` in `tauri.conf.json` | **KNOWN REGRESSION** | Config has `"security": { "csp": null }` |
-| `debug/page.tsx` reachable in release build | **KNOWN REGRESSION** | Page exists at `src/app/debug/page.tsx`, no compile-time gating |
+| `CSP: null` in `tauri.conf.json` | **FIXED (2026-07-15)** | `tauri.conf.json` CSP tightened: removed `unsafe-inline` from `script-src`; `connect-src` kept permissive for LAN thermal-printer HTTP traffic (a real hardware requirement, not an oversight) |
+| `debug/page.tsx` reachable in release build | **FIXED (2026-07-16)** | Frontend already excluded the page from prod bundles via `import.meta.env.DEV` (`App.tsx:26-28`), but the backing Rust command `diagnose_db` had **no server-side gate** — invokable directly by any renderer script regardless of which UI route was showing, in any build. Now wrapped `#[cfg(debug_assertions)]` with a release-mode stub that returns `Err`, matching the pattern already used for `seed_default_users`. |
 | Ad-hoc `ALTER TABLE` with no version table | **KNOWN REGRESSION** | `lib.rs:566-596` — ALTER TABLE wrapped in `.ok()` in init_db() |
 | Permission checks in React only | **KNOWN REGRESSION** | All `canAccessX()` functions in `permissions.ts` have no Rust counterpart |
 | Rust commands: zero role checks | **WIDESPREAD GAP** | All 17 commands accept any caller, no session verification |
 | `audit_logs` table: created, never written to | **WIDESPREAD GAP** | `lib.rs:182` creates table, zero commands insert into it |
 | Session tokens are `zaeem_{uuid}` in localStorage | **SECURITY GAP** | `lib.rs:718-790` — session tokens are `zaeem_` + uuid, no expiry |
+| `create_branch` reachable from two unauthorized UI paths | **KNOWN HOLE — closing in Sprint 01 (T1.2/T1.3)** | Found in T1.0a command inventory (`docs/plans/T1.0a_COMMAND_INVENTORY.md`): reachable both from `branches/page.tsx:236-239` (OWNER-gated) and silently from `settings/page.tsx:199-215`'s `saveBranch()` else-branch (MANAGER/ADMIN-gated). Per `ARCHITECTURE_V3.md` hard rule #1, branch creation must be Platform-only. **Deliberately not patched in the frontend** — the fix is the scoped Rust command layer landing in T1.2/T1.3, which structurally rejects any non-Platform caller; a frontend-only patch here would be thrown away. |
+| Staff/branch/shift aggregate queries return unscoped (global) data | **KNOWN HOLE — closing in Sprint 01 (T1.2/T1.3)** | Found in T1.0a: `branches/page.tsx`'s per-branch staff-count and today's-sales sub-queries, plus `get_staff_list`/`get_shifts`/`get_attendance` in `staff/page.tsx`, have no `branch_id` filter today (expected — the column doesn't exist yet) and silently show global figures mislabeled as per-branch. Same deliberate non-fix: correct scoping only exists once the repo-layer scope filter (T1.2) lands. |
 
 ---
 
@@ -240,7 +242,7 @@
 | Rule | Status |
 |------|--------|
 | R1 — Frontend never touches DB | **FAIL** — 37 `getDb()` call sites |
-| R2 — No country logic in core | **PASS** — but only because there's no `core/` module yet |
+| R2 — No country logic in core | **N/A** — `core/` module does not exist yet; nothing can leak into a directory that isn't there |
 | R3 — Money type (not bare `_cents`) | **FAIL** — all money is `_cents: i64` everywhere |
 | R4 — Orders/payments append-only | **FAIL** — orders are UPDATEd in place |
 | R5 — Every mutation writes audit entry | **FAIL** — audit_logs table is dead |
@@ -299,6 +301,8 @@
 4. **POS loyalty earning is silently wrapped in try/catch** (`pos/page.tsx:299`) — if loyalty point earning fails during payment, the payment succeeds and the error is silently swallowed. The customer gets their food but loses their points. In Syrian inflation, losing points is losing real value.
 
 5. **Payment flow is not transactional** (`pos/page.tsx:190-306`) — order creation, payment insertion, table free, loyalty points, and print are sequential await calls with no transaction wrapping. If the app crashes between "insert payment" and "free table", the table stays OCCUPIED but the order is PAID.
+
+   **Chaos test (T0.5)**: `pnpm test:chaos` runs 200 randomized order+payment cycles with simulated crashes at random points during the write sequence. Current failure rate: **97.0%** (194/200 cycles). Primary failure mode: orders marked PAID with no corresponding payment record (DB integrity remains intact — SQLite WAL handles OS-level crashes; the failures are all application-level consistency). Fix target: Sprint 02.
 
 6. **`lib/license.ts` is not just a stub — it's dangerous** — Returns `active` unconditionally. If someone builds a feature gate on it (which the subscription page UI hints at), the gate is trivially bypassed. The CLAUDE.md says to delete it in S1 but there's no sprint task that explicitly says to add `EntitlementAdapter`.
 

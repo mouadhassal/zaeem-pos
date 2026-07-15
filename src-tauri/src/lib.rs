@@ -3,10 +3,65 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{Manager, State};
 use tauri_plugin_sql::{Migration, MigrationKind};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+mod migrate;
+mod ai;
 
 use bcrypt::{hash, verify, DEFAULT_COST};
 
 struct Db(Mutex<Connection>);
+
+use ai::commands::AppState;
+use ai::commands;
+use ai::MockAiProvider;
+use ai::NullAiProvider;
+use ai::UploadQueue;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum OrderStatus {
+    Draft,
+    Pending,
+    Preparing,
+    Ready,
+    Served,
+    Paid,
+    Cancelled,
+    Scheduled,
+    Voided,
+}
+
+impl OrderStatus {
+    fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "DRAFT" => Some(Self::Draft),
+            "PENDING" => Some(Self::Pending),
+            "PREPARING" => Some(Self::Preparing),
+            "READY" => Some(Self::Ready),
+            "SERVED" => Some(Self::Served),
+            "PAID" => Some(Self::Paid),
+            "CANCELLED" => Some(Self::Cancelled),
+            "SCHEDULED" => Some(Self::Scheduled),
+            "VOIDED" => Some(Self::Voided),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Draft => "DRAFT",
+            Self::Pending => "PENDING",
+            Self::Preparing => "PREPARING",
+            Self::Ready => "READY",
+            Self::Served => "SERVED",
+            Self::Paid => "PAID",
+            Self::Cancelled => "CANCELLED",
+            Self::Scheduled => "SCHEDULED",
+            Self::Voided => "VOIDED",
+        }
+    }
+}
 
 const SCHEMA_SQL: &str = "
 PRAGMA journal_mode=WAL;
@@ -563,38 +618,11 @@ fn db_path(app: &tauri::AppHandle) -> std::path::PathBuf {
     dir.join("zaeem_pos.db")
 }
 
-fn init_db(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(SCHEMA_SQL)?;
-    for (table, column, col_type) in &[
-        ("users", "photo_path", "TEXT"),
-        ("users", "cv_path", "TEXT"),
-        ("users", "qr_code", "TEXT"),
-        ("ingredients", "barcode", "TEXT"),
-    ] {
-        let sql = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, col_type);
-        conn.execute_batch(&sql).ok();
-    }
-    for (table, column, col_type) in &[
-        ("users", "username", "TEXT"),
-        ("users", "name_en", "TEXT"),
-        ("users", "phone", "TEXT"),
-        ("users", "last_login", "TEXT"),
-        ("users", "restaurant_id", "TEXT"),
-        ("orders", "shift_id", "TEXT"),
-        ("menu_items", "is_combo", "INTEGER NOT NULL DEFAULT 0"),
-        ("menu_items", "combo_original_price_cents", "INTEGER"),
-        ("menu_items", "combo_description", "TEXT"),
-        ("combo_items", "is_free", "INTEGER NOT NULL DEFAULT 0"),
-        ("combo_items", "sort_order", "INTEGER NOT NULL DEFAULT 0"),
-        ("orders", "delivery_fee_cents", "INTEGER NOT NULL DEFAULT 0"),
-        ("orders", "delivery_zone_id", "TEXT"),
-    ] {
-        let sql = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, col_type);
-        conn.execute_batch(&sql).ok();
-    }
-    Ok(())
+fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), migrate::MigrationError> {
+    migrate::run_migrations(conn, db_path)
 }
 
+#[cfg(debug_assertions)]
 fn seed_default_users(conn: &Connection) -> rusqlite::Result<()> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM users WHERE username IS NOT NULL",
@@ -627,6 +655,71 @@ fn seed_default_users(conn: &Connection) -> rusqlite::Result<()> {
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+fn needs_setup(state: State<Db>) -> Result<bool, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    if cfg!(debug_assertions) {
+        return Ok(false);
+    }
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM users WHERE role = 'OWNER' AND is_active = 1",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(0);
+    Ok(count == 0)
+}
+
+#[tauri::command]
+fn setup_owner(state: State<Db>, name: String, username: String, password: String, pin: String) -> Result<LoginResponse, String> {
+    if password.len() < 10 {
+        return Err("كلمة المرور يجب أن تكون 10 أحرف على الأقل".to_string());
+    }
+    if pin.len() != 6 || !pin.chars().all(|c| c.is_ascii_digit()) {
+        return Err("الرقم السري يجب أن يكون 6 أرقام".to_string());
+    }
+
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let existing: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM users WHERE role = 'OWNER' AND is_active = 1",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(0);
+    if existing > 0 {
+        return Err("المالك موجود بالفعل".to_string());
+    }
+
+    let password_hash = hash(&password, DEFAULT_COST).map_err(|e| e.to_string())?;
+    let pin_hash = hash(&pin, DEFAULT_COST).map_err(|e| e.to_string())?;
+    let id = format!("user-{}", uuid::Uuid::new_v4());
+    let now = chrono::Utc::now().to_rfc3339();
+
+    conn.execute(
+        "INSERT INTO users (id, email, name, username, password_hash, manager_pin_hash, role, is_active, created_at, restaurant_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'OWNER', 1, ?7, 'main')",
+        params![id, format!("{}@zaeem.local", username), name, username, password_hash, pin_hash, now],
+    ).map_err(|e| e.to_string())?;
+
+    let session_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO login_sessions (id, user_id, login_time, device_info, is_active) VALUES (?1, ?2, ?3, 'setup-wizard', 1)",
+        params![session_id, id, now],
+    ).ok();
+
+    let token = format!("zaeem_{}", session_id);
+    Ok(LoginResponse {
+        success: true,
+        user: Some(AuthUser {
+            id,
+            name,
+            username,
+            role: "OWNER".to_string(),
+            photo_path: None,
+            restaurant_id: "main".to_string(),
+        }),
+        token: Some(token),
+        message: "تم إنشاء حساب المالك".to_string(),
+    })
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -787,6 +880,75 @@ fn login(state: State<Db>, request: LoginRequest, device_info: String) -> Result
     })
 }
 
+type PinUserRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    i32,
+);
+
+#[tauri::command]
+fn login_with_pin(state: State<Db>, pin: String, device_info: String) -> Result<LoginResponse, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, name, username, password_hash, role, photo_path, restaurant_id, manager_pin_hash, is_active FROM users WHERE manager_pin_hash IS NOT NULL"
+    ).map_err(|e| e.to_string())?;
+
+    let users: Vec<PinUserRow> = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, i32>(8)?,
+        ))
+    }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+    for (id, name, username, _password_hash, role, photo_path, restaurant_id, pin_hash, is_active) in &users {
+        if *is_active == 0 { continue; }
+        if verify(&pin, pin_hash).unwrap_or(false) {
+            let now = chrono::Utc::now().to_rfc3339();
+            conn.execute("UPDATE users SET last_login = ?1 WHERE id = ?2", params![now, id])
+                .map_err(|e| e.to_string())?;
+            let session_id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO login_sessions (id, user_id, login_time, device_info, is_active) VALUES (?1, ?2, ?3, ?4, 1)",
+                params![session_id, id, now, device_info],
+            ).map_err(|e| e.to_string())?;
+            let token = format!("zaeem_{}", session_id);
+            return Ok(LoginResponse {
+                success: true,
+                user: Some(AuthUser {
+                    id: id.clone(),
+                    name: name.clone(),
+                    username: username.clone(),
+                    role: role.clone(),
+                    photo_path: photo_path.clone(),
+                    restaurant_id: restaurant_id.clone(),
+                }),
+                token: Some(token),
+                message: "تم تسجيل الدخول بنجاح".to_string(),
+            });
+        }
+    }
+
+    Ok(LoginResponse {
+        success: false,
+        user: None,
+        token: None,
+        message: "رمز PIN غير صحيح".to_string(),
+    })
+}
+
 #[tauri::command]
 fn logout(state: State<Db>, user_id: String) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -819,8 +981,52 @@ fn check_auth(state: State<Db>, user_id: String) -> Result<AuthCheckResponse, St
 }
 
 #[tauri::command]
-fn change_password(state: State<Db>, user_id: String, old_password: String, new_password: String) -> Result<bool, String> {
+fn change_password(state: State<Db>, session_token: String, old_password: String, new_password: String) -> Result<bool, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
+
+    let session_id = session_token.strip_prefix("zaeem_")
+        .ok_or_else(|| "رمز الجلسة غير صالح".to_string())?;
+
+    let user_id: String = conn.query_row(
+        "SELECT user_id FROM login_sessions WHERE id = ?1 AND is_active = 1",
+        [session_id],
+        |row| row.get(0),
+    ).map_err(|_| "الجلسة غير صالحة أو منتهية".to_string())?;
+
+    let failures_key = format!("pwd_attempts_{}", user_id);
+    let lock_key = format!("pwd_locked_{}", user_id);
+
+    let locked_until_raw: Option<String> = conn.query_row(
+        "SELECT value FROM app_settings WHERE key = ?1",
+        params![&lock_key],
+        |row| row.get(0),
+    ).ok();
+    if let Some(ref until) = locked_until_raw {
+        if let Ok(locked_epoch) = until.parse::<u64>() {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+            if now < locked_epoch {
+                return Err("تم قفل تغيير كلمة المرور. حاول بعد ساعة.".to_string());
+            }
+            conn.execute("DELETE FROM app_settings WHERE key = ?1", params![&lock_key]).ok();
+        }
+    }
+
+    let failures: i64 = conn.query_row(
+        "SELECT value FROM app_settings WHERE key = ?1",
+        params![&failures_key],
+        |row| row.get::<_, String>(0).and_then(|v| v.parse::<i64>().map_err(|_| rusqlite::Error::ToSqlConversionFailure(Box::new(std::fmt::Error)))),
+    ).unwrap_or(0);
+
+    if failures >= 10 {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let lock_until = (now + 3600).to_string();
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
+            params![&lock_key, lock_until],
+        ).map_err(|e| e.to_string())?;
+        return Err("تم قفل تغيير كلمة المرور بسبب كثرة المحاولات. حاول بعد ساعة.".to_string());
+    }
+
     let current_hash: String = conn.query_row(
         "SELECT password_hash FROM users WHERE id = ?1",
         [&user_id],
@@ -828,7 +1034,17 @@ fn change_password(state: State<Db>, user_id: String, old_password: String, new_
     ).map_err(|e| e.to_string())?;
 
     let valid = verify(&old_password, &current_hash).map_err(|e| e.to_string())?;
-    if !valid { return Ok(false); }
+    if !valid {
+        let new_count = failures + 1;
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
+            params![&failures_key, new_count.to_string()],
+        ).map_err(|e| e.to_string())?;
+        return Ok(false);
+    }
+
+    conn.execute("DELETE FROM app_settings WHERE key = ?1", params![&failures_key]).ok();
+    conn.execute("DELETE FROM app_settings WHERE key = ?1", params![&lock_key]).ok();
 
     let new_hash = hash(&new_password, DEFAULT_COST).map_err(|e| e.to_string())?;
     conn.execute("UPDATE users SET password_hash = ?1 WHERE id = ?2", params![new_hash, user_id])
@@ -1046,11 +1262,14 @@ fn get_kitchen_orders(state: State<Db>) -> Result<Vec<KitchenOrder>, String> {
 
 #[tauri::command]
 fn update_order_status(state: State<Db>, order_id: String, status: String) -> Result<(), String> {
+    let parsed = OrderStatus::from_str(&status)
+        .ok_or_else(|| format!("Invalid order status: {}", status))?;
+    let status_str = parsed.as_str();
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE orders SET status = ?1, last_modified = ?2 WHERE id = ?3",
-        params![status, now, order_id],
+        params![status_str, now, order_id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -1119,27 +1338,54 @@ fn update_settings(state: State<Db>, settings: SettingsData) -> Result<(), Strin
     Ok(())
 }
 
+#[cfg(debug_assertions)]
 #[tauri::command]
-fn diagnose_db(app: tauri::AppHandle) -> Result<String, String> {
-    let path = db_path(&app);
-    let exists = path.exists();
-    let path_str = path.to_str().unwrap_or("invalid").to_string();
-
+fn diagnose_db(state: State<Db>) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
     let mut tables = Vec::new();
-    if exists {
-        if let Ok(conn) = Connection::open(&path) {
-            if let Ok(mut stmt) = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name") {
-                if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
-                    for row in rows.flatten() {
-                        tables.push(row);
-                    }
-                }
-            }
-        }
+    let mut stmt = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    for name in rows.flatten() {
+        tables.push(name);
     }
+    Ok(format!("Tables [{}]: {}", tables.len(), tables.join(", ")))
+}
 
-    let table_list = tables.join(", ");
-    Ok(format!("DB path: {}\nExists: {}\nTables [{}]: {}", path_str, exists, tables.len(), table_list))
+// Diagnostics disclose schema/table info and must never be reachable in a release
+// build, even by a renderer that calls invoke("diagnose_db") directly (frontend
+// routing alone does not stop that — the command itself must refuse).
+#[cfg(not(debug_assertions))]
+#[tauri::command]
+fn diagnose_db(_state: State<Db>) -> Result<String, String> {
+    Err("diagnose_db is not available in release builds".to_string())
+}
+
+// Interim fix: stop password_hash/manager_pin_hash from ever reaching the renderer.
+// This is deliberately minimal -- a straight server-side comparison, matching the
+// exact fallback logic (manager_pin_hash, else password_hash) that shift/page.tsx
+// used to do client-side. It is NOT the elevation-token system (that's T1.4); no
+// rate limiting, no session binding here yet.
+#[tauri::command]
+fn verify_manager_override(state: State<Db>, password_or_pin: String) -> Result<bool, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let manager: Option<(String, Option<String>)> = conn
+        .query_row(
+            "SELECT password_hash, manager_pin_hash FROM users \
+             WHERE role IN ('MANAGER', 'ADMIN', 'OWNER') AND is_active = 1 LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok();
+
+    let Some((password_hash, manager_pin_hash)) = manager else {
+        return Ok(false);
+    };
+    let hash = manager_pin_hash.unwrap_or(password_hash);
+    Ok(verify(&password_or_pin, &hash).unwrap_or(false))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1165,19 +1411,39 @@ pub fn run() {
                         .build(),
                 )?;
             }
-            let db_path = db_path(&app.handle());
-            let conn = Connection::open(&db_path).expect("Failed to open database");
-            init_db(&conn).expect("Failed to initialize database");
+            let db_path = db_path(app.handle());
+            let mut conn = Connection::open(&db_path).expect("Failed to open database");
+            init_db(&mut conn, &db_path).expect("Failed to initialize database");
+            #[cfg(debug_assertions)]
             seed_default_users(&conn).expect("Failed to seed default users");
             app.manage(Db(Mutex::new(conn)));
+
+            // AI onboarding state
+            let queue_conn = Connection::open(&db_path).expect("Failed to open database for queue");
+            let queue = UploadQueue::new_queue(queue_conn);
+            let provider: Box<dyn ai::AiProvider + Send + Sync> = if cfg!(debug_assertions) {
+                Box::new(MockAiProvider)
+            } else {
+                Box::new(NullAiProvider)
+            };
+            let app_conn = Connection::open(&db_path).expect("Failed to open database for AppState");
+            app.manage(AppState {
+                db: Mutex::new(app_conn),
+                queue: Mutex::new(queue),
+                provider,
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             diagnose_db,
+            verify_manager_override,
             login,
+            login_with_pin,
             logout,
             check_auth,
             change_password,
+            needs_setup,
+            setup_owner,
             get_debtors,
             get_debtor_detail,
             create_debtor,
@@ -1190,6 +1456,12 @@ pub fn run() {
             get_active_orders,
             get_settings,
             update_settings,
+            commands::queue_media,
+            commands::list_uploads,
+            commands::process_queue,
+            commands::reset_failed_uploads,
+            commands::clear_uploads,
+            commands::apply_draft,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
