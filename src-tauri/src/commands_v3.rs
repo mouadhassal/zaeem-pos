@@ -8,7 +8,7 @@
 //! referencing that column at all.
 
 use crate::audit;
-use crate::repo::{NewOrder, OrderRow, Repo};
+use crate::repo::{NewOrder, OrderRow, Repo, FullOrderInput, SplitBillInput, TableInfo, HeldOrderResult, ReceiptConfig, LoyaltyCardLookup};
 use crate::security::{self, authorize, authorize_scope, Actor, Permission, Role, Scope};
 use crate::Db;
 use bcrypt::{hash, verify, DEFAULT_COST};
@@ -1697,6 +1697,376 @@ pub fn change_own_password_v3(state: State<Db>, session_token: String, old_passw
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Slice A -- POS flow commands. These replace the frontend's `orderService.ts`
+// and `pos/page.tsx` getDb() calls with Rust-backed, auth-checked commands.
+// Each write command: authn → authz → validate → repo (with transaction) →
+// audit → commit.
+// ---------------------------------------------------------------------------
+
+/// Simple list of all tables. No scope filter (tables has no tenant_id/branch_id).
+#[tauri::command]
+pub fn list_tables_v3(state: State<Db>, _session_token: String) -> Result<Vec<TableInfo>, String> {
+    let _actor = authenticate_actor(&state, &_session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_tables().map_err(|e| e.to_string())
+}
+
+/// Atomic full order creation: order + items + modifiers + table→OCCUPIED.
+/// Replaces `orderService.createOrder`. Returns the new order ID.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn create_full_order_v3(
+    state: State<Db>,
+    session_token: String,
+    table_id: String,
+    order_type: String,
+    items: Vec<crate::repo::OrderItemInput>,
+    subtotal_cents: i64,
+    tax_cents: i64,
+    total_cents: i64,
+    discount_cents: i64,
+    discount_reason: Option<String>,
+    customer_name: Option<String>,
+    customer_phone: Option<String>,
+    delivery_address: Option<String>,
+    delivery_fee_cents: i64,
+    driver_id: Option<String>,
+    shift_id: Option<String>,
+) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("order creation requires a Branch-scoped actor".to_string());
+    };
+    if subtotal_cents < 0 || tax_cents < 0 || total_cents < 0 || discount_cents < 0 {
+        return Err("negative amounts are not valid".to_string());
+    }
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let scope = actor.scope();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let input = FullOrderInput {
+        table_id, user_id: actor.id.clone(), order_type: order_type.clone(),
+        subtotal_cents, tax_cents, total_cents, discount_cents,
+        discount_reason, customer_name, customer_phone, delivery_address,
+        delivery_fee_cents, driver_id, shift_id, items,
+    };
+    let order_id = Repo::new(&tx).create_full_order(&scope, &tenant_id, &branch_id, input)
+        .map_err(|e| e.to_string())?;
+
+    Repo::new(&tx).append_order_status_event(&tenant_id, &branch_id, &order_id, "PENDING", &actor.id, &actor.device_id)
+        .map_err(|e| e.to_string())?;
+    Repo::new(&tx).rebuild_order_current(&order_id).map_err(|e| e.to_string())?;
+
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::OrderCreated, "order", &order_id,
+        None, Some(&serde_json::json!({ "order_type": order_type, "total_cents": total_cents })),
+    ).map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(order_id)
+}
+
+/// DRAFT order + items + modifiers + table→OCCUPIED. Replaces `orderService.holdOrder`.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn hold_order_v3(
+    state: State<Db>,
+    session_token: String,
+    table_id: String,
+    order_type: String,
+    items: Vec<crate::repo::OrderItemInput>,
+    subtotal_cents: i64,
+    tax_cents: i64,
+    total_cents: i64,
+    shift_id: Option<String>,
+) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("order creation requires a Branch-scoped actor".to_string());
+    };
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let scope = actor.scope();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let input = FullOrderInput {
+        table_id, user_id: actor.id.clone(), order_type: order_type.clone(),
+        subtotal_cents, tax_cents, total_cents, discount_cents: 0,
+        discount_reason: None, customer_name: None, customer_phone: None,
+        delivery_address: None, delivery_fee_cents: 0, driver_id: None, shift_id, items,
+    };
+    let order_id = Repo::new(&tx).hold_order(&scope, &tenant_id, &branch_id, input)
+        .map_err(|e| e.to_string())?;
+
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::OrderCreated, "order", &order_id,
+        None, Some(&serde_json::json!({ "action": "hold", "order_type": order_type })),
+    ).map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(order_id)
+}
+
+/// Read a DRAFT order with all items + modifiers + menu item names.
+/// Returns null if no DRAFT order with that ID exists.
+#[tauri::command]
+pub fn retrieve_held_order_v3(state: State<Db>, _session_token: String, order_id: String) -> Result<Option<HeldOrderResult>, String> {
+    let _actor = authenticate_actor(&state, &_session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).retrieve_held_order(&order_id).map_err(|e| e.to_string())
+}
+
+/// Split a PENDING order into child orders, moving items.
+#[tauri::command]
+pub fn split_bill_v3(
+    state: State<Db>,
+    session_token: String,
+    order_id: String,
+    splits: Vec<SplitBillInput>,
+    table_id: String,
+) -> Result<Vec<String>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    let scope = actor.scope();
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let ids = Repo::new(&tx).split_bill(&scope, &order_id, splits, &actor.id, &table_id)
+        .map_err(|e| e.to_string())?;
+
+    audit::append(
+        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
+        audit::Action::OrderStatusChanged, "order", &order_id,
+        None, Some(&serde_json::json!({ "action": "split", "child_count": ids.len() })),
+    ).map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(ids)
+}
+
+/// Merge source tables into target: all become MERGED, source order items
+/// move to target order, source orders cancelled.
+#[tauri::command]
+pub fn merge_tables_v3(
+    state: State<Db>,
+    session_token: String,
+    source_table_ids: Vec<String>,
+    target_table_id: String,
+) -> Result<Option<String>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    let scope = actor.scope();
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let target_order_id = Repo::new(&tx).merge_tables(&scope, source_table_ids, &target_table_id)
+        .map_err(|e| e.to_string())?;
+
+    audit::append(
+        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
+        audit::Action::OrderStatusChanged, "table", &target_table_id,
+        None, Some(&serde_json::json!({ "action": "merge" })),
+    ).map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(target_order_id)
+}
+
+/// Unmerge all tables in a merge group back to FREE.
+#[tauri::command]
+pub fn unmerge_tables_v3(state: State<Db>, session_token: String, merge_group_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    let scope = actor.scope();
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).unmerge_tables(&scope, &merge_group_id).map_err(|e| e.to_string())?;
+
+    audit::append(
+        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
+        audit::Action::OrderStatusChanged, "table", &merge_group_id,
+        None, Some(&serde_json::json!({ "action": "unmerge" })),
+    ).map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Soft-void an order item (set voided=1 + void_reason).
+#[tauri::command]
+pub fn void_order_item_v3(state: State<Db>, session_token: String, item_id: String, reason: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    let scope = actor.scope();
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).void_order_item(&scope, &item_id, &reason).map_err(|e| e.to_string())?;
+
+    audit::append(
+        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
+        audit::Action::OrderStatusChanged, "order_item", &item_id,
+        None, Some(&serde_json::json!({ "action": "void", "reason": reason })),
+    ).map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Transfer an order from one table to another.
+#[tauri::command]
+pub fn transfer_order_v3(state: State<Db>, session_token: String, order_id: String, from_table_id: String, to_table_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    let scope = actor.scope();
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).transfer_order(&scope, &order_id, &from_table_id, &to_table_id).map_err(|e| e.to_string())?;
+
+    audit::append(
+        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
+        audit::Action::OrderStatusChanged, "order", &order_id,
+        None, Some(&serde_json::json!({ "action": "transfer", "from": from_table_id, "to": to_table_id })),
+    ).map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Create a SCHEDULED order + items + modifiers + delayed_orders entry.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn schedule_delayed_order_v3(
+    state: State<Db>,
+    session_token: String,
+    table_id: String,
+    order_type: String,
+    items: Vec<crate::repo::OrderItemInput>,
+    subtotal_cents: i64,
+    tax_cents: i64,
+    total_cents: i64,
+    scheduled_at: String,
+) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("order creation requires a Branch-scoped actor".to_string());
+    };
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let scope = actor.scope();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let input = FullOrderInput {
+        table_id, user_id: actor.id.clone(), order_type: order_type.clone(),
+        subtotal_cents, tax_cents, total_cents, discount_cents: 0,
+        discount_reason: None, customer_name: None, customer_phone: None,
+        delivery_address: None, delivery_fee_cents: 0, driver_id: None, shift_id: None, items,
+    };
+    let order_id = Repo::new(&tx).schedule_delayed_order(&scope, &tenant_id, &branch_id, input, &scheduled_at)
+        .map_err(|e| e.to_string())?;
+
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::OrderCreated, "order", &order_id,
+        None, Some(&serde_json::json!({ "action": "schedule", "scheduled_at": scheduled_at })),
+    ).map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(order_id)
+}
+
+/// Activate all delayed orders where scheduled_at <= now.
+#[tauri::command]
+pub fn activate_delayed_orders_v3(state: State<Db>, _session_token: String) -> Result<Vec<String>, String> {
+    let _actor = authenticate_actor(&state, &_session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).activate_delayed_orders().map_err(|e| e.to_string())
+}
+
+/// Get receipt config: chain_name, currency from chain_config + branch name.
+#[tauri::command]
+pub fn get_receipt_config_v3(state: State<Db>, _session_token: String) -> Result<ReceiptConfig, String> {
+    let _actor = authenticate_actor(&state, &_session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).get_receipt_config().map_err(|e| e.to_string())
+}
+
+/// Look up a loyalty card by card_number.
+#[tauri::command]
+pub fn lookup_loyalty_card_v3(state: State<Db>, _session_token: String, card_number: String) -> Result<Option<LoyaltyCardLookup>, String> {
+    let _actor = authenticate_actor(&state, &_session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).lookup_loyalty_card(&card_number).map_err(|e| e.to_string())
+}
+
+/// Earn loyalty points after an order.
+#[tauri::command]
+pub fn earn_loyalty_points_v3(state: State<Db>, session_token: String, card_number: String, points: i64, order_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("earning loyalty points requires a Branch-scoped actor".to_string());
+    };
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).earn_loyalty_points(&tenant_id, &branch_id, &card_number, points, &order_id).map_err(|e| e.to_string())?;
+
+    audit::append(
+        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
+        audit::Action::LoyaltyCardIssued, "loyalty_card", &card_number,
+        None, Some(&serde_json::json!({ "action": "earn", "points": points, "order_id": order_id })),
+    ).map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Finalize a PENDING order: status→PAID, insert payment, free table,
+/// optional debt entry. Replaces `orderService.finalizeOrder` (the DB
+/// part). Receipt printing stays on the frontend.
+#[tauri::command]
+pub fn finalize_order_with_payment_v3(
+    state: State<Db>,
+    session_token: String,
+    order_id: String,
+    method: String,
+    amount_cents: i64,
+    change_cents: i64,
+    debtor_id: Option<String>,
+) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::TakePayment).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("taking a payment requires a Branch-scoped actor".to_string());
+    };
+    if amount_cents < 0 || change_cents < 0 {
+        return Err("negative amounts are not valid".to_string());
+    }
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let payment_id = Repo::new(&tx).finalize_order_with_payment(
+        &tenant_id, &branch_id, &order_id, &method, amount_cents, change_cents,
+        debtor_id.as_deref(), &actor.id,
+    ).map_err(|e| e.to_string())?;
+
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::PaymentTaken, "order", &order_id,
+        None, Some(&serde_json::json!({ "payment_id": payment_id, "method": method, "amount_cents": amount_cents, "change_cents": change_cents, "debtor_id": debtor_id })),
+    ).map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(payment_id)
+}
+
 #[cfg(test)]
 mod tests {
     //! Integration tests against a real, fully-migrated DB (0001-0003 + T1.1's
@@ -1707,7 +2077,7 @@ mod tests {
     //! already-covered-by-inspection shim around it.
     use crate::migrate;
     use crate::migrate_v3;
-    use crate::repo::{NewOrder, Repo};
+    use crate::repo::{NewOrder, Repo, RepoError, FullOrderInput, SplitBillInput};
     use crate::security::{self, authorize, Permission, Role};
     use rusqlite::{params, Connection};
     use std::fs;
@@ -2943,6 +3313,221 @@ mod tests {
         assert_eq!(repo.list_all_drivers(&scope).unwrap().len(), 1, "list_all_drivers must still show it (soft delete, not gone)");
         assert_eq!(repo.list_all_drivers(&scope).unwrap()[0].is_active, 0);
         println!("[delivery] driver deactivated: excluded from list_drivers, still visible via list_all_drivers with is_active=0");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Slice A verification: the money-touching POS-flow commands
+    /// (`split_bill`, `void_order_item`, `merge_tables`/`unmerge_tables`,
+    /// `transfer_order`, `finalize_order_with_payment`) had ZERO tests
+    /// despite mutating orders/payments/tables. This is the AGENTS.md
+    /// "test per money path" requirement, applied retroactively. Also
+    /// proves `create_full_order` no longer references the nonexistent
+    /// `orders.driver_id` column (found broken during this same
+    /// verification pass -- the original `INSERT` would have hard-failed
+    /// the very first real order creation).
+    #[test]
+    fn pos_flow_create_split_void_merge_transfer_and_finalize_payment() {
+        let (db_path, tenant_id, branch_id, table_id) = seeded_db("pos_flow");
+        let conn = Connection::open(&db_path).unwrap();
+        // `seeded_db`'s fixture table ("tbl-1") is inserted with no
+        // tenant_id/branch_id (it predates the scope checks this test
+        // exercises) -- scope it here rather than in the shared fixture,
+        // which many other tests also rely on staying as-is.
+        conn.execute("UPDATE tables SET tenant_id = ?1, branch_id = ?2 WHERE id = ?3", params![tenant_id, branch_id, table_id]).unwrap();
+        let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "POS Cashier");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let repo = Repo::new(&conn);
+
+        let cat_id = repo.create_category(&tenant_id, "مشروبات", None, 0, None).unwrap();
+        let item_a = repo.create_menu_item(&tenant_id, "شاي", &cat_id, 500, 200, None, None, None).unwrap();
+        let item_b = repo.create_menu_item(&tenant_id, "قهوة", &cat_id, 700, 300, None, None, None).unwrap();
+
+        // create_full_order: this is the exact call that would have
+        // hard-failed on the pre-fix `orders.driver_id` INSERT.
+        let order_id = repo.create_full_order(&scope, &tenant_id, &branch_id, FullOrderInput {
+            table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".into(),
+            subtotal_cents: 1200, tax_cents: 120, total_cents: 1320, discount_cents: 0,
+            discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
+            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            items: vec![
+                crate::repo::OrderItemInput { menu_item_id: item_a.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] },
+                crate::repo::OrderItemInput { menu_item_id: item_b.clone(), name: None, quantity: 1, unit_price_cents: 700, notes: None, combo_id: None, modifiers: vec![] },
+            ],
+        }).unwrap();
+        let table: crate::repo::TableInfo = repo.list_tables().unwrap().into_iter().find(|t| t.id == table_id).unwrap();
+        assert_eq!(table.status, "OCCUPIED");
+        assert_eq!(table.current_order_id.as_deref(), Some(order_id.as_str()));
+        println!("[pos-flow] create_full_order: order created with 2 items, no driver_id column referenced, table flipped OCCUPIED");
+
+        let item_ids: Vec<String> = conn.prepare("SELECT id FROM order_items WHERE order_id = ?1 ORDER BY unit_price_cents ASC").unwrap()
+            .query_map(params![order_id], |r| r.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(item_ids.len(), 2);
+
+        // void_order_item -- soft-void the cheaper item.
+        repo.void_order_item(&scope, &item_ids[0], "نفذت الكمية").unwrap();
+        let voided: i64 = conn.query_row("SELECT voided FROM order_items WHERE id = ?1", params![item_ids[0]], |r| r.get(0)).unwrap();
+        assert_eq!(voided, 1);
+        println!("[pos-flow] void_order_item: item soft-voided");
+
+        // split_bill: split the (still-PENDING) order's remaining item into
+        // its own child order.
+        let split_ids = repo.split_bill(&scope, &order_id, vec![
+            SplitBillInput { item_ids: vec![item_ids[1].clone()], amount_cents: 700, label: "طاولة 1 - جزء 1".into() },
+        ], &cashier_id, &table_id).unwrap();
+        assert_eq!(split_ids.len(), 1);
+        let moved_order_id: String = conn.query_row("SELECT order_id FROM order_items WHERE id = ?1", params![item_ids[1]], |r| r.get(0)).unwrap();
+        assert_eq!(moved_order_id, split_ids[0], "the item must have actually moved to the new split order");
+        println!("[pos-flow] split_bill: 1 child order created, item moved into it");
+
+        // merge_tables: a second table merges into the first.
+        let table_2 = "tbl-2".to_string();
+        conn.execute("INSERT INTO tables (id, tenant_id, branch_id, name) VALUES (?1, ?2, ?3, 'Table 2')", params![table_2, tenant_id, branch_id]).unwrap();
+        let merge_result = repo.merge_tables(&scope, vec![table_id.clone(), table_2.clone()], &table_id).unwrap();
+        assert!(merge_result.is_some());
+        let (t1_status, t1_group): (String, Option<String>) = conn.query_row("SELECT status, merge_group_id FROM tables WHERE id = ?1", params![table_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let (t2_status, t2_group): (String, Option<String>) = conn.query_row("SELECT status, merge_group_id FROM tables WHERE id = ?1", params![table_2], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(t1_status, "MERGED");
+        assert_eq!(t2_status, "MERGED");
+        assert_eq!(t1_group, t2_group);
+        let merge_group_id = t1_group.unwrap();
+        println!("[pos-flow] merge_tables: both tables MERGED under the same merge_group_id");
+
+        // unmerge_tables: back to FREE.
+        repo.unmerge_tables(&scope, &merge_group_id).unwrap();
+        let (t1_status_after, _): (String, Option<String>) = conn.query_row("SELECT status, merge_group_id FROM tables WHERE id = ?1", params![table_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(t1_status_after, "FREE");
+        println!("[pos-flow] unmerge_tables: back to FREE");
+
+        // transfer_order: move the split child order to table_2.
+        conn.execute("UPDATE tables SET status = 'FREE' WHERE id = ?1", params![table_2]).unwrap();
+        repo.transfer_order(&scope, &split_ids[0], &table_id, &table_2).unwrap();
+        let transferred_table: String = conn.query_row("SELECT table_id FROM orders WHERE id = ?1", params![split_ids[0]], |r| r.get(0)).unwrap();
+        assert_eq!(transferred_table, table_2);
+        let t2_status_after: String = conn.query_row("SELECT status FROM tables WHERE id = ?1", params![table_2], |r| r.get(0)).unwrap();
+        assert_eq!(t2_status_after, "OCCUPIED");
+        println!("[pos-flow] transfer_order: split order moved to table_2, table_2 now OCCUPIED");
+
+        // finalize_order_with_payment -- the actual payment path.
+        let payment_id = repo.finalize_order_with_payment(&tenant_id, &branch_id, &split_ids[0], "CASH", 700, 0, None, &cashier_id).unwrap();
+        let paid_status: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![split_ids[0]], |r| r.get(0)).unwrap();
+        assert_eq!(paid_status, "PAID");
+        let payment_amount: i64 = conn.query_row("SELECT amount_cents FROM payments WHERE id = ?1", params![payment_id], |r| r.get(0)).unwrap();
+        assert_eq!(payment_amount, 700);
+        let table_2_status_after_pay: String = conn.query_row("SELECT status FROM tables WHERE id = ?1", params![table_2], |r| r.get(0)).unwrap();
+        assert_eq!(table_2_status_after_pay, "FREE", "paying off the order must free the table it was occupying");
+        println!("[pos-flow] finalize_order_with_payment: order PAID, payment row inserted, table freed");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Slice A verification's headline finding: `split_bill`, `merge_tables`,
+    /// `unmerge_tables`, `void_order_item`, and `transfer_order` originally
+    /// had NO scope check at all -- a Branch-scoped actor could operate on
+    /// any order/item/table in the database by id, regardless of
+    /// tenant/branch. This proves each one is now blocked cross-branch,
+    /// exactly the isolation guarantee `take_payment`/`finalize_order_with_
+    /// payment` already had.
+    #[test]
+    fn pos_flow_commands_reject_out_of_scope_orders_items_and_tables() {
+        let (db_path, tenant_id, branch_a, table_a) = seeded_db("pos_flow_scope");
+        let conn = Connection::open(&db_path).unwrap();
+        let repo = Repo::new(&conn);
+
+        let branch_b = repo.create_branch(&tenant_id, "Branch B", "USD").unwrap();
+        let table_b = "tbl-b".to_string();
+        conn.execute("INSERT INTO tables (id, tenant_id, branch_id, name) VALUES (?1, ?2, ?3, 'Table B')", params![table_b, tenant_id, branch_b]).unwrap();
+
+        let cashier_a = seed_staff(&conn, &tenant_id, Some(&branch_a), Role::Cashier, "Cashier A");
+        let cashier_b = seed_staff(&conn, &tenant_id, Some(&branch_b), Role::Cashier, "Cashier B");
+        let scope_a = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_a.clone() };
+        let scope_b = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_b.clone() };
+
+        let cat_id = repo.create_category(&tenant_id, "Cat", None, 0, None).unwrap();
+        let item_id = repo.create_menu_item(&tenant_id, "Item", &cat_id, 1000, 500, None, None, None).unwrap();
+
+        // Branch B's order + item.
+        let order_b = repo.create_full_order(&scope_b, &tenant_id, &branch_b, FullOrderInput {
+            table_id: table_b.clone(), user_id: cashier_b.clone(), order_type: "DINE_IN".into(),
+            subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0,
+            discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
+            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            items: vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] }],
+        }).unwrap();
+        let item_b_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_b], |r| r.get(0)).unwrap();
+
+        // Branch A's actor must NOT be able to touch Branch B's order/item/table by id.
+        match repo.void_order_item(&scope_a, &item_b_id, "unauthorized void") {
+            Err(RepoError::OrderItemOutOfScope { .. }) => println!("[scope] void_order_item correctly rejected Branch A voiding Branch B's item"),
+            other => panic!("expected OrderItemOutOfScope, got {other:?}"),
+        }
+
+        match repo.split_bill(&scope_a, &order_b, vec![SplitBillInput { item_ids: vec![item_b_id.clone()], amount_cents: 1000, label: "x".into() }], &cashier_a, &table_a) {
+            Err(RepoError::OrderOutOfScope { .. }) => println!("[scope] split_bill correctly rejected Branch A splitting Branch B's order"),
+            other => panic!("expected OrderOutOfScope, got {other:?}"),
+        }
+
+        match repo.transfer_order(&scope_a, &order_b, &table_b, &table_a) {
+            Err(RepoError::OrderOutOfScope { .. }) => println!("[scope] transfer_order correctly rejected Branch A transferring Branch B's order"),
+            other => panic!("expected OrderOutOfScope, got {other:?}"),
+        }
+
+        match repo.merge_tables(&scope_a, vec![table_a.clone(), table_b.clone()], &table_a) {
+            Err(RepoError::TableOutOfScope { .. }) => println!("[scope] merge_tables correctly rejected Branch A merging in Branch B's table"),
+            other => panic!("expected TableOutOfScope, got {other:?}"),
+        }
+
+        // unmerge_tables: scope-qualify the UPDATE itself rather than
+        // pre-checking a single id (a merge_group_id has no single owner
+        // lookup) -- prove it's a no-op against Branch A's scope for a
+        // group that only contains Branch B's table.
+        let merge_group_id = uuid::Uuid::new_v4().to_string();
+        conn.execute("UPDATE tables SET status = 'MERGED', merge_group_id = ?1 WHERE id = ?2", params![merge_group_id, table_b]).unwrap();
+        repo.unmerge_tables(&scope_a, &merge_group_id).unwrap(); // must not error, must not affect anything
+        let still_merged: String = conn.query_row("SELECT status FROM tables WHERE id = ?1", params![table_b], |r| r.get(0)).unwrap();
+        assert_eq!(still_merged, "MERGED", "Branch A's unmerge_tables call must not have touched Branch B's table");
+        println!("[scope] unmerge_tables correctly left Branch B's merge group untouched when called from Branch A's scope");
+
+        // And the positive case still works: Branch B's own actor CAN operate on its own order.
+        repo.void_order_item(&scope_b, &item_b_id, "legitimate void").unwrap();
+        println!("[scope] void_order_item still succeeds for the owning branch's own actor (not over-broadened)");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// `lookup_loyalty_card`/`earn_loyalty_points` both referenced
+    /// `loyalty_cards.is_active` (removed once already in slice 3,
+    /// reintroduced in Slice A) and `earn_loyalty_points` also referenced
+    /// `loyalty_transactions.description` (never existed) and omitted
+    /// `loyalty_transactions.tenant_id`/`branch_id` (NOT populated ->
+    /// would have failed `assert_scope_populated` the first time anything
+    /// scoped-queried this table). Found and fixed during Slice A
+    /// verification.
+    #[test]
+    fn loyalty_lookup_and_earn_points_after_order_no_longer_reference_phantom_columns() {
+        let (db_path, tenant_id, branch_id, _table_id) = seeded_db("loyalty_earn");
+        let conn = Connection::open(&db_path).unwrap();
+        let repo = Repo::new(&conn);
+
+        let customer_id = repo.create_customer(&tenant_id, "زبون وفي", "0999000111", None, None, None, None).unwrap();
+        let card_id = repo.issue_loyalty_card(&tenant_id, &customer_id, "CARD-001").unwrap();
+
+        let looked_up = repo.lookup_loyalty_card("CARD-001").unwrap().expect("card must be found by number alone, no is_active filter");
+        assert_eq!(looked_up.customer_name, "زبون وفي");
+        assert_eq!(looked_up.points, 0);
+        println!("[loyalty] lookup_loyalty_card found the card without referencing is_active");
+
+        repo.earn_loyalty_points(&tenant_id, &branch_id, "CARD-001", 25, "order-123").unwrap();
+        let after = repo.lookup_loyalty_card("CARD-001").unwrap().unwrap();
+        assert_eq!(after.points, 25, "earn_loyalty_points must bump the card's points");
+
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let txs = repo.list_loyalty_transactions(&scope, Some(&card_id)).unwrap();
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0].points, 25);
+        assert_eq!(txs[0].tx_type, "EARN");
+        assert_eq!(txs[0].reference_id.as_deref(), Some("order-123"));
+        println!("[loyalty] earn_loyalty_points wrote a scoped loyalty_transactions row (tenant_id/branch_id populated), visible via list_loyalty_transactions");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }

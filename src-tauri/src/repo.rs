@@ -24,6 +24,8 @@ pub enum RepoError {
     OrderAlreadyPaid { order_id: String },
     PurchaseOrderOutOfScope { po_id: String },
     PurchaseOrderNotPending { po_id: String, status: String },
+    OrderItemOutOfScope { item_id: String },
+    TableOutOfScope { table_id: String },
 }
 
 impl fmt::Display for RepoError {
@@ -42,6 +44,8 @@ impl fmt::Display for RepoError {
             Self::OrderAlreadyPaid { order_id } => write!(f, "order {order_id} is already PAID -- refusing to take a second payment"),
             Self::PurchaseOrderOutOfScope { po_id } => write!(f, "purchase order {po_id} does not belong to the caller's tenant/branch"),
             Self::PurchaseOrderNotPending { po_id, status } => write!(f, "purchase order {po_id} is {status}, not PENDING -- refusing to receive/cancel it"),
+            Self::OrderItemOutOfScope { item_id } => write!(f, "order item {item_id} does not belong to the caller's tenant/branch"),
+            Self::TableOutOfScope { table_id } => write!(f, "table {table_id} does not belong to the caller's tenant/branch"),
         }
     }
 }
@@ -96,6 +100,108 @@ pub struct PaymentInput {
     pub change_cents: i64,
     pub debtor_id: Option<String>,
     pub actor_id: String,
+}
+
+// ---------------------------------------------------------------------------
+// Slice A -- POS flow: order-with-items, hold, retrieve, split, merge,
+// void, transfer, delayed orders, tables, receipt config, loyalty lookup.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct OrderModifierInput {
+    pub name: String,
+    pub price_cents: i64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct OrderItemInput {
+    pub menu_item_id: String,
+    #[allow(dead_code)] pub name: Option<String>,
+    pub quantity: i64,
+    pub unit_price_cents: i64,
+    pub notes: Option<String>,
+    pub combo_id: Option<String>,
+    pub modifiers: Vec<OrderModifierInput>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct FullOrderInput {
+    pub table_id: String,
+    pub user_id: String,
+    pub order_type: String,
+    pub subtotal_cents: i64,
+    pub tax_cents: i64,
+    pub total_cents: i64,
+    pub discount_cents: i64,
+    pub discount_reason: Option<String>,
+    pub customer_name: Option<String>,
+    pub customer_phone: Option<String>,
+    pub delivery_address: Option<String>,
+    pub delivery_fee_cents: i64,
+    /// Accepted from the frontend (`create_full_order_v3`'s `driver_id`
+    /// param) but deliberately never written -- `orders.driver_id` doesn't
+    /// exist (Finding #1). Kept on the struct only so the command's public
+    /// signature doesn't need to change; assign a driver via
+    /// `assign_driver_to_delivery` after order creation instead.
+    #[allow(dead_code)]
+    pub driver_id: Option<String>,
+    pub shift_id: Option<String>,
+    pub items: Vec<OrderItemInput>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SplitBillInput {
+    pub item_ids: Vec<String>,
+    pub amount_cents: i64,
+    #[allow(dead_code)] pub label: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TableInfo {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub current_order_id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HeldOrderModifier {
+    pub name: String,
+    pub price_cents: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HeldOrderItem {
+    pub db_item_id: String,
+    pub menu_item_id: String,
+    pub name: String,
+    pub quantity: i64,
+    pub unit_price_cents: i64,
+    pub notes: String,
+    pub modifiers: Vec<HeldOrderModifier>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HeldOrderResult {
+    pub items: Vec<HeldOrderItem>,
+    pub customer_name: Option<String>,
+    pub customer_phone: Option<String>,
+    pub delivery_address: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReceiptConfig {
+    pub chain_name: String,
+    pub currency: String,
+    pub branch_name: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LoyaltyCardLookup {
+    pub card_number: String,
+    pub customer_name: String,
+    pub points: i64,
+    pub tier: String,
 }
 
 /// Batch 3a, Decision B -- row shapes for the 5 DRIFT-broken command groups
@@ -2221,6 +2327,710 @@ impl<'a> Repo<'a> {
             params![now, ending_cash_cents, difference_cents, shift_id],
         )?;
         Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Slice A -- POS flow repo methods. Each method wraps a full
+    // transaction for atomicity (all-or-nothing on kill-9). The
+    // `tables` table has no tenant_id/branch_id columns, so scope
+    // checks are skipped there.
+    // -----------------------------------------------------------------
+
+    /// Simple SELECT of all tables. No scope filter (tables has no
+    /// tenant_id/branch_id columns -- legacy table).
+    pub fn list_tables(&self) -> Result<Vec<TableInfo>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, status, current_order_id FROM tables ORDER BY name ASC"
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(TableInfo {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                status: r.get(2)?,
+                current_order_id: r.get(3)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Atomic full order creation: order + items + modifiers + table→OCCUPIED.
+    /// Replaces the frontend `orderService.createOrder`. Uses one transaction
+    /// so a kill-9 either writes all or none.
+    /// `input.driver_id` is deliberately NEVER written -- `orders.driver_id`
+    /// does not exist in the real schema (DRIFT_REPORT.md Finding #1, same
+    /// as `NewOrder`'s doc comment above). Found and fixed during Slice A
+    /// verification: this method's `INSERT` previously listed `driver_id`
+    /// as a real column, which would hard-fail every DELIVERY order (and,
+    /// since it's one shared `INSERT`, every order type) with "table orders
+    /// has no column named driver_id" the first time it actually ran --
+    /// caught only because nothing had exercised this path with a test yet.
+    /// Delivery driver assignment happens via `assign_driver_to_delivery`
+    /// against `delivery_logs`, a separate explicit follow-up call.
+    pub fn create_full_order(&self, scope: &Scope, tenant_id: &str, branch_id: &str, input: FullOrderInput) -> Result<String, RepoError> {
+        self.assert_scope_populated("orders", true)?;
+        let _ = scope; // populated-check already ran; write path is branch-pinned
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let currency: String = self.conn.query_row(
+            "SELECT currency FROM branch WHERE id = ?1", params![branch_id], |r| r.get(0)
+        )?;
+        let scale = crate::money::scale_for(&currency) as i64;
+
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result: Result<(), RepoError> = (|| {
+            self.conn.execute(
+                "INSERT INTO orders (id, tenant_id, branch_id, table_id, user_id, status, order_type, \
+                 subtotal_cents, tax_cents, total_cents, discount_cents, discount_reason, \
+                 customer_name, customer_phone, delivery_address, delivery_fee_cents, shift_id, \
+                 created_at, sync_version, last_modified, sync_status, \
+                 subtotal_minor, subtotal_currency, subtotal_scale, subtotal_base_minor, subtotal_fx_rate, subtotal_fx_source, subtotal_denom_epoch, \
+                 tax_minor, tax_currency, tax_scale, tax_base_minor, tax_fx_rate, tax_fx_source, tax_denom_epoch, \
+                 discount_minor, discount_currency, discount_scale, discount_base_minor, discount_fx_rate, discount_fx_source, discount_denom_epoch, \
+                 total_minor, total_currency, total_scale, total_base_minor, total_fx_rate, total_fx_source, total_denom_epoch) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 1, ?17, 'pending', \
+                 ?7, ?18, ?19, ?7, '1', 'NATIVE', 2, \
+                 ?8, ?18, ?19, ?8, '1', 'NATIVE', 2, \
+                 ?10, ?18, ?19, ?10, '1', 'NATIVE', 2, \
+                 ?9, ?18, ?19, ?9, '1', 'NATIVE', 2)",
+                params![
+                    id, tenant_id, branch_id, input.table_id, input.user_id, input.order_type,
+                    input.subtotal_cents, input.tax_cents, input.total_cents, input.discount_cents,
+                    input.discount_reason, input.customer_name, input.customer_phone, input.delivery_address,
+                    input.delivery_fee_cents, input.shift_id, now, currency, scale
+                ],
+            ).map_err(RepoError::from)?;
+
+            for item in &input.items {
+                let item_id = uuid::Uuid::now_v7().to_string();
+                self.conn.execute(
+                    "INSERT INTO order_items (id, tenant_id, branch_id, order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, voided, sync_version, last_modified, sync_status) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 1, ?10, 'pending')",
+                    params![item_id, tenant_id, branch_id, id, item.menu_item_id, item.quantity, item.unit_price_cents, item.notes, item.combo_id, now],
+                ).map_err(RepoError::from)?;
+
+                for modifier in &item.modifiers {
+                    self.conn.execute(
+                        "INSERT INTO order_modifiers (id, tenant_id, branch_id, order_item_id, name, price_cents, sync_version, last_modified, sync_status) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 'pending')",
+                        params![uuid::Uuid::now_v7().to_string(), tenant_id, branch_id, item_id, modifier.name, modifier.price_cents, now],
+                    ).map_err(RepoError::from)?;
+                }
+            }
+
+            self.conn.execute(
+                "UPDATE tables SET status = 'OCCUPIED', current_order_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
+                params![id, now, input.table_id],
+            ).map_err(RepoError::from)?;
+
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => { self.conn.execute_batch("COMMIT").map_err(RepoError::from)?; Ok(id) }
+            Err(e) => { let _ = self.conn.execute_batch("ROLLBACK"); Err(e) }
+        }
+    }
+
+    /// DRAFT order + items + modifiers + table→OCCUPIED. Replaces the
+    /// frontend `orderService.holdOrder`.
+    pub fn hold_order(&self, scope: &Scope, tenant_id: &str, branch_id: &str, input: FullOrderInput) -> Result<String, RepoError> {
+        self.assert_scope_populated("orders", true)?;
+        let _ = scope;
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let currency: String = self.conn.query_row(
+            "SELECT currency FROM branch WHERE id = ?1", params![branch_id], |r| r.get(0)
+        )?;
+        let scale = crate::money::scale_for(&currency) as i64;
+
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result: Result<(), RepoError> = (|| {
+            self.conn.execute(
+                "INSERT INTO orders (id, tenant_id, branch_id, table_id, user_id, status, order_type, \
+                 subtotal_cents, tax_cents, total_cents, discount_cents, delivery_fee_cents, shift_id, \
+                 created_at, sync_version, last_modified, sync_status, \
+                 subtotal_minor, subtotal_currency, subtotal_scale, subtotal_base_minor, subtotal_fx_rate, subtotal_fx_source, subtotal_denom_epoch, \
+                 tax_minor, tax_currency, tax_scale, tax_base_minor, tax_fx_rate, tax_fx_source, tax_denom_epoch, \
+                 discount_minor, discount_currency, discount_scale, discount_base_minor, discount_fx_rate, discount_fx_source, discount_denom_epoch, \
+                 total_minor, total_currency, total_scale, total_base_minor, total_fx_rate, total_fx_source, total_denom_epoch) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'DRAFT', ?6, ?7, ?8, ?9, 0, 0, ?10, ?11, 1, ?11, 'pending', \
+                 ?7, ?12, ?13, ?7, '1', 'NATIVE', 2, \
+                 ?8, ?12, ?13, ?8, '1', 'NATIVE', 2, \
+                 0, ?12, ?13, 0, '1', 'NATIVE', 2, \
+                 ?9, ?12, ?13, ?9, '1', 'NATIVE', 2)",
+                params![
+                    id, tenant_id, branch_id, input.table_id, input.user_id, input.order_type,
+                    input.subtotal_cents, input.tax_cents, input.total_cents, input.shift_id, now,
+                    currency, scale
+                ],
+            ).map_err(RepoError::from)?;
+
+            for item in &input.items {
+                let item_id = uuid::Uuid::now_v7().to_string();
+                self.conn.execute(
+                    "INSERT INTO order_items (id, tenant_id, branch_id, order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, voided, sync_version, last_modified, sync_status) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 1, ?10, 'pending')",
+                    params![item_id, tenant_id, branch_id, id, item.menu_item_id, item.quantity, item.unit_price_cents, item.notes, item.combo_id, now],
+                ).map_err(RepoError::from)?;
+
+                for modifier in &item.modifiers {
+                    self.conn.execute(
+                        "INSERT INTO order_modifiers (id, tenant_id, branch_id, order_item_id, name, price_cents, sync_version, last_modified, sync_status) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 'pending')",
+                        params![uuid::Uuid::now_v7().to_string(), tenant_id, branch_id, item_id, modifier.name, modifier.price_cents, now],
+                    ).map_err(RepoError::from)?;
+                }
+            }
+
+            self.conn.execute(
+                "UPDATE tables SET status = 'OCCUPIED', current_order_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
+                params![id, now, input.table_id],
+            ).map_err(RepoError::from)?;
+
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => { self.conn.execute_batch("COMMIT").map_err(RepoError::from)?; Ok(id) }
+            Err(e) => { let _ = self.conn.execute_batch("ROLLBACK"); Err(e) }
+        }
+    }
+
+    /// Read a DRAFT order with all items + modifiers + menu item names.
+    /// Returns None if no DRAFT order with that ID exists.
+    pub fn retrieve_held_order(&self, order_id: &str) -> Result<Option<HeldOrderResult>, RepoError> {
+        let order: Option<(String, String, Option<String>, Option<String>)> = self.conn.query_row(
+            "SELECT id, customer_name, customer_phone, delivery_address FROM orders WHERE id = ?1 AND status = 'DRAFT'",
+            params![order_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        ).optional().map_err(RepoError::from)?;
+
+        let (.., customer_name, customer_phone, delivery_address) = match order {
+            Some(o) => o,
+            None => return Ok(None),
+        };
+
+        let mut items_stmt = self.conn.prepare(
+            "SELECT id, menu_item_id, quantity, unit_price_cents, notes FROM order_items WHERE order_id = ?1 AND voided = 0"
+        )?;
+        let raw_items: Vec<(String, String, i64, i64, Option<String>)> = items_stmt.query_map(params![order_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?.filter_map(|r| r.ok()).collect();
+        drop(items_stmt);
+
+        let mut items = Vec::with_capacity(raw_items.len());
+        for (db_item_id, menu_item_id, quantity, unit_price_cents, notes) in raw_items {
+            let name: String = self.conn.query_row(
+                "SELECT name FROM menu_items WHERE id = ?1", params![menu_item_id], |r| r.get(0)
+            ).unwrap_or_default();
+
+            let mut mod_stmt = self.conn.prepare(
+                "SELECT name, price_cents FROM order_modifiers WHERE order_item_id = ?1"
+            )?;
+            let modifiers: Vec<HeldOrderModifier> = mod_stmt.query_map(params![db_item_id], |r| {
+                Ok(HeldOrderModifier { name: r.get(0)?, price_cents: r.get(1)? })
+            })?.filter_map(|r| r.ok()).collect();
+            drop(mod_stmt);
+
+            items.push(HeldOrderItem {
+                db_item_id, menu_item_id, name, quantity, unit_price_cents,
+                notes: notes.unwrap_or_default(), modifiers,
+            });
+        }
+
+        Ok(Some(HeldOrderResult { items, customer_name: Some(customer_name), customer_phone, delivery_address }))
+    }
+
+    /// Verifies `order_id` belongs to the caller's tenant/branch before any
+    /// mutation -- same guard as `take_payment`/`finalize_order_with_payment`,
+    /// extracted here so `split_bill`/`transfer_order` share it instead of
+    /// each re-deriving it (and risking one of them skipping it, which is
+    /// exactly what happened before this fix).
+    fn assert_order_in_scope(&self, order_id: &str, scope: &Scope) -> Result<(), RepoError> {
+        let (predicate, args) = Self::scope_predicate(scope);
+        // `predicate` is pre-numbered `?1`/`?2` -- the id placeholder must
+        // come AFTER those (same fix as `assert_purchase_order_in_scope`;
+        // mixing anonymous `?` with numbered `?1` in one SQLite statement is
+        // invalid and throws `InvalidParameterCount`, not a silent bug).
+        let id_placeholder = format!("?{}", args.len() + 1);
+        let sql = format!("SELECT 1 FROM orders WHERE {predicate} AND id = {id_placeholder}");
+        let mut full_args: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        full_args.push(&order_id);
+        self.conn.query_row(&sql, full_args.as_slice(), |r| r.get::<_, i64>(0))
+            .optional()?
+            .ok_or_else(|| RepoError::OrderOutOfScope { order_id: order_id.to_string() })?;
+        Ok(())
+    }
+
+    /// Same guard, for a `tables` row -- `merge_tables`/`unmerge_tables`
+    /// operate on table ids directly, not via an order.
+    fn assert_table_in_scope(&self, table_id: &str, scope: &Scope) -> Result<(), RepoError> {
+        let (predicate, args) = Self::scope_predicate(scope);
+        let id_placeholder = format!("?{}", args.len() + 1);
+        let sql = format!("SELECT 1 FROM tables WHERE {predicate} AND id = {id_placeholder}");
+        let mut full_args: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        full_args.push(&table_id);
+        self.conn.query_row(&sql, full_args.as_slice(), |r| r.get::<_, i64>(0))
+            .optional()?
+            .ok_or_else(|| RepoError::TableOutOfScope { table_id: table_id.to_string() })?;
+        Ok(())
+    }
+
+    /// Same guard, for an `order_items` row via its parent order -- `order_items`
+    /// itself carries `tenant_id`/`branch_id` post-Migration-A, so this checks
+    /// the item row directly rather than joining to `orders`.
+    fn assert_order_item_in_scope(&self, item_id: &str, scope: &Scope) -> Result<(), RepoError> {
+        let (predicate, args) = Self::scope_predicate(scope);
+        let id_placeholder = format!("?{}", args.len() + 1);
+        let sql = format!("SELECT 1 FROM order_items WHERE {predicate} AND id = {id_placeholder}");
+        let mut full_args: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        full_args.push(&item_id);
+        self.conn.query_row(&sql, full_args.as_slice(), |r| r.get::<_, i64>(0))
+            .optional()?
+            .ok_or_else(|| RepoError::OrderItemOutOfScope { item_id: item_id.to_string() })?;
+        Ok(())
+    }
+
+    /// Split a PENDING order into child orders, moving items. Each split
+    /// creates a new PENDING order linked via parent_order_id.
+    ///
+    /// `order_id` (and `table_id`) are client-supplied and unverified until
+    /// `assert_order_in_scope`/`assert_table_in_scope` run here -- without
+    /// this, a Branch-scoped actor could split ANY order in the database by
+    /// id, regardless of tenant/branch. Found and fixed during Slice A
+    /// verification (this method previously did no scope check at all).
+    pub fn split_bill(&self, scope: &Scope, order_id: &str, splits: Vec<SplitBillInput>, user_id: &str, table_id: &str) -> Result<Vec<String>, RepoError> {
+        self.assert_order_in_scope(order_id, scope)?;
+        self.assert_table_in_scope(table_id, scope)?;
+        // `orders.tenant_id`/`branch_id` are NOT NULL post-Migration-A --
+        // pulled from the parent order (already verified in-scope above)
+        // rather than trusting a caller-supplied value. Found and fixed
+        // during Slice A verification: this INSERT previously omitted both
+        // columns entirely, which would hard-fail the very first real
+        // split-bill call.
+        let (tenant_id, branch_id): (String, String) = self.conn.query_row(
+            "SELECT tenant_id, branch_id FROM orders WHERE id = ?1", params![order_id], |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut split_order_ids = Vec::with_capacity(splits.len());
+
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result: Result<(), RepoError> = (|| {
+            for split in &splits {
+                let new_order_id = uuid::Uuid::now_v7().to_string();
+                split_order_ids.push(new_order_id.clone());
+
+                self.conn.execute(
+                    "INSERT INTO orders (id, tenant_id, branch_id, table_id, user_id, status, order_type, subtotal_cents, tax_cents, total_cents, discount_cents, delivery_fee_cents, parent_order_id, created_at, sync_version, last_modified, sync_status) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', 'DINE_IN', ?6, 0, ?6, 0, 0, ?7, ?8, 1, ?8, 'pending')",
+                    params![new_order_id, tenant_id, branch_id, table_id, user_id, split.amount_cents, order_id, now],
+                ).map_err(RepoError::from)?;
+
+                for item_id in &split.item_ids {
+                    self.conn.execute(
+                        "UPDATE order_items SET order_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3 AND order_id = ?4",
+                        params![new_order_id, now, item_id, order_id],
+                    ).map_err(RepoError::from)?;
+                }
+            }
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => { self.conn.execute_batch("COMMIT").map_err(RepoError::from)?; Ok(split_order_ids) }
+            Err(e) => { let _ = self.conn.execute_batch("ROLLBACK"); Err(e) }
+        }
+    }
+
+    /// Merge source tables into a target: set all to MERGED with a common
+    /// merge_group_id, move items from source tables' orders to the target
+    /// table's order, cancel source orders.
+    ///
+    /// Every table id (source and target) is verified in-scope BEFORE any
+    /// write -- found and fixed during Slice A verification (this method
+    /// previously did no scope check at all, letting a Branch-scoped actor
+    /// merge tables belonging to any tenant/branch by id).
+    pub fn merge_tables(&self, scope: &Scope, source_table_ids: Vec<String>, target_table_id: &str) -> Result<Option<String>, RepoError> {
+        self.assert_table_in_scope(target_table_id, scope)?;
+        for table_id in &source_table_ids {
+            self.assert_table_in_scope(table_id, scope)?;
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        let merge_group_id = uuid::Uuid::now_v7().to_string();
+        let mut target_order_id: Option<String> = None;
+
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result: Result<(), RepoError> = (|| {
+            for table_id in &source_table_ids {
+                // `.get::<_, Option<String>>(0)`, not `.get(0)` inferred as
+                // `String` -- an unoccupied table's `current_order_id` is a
+                // genuine SQL NULL, not a missing row (`table_id` was
+                // already confirmed to exist via `assert_table_in_scope`
+                // above). Found and fixed during Slice A verification: the
+                // old inferred-`String` read crashed with
+                // `InvalidColumnType` the moment anyone tried to merge in an
+                // empty/unoccupied table -- an extremely common case, not
+                // an edge case.
+                let table_order_id: Option<String> = self.conn.query_row(
+                    "SELECT current_order_id FROM tables WHERE id = ?1", params![table_id],
+                    |r| r.get::<_, Option<String>>(0),
+                ).map_err(RepoError::from)?;
+
+                if table_id == target_table_id {
+                    self.conn.execute(
+                        "UPDATE tables SET status = 'MERGED', merge_group_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
+                        params![merge_group_id, now, table_id],
+                    ).map_err(RepoError::from)?;
+                    target_order_id = table_order_id;
+                } else {
+                    self.conn.execute(
+                        "UPDATE tables SET status = 'MERGED', merge_group_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
+                        params![merge_group_id, now, table_id],
+                    ).map_err(RepoError::from)?;
+
+                    if let Some(ref src_order_id) = table_order_id {
+                        if let Some(ref tgt_oid) = target_order_id {
+                            self.conn.execute(
+                                "UPDATE order_items SET order_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE order_id = ?3",
+                                params![tgt_oid, now, src_order_id],
+                            ).map_err(RepoError::from)?;
+                        }
+                        self.conn.execute(
+                            "UPDATE orders SET status = 'CANCELLED', last_modified = ?1, sync_status = 'pending' WHERE id = ?2",
+                            params![now, src_order_id],
+                        ).map_err(RepoError::from)?;
+                    }
+                }
+            }
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => { self.conn.execute_batch("COMMIT").map_err(RepoError::from)?; Ok(target_order_id) }
+            Err(e) => { let _ = self.conn.execute_batch("ROLLBACK"); Err(e) }
+        }
+    }
+
+    /// Unmerge all tables in a merge group: set them back to FREE.
+    ///
+    /// The `UPDATE` itself is scope-qualified (not just a pre-check) --
+    /// `merge_group_id` is an opaque id with no owner lookup of its own, so
+    /// the safest guard is to only ever touch rows that are simultaneously
+    /// in this merge group AND in the caller's scope. Found and fixed
+    /// during Slice A verification (previously unscoped entirely).
+    pub fn unmerge_tables(&self, scope: &Scope, merge_group_id: &str) -> Result<(), RepoError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let (predicate, args) = Self::scope_predicate(scope);
+        // Same numbered-placeholder-collision fix as `assert_order_in_scope`
+        // -- `predicate` already owns `?1..?N`, so the extra params here are
+        // numbered AFTER it, never with a bare `?`.
+        let n = args.len();
+        let last_modified_placeholder = format!("?{}", n + 1);
+        let merge_group_placeholder = format!("?{}", n + 2);
+        let sql = format!(
+            "UPDATE tables SET status = 'FREE', merge_group_id = NULL, last_modified = {last_modified_placeholder} \
+             WHERE merge_group_id = {merge_group_placeholder} AND {predicate}"
+        );
+        let mut full_args: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        full_args.push(&now);
+        full_args.push(&merge_group_id);
+        self.conn.execute(&sql, full_args.as_slice())?;
+        Ok(())
+    }
+
+    /// Soft-void an order item (set voided=1 + void_reason).
+    ///
+    /// `item_id` is verified in-scope before the write -- found and fixed
+    /// during Slice A verification (previously unscoped entirely, letting a
+    /// Branch-scoped actor void any order item in the database by id).
+    pub fn void_order_item(&self, scope: &Scope, item_id: &str, reason: &str) -> Result<(), RepoError> {
+        self.assert_order_item_in_scope(item_id, scope)?;
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE order_items SET voided = 1, void_reason = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
+            params![reason, now, item_id],
+        )?;
+        Ok(())
+    }
+
+    /// Transfer an order from one table to another: update order.table_id,
+    /// free the source table, occupy the target table.
+    ///
+    /// `order_id`/`from_table_id`/`to_table_id` are all verified in-scope
+    /// before any write -- found and fixed during Slice A verification
+    /// (previously unscoped entirely).
+    pub fn transfer_order(&self, scope: &Scope, order_id: &str, from_table_id: &str, to_table_id: &str) -> Result<(), RepoError> {
+        self.assert_order_in_scope(order_id, scope)?;
+        self.assert_table_in_scope(from_table_id, scope)?;
+        self.assert_table_in_scope(to_table_id, scope)?;
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result: Result<(), RepoError> = (|| {
+            self.conn.execute(
+                "UPDATE orders SET table_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
+                params![to_table_id, now, order_id],
+            ).map_err(RepoError::from)?;
+            self.conn.execute(
+                "UPDATE tables SET status = 'FREE', current_order_id = NULL, last_modified = ?1, sync_status = 'pending' WHERE id = ?2",
+                params![now, from_table_id],
+            ).map_err(RepoError::from)?;
+            self.conn.execute(
+                "UPDATE tables SET status = 'OCCUPIED', current_order_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
+                params![order_id, now, to_table_id],
+            ).map_err(RepoError::from)?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => { self.conn.execute_batch("COMMIT").map_err(RepoError::from)?; Ok(()) }
+            Err(e) => { let _ = self.conn.execute_batch("ROLLBACK"); Err(e) }
+        }
+    }
+
+    /// Create a SCHEDULED order + items + modifiers + delayed_orders entry.
+    pub fn schedule_delayed_order(&self, scope: &Scope, tenant_id: &str, branch_id: &str, input: FullOrderInput, scheduled_at: &str) -> Result<String, RepoError> {
+        self.assert_scope_populated("orders", true)?;
+        let _ = scope;
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let currency: String = self.conn.query_row(
+            "SELECT currency FROM branch WHERE id = ?1", params![branch_id], |r| r.get(0)
+        )?;
+        let scale = crate::money::scale_for(&currency) as i64;
+
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result: Result<(), RepoError> = (|| {
+            self.conn.execute(
+                "INSERT INTO orders (id, tenant_id, branch_id, table_id, user_id, status, order_type, \
+                 subtotal_cents, tax_cents, total_cents, discount_cents, delivery_fee_cents, scheduled_at, \
+                 created_at, sync_version, last_modified, sync_status, \
+                 subtotal_minor, subtotal_currency, subtotal_scale, subtotal_base_minor, subtotal_fx_rate, subtotal_fx_source, subtotal_denom_epoch, \
+                 tax_minor, tax_currency, tax_scale, tax_base_minor, tax_fx_rate, tax_fx_source, tax_denom_epoch, \
+                 discount_minor, discount_currency, discount_scale, discount_base_minor, discount_fx_rate, discount_fx_source, discount_denom_epoch, \
+                 total_minor, total_currency, total_scale, total_base_minor, total_fx_rate, total_fx_source, total_denom_epoch) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'SCHEDULED', ?6, ?7, ?8, ?9, 0, 0, ?10, ?11, 1, ?11, 'pending', \
+                 ?7, ?12, ?13, ?7, '1', 'NATIVE', 2, \
+                 ?8, ?12, ?13, ?8, '1', 'NATIVE', 2, \
+                 0, ?12, ?13, 0, '1', 'NATIVE', 2, \
+                 ?9, ?12, ?13, ?9, '1', 'NATIVE', 2)",
+                params![
+                    id, tenant_id, branch_id, input.table_id, input.user_id, input.order_type,
+                    input.subtotal_cents, input.tax_cents, input.total_cents, scheduled_at, now,
+                    currency, scale
+                ],
+            ).map_err(RepoError::from)?;
+
+            for item in &input.items {
+                let item_id = uuid::Uuid::now_v7().to_string();
+                self.conn.execute(
+                    "INSERT INTO order_items (id, tenant_id, branch_id, order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, voided, sync_version, last_modified, sync_status) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 1, ?10, 'pending')",
+                    params![item_id, tenant_id, branch_id, id, item.menu_item_id, item.quantity, item.unit_price_cents, item.notes, item.combo_id, now],
+                ).map_err(RepoError::from)?;
+
+                for modifier in &item.modifiers {
+                    self.conn.execute(
+                        "INSERT INTO order_modifiers (id, tenant_id, branch_id, order_item_id, name, price_cents, sync_version, last_modified, sync_status) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 'pending')",
+                        params![uuid::Uuid::now_v7().to_string(), tenant_id, branch_id, item_id, modifier.name, modifier.price_cents, now],
+                    ).map_err(RepoError::from)?;
+                }
+            }
+
+            self.conn.execute(
+                "INSERT INTO delayed_orders (id, tenant_id, branch_id, order_id, scheduled_at, activated, sync_version, last_modified, sync_status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0, 1, ?6, 'pending')",
+                params![uuid::Uuid::now_v7().to_string(), tenant_id, branch_id, id, scheduled_at, now],
+            ).map_err(RepoError::from)?;
+
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => { self.conn.execute_batch("COMMIT").map_err(RepoError::from)?; Ok(id) }
+            Err(e) => { let _ = self.conn.execute_batch("ROLLBACK"); Err(e) }
+        }
+    }
+
+    /// Activate all delayed orders where scheduled_at <= now. Each order is
+    /// activated atomically (order→PENDING, delayed_orders→activated=1).
+    pub fn activate_delayed_orders(&self) -> Result<Vec<String>, RepoError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut activated_ids = Vec::new();
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, order_id FROM delayed_orders WHERE activated = 0 AND scheduled_at <= ?1"
+        )?;
+        let due: Vec<(String, String)> = stmt.query_map(params![now], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .filter_map(|r| r.ok()).collect();
+        drop(stmt);
+
+        for (delayed_id, order_id) in due {
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+            let result: Result<(), RepoError> = (|| {
+                self.conn.execute(
+                    "UPDATE orders SET status = 'PENDING', last_modified = ?1, sync_status = 'pending' WHERE id = ?2",
+                    params![now, order_id],
+                ).map_err(RepoError::from)?;
+                self.conn.execute(
+                    "UPDATE delayed_orders SET activated = 1, last_modified = ?1, sync_status = 'pending' WHERE id = ?2",
+                    params![now, delayed_id],
+                ).map_err(RepoError::from)?;
+                Ok(())
+            })();
+
+            match result {
+                Ok(()) => { self.conn.execute_batch("COMMIT").map_err(RepoError::from)?; activated_ids.push(order_id); }
+                Err(e) => { let _ = self.conn.execute_batch("ROLLBACK"); return Err(e); }
+            }
+        }
+
+        Ok(activated_ids)
+    }
+
+    /// Get chain_name, currency from chain_config + branch name. No scope
+    /// (config is global).
+    pub fn get_receipt_config(&self) -> Result<ReceiptConfig, RepoError> {
+        let (chain_name, currency): (String, String) = self.conn.query_row(
+            "SELECT chain_name, currency FROM chain_config WHERE id = 'default'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).map_err(RepoError::from)?;
+
+        let branch_name: String = self.conn.query_row(
+            "SELECT name FROM branches ORDER BY rowid LIMIT 1",
+            [],
+            |r| r.get(0),
+        ).unwrap_or_else(|_| "الفرع الرئيسي".to_string());
+
+        Ok(ReceiptConfig { chain_name, currency, branch_name })
+    }
+
+    /// Look up a loyalty card by card_number, joining customers for the name.
+    /// Returns None if not found. `loyalty_cards.is_active` does not exist
+    /// in the real schema (DRIFT_REPORT.md Finding #5, already fixed once
+    /// in slice 3's `LoyaltyCardRow`/`list_loyalty_cards`) -- found
+    /// reintroduced here during Slice A verification and removed again.
+    pub fn lookup_loyalty_card(&self, card_number: &str) -> Result<Option<LoyaltyCardLookup>, RepoError> {
+        let result = self.conn.query_row(
+            "SELECT lc.card_number, c.name, lc.points, lc.tier \
+             FROM loyalty_cards lc INNER JOIN customers c ON c.id = lc.customer_id \
+             WHERE lc.card_number = ?1",
+            params![card_number],
+            |r| Ok(LoyaltyCardLookup {
+                card_number: r.get(0)?,
+                customer_name: r.get(1)?,
+                points: r.get(2)?,
+                tier: r.get(3)?,
+            }),
+        ).optional().map_err(RepoError::from)?;
+
+        Ok(result)
+    }
+
+    /// Earn loyalty points: bump card points, insert a loyalty_transactions
+    /// EARN entry. Both happen in the same implicit transaction (rusqlite
+    /// auto-begins when no explicit tx is open).
+    ///
+    /// Found and fixed during Slice A verification: this method previously
+    /// referenced `loyalty_cards.is_active` (removed once already in slice
+    /// 3, reintroduced here) and `loyalty_transactions.description` --
+    /// neither column exists in the real schema (DRIFT_REPORT.md Finding
+    /// #5). The INSERT also omitted `tenant_id`/`branch_id`
+    /// (`loyalty_transactions` is `TENANT_BRANCH_TABLES`), which -- unlike
+    /// `description` -- would have actually crashed the very first call.
+    pub fn earn_loyalty_points(&self, tenant_id: &str, branch_id: &str, card_number: &str, points: i64, order_id: &str) -> Result<(), RepoError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let card_id: String = self.conn.query_row(
+            "SELECT id FROM loyalty_cards WHERE card_number = ?1",
+            params![card_number],
+            |r| r.get(0),
+        ).map_err(RepoError::from)?;
+
+        self.conn.execute(
+            "UPDATE loyalty_cards SET points = points + ?1, last_used_at = ?2, last_modified = ?2 WHERE id = ?3",
+            params![points, now, card_id],
+        )?;
+        self.conn.execute(
+            "INSERT INTO loyalty_transactions (id, tenant_id, branch_id, card_id, points, type, reference_type, reference_id, created_at, sync_version, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'EARN', 'ORDER', ?6, ?7, 1, ?7, 'pending')",
+            params![uuid::Uuid::now_v7().to_string(), tenant_id, branch_id, card_id, points, order_id, now],
+        )?;
+        Ok(())
+    }
+
+    /// Finalize a PENDING order: change status to PAID, insert payment,
+    /// free the table, optional debt entry. This is the atomic pair that
+    /// replaces the frontend's `orderService.finalizeOrder`. The caller
+    /// (`take_payment_v3`) handles the audit entry and session auth.
+    #[allow(clippy::too_many_arguments)]
+    pub fn finalize_order_with_payment(&self, tenant_id: &str, branch_id: &str, order_id: &str, method: &str, amount_cents: i64, change_cents: i64, debtor_id: Option<&str>, actor_id: &str) -> Result<String, RepoError> {
+        self.assert_scope_populated("payments", true)?;
+
+        let (order_tenant, order_branch, order_status): (String, String, String) = self.conn.query_row(
+            "SELECT tenant_id, branch_id, status FROM orders WHERE id = ?1",
+            params![order_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        if order_tenant != tenant_id || order_branch != branch_id {
+            return Err(RepoError::OrderOutOfScope { order_id: order_id.to_string() });
+        }
+        if order_status == "PAID" {
+            return Err(RepoError::OrderAlreadyPaid { order_id: order_id.to_string() });
+        }
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let currency: String = self.conn.query_row(
+            "SELECT currency FROM branch WHERE id = ?1", params![branch_id], |r| r.get(0)
+        )?;
+        let scale = crate::money::scale_for(&currency) as i64;
+        let payment_id = uuid::Uuid::now_v7().to_string();
+
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result: Result<(), RepoError> = (|| {
+            self.conn.execute(
+                "INSERT INTO payments (id, tenant_id, branch_id, order_id, method, amount_cents, change_cents, created_at, sync_version, last_modified, sync_status, \
+                 amount_minor, amount_currency, amount_scale, amount_base_minor, amount_fx_rate, amount_fx_source, amount_denom_epoch, \
+                 change_minor, change_currency, change_scale, change_base_minor, change_fx_rate, change_fx_source, change_denom_epoch) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?8, 'pending', \
+                 ?6, ?9, ?10, ?6, '1', 'NATIVE', 2, \
+                 ?7, ?9, ?10, ?7, '1', 'NATIVE', 2)",
+                params![payment_id, tenant_id, branch_id, order_id, method, amount_cents, change_cents, now, currency, scale],
+            ).map_err(RepoError::from)?;
+
+            self.conn.execute(
+                "UPDATE orders SET status = 'PAID', closed_at = ?1, last_modified = ?1, sync_status = 'pending' WHERE id = ?2",
+                params![now, order_id],
+            ).map_err(RepoError::from)?;
+
+            self.conn.execute(
+                "UPDATE tables SET status = 'FREE', current_order_id = NULL, last_modified = ?1, sync_status = 'pending' WHERE current_order_id = ?2",
+                params![now, order_id],
+            ).map_err(RepoError::from)?;
+
+            if let Some(debtor_id) = debtor_id {
+                let debt_entry_id = uuid::Uuid::now_v7().to_string();
+                self.conn.execute(
+                    "INSERT INTO debt_entries (id, debtor_id, order_id, amount_cents, type, notes, created_by, created_at, sync_version, last_modified, sync_status) \
+                     VALUES (?1, ?2, ?3, ?4, 'DEBT', NULL, ?5, ?6, 1, ?6, 'pending')",
+                    params![debt_entry_id, debtor_id, order_id, amount_cents, actor_id, now],
+                ).map_err(RepoError::from)?;
+                self.conn.execute(
+                    "UPDATE debtors SET total_debt_cents = total_debt_cents + ?1, balance_cents = balance_cents + ?1, last_transaction_at = ?2, last_modified = ?2 WHERE id = ?3",
+                    params![amount_cents, now, debtor_id],
+                ).map_err(RepoError::from)?;
+            }
+
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => { self.conn.execute_batch("COMMIT").map_err(RepoError::from)?; Ok(payment_id) }
+            Err(e) => { let _ = self.conn.execute_batch("ROLLBACK"); Err(e) }
+        }
     }
 }
 

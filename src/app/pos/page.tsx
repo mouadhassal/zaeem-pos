@@ -24,9 +24,7 @@ import { useOrderTypeStore } from "../../stores/orderTypeStore";
 import { useMenuStore } from "../../stores/menuStore";
 import { CURRENCY_SYMBOLS } from "../../hooks/useCurrency";
 import { usePermissions } from "../../hooks/usePermissions";
-import { getDb } from "../../db";
-import { sql } from "kysely";
-import { createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem } from "../../lib/orderService";
+import { createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, lookupLoyaltyCard, earnLoyaltyPoints } from "../../lib/orderService";
 import { enableBarcodeScanner, disableBarcodeScanner } from "../../lib/barcodeScanner";
 import { retryPrintQueue, printReceipt } from "../../lib/printer";
 import type { ReceiptData } from "../../lib/printer";
@@ -77,10 +75,8 @@ export default function POSPage() {
   const { maxDiscountPercent } = usePermissions();
 
   useEffect(() => {
-    getDb().then((db) =>
-      db.selectFrom("chain_config").select("currency").where("id", "=", "default").executeTakeFirst()
-    ).then((row) => {
-      if (row) setCurrencySymbol(CURRENCY_SYMBOLS[row.currency] || row.currency);
+    getReceiptConfig().then((cfg) => {
+      setCurrencySymbol(CURRENCY_SYMBOLS[cfg.currency] || cfg.currency);
     }).catch(() => {});
   }, []);
 
@@ -88,11 +84,7 @@ export default function POSPage() {
 
   const fetchTables = useCallback(async () => {
     try {
-      const db = await getDb();
-      const rows = await db
-        .selectFrom("tables")
-        .select(["id", "name", "status", "current_order_id"])
-        .execute();
+      const rows = await listTables();
       setTables(rows as TableData[]);
       setDbError(null);
     } catch {
@@ -217,12 +209,10 @@ export default function POSPage() {
       state.savingsCents, shiftId ?? undefined,
       orderType === "DELIVERY" ? driverId : undefined,
     );
-    const db = await getDb();
-    const cfg = await db.selectFrom("chain_config").select(["chain_name", "currency"]).where("id", "=", "default").executeTakeFirst();
-    const branchRow = await db.selectFrom("branches").select("name").limit(1).executeTakeFirst();
+    const cfg = await getReceiptConfig();
     const receipt: ReceiptData = {
-      chainName: cfg?.chain_name ?? "مطعمي", branchName: branchRow?.name ?? "الفرع الرئيسي",
-      currency: cfg?.currency ?? "SYP", orderNumber: orderId.slice(0, 8),
+      chainName: cfg.chain_name, branchName: cfg.branch_name,
+      currency: cfg.currency, orderNumber: orderId.slice(0, 8),
       tableName: tableName ?? "", orderType,
       items: items.filter((i) => !i.voided).map((i) => ({ name: i.name, quantity: i.quantity, priceCents: i.unitPriceCents, modifiers: i.modifiers, ...(i.comboId ? { comboId: i.comboId } : {}) })),
       subtotalCents: state.subtotal(), taxCents: t.taxCents, secondaryTaxCents: t.secondaryTaxCents,
@@ -247,12 +237,7 @@ export default function POSPage() {
       try {
         const totalCents = useCartStore.getState().total();
         const pointsEarned = Math.floor(totalCents / 100);
-        const db = await getDb();
-        const cardRec = await db.selectFrom("loyalty_cards").select("id").where("card_number", "=", loyaltyCard.card_number).executeTakeFirst();
-        if (cardRec) {
-          await db.updateTable("loyalty_cards").set({ points: sql`points + ${pointsEarned}`, last_used_at: new Date().toISOString() }).where("id", "=", cardRec.id).execute();
-          await db.insertInto("loyalty_transactions").values({ id: crypto.randomUUID(), card_id: cardRec.id, points: pointsEarned, type: "EARN", reference_type: "ORDER", reference_id: orderId, description: `نقاط مكتسبة من طلبية ${orderId.slice(0, 8)}`, created_at: new Date().toISOString() }).execute();
-        }
+        await earnLoyaltyPoints(loyaltyCard.card_number, pointsEarned, orderId);
       } catch { /* silent */ }
     }
     clearCart();
@@ -347,12 +332,10 @@ export default function POSPage() {
     if (items.length === 0) return;
     const state = useCartStore.getState();
     const t = state.tax();
-    const db = await getDb();
-    const cfg = await db.selectFrom("chain_config").select(["chain_name", "currency"]).where("id", "=", "default").executeTakeFirst();
-    const branchRow = await db.selectFrom("branches").select("name").limit(1).executeTakeFirst();
+    const cfg = await getReceiptConfig();
     const receipt: ReceiptData = {
-      chainName: cfg?.chain_name ?? "مطعمي", branchName: branchRow?.name ?? "الفرع الرئيسي",
-      currency: cfg?.currency ?? "SYP", orderNumber,
+      chainName: cfg.chain_name, branchName: cfg.branch_name,
+      currency: cfg.currency, orderNumber,
       tableName: tableName ?? "", orderType,
       items: items.filter((i) => !i.voided).map((i) => ({ name: i.name, quantity: i.quantity, priceCents: i.unitPriceCents, modifiers: i.modifiers, ...(i.comboId ? { comboId: i.comboId } : {}) })),
       subtotalCents: state.subtotal(), taxCents: t.taxCents, secondaryTaxCents: t.secondaryTaxCents,
@@ -542,8 +525,7 @@ export default function POSPage() {
                   const val = (e.target as HTMLInputElement).value.trim();
                   if (!val) return;
                   try {
-                    const db = await getDb();
-                    const card = await db.selectFrom("loyalty_cards").innerJoin("customers", "customers.id", "loyalty_cards.customer_id").select(["loyalty_cards.card_number", "loyalty_cards.points", "loyalty_cards.tier", "customers.name as customer_name"]).where("loyalty_cards.card_number", "=", val).where("loyalty_cards.is_active", "=", 1).executeTakeFirst();
+                    const card = await lookupLoyaltyCard(val);
                     if (card) { setLoyaltyCard(card); useOrderTypeStore.getState().setCustomerName(card.customer_name); setShowLoyaltyScan(false); }
                   } catch { /* silent */ }
                 }

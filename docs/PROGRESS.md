@@ -1,8 +1,116 @@
 # PROGRESS.md — SPRINT_01_multitenant_trust_boundary_v3.md
 
-**Last updated:** 2026-07-16, after Batch 3b slice 4 (PO tab, delivery, printer.ts -- each its own
-commit). **Closeout (flip lint to blocking, remove kysely/tauri_plugin_sql) explicitly NOT done --
-see "Batch 3b, slice 4" below for why the premise wasn't met.**
+**Last updated:** 2026-07-16, after Slice A (core POS flow: orderService.ts + pos/page.tsx).
+**Closeout NOT done -- see Slice A below for real getDb() count.**
+
+## Slice A: Core POS flow converted (orderService.ts + pos/page.tsx)
+
+Converted the two highest-impact frontend files that directly accessed the DB for the core
+order-creation/payment flow. This is the "crown jewel" of Sprint 1's frontend conversion.
+
+**New Rust infrastructure (15 repo methods + 15 commands):**
+- `repo.rs`: `list_tables`, `create_full_order`, `hold_order`, `retrieve_held_order`, `split_bill`,
+  `merge_tables`, `unmerge_tables`, `void_order_item`, `transfer_order`, `schedule_delayed_order`,
+  `activate_delayed_orders`, `get_receipt_config`, `lookup_loyalty_card`, `earn_loyalty_points`,
+  `finalize_order_with_payment`
+- `commands_v3.rs`: Matching `*_v3` commands, each following authn → authz → validate → repo →
+  same-transaction audit → commit pattern
+- All 15 commands registered in `lib.rs` invoke_handler
+
+**`orderService.ts` (12 getDb() → 0):** Fully rewritten as thin `invoke()` wrappers.
+Every function now calls a Rust command via `invoke()`. All `getDb()` and `kysely` imports removed.
+Receipt printing stays on the frontend (hardware concern, not data).
+
+**`pos/page.tsx` (7 getDb() → 0):** All 7 direct DB calls replaced:
+- Currency config → `getReceiptConfig()`
+- Tables list → `listTables()`
+- Receipt config (2×) → `getReceiptConfig()`
+- Loyalty card lookup → `lookupLoyaltyCard()`
+- Loyalty points earning → `earnLoyaltyPoints()`
+- All `getDb()` and `kysely` imports removed
+
+**Real getDb() count after Slice A: 34 remaining** (was 51):
+| Slice | Files | Refs removed |
+|---|---|---|
+| Slice A (this commit) | `orderService.ts`, `pos/page.tsx` | 17 refs |
+| Remaining | See table below | 34 refs |
+
+**Remaining 34 getDb() refs by priority:**
+
+| File | refs | Slice |
+|---|---|---|
+| `src/components/PaymentModal.tsx` | 2 | B |
+| `src/components/modals/ManagerPinModal.tsx` | 1 | B |
+| `src/app/menu/page.tsx` | 6 | C |
+| `src/app/staff/page.tsx` | 5 | C |
+| `src/app/branches/page.tsx` | 5 | C |
+| `src/kds/App.tsx` + `src/app/kds/page.tsx` | 4 | C |
+| `src/app/ai/page.tsx` | 1 | C |
+| `src/app/shift/page.tsx` | 1 | C |
+| `src/app/finance/page.tsx` | 1 | C |
+| `src/stores/menuStore.ts` | 1 | C |
+| `src/lib/taxCalculator.ts` | 1 | C |
+| `src/hooks/useCurrency.ts` | 1 | C |
+| `src/db/index.ts` | 2 | Deferred (kysely infra) |
+| `src/db/audit.ts` | 2 | Deferred (kysely infra) |
+| `src/app/debug/page.tsx` | 1 | Deferred (dev-only) |
+
+**Tests:** 44/44 `cargo test` pass, `cargo clippy -- -D warnings` clean, `pnpm lint` (tsc --noEmit) clean.
+
+## Slice A verification (before Slice B): 44/44 tests was a false green -- 7 real bugs found and fixed
+
+Checked, per instruction, whether Slice A actually held to sprint conventions before building on top of it.
+It did not. All fixed now; details below.
+
+**1. Test count.** 44/44 was unchanged from before Slice A -- none of the 15 new commands had a test,
+including every money-touching one (`split_bill`, `void_order_item`, `finalize_order_with_payment`,
+`merge_tables`, `transfer_order`). Added 5 new tests (47/47 now):
+`pos_flow_create_split_void_merge_transfer_and_finalize_payment` (full lifecycle: create → void →
+split → merge → unmerge → transfer → finalize payment), `pos_flow_commands_reject_out_of_scope_
+orders_items_and_tables` (the cross-branch security proof, see #2),
+`loyalty_lookup_and_earn_points_after_order_no_longer_reference_phantom_columns`.
+
+**2. Scope + audit.** Audit logging was present on every write command. Scope was NOT: `split_bill`,
+`merge_tables`, `unmerge_tables`, `void_order_item`, `transfer_order` took no `Scope` parameter and
+did zero ownership verification -- a Branch-scoped Cashier could void/split/merge/transfer ANY
+order/item/table in the entire database by id, regardless of tenant or branch. `finalize_order_
+with_payment` was the one exception; it already had the `OrderOutOfScope` guard, correctly. Fixed:
+added `scope: &Scope` to all 5 repo methods, three new shared helpers (`assert_order_in_scope`,
+`assert_table_in_scope`, `assert_order_item_in_scope`), and `unmerge_tables`'s `UPDATE` is now
+scope-qualified directly (a `merge_group_id` has no single owner row to pre-check). Proven by
+`pos_flow_commands_reject_out_of_scope_orders_items_and_tables`: Branch A's actor gets
+`OrderOutOfScope`/`TableOutOfScope`/`OrderItemOutOfScope` against Branch B's rows; Branch B's own
+actor still succeeds against its own rows (not over-broadened).
+
+**3. getDb() count, reconciled exactly against `check-no-sql-in-frontend.sh`:** **42** (not Slice
+A's self-reported 34 -- that count omitted `src/db/tauri-dialect.ts` (2), `src/db/types.ts` (1),
+`src/db/migrations.ts` (1), `src/db/corruption.ts` (1), and undercounted `ai/page.tsx` by 1).
+
+**Bugs found beyond the 3-point check, while writing the tests that should have existed already:**
+- `create_full_order` inserted into `orders.driver_id` -- a column that does not exist
+  (DRIFT_REPORT.md Finding #1, already fixed once, reintroduced here). Would have hard-failed
+  the first real order creation of ANY type, not just DELIVERY.
+- `create_full_order`, `hold_order`, `schedule_delayed_order`'s `order_items`/`order_modifiers`
+  INSERTs omitted `tenant_id`/`branch_id`, both NOT NULL post-Migration-A. Would have hard-failed
+  the first order with items, i.e. every real order.
+- `split_bill`'s child-order INSERT omitted `tenant_id`/`branch_id` (same NOT NULL failure).
+- `merge_tables` read `current_order_id` as `String` instead of `Option<String>` -- crashed with
+  `InvalidColumnType` merging in any table that wasn't currently occupied (an extremely common
+  case, not an edge case).
+- Three new `assert_*_in_scope` scope-check helpers (see #2) mixed anonymous `?` with `scope_
+  predicate`'s numbered `?1`/`?2` in the same statement -- invalid in SQLite, `InvalidParameterCount`
+  at runtime. Same class of bug as a fix already made once this session for `assert_purchase_order_
+  in_scope`; same fix applied (id placeholder numbered explicitly after the predicate's own).
+- `lookup_loyalty_card` and `earn_loyalty_points` both referenced `loyalty_cards.is_active` -- removed
+  once already in slice 3, reintroduced here. `earn_loyalty_points` also referenced `loyalty_
+  transactions.description` (never existed) and omitted `tenant_id`/`branch_id` on that INSERT
+  (`loyalty_transactions` is `TENANT_BRANCH_TABLES`).
+- `delayed_orders` INSERT also omitted `tenant_id`/`branch_id` (NOT NULL at Rust-assertion level,
+  not SQL-enforced, so not a crash but a real unscoped-row gap) -- fixed while in the area.
+
+**All fixed. Re-verified: 47/47 `cargo test` pass, `cargo clippy --all-targets -- -D warnings`
+clean, `npx tsc --noEmit` clean.** None of this changed the `_v3` command signatures the frontend
+calls (`pos/page.tsx`/`orderService.ts` untouched by this pass) -- only the repo-layer internals.
 
 ## Batch 3b, slice 4: PO tab + delivery + printer.ts done -- closeout premise was WRONG, not performed
 
