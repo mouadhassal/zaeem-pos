@@ -43,27 +43,27 @@ export default function SplashScreen({ onComplete }: Props) {
 
   return (
     <div
-      className="h-screen w-screen bg-slate-50 flex flex-col items-center justify-center"
+      className="h-screen w-screen bg-ink-50 flex flex-col items-center justify-center"
       dir="rtl"
     >
       <div className="flex flex-col items-center gap-8">
-        <div className="w-16 h-16 rounded-2xl bg-emerald-600 flex items-center justify-center shadow-lg shadow-emerald-600\/30">
+        <div className="w-16 h-16 rounded-2xl bg-saffron-600 flex items-center justify-center shadow-lg shadow-saffron-600\/30">
           <span className="text-white text-3xl font-bold">ز</span>
         </div>
 
         <div className="text-center space-y-2">
-          <h1 className="text-2xl font-bold text-slate-900">زعيم</h1>
-          <p className="text-sm text-slate-500 font-arabic">نقاط البيع</p>
+          <h1 className="text-2xl font-bold text-ink-900">زعيم</h1>
+          <p className="text-sm text-ink-500 font-arabic">نقاط البيع</p>
         </div>
 
         <div className="w-64 space-y-3">
-          <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
+          <div className="h-2 bg-ink-200 rounded-full overflow-hidden">
             <div
-              className="h-full bg-emerald-600 rounded-full transition-all duration-100 ease-linear"
+              className="h-full bg-saffron-600 rounded-full transition-all duration-100 ease-linear"
               style={{ width: `${progress}%` }}
             />
           </div>
-          <p className="text-xs text-slate-500 text-center font-arabic">
+          <p className="text-xs text-ink-500 text-center font-arabic">
             {STEPS[Math.min(step, STEPS.length - 1)]?.label ?? ""}
           </p>
         </div>

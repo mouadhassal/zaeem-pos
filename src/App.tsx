@@ -1,6 +1,7 @@
 import { useState, lazy, Suspense, useEffect } from "react";
 import { useAuthStore } from "./stores/authStore";
 import LoginPage from "./components/LoginPage";
+import SetupWizard from "./components/SetupWizard";
 import Sidebar from "./components/layout/Sidebar";
 import TopBar from "./components/layout/TopBar";
 import { usePermissions } from "./hooks/usePermissions";
@@ -18,13 +19,17 @@ const BranchesPage = lazy(() => import("./app/branches/page"));
 const FinancePage = lazy(() => import("./app/finance/page"));
 const DeliveryPage = lazy(() => import("./app/delivery/page"));
 const SettingsPage = lazy(() => import("./app/settings/page"));
-const DebugPage = lazy(() => import("./app/debug/page"));
 const AIPage = lazy(() => import("./app/ai/page"));
+const AiOnboardingPage = lazy(() => import("./app/ai-onboarding/page"));
 const LoyaltyPage = lazy(() => import("./app/loyalty/page"));
+
+const DebugPage = import.meta.env.DEV
+  ? lazy(() => import("./app/debug/page"))
+  : null;
 
 function LoadingFallback() {
   return (
-      <div className="flex items-center justify-center h-full text-slate-400 text-sm">
+    <div className="flex items-center justify-center h-full text-text-muted text-sm">
       جاري التحميل...
     </div>
   );
@@ -36,7 +41,9 @@ function PosLayout({ children }: { children: React.ReactNode }) {
 
   const handleNavigate = (id: string) => {
     if (id === "debug") {
-      setActiveView("debug");
+      if (import.meta.env.DEV) {
+        setActiveView("debug");
+      }
       return;
     }
     const item = navItems.find((n) => n.id === id);
@@ -61,18 +68,24 @@ function PosLayout({ children }: { children: React.ReactNode }) {
       case "finance": return <FinancePage />;
       case "loyalty": return <LoyaltyPage />;
       case "ai": return <AIPage />;
+      case "ai-onboarding": return <AiOnboardingPage />;
       case "settings": return <SettingsPage />;
-      case "debug": return <DebugPage />;
+      case "debug": return DebugPage ? <DebugPage /> : null;
       default: return children;
     }
   };
 
   return (
-    <div className="h-screen w-screen bg-slate-50 flex flex-col overflow-hidden">
+    <div className="h-screen w-screen bg-canvas flex flex-col overflow-hidden">
+      {import.meta.env.DEV && (
+        <div className="bg-warn text-white text-center text-xs py-1 px-4 font-bold">
+          وضع التطوير — حسابات الاختبار متاحة (admin123)
+        </div>
+      )}
       <TopBar />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar active={activeView} onNavigate={handleNavigate} />
-        <main className="flex-1 overflow-hidden bg-slate-50">
+        <main className="flex-1 overflow-hidden bg-canvas">
           <Suspense fallback={<LoadingFallback />}>
             {renderContent()}
           </Suspense>
@@ -85,18 +98,23 @@ function PosLayout({ children }: { children: React.ReactNode }) {
 export default function App() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isLoading = useAuthStore((s) => s.isLoading);
-  const checkSession = useAuthStore((s) => s.checkSession);
+  const needsSetup = useAuthStore((s) => s.needsSetup);
+  const checkNeedsSetup = useAuthStore((s) => s.checkNeedsSetup);
 
   useEffect(() => {
-    checkSession();
-  }, [checkSession]);
+    checkNeedsSetup();
+  }, [checkNeedsSetup]);
 
   if (isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50">
-        <div className="w-8 h-8 border-4 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+      <div className="min-h-screen flex items-center justify-center bg-canvas">
+        <div className="w-8 h-8 rounded-full border-2 border-line border-t-accent animate-spin" />
       </div>
     );
+  }
+
+  if (needsSetup) {
+    return <SetupWizard />;
   }
 
   if (!isAuthenticated) {

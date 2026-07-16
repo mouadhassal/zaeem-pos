@@ -86,7 +86,7 @@ const emptyMenuItemForm: MenuItemForm = {
 
 const emptyCategoryForm: CategoryForm = {
   name: "",
-  color: "#10b981",
+  color: "#667085",
   sort_order: "0",
   image_path: "",
 };
@@ -421,7 +421,7 @@ export default function MenuPage() {
     setEditCategoryId(cat.id);
     setCategoryForm({
       name: cat.name,
-      color: cat.color ?? "#10b981",
+      color: cat.color ?? "#667085",
       sort_order: cat.sort_order.toString(),
       image_path: cat.image_path ?? "",
     });
@@ -694,7 +694,7 @@ export default function MenuPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full text-slate-500 font-arabic">
+      <div className="flex items-center justify-center h-full text-ink-500 font-arabic">
         جاري التحميل...
       </div>
     );
@@ -711,11 +711,11 @@ export default function MenuPage() {
   return (
     <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-slate-900">إدارة القائمة</h1>
+        <h1 className="text-xl font-bold text-ink-900">إدارة القائمة</h1>
         {tab === "items" && (
           <button
             onClick={openAddItem}
-            className="h-10 px-4 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors"
+            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
             + إضافة صنف
           </button>
@@ -723,7 +723,7 @@ export default function MenuPage() {
         {tab === "categories" && (
           <button
             onClick={openAddCategory}
-            className="h-10 px-4 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors"
+            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
             + إضافة تصنيف
           </button>
@@ -731,7 +731,7 @@ export default function MenuPage() {
         {tab === "offers" && offerSubTab === "combos" && (
           <button
             onClick={openAddCombo}
-            className="h-10 px-4 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors"
+            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
             + إضافة وجبة مجمعة
           </button>
@@ -739,7 +739,7 @@ export default function MenuPage() {
         {tab === "offers" && offerSubTab === "happyhour" && (
           <button
             onClick={openAddHappyHour}
-            className="h-10 px-4 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors"
+            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
             + إضافة قاعدة
           </button>
@@ -747,15 +747,15 @@ export default function MenuPage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-2 border-b border-slate-200 pb-2">
+      <div className="flex gap-2 border-b border-ink-200 pb-2">
         {(["items", "categories", "offers"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={`px-5 py-2 rounded-t-lg font-arabic font-medium text-sm transition-colors ${
               tab === t
-                ? "bg-emerald-600 text-white shadow-sm"
-                : "text-slate-500 hover:text-emerald-600 hover:bg-white"
+                ? "bg-saffron-600 text-white shadow-sm"
+                : "text-ink-500 hover:text-saffron-600 hover:bg-white"
             }`}
           >
             {t === "items" ? "الأصناف" : t === "categories" ? "التصنيفات" : "العروض"}
@@ -772,12 +772,12 @@ export default function MenuPage() {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="ابحث عن صنف..."
-              className="flex-1 h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+              className="flex-1 h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
             />
             <select
               value={filterCategory}
               onChange={(e) => setFilterCategory(e.target.value)}
-              className="h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+              className="h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
             >
               <option value="">كل التصنيفات</option>
               {categories.map((cat) => (
@@ -791,7 +791,7 @@ export default function MenuPage() {
           <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-slate-200 text-slate-400 font-arabic">
+                <tr className="border-b border-ink-200 text-ink-400 font-arabic">
                   <th className="text-right p-3 font-medium">الاسم</th>
                   <th className="text-right p-3 font-medium">التصنيف</th>
                   <th className="text-right p-3 font-medium">السعر</th>
@@ -805,17 +805,17 @@ export default function MenuPage() {
                 {filteredItems.map((item) => {
                   const margin = calcMargin(item.price_cents, item.cost_cents);
                   return (
-                    <tr key={item.id} className="border-b border-slate-200 hover:bg-white">
-                      <td className="p-3 font-arabic text-slate-900">{item.name}</td>
+                    <tr key={item.id} className="border-b border-ink-200 hover:bg-white">
+                      <td className="p-3 font-arabic text-ink-900">{item.name}</td>
                       <td className="p-3">
-                        <span className="inline-block px-3 py-1 rounded-full text-xs font-arabic bg-emerald-50 text-emerald-700">
+                        <span className="inline-block px-3 py-1 rounded-full text-xs font-arabic bg-saffron-50 text-saffron-700">
                           {selectedCategoryName(item.category_id)}
                         </span>
                       </td>
-                      <td className="p-3 font-mono text-emerald-600 font-bold">
+                      <td className="p-3 font-mono text-saffron-600 font-bold">
                         {fromCents(item.price_cents)}
                       </td>
-                      <td className="p-3 font-mono text-slate-500">
+                      <td className="p-3 font-mono text-ink-500">
                         {item.cost_cents > 0 ? fromCents(item.cost_cents) : "-"}
                       </td>
                       <td className="p-3">
@@ -829,7 +829,7 @@ export default function MenuPage() {
                         <button
                           onClick={() => toggleItemStatus(item)}
                           className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                            item.is_active ? "bg-emerald-600" : "bg-slate-300"
+                            item.is_active ? "bg-saffron-600" : "bg-ink-300"
                           }`}
                         >
                           <span
@@ -843,7 +843,7 @@ export default function MenuPage() {
                         <div className="flex items-center justify-center gap-2">
                           <button
                             onClick={() => openEditItem(item)}
-                            className="px-3 py-1 rounded-lg text-xs font-arabic text-emerald-600 hover:bg-emerald-50 transition-colors"
+                            className="px-3 py-1 rounded-lg text-xs font-arabic text-saffron-600 hover:bg-saffron-50 transition-colors"
                           >
                             ✏️ تعديل
                           </button>
@@ -860,7 +860,7 @@ export default function MenuPage() {
                 })}
                 {filteredItems.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="p-6 text-center text-slate-500 font-arabic">
+                    <td colSpan={7} className="p-6 text-center text-ink-500 font-arabic">
                       لا توجد أصناف
                     </td>
                   </tr>
@@ -882,18 +882,18 @@ export default function MenuPage() {
               >
                 <div
                   className="w-10 h-10 rounded-full flex-shrink-0"
-                  style={{ backgroundColor: cat.color ?? "#10b981" }}
+                  style={{ backgroundColor: cat.color ?? "#667085" }}
                 />
                 <div className="flex-1 min-w-0">
-                  <p className="font-arabic font-bold text-slate-900 truncate">{cat.name}</p>
-                  <p className="text-xs text-slate-500 font-arabic">
+                  <p className="font-arabic font-bold text-ink-900 truncate">{cat.name}</p>
+                  <p className="text-xs text-ink-500 font-arabic">
                     {categoryItemCounts[cat.id] ?? 0} صنف
                   </p>
                 </div>
                 <div className="flex gap-1">
                   <button
                     onClick={() => openEditCategory(cat)}
-                    className="p-2 rounded-lg text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 transition-colors"
+                    className="p-2 rounded-lg text-ink-500 hover:text-saffron-600 hover:bg-saffron-50 transition-colors"
                     title="تعديل"
                   >
                     ✏️
@@ -906,7 +906,7 @@ export default function MenuPage() {
                       }
                       setDeleteCategoryId(cat.id);
                     }}
-                    className="p-2 rounded-lg text-slate-500 hover:text-red-500 hover:bg-red-50 transition-colors"
+                    className="p-2 rounded-lg text-ink-500 hover:text-red-500 hover:bg-red-50 transition-colors"
                     title="حذف"
                   >
                     🗑️
@@ -915,7 +915,7 @@ export default function MenuPage() {
               </div>
             ))}
             {categories.length === 0 && (
-              <div className="col-span-full text-center text-slate-500 font-arabic py-8">
+              <div className="col-span-full text-center text-ink-500 font-arabic py-8">
                 لا توجد تصنيفات
               </div>
             )}
@@ -933,8 +933,8 @@ export default function MenuPage() {
                 onClick={() => setOfferSubTab(st)}
                 className={`px-4 py-2 rounded-lg font-arabic font-medium text-sm transition-colors ${
                   offerSubTab === st
-                    ? "bg-emerald-600 text-white shadow-sm"
-                    : "text-slate-500 hover:text-emerald-600 hover:bg-white"
+                    ? "bg-saffron-600 text-white shadow-sm"
+                    : "text-ink-500 hover:text-saffron-600 hover:bg-white"
                 }`}
               >
                 {st === "combos" ? "الوجبات المجمعة" : "ساعة السعادة"}
@@ -959,11 +959,11 @@ export default function MenuPage() {
                     className="bg-white rounded-2xl shadow-sm p-4 space-y-3"
                   >
                     <div className="flex items-center justify-between">
-                      <h3 className="font-arabic font-bold text-slate-900">{combo.name}</h3>
+                      <h3 className="font-arabic font-bold text-ink-900">{combo.name}</h3>
                       <button
                         onClick={() => toggleComboStatus(combo)}
                         className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                          combo.is_active ? "bg-emerald-600" : "bg-slate-300"
+                          combo.is_active ? "bg-saffron-600" : "bg-ink-300"
                         }`}
                       >
                         <span
@@ -974,14 +974,14 @@ export default function MenuPage() {
                       </button>
                     </div>
                     <div className="flex items-center justify-between text-sm">
-                      <span className="text-slate-400 font-arabic">
+                      <span className="text-ink-400 font-arabic">
                         السعر المجمع:{" "}
-                        <span className="font-mono text-emerald-600 font-bold">
+                        <span className="font-mono text-saffron-600 font-bold">
                           {fromCents(combo.bundle_price_cents)}
                         </span>
                       </span>
                       {savings > 0 && (
-                        <span className="text-xs font-arabic text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
+                        <span className="text-xs font-arabic text-saffron-600 bg-saffron-50 px-2 py-0.5 rounded-full">
                           وفر {savings}%
                         </span>
                       )}
@@ -990,7 +990,7 @@ export default function MenuPage() {
                       {combo.items.map((ci, idx) => (
                         <div
                           key={idx}
-                          className="flex justify-between text-xs text-slate-400"
+                          className="flex justify-between text-xs text-ink-400"
                         >
                           <span className="font-arabic">
                             {ci.name} × {ci.quantity}
@@ -1003,7 +1003,7 @@ export default function MenuPage() {
                     </div>
                     <button
                       onClick={() => openEditCombo(combo)}
-                      className="text-xs font-arabic text-emerald-600 hover:underline"
+                      className="text-xs font-arabic text-saffron-600 hover:underline"
                     >
                       ✏️ تعديل
                     </button>
@@ -1011,7 +1011,7 @@ export default function MenuPage() {
                 );
               })}
               {combos.length === 0 && (
-                <div className="col-span-full text-center text-slate-500 font-arabic py-8">
+                <div className="col-span-full text-center text-ink-500 font-arabic py-8">
                   لا توجد وجبات مجمعة
                 </div>
               )}
@@ -1022,7 +1022,7 @@ export default function MenuPage() {
             <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-slate-200 text-slate-400 font-arabic">
+                  <tr className="border-b border-ink-200 text-ink-400 font-arabic">
                     <th className="text-right p-3 font-medium">الصنف</th>
                     <th className="text-right p-3 font-medium">الخصم</th>
                     <th className="text-right p-3 font-medium">اليوم</th>
@@ -1036,24 +1036,24 @@ export default function MenuPage() {
                   {happyHourRules.map((rule) => (
                     <tr
                       key={rule.id}
-                      className="border-b border-slate-200 hover:bg-white"
+                      className="border-b border-ink-200 hover:bg-white"
                     >
-                      <td className="p-3 font-arabic text-slate-900">
+                      <td className="p-3 font-arabic text-ink-900">
                         {rule.menu_item_name}
                       </td>
                       <td className="p-3 font-mono text-amber-600 font-bold">
                         {rule.discount_percent}%
                       </td>
-                      <td className="p-3 font-arabic text-slate-900">
+                      <td className="p-3 font-arabic text-ink-900">
                         {DAY_NAMES[rule.day_of_week] ?? rule.day_of_week}
                       </td>
-                      <td className="p-3 font-mono text-slate-500">{rule.start_time}</td>
-                      <td className="p-3 font-mono text-slate-500">{rule.end_time}</td>
+                      <td className="p-3 font-mono text-ink-500">{rule.start_time}</td>
+                      <td className="p-3 font-mono text-ink-500">{rule.end_time}</td>
                       <td className="p-3 text-center">
                         <button
                           onClick={() => toggleHappyHourStatus(rule)}
                           className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                            rule.is_active ? "bg-emerald-600" : "bg-slate-300"
+                            rule.is_active ? "bg-saffron-600" : "bg-ink-300"
                           }`}
                         >
                           <span
@@ -1067,7 +1067,7 @@ export default function MenuPage() {
                         <div className="flex items-center justify-center gap-2">
                           <button
                             onClick={() => openEditHappyHour(rule)}
-                            className="px-3 py-1 rounded-lg text-xs font-arabic text-emerald-600 hover:bg-emerald-50 transition-colors"
+                            className="px-3 py-1 rounded-lg text-xs font-arabic text-saffron-600 hover:bg-saffron-50 transition-colors"
                           >
                             ✏️ تعديل
                           </button>
@@ -1083,7 +1083,7 @@ export default function MenuPage() {
                   ))}
                   {happyHourRules.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="p-6 text-center text-slate-500 font-arabic">
+                      <td colSpan={7} className="p-6 text-center text-ink-500 font-arabic">
                         لا توجد قواعد ساعة سعيدة
                       </td>
                     </tr>
@@ -1101,19 +1101,19 @@ export default function MenuPage() {
       {showItemModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-slate-900">
+            <h2 className="text-lg font-bold font-arabic text-ink-900">
               {editItemId ? "تعديل صنف" : "إضافة صنف"}
             </h2>
 
             <div className="space-y-3">
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">الاسم *</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">الاسم *</label>
                 <input
                   type="text"
                   value={itemForm.name}
                   onChange={(e) => setItemForm((p) => ({ ...p, name: e.target.value }))}
                   maxLength={100}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 />
                 {itemErrors.name && (
                   <p className="text-xs text-red-500 mt-1 font-arabic">{itemErrors.name}</p>
@@ -1121,11 +1121,11 @@ export default function MenuPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">التصنيف *</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">التصنيف *</label>
                 <select
                   value={itemForm.category_id}
                   onChange={(e) => setItemForm((p) => ({ ...p, category_id: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 >
                   <option value="">اختر تصنيف</option>
                   {categories.map((cat) => (
@@ -1141,14 +1141,14 @@ export default function MenuPage() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm font-arabic text-slate-900 mb-1">السعر *</label>
+                  <label className="block text-sm font-arabic text-ink-900 mb-1">السعر *</label>
                   <input
                     type="number"
                     min="0"
                     step="0.01"
                     value={itemForm.price_cents}
                     onChange={(e) => setItemForm((p) => ({ ...p, price_cents: e.target.value }))}
-                    className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                    className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                   />
                   {itemErrors.price_cents && (
                     <p className="text-xs text-red-500 mt-1 font-arabic">
@@ -1157,14 +1157,14 @@ export default function MenuPage() {
                   )}
                 </div>
                 <div>
-                  <label className="block text-sm font-arabic text-slate-900 mb-1">التكلفة</label>
+                  <label className="block text-sm font-arabic text-ink-900 mb-1">التكلفة</label>
                   <input
                     type="number"
                     min="0"
                     step="0.01"
                     value={itemForm.cost_cents}
                     onChange={(e) => setItemForm((p) => ({ ...p, cost_cents: e.target.value }))}
-                    className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                    className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                   />
                   {itemErrors.cost_cents && (
                     <p className="text-xs text-red-500 mt-1 font-arabic">
@@ -1175,14 +1175,14 @@ export default function MenuPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">
+                <label className="block text-sm font-arabic text-ink-900 mb-1">
                   الباركود (اختياري)
                 </label>
                 <input
                   type="text"
                   value={itemForm.barcode}
                   onChange={(e) => setItemForm((p) => ({ ...p, barcode: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                 />
                 {itemErrors.barcode && (
                   <p className="text-xs text-red-500 mt-1 font-arabic">{itemErrors.barcode}</p>
@@ -1190,24 +1190,24 @@ export default function MenuPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">
+                <label className="block text-sm font-arabic text-ink-900 mb-1">
                   رابط الصورة (اختياري)
                 </label>
                 <input
                   type="text"
                   value={itemForm.image_path}
                   onChange={(e) => setItemForm((p) => ({ ...p, image_path: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">الوصف</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">الوصف</label>
                 <textarea
                   value={itemForm.description}
                   onChange={(e) => setItemForm((p) => ({ ...p, description: e.target.value }))}
                   rows={3}
-                  className="w-full px-4 py-2 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500 resize-none"
+                  className="w-full px-4 py-2 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500 resize-none"
                 />
               </div>
 
@@ -1219,14 +1219,14 @@ export default function MenuPage() {
             <div className="flex gap-3 justify-end pt-2">
               <button
                 onClick={() => setShowItemModal(false)}
-                className="h-10 px-6 rounded-xl bg-white text-slate-900 font-arabic text-sm hover:bg-slate-200 transition-colors"
+                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={saveItem}
                 disabled={savingItem}
-                className="h-10 px-6 rounded-xl bg-emerald-600 text-white font-arabic text-sm hover:bg-emerald-700 transition-colors disabled:opacity-50"
+                className="h-10 px-6 rounded-xl bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 {savingItem ? "جاري الحفظ..." : "حفظ"}
               </button>
@@ -1239,14 +1239,14 @@ export default function MenuPage() {
       {deleteItemId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-slate-900">تأكيد الحذف</h2>
-            <p className="text-sm font-arabic text-slate-500">
+            <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد الحذف</h2>
+            <p className="text-sm font-arabic text-ink-500">
               هل أنت متأكد من حذف هذا الصنف؟
             </p>
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setDeleteItemId(null)}
-                className="h-10 px-6 rounded-xl bg-white text-slate-900 font-arabic text-sm hover:bg-slate-200 transition-colors"
+                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
@@ -1265,19 +1265,19 @@ export default function MenuPage() {
       {showCategoryModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-slate-900">
+            <h2 className="text-lg font-bold font-arabic text-ink-900">
               {editCategoryId ? "تعديل تصنيف" : "إضافة تصنيف"}
             </h2>
 
             <div className="space-y-3">
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">الاسم *</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">الاسم *</label>
                 <input
                   type="text"
                   value={categoryForm.name}
                   onChange={(e) => setCategoryForm((p) => ({ ...p, name: e.target.value }))}
                   maxLength={100}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 />
                 {categoryErrors.name && (
                   <p className="text-xs text-red-500 mt-1 font-arabic">{categoryErrors.name}</p>
@@ -1285,20 +1285,20 @@ export default function MenuPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">اللون</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">اللون</label>
                 <div className="flex gap-3 items-center">
                   <input
                     type="color"
                     value={categoryForm.color}
                     onChange={(e) => setCategoryForm((p) => ({ ...p, color: e.target.value }))}
-                    className="w-10 h-10 rounded-lg border border-slate-200 cursor-pointer"
+                    className="w-10 h-10 rounded-lg border border-ink-200 cursor-pointer"
                   />
                   <input
                     type="text"
                     value={categoryForm.color}
                     onChange={(e) => setCategoryForm((p) => ({ ...p, color: e.target.value }))}
-                    placeholder="#10b981"
-                    className="flex-1 h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                    placeholder="#667085"
+                    className="flex-1 h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                   />
                 </div>
                 {categoryErrors.color && (
@@ -1307,13 +1307,13 @@ export default function MenuPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">ترتيب الفرز</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">ترتيب الفرز</label>
                 <input
                   type="number"
                   min="0"
                   value={categoryForm.sort_order}
                   onChange={(e) => setCategoryForm((p) => ({ ...p, sort_order: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                 />
                 {categoryErrors.sort_order && (
                   <p className="text-xs text-red-500 mt-1 font-arabic">
@@ -1323,14 +1323,14 @@ export default function MenuPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">
+                <label className="block text-sm font-arabic text-ink-900 mb-1">
                   رابط الصورة (اختياري)
                 </label>
                 <input
                   type="text"
                   value={categoryForm.image_path}
                   onChange={(e) => setCategoryForm((p) => ({ ...p, image_path: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                 />
               </div>
 
@@ -1342,14 +1342,14 @@ export default function MenuPage() {
             <div className="flex gap-3 justify-end pt-2">
               <button
                 onClick={() => setShowCategoryModal(false)}
-                className="h-10 px-6 rounded-xl bg-white text-slate-900 font-arabic text-sm hover:bg-slate-200 transition-colors"
+                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={saveCategory}
                 disabled={savingCategory}
-                className="h-10 px-6 rounded-xl bg-emerald-600 text-white font-arabic text-sm hover:bg-emerald-700 transition-colors disabled:opacity-50"
+                className="h-10 px-6 rounded-xl bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 {savingCategory ? "جاري الحفظ..." : "حفظ"}
               </button>
@@ -1362,14 +1362,14 @@ export default function MenuPage() {
       {deleteCategoryId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-slate-900">تأكيد الحذف</h2>
-            <p className="text-sm font-arabic text-slate-500">
+            <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد الحذف</h2>
+            <p className="text-sm font-arabic text-ink-500">
               هل أنت متأكد من حذف هذا التصنيف؟
             </p>
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setDeleteCategoryId(null)}
-                className="h-10 px-6 rounded-xl bg-white text-slate-900 font-arabic text-sm hover:bg-slate-200 transition-colors"
+                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
@@ -1388,19 +1388,19 @@ export default function MenuPage() {
       {showComboModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-slate-900">
+            <h2 className="text-lg font-bold font-arabic text-ink-900">
               {editComboId ? "تعديل وجبة مجمعة" : "إضافة وجبة مجمعة"}
             </h2>
 
             <div className="space-y-3">
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">الاسم *</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">الاسم *</label>
                 <input
                   type="text"
                   value={comboForm.name}
                   onChange={(e) => setComboForm((p) => ({ ...p, name: e.target.value }))}
                   maxLength={100}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 />
                 {comboErrors.name && (
                   <p className="text-xs text-red-500 mt-1 font-arabic">{comboErrors.name}</p>
@@ -1408,7 +1408,7 @@ export default function MenuPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">
+                <label className="block text-sm font-arabic text-ink-900 mb-1">
                   السعر المجمع *
                 </label>
                 <input
@@ -1419,7 +1419,7 @@ export default function MenuPage() {
                   onChange={(e) =>
                     setComboForm((p) => ({ ...p, bundle_price_cents: e.target.value }))
                   }
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                 />
                 {comboErrors.bundle_price_cents && (
                   <p className="text-xs text-red-500 mt-1 font-arabic">
@@ -1430,10 +1430,10 @@ export default function MenuPage() {
 
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm font-arabic text-slate-900">الأصناف *</label>
+                  <label className="text-sm font-arabic text-ink-900">الأصناف *</label>
                   <button
                     onClick={addComboItemRow}
-                    className="text-xs font-arabic text-emerald-600 hover:underline"
+                    className="text-xs font-arabic text-saffron-600 hover:underline"
                   >
                     + إضافة صنف
                   </button>
@@ -1447,7 +1447,7 @@ export default function MenuPage() {
                       <select
                         value={item.menu_item_id}
                         onChange={(e) => updateComboItem(idx, "menu_item_id", e.target.value)}
-                        className="flex-1 h-10 px-3 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                        className="flex-1 h-10 px-3 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                       >
                         <option value="">اختر صنف</option>
                         {menuItems.map((mi) => (
@@ -1461,11 +1461,11 @@ export default function MenuPage() {
                         min="1"
                         value={item.quantity}
                         onChange={(e) => updateComboItem(idx, "quantity", e.target.value)}
-                        className="w-20 h-10 px-3 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                        className="w-20 h-10 px-3 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                       />
                       <button
                         onClick={() => removeComboItem(idx)}
-                        className="h-10 px-2 text-slate-500 hover:text-red-500 transition-colors"
+                        className="h-10 px-2 text-ink-500 hover:text-red-500 transition-colors"
                       >
                         ✕
                       </button>
@@ -1482,14 +1482,14 @@ export default function MenuPage() {
             <div className="flex gap-3 justify-end pt-2">
               <button
                 onClick={() => setShowComboModal(false)}
-                className="h-10 px-6 rounded-xl bg-white text-slate-900 font-arabic text-sm hover:bg-slate-200 transition-colors"
+                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={saveCombo}
                 disabled={savingCombo}
-                className="h-10 px-6 rounded-xl bg-emerald-600 text-white font-arabic text-sm hover:bg-emerald-700 transition-colors disabled:opacity-50"
+                className="h-10 px-6 rounded-xl bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 {savingCombo ? "جاري الحفظ..." : "حفظ"}
               </button>
@@ -1502,17 +1502,17 @@ export default function MenuPage() {
       {showHappyHourModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-slate-900">
+            <h2 className="text-lg font-bold font-arabic text-ink-900">
               {editHappyHourId ? "تعديل قاعدة ساعة سعيدة" : "إضافة قاعدة ساعة سعيدة"}
             </h2>
 
             <div className="space-y-3">
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">الصنف *</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">الصنف *</label>
                 <select
                   value={happyHourForm.menu_item_id}
                   onChange={(e) => setHappyHourForm((p) => ({ ...p, menu_item_id: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 >
                   <option value="">اختر صنف</option>
                   {menuItems.map((mi) => (
@@ -1529,7 +1529,7 @@ export default function MenuPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">
+                <label className="block text-sm font-arabic text-ink-900 mb-1">
                   نسبة الخصم % *
                 </label>
                 <input
@@ -1540,7 +1540,7 @@ export default function MenuPage() {
                   onChange={(e) =>
                     setHappyHourForm((p) => ({ ...p, discount_percent: e.target.value }))
                   }
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                 />
                 {happyHourErrors.discount_percent && (
                   <p className="text-xs text-red-500 mt-1 font-arabic">
@@ -1550,13 +1550,13 @@ export default function MenuPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">اليوم *</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">اليوم *</label>
                 <select
                   value={happyHourForm.day_of_week}
                   onChange={(e) =>
                     setHappyHourForm((p) => ({ ...p, day_of_week: e.target.value }))
                   }
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 >
                   {DAY_NAMES.map((name, idx) => (
                     <option key={idx} value={idx}>
@@ -1573,7 +1573,7 @@ export default function MenuPage() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm font-arabic text-slate-900 mb-1">
+                  <label className="block text-sm font-arabic text-ink-900 mb-1">
                     وقت البداية *
                   </label>
                   <input
@@ -1582,7 +1582,7 @@ export default function MenuPage() {
                     onChange={(e) =>
                       setHappyHourForm((p) => ({ ...p, start_time: e.target.value }))
                     }
-                    className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                    className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                   />
                   {happyHourErrors.start_time && (
                     <p className="text-xs text-red-500 mt-1 font-arabic">
@@ -1591,7 +1591,7 @@ export default function MenuPage() {
                   )}
                 </div>
                 <div>
-                  <label className="block text-sm font-arabic text-slate-900 mb-1">
+                  <label className="block text-sm font-arabic text-ink-900 mb-1">
                     وقت النهاية *
                   </label>
                   <input
@@ -1600,7 +1600,7 @@ export default function MenuPage() {
                     onChange={(e) =>
                       setHappyHourForm((p) => ({ ...p, end_time: e.target.value }))
                     }
-                    className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                    className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                   />
                   {happyHourErrors.end_time && (
                     <p className="text-xs text-red-500 mt-1 font-arabic">
@@ -1611,13 +1611,13 @@ export default function MenuPage() {
               </div>
 
               <div className="flex items-center gap-3">
-                <label className="text-sm font-arabic text-slate-900">نشط</label>
+                <label className="text-sm font-arabic text-ink-900">نشط</label>
                 <button
                   onClick={() =>
                     setHappyHourForm((p) => ({ ...p, is_active: !p.is_active }))
                   }
                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                    happyHourForm.is_active ? "bg-emerald-600" : "bg-slate-300"
+                    happyHourForm.is_active ? "bg-saffron-600" : "bg-ink-300"
                   }`}
                 >
                   <span
@@ -1636,14 +1636,14 @@ export default function MenuPage() {
             <div className="flex gap-3 justify-end pt-2">
               <button
                 onClick={() => setShowHappyHourModal(false)}
-                className="h-10 px-6 rounded-xl bg-white text-slate-900 font-arabic text-sm hover:bg-slate-200 transition-colors"
+                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={saveHappyHour}
                 disabled={savingHappyHour}
-                className="h-10 px-6 rounded-xl bg-emerald-600 text-white font-arabic text-sm hover:bg-emerald-700 transition-colors disabled:opacity-50"
+                className="h-10 px-6 rounded-xl bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 {savingHappyHour ? "جاري الحفظ..." : "حفظ"}
               </button>

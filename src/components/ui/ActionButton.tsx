@@ -11,10 +11,10 @@ interface Props {
 }
 
 const variantStyles = {
-  primary: "bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800",
-  secondary: "bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 active:bg-slate-100",
+  primary: "bg-saffron-600 text-white hover:bg-saffron-700 active:bg-saffron-800",
+  secondary: "bg-white text-ink-700 border border-ink-200 hover:bg-ink-50 active:bg-ink-100",
   danger: "bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 active:bg-red-200",
-  ghost: "text-slate-500 hover:text-slate-700 hover:bg-slate-100",
+  ghost: "text-ink-500 hover:text-ink-700 hover:bg-ink-100",
 };
 
 export default function ActionButton({

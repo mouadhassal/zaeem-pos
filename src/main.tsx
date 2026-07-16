@@ -7,6 +7,13 @@ import { checkIntegrity, applyPragmas } from "./db/corruption";
 import { createBackup, startAutoBackup } from "./lib/backup";
 import { startMemoryMonitoring, measureStartup, startFpsMonitor } from "./lib/performance";
 import { logger } from "./lib/logger";
+import "@fontsource/tajawal/400.css";
+import "@fontsource/tajawal/500.css";
+import "@fontsource/tajawal/700.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
+import "@fontsource/ibm-plex-mono/600.css";
+import "@fontsource/ibm-plex-mono/700.css";
 import "./index.css";
 
 const startupEnd = measureStartup();

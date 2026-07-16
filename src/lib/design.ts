@@ -3,13 +3,13 @@ import type { LicenseStatus } from "@zaeem/types";
 export function getLicenseStatusColor(status: LicenseStatus): string {
   switch (status) {
     case "active":
-      return "#10b981";
+      return "#12A150";
     case "trial":
-      return "#f59e0b";
+      return "#E8A317";
     case "expired":
-      return "#ef4444";
+      return "#E03B3B";
     case "suspended":
-      return "#6b7280";
+      return "#667085";
   }
 }
 

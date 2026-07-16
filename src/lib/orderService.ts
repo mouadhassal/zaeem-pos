@@ -305,6 +305,7 @@ export async function retrieveHeldOrder(
   orderId: string
 ): Promise<{
   items: {
+    dbItemId: string;
     menuItemId: string;
     name: string;
     quantity: number;
@@ -350,6 +351,7 @@ export async function retrieveHeldOrder(
       .executeTakeFirst();
 
     items.push({
+      dbItemId: oi.id,
       menuItemId: oi.menu_item_id,
       name: menuItem?.name ?? "",
       quantity: oi.quantity,
@@ -363,7 +365,7 @@ export async function retrieveHeldOrder(
   }
 
   const ret: {
-    items: { menuItemId: string; name: string; quantity: number; unitPriceCents: number; notes: string; modifiers: { name: string; priceCents: number }[] }[];
+    items: { dbItemId: string; menuItemId: string; name: string; quantity: number; unitPriceCents: number; notes: string; modifiers: { name: string; priceCents: number }[] }[];
     customerName?: string; customerPhone?: string; deliveryAddress?: string;
   } = { items };
   if (order.customer_name) ret.customerName = order.customer_name;

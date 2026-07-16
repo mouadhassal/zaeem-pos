@@ -151,7 +151,7 @@ export default function BranchesPage() {
 
       const userCount = (
         await db
-          .selectFrom("users")
+          .selectFrom("staff")
           .select(db.fn.count<number>("id").as("count"))
           .executeTakeFirst()
       )?.count ?? 0;
@@ -272,7 +272,7 @@ export default function BranchesPage() {
           .orderBy("name", "asc")
           .execute(),
         db
-          .selectFrom("users")
+          .selectFrom("staff")
           .select(db.fn.count<number>("id").as("count"))
           .executeTakeFirst(),
         db
@@ -317,7 +317,7 @@ export default function BranchesPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full text-slate-500 font-arabic">
+      <div className="flex items-center justify-center h-full text-ink-500 font-arabic">
         جاري التحميل...
       </div>
     );
@@ -335,10 +335,10 @@ export default function BranchesPage() {
     <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-slate-900">إدارة الفروع</h1>
+        <h1 className="text-xl font-bold text-ink-900">إدارة الفروع</h1>
         <button
           onClick={openAdd}
-          className="h-10 px-4 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors"
+          className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
         >
           + إضافة فرع
         </button>
@@ -356,7 +356,7 @@ export default function BranchesPage() {
             >
               {/* Name & Status */}
               <div className="flex items-center justify-between">
-                <h2 className="text-lg font-bold text-slate-900 font-arabic">{b.name}</h2>
+                <h2 className="text-lg font-bold text-ink-900 font-arabic">{b.name}</h2>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={(e) => { e.stopPropagation(); openEdit(b); }}
@@ -369,7 +369,7 @@ export default function BranchesPage() {
                     onClick={(e) => { e.stopPropagation(); toggleStatus(b); }}
                     className={`px-3 py-1 rounded-full text-xs font-arabic font-bold ${
                       b.is_active
-                        ? "bg-emerald-50 text-emerald-600"
+                        ? "bg-saffron-50 text-saffron-600"
                         : "bg-red-50 text-red-700"
                     }`}
                   >
@@ -379,7 +379,7 @@ export default function BranchesPage() {
               </div>
 
               {/* Address & Phone */}
-              <div className="space-y-1 text-sm text-slate-400 font-arabic">
+              <div className="space-y-1 text-sm text-ink-400 font-arabic">
                 {b.address && <p>{b.address}{b.city ? `، ${b.city}` : ""}</p>}
                 {b.phone && <p className="font-mono" dir="ltr">{b.phone}</p>}
               </div>
@@ -387,27 +387,27 @@ export default function BranchesPage() {
               {/* Stats Row */}
               <div className="grid grid-cols-2 gap-2">
                 <div className="bg-white rounded-xl p-2.5 text-center">
-                  <p className="text-lg font-bold text-slate-900 font-mono">{s?.todayOrders ?? 0}</p>
-                  <p className="text-[10px] text-slate-500 font-arabic">الطلبات اليوم</p>
+                  <p className="text-lg font-bold text-ink-900 font-mono">{s?.todayOrders ?? 0}</p>
+                  <p className="text-[10px] text-ink-500 font-arabic">الطلبات اليوم</p>
                 </div>
                 <div className="bg-white rounded-xl p-2.5 text-center">
-                  <p className="text-lg font-bold text-emerald-600 font-mono">{s?.todayRevenue ?? 0}</p>
-                  <p className="text-[10px] text-slate-500 font-arabic">الإيرادات اليوم</p>
+                  <p className="text-lg font-bold text-saffron-600 font-mono">{s?.todayRevenue ?? 0}</p>
+                  <p className="text-[10px] text-ink-500 font-arabic">الإيرادات اليوم</p>
                 </div>
                 <div className="bg-white rounded-xl p-2.5 text-center">
-                  <p className="text-lg font-bold text-slate-900 font-mono">{b.max_tables}</p>
-                  <p className="text-[10px] text-slate-500 font-arabic">عدد الطاولات</p>
+                  <p className="text-lg font-bold text-ink-900 font-mono">{b.max_tables}</p>
+                  <p className="text-[10px] text-ink-500 font-arabic">عدد الطاولات</p>
                 </div>
                 <div className="bg-white rounded-xl p-2.5 text-center">
-                  <p className="text-lg font-bold text-slate-900 font-mono">{s?.staffCount ?? 0}</p>
-                  <p className="text-[10px] text-slate-500 font-arabic">عدد الموظفين</p>
+                  <p className="text-lg font-bold text-ink-900 font-mono">{s?.staffCount ?? 0}</p>
+                  <p className="text-[10px] text-ink-500 font-arabic">عدد الموظفين</p>
                 </div>
               </div>
             </div>
           );
         })}
         {branches.length === 0 && (
-          <div className="col-span-full text-center text-slate-500 font-arabic py-12">
+          <div className="col-span-full text-center text-ink-500 font-arabic py-12">
             لا توجد فروع
           </div>
         )}
@@ -417,62 +417,62 @@ export default function BranchesPage() {
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-slate-900">
+            <h2 className="text-lg font-bold font-arabic text-ink-900">
               {editId ? "تعديل فرع" : "إضافة فرع"}
             </h2>
 
             <div className="space-y-3">
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">الاسم *</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">الاسم *</label>
                 <input
                   type="text"
                   value={form.name}
                   onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
                   maxLength={100}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 />
                 {formErrors.name && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.name}</p>}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm font-arabic text-slate-900 mb-1">المدينة</label>
+                  <label className="block text-sm font-arabic text-ink-900 mb-1">المدينة</label>
                   <input
                     type="text"
                     value={form.city}
                     onChange={(e) => setForm((p) => ({ ...p, city: e.target.value }))}
-                    className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                    className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-arabic text-slate-900 mb-1">رقم الهاتف</label>
+                  <label className="block text-sm font-arabic text-ink-900 mb-1">رقم الهاتف</label>
                   <input
                     type="text"
                     value={form.phone}
                     onChange={(e) => setForm((p) => ({ ...p, phone: e.target.value }))}
-                    className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                    className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                     dir="ltr"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">العنوان</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">العنوان</label>
                 <input
                   type="text"
                   value={form.address}
                   onChange={(e) => setForm((p) => ({ ...p, address: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm font-arabic text-slate-900 mb-1">المنطقة الزمنية *</label>
+                  <label className="block text-sm font-arabic text-ink-900 mb-1">المنطقة الزمنية *</label>
                   <select
                     value={form.timezone}
                     onChange={(e) => setForm((p) => ({ ...p, timezone: e.target.value }))}
-                    className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                    className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                   >
                     {TIMEZONES.map((tz) => (
                       <option key={tz} value={tz}>{tz}</option>
@@ -481,11 +481,11 @@ export default function BranchesPage() {
                   {formErrors.timezone && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.timezone}</p>}
                 </div>
                 <div>
-                  <label className="block text-sm font-arabic text-slate-900 mb-1">العملة *</label>
+                  <label className="block text-sm font-arabic text-ink-900 mb-1">العملة *</label>
                   <select
                     value={form.currency}
                     onChange={(e) => setForm((p) => ({ ...p, currency: e.target.value }))}
-                    className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                    className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                   >
                     {CURRENCIES.map((c) => (
                       <option key={c} value={c}>{c}</option>
@@ -497,25 +497,25 @@ export default function BranchesPage() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm font-arabic text-slate-900 mb-1">نسبة الضريبة (بالنقاط)</label>
+                  <label className="block text-sm font-arabic text-ink-900 mb-1">نسبة الضريبة (بالنقاط)</label>
                   <input
                     type="number"
                     min="0"
                     value={form.tax_rate_cents}
                     onChange={(e) => setForm((p) => ({ ...p, tax_rate_cents: e.target.value }))}
-                    className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                    className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                   />
-                  <p className="text-[10px] text-slate-500 mt-0.5 font-arabic">مثال: 1500 = 15%</p>
+                  <p className="text-[10px] text-ink-500 mt-0.5 font-arabic">مثال: 1500 = 15%</p>
                   {formErrors.tax_rate_cents && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.tax_rate_cents}</p>}
                 </div>
                 <div>
-                  <label className="block text-sm font-arabic text-slate-900 mb-1">عدد الطاولات *</label>
+                  <label className="block text-sm font-arabic text-ink-900 mb-1">عدد الطاولات *</label>
                   <input
                     type="number"
                     min="1"
                     value={form.max_tables}
                     onChange={(e) => setForm((p) => ({ ...p, max_tables: e.target.value }))}
-                    className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                    className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                   />
                   {formErrors.max_tables && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.max_tables}</p>}
                 </div>
@@ -529,14 +529,14 @@ export default function BranchesPage() {
             <div className="flex gap-3 justify-end pt-2">
               <button
                 onClick={() => setShowModal(false)}
-                className="h-10 px-6 rounded-xl bg-white text-slate-900 font-arabic text-sm hover:bg-slate-200 transition-colors"
+                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={save}
                 disabled={saving}
-                className="h-10 px-6 rounded-xl bg-emerald-600 text-white font-arabic text-sm hover:bg-emerald-700 transition-colors disabled:opacity-50"
+                className="h-10 px-6 rounded-xl bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 {saving ? "جاري الحفظ..." : "حفظ"}
               </button>
@@ -554,13 +554,13 @@ export default function BranchesPage() {
               {/* Header */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <h2 className="text-lg font-bold font-arabic text-slate-900">
+                  <h2 className="text-lg font-bold font-arabic text-ink-900">
                     {detailBranch.name}
                   </h2>
                   <span
                     className={`px-2 py-0.5 rounded-full text-xs font-arabic font-bold ${
                       detailBranch.is_active
-                        ? "bg-emerald-50 text-emerald-600"
+                        ? "bg-saffron-50 text-saffron-600"
                         : "bg-red-50 text-red-700"
                     }`}
                   >
@@ -569,7 +569,7 @@ export default function BranchesPage() {
                 </div>
                 <button
                   onClick={closeDetail}
-                  className="p-2 rounded-lg text-slate-500 hover:bg-white transition-colors"
+                  className="p-2 rounded-lg text-ink-500 hover:bg-white transition-colors"
                 >
                   ✕
                 </button>
@@ -577,42 +577,42 @@ export default function BranchesPage() {
 
               {/* Branch Info (editable) */}
               <div className="bg-white rounded-2xl p-4 space-y-3">
-                <h3 className="font-bold font-arabic text-sm text-slate-900">معلومات الفرع</h3>
+                <h3 className="font-bold font-arabic text-sm text-ink-900">معلومات الفرع</h3>
                 <div className="space-y-2">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 font-arabic w-20">الاسم</span>
+                    <span className="text-xs text-ink-500 font-arabic w-20">الاسم</span>
                     <input
                       type="text"
                       value={detailBranch.name}
                       onChange={(e) => updateDetailField("name", e.target.value)}
-                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 font-arabic w-20">العنوان</span>
+                    <span className="text-xs text-ink-500 font-arabic w-20">العنوان</span>
                     <input
                       type="text"
                       value={detailBranch.address ?? ""}
                       onChange={(e) => updateDetailField("address", e.target.value)}
-                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 font-arabic w-20">المدينة</span>
+                    <span className="text-xs text-ink-500 font-arabic w-20">المدينة</span>
                     <input
                       type="text"
                       value={detailBranch.city ?? ""}
                       onChange={(e) => updateDetailField("city", e.target.value)}
-                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 font-arabic w-20">الهاتف</span>
+                    <span className="text-xs text-ink-500 font-arabic w-20">الهاتف</span>
                     <input
                       type="text"
                       value={detailBranch.phone ?? ""}
                       onChange={(e) => updateDetailField("phone", e.target.value)}
-                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                       dir="ltr"
                     />
                   </div>
@@ -620,40 +620,40 @@ export default function BranchesPage() {
               </div>
 
               {/* Sales Summary */}
-              <div className="bg-emerald-50 rounded-2xl p-4 space-y-2">
-                <h3 className="font-bold font-arabic text-sm text-emerald-700">ملخص المبيعات اليوم</h3>
-                <p className="text-3xl font-bold text-emerald-600 font-mono">
+              <div className="bg-saffron-50 rounded-2xl p-4 space-y-2">
+                <h3 className="font-bold font-arabic text-sm text-saffron-700">ملخص المبيعات اليوم</h3>
+                <p className="text-3xl font-bold text-saffron-600 font-mono">
                   {detailTodaySales.toFixed(2)}
                 </p>
-                <p className="text-xs text-emerald-500 font-arabic">إجمالي المبيعات</p>
+                <p className="text-xs text-saffron-500 font-arabic">إجمالي المبيعات</p>
               </div>
 
               {/* Staff Count */}
               <div className="bg-white rounded-2xl p-4 flex items-center justify-between shadow-sm">
-                <span className="font-arabic text-slate-900">عدد الموظفين</span>
-                <span className="text-2xl font-bold text-slate-900 font-mono">{detailStaffCount}</span>
+                <span className="font-arabic text-ink-900">عدد الموظفين</span>
+                <span className="text-2xl font-bold text-ink-900 font-mono">{detailStaffCount}</span>
               </div>
 
               {/* Terminals */}
               <div className="bg-white rounded-2xl p-4 space-y-3 shadow-sm">
-                <h3 className="font-bold font-arabic text-sm text-slate-900">الأجهزة</h3>
+                <h3 className="font-bold font-arabic text-sm text-ink-900">الأجهزة</h3>
                 {detailTerminals.length > 0 ? (
                   <div className="space-y-2">
                     {detailTerminals.map((t) => (
                       <div
                         key={t.id}
-                        className="flex items-center justify-between py-2 border-b border-slate-200 last:border-0"
+                        className="flex items-center justify-between py-2 border-b border-ink-200 last:border-0"
                       >
                         <div className="space-y-0.5">
-                          <p className="text-sm font-arabic text-slate-900">{t.name}</p>
-                          <p className="text-[10px] text-slate-500 font-mono">
+                          <p className="text-sm font-arabic text-ink-900">{t.name}</p>
+                          <p className="text-[10px] text-ink-500 font-mono">
                             v{t.version} · آخر مزامنة: {formatDate(t.last_sync)}
                           </p>
                         </div>
                         <span
                           className={`px-2 py-0.5 rounded-full text-[10px] font-arabic ${
                             t.status === "ACTIVE"
-                              ? "bg-emerald-50 text-emerald-600"
+                              ? "bg-saffron-50 text-saffron-600"
                               : t.status === "OFFLINE"
                               ? "bg-amber-50 text-amber-700"
                               : "bg-red-50 text-red-700"
@@ -665,7 +665,7 @@ export default function BranchesPage() {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-xs text-slate-500 font-arabic">لا توجد أجهزة مسجلة</p>
+                  <p className="text-xs text-ink-500 font-arabic">لا توجد أجهزة مسجلة</p>
                 )}
               </div>
             </div>

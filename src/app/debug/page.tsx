@@ -6,7 +6,7 @@ import { useCartStore } from "../../stores/cartStore";
 import { useAuthStore } from "../../stores/authStore";
 import { invoke } from "@tauri-apps/api/core";
 
-export default function DebugPage() {
+function DebugPageContent() {
   const [integrity, setIntegrity] = useState<{ ok: boolean; errors: string[] } | null>(null);
   const [walMode, setWal] = useState(false);
   const [queueSize, setQueueSize] = useState(0);
@@ -58,12 +58,12 @@ export default function DebugPage() {
 
   return (
     <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
-      <h1 className="text-xl font-bold text-slate-900 font-arabic">التشخيص</h1>
+      <h1 className="text-xl font-bold text-ink-900 font-arabic">التشخيص</h1>
 
       {diagnose && (
         <div className="bg-white rounded-2xl p-4 shadow-sm space-y-1">
-          <h2 className="font-bold text-slate-900 font-arabic text-sm">تشخيص قاعدة البيانات</h2>
-          <pre className="text-xs font-mono whitespace-pre-wrap text-slate-500">{diagnose}</pre>
+          <h2 className="font-bold text-ink-900 font-arabic text-sm">تشخيص قاعدة البيانات</h2>
+          <pre className="text-xs font-mono whitespace-pre-wrap text-ink-500">{diagnose}</pre>
         </div>
       )}
 
@@ -76,48 +76,48 @@ export default function DebugPage() {
 
       <div className="grid grid-cols-2 gap-4">
         <div className="bg-white rounded-2xl p-4 shadow-sm space-y-2">
-          <h2 className="font-bold text-slate-900 font-arabic">قاعدة البيانات</h2>
+          <h2 className="font-bold text-ink-900 font-arabic">قاعدة البيانات</h2>
           <div className="space-y-1 text-sm">
             <div className="flex justify-between">
-              <span className="text-slate-400 font-arabic">السلامة</span>
-              <span className={`font-mono ${integrity?.ok ? "text-emerald-600" : "text-red-500"}`}>
+              <span className="text-ink-400 font-arabic">السلامة</span>
+              <span className={`font-mono ${integrity?.ok ? "text-saffron-600" : "text-red-500"}`}>
                 {integrity?.ok ? "سليمة ✓" : `تلف: ${integrity?.errors.join(", ")}`}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400 font-arabic">WAL</span>
+              <span className="text-ink-400 font-arabic">WAL</span>
               <span className="font-mono">{walMode ? "مفعل" : "غير مفعل"}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400 font-arabic">الطلبات</span>
+              <span className="text-ink-400 font-arabic">الطلبات</span>
               <span className="font-mono">{orderCount}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400 font-arabic">انتظار المزامنة</span>
+              <span className="text-ink-400 font-arabic">انتظار المزامنة</span>
               <span className="font-mono">{queueSize}</span>
             </div>
           </div>
         </div>
 
         <div className="bg-white rounded-2xl p-4 shadow-sm space-y-2">
-          <h2 className="font-bold text-slate-900 font-arabic">الأداء</h2>
+          <h2 className="font-bold text-ink-900 font-arabic">الأداء</h2>
           <div className="space-y-1 text-sm">
             <div className="flex justify-between">
-              <span className="text-slate-400 font-arabic">الذاكرة</span>
+              <span className="text-ink-400 font-arabic">الذاكرة</span>
               <span className="font-mono">{memory.heapUsedMB} / {memory.heapTotalMB} MB</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400 font-arabic">FPS</span>
-              <span className={`font-mono ${fps < 30 ? "text-red-500" : fps < 50 ? "text-amber-500" : "text-emerald-600"}`}>
+              <span className="text-ink-400 font-arabic">FPS</span>
+              <span className={`font-mono ${fps < 30 ? "text-red-500" : fps < 50 ? "text-amber-500" : "text-saffron-600"}`}>
                 {fps}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400 font-arabic">السلة</span>
+              <span className="text-ink-400 font-arabic">السلة</span>
               <span className="font-mono">{cartItems} أصناف</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400 font-arabic">المستخدم</span>
+              <span className="text-ink-400 font-arabic">المستخدم</span>
               <span className="font-mono font-arabic">{user?.name ?? "---"}</span>
             </div>
           </div>
@@ -125,4 +125,9 @@ export default function DebugPage() {
       </div>
     </div>
   );
+}
+
+export default function DebugPage() {
+  if (!import.meta.env.DEV) return null;
+  return <DebugPageContent />;
 }

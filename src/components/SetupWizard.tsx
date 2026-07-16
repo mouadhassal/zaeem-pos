@@ -1,0 +1,139 @@
+import { useState } from "react";
+import { useAuthStore } from "../stores/authStore";
+import { UtensilsCrossed, AlertCircle, Eye, EyeOff } from "lucide-react";
+
+export default function SetupWizard() {
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [pin, setPin] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showPin, setShowPin] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const setupOwner = useAuthStore((s) => s.setupOwner);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (password.length < 10) {
+      setError("كلمة المرور يجب أن تكون 10 أحرف على الأقل");
+      return;
+    }
+    if (pin.length !== 6 || !/^\d{6}$/.test(pin)) {
+      setError("الرقم السري يجب أن يكون 6 أرقام");
+      return;
+    }
+    setError("");
+    setLoading(true);
+    const err = await setupOwner(name, password, pin);
+    if (err) setError(err);
+    setLoading(false);
+  }
+
+  return (
+    <div className="relative min-h-screen w-full overflow-hidden bg-ink-50" dir="rtl">
+      <div className="min-h-screen flex items-center justify-center p-4">
+        <div className="w-full max-w-md">
+          <div className="text-center mb-8">
+            <div className="inline-flex items-center justify-center w-16 h-16 rounded-lg bg-saffron-600 mb-4">
+              <UtensilsCrossed className="w-8 h-8 text-white" />
+            </div>
+            <h1 className="text-3xl font-bold text-ink-800 mb-2 tracking-tight">
+              زعيم <span className="text-saffron-600">Zaeem</span>
+            </h1>
+            <p className="text-ink-400 text-sm">الإعداد الأولي — إنشاء حساب المالك</p>
+          </div>
+
+          <div className="bg-white border border-ink-200 rounded-md p-8 shadow-sm">
+            {error && (
+              <div className="mb-6 flex items-center gap-2 p-3 rounded-sm bg-red-50 border border-red-200 text-red-600 text-sm">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit} className="space-y-5">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-ink-700">الاسم الكامل</label>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="أدخل اسم المالك"
+                  className="w-full h-11 px-4 rounded-sm border border-ink-300 text-ink-800 placeholder:text-ink-400 text-right outline-none focus:border-saffron-500 focus:ring-1 focus:ring-saffron-500/20 transition-colors"
+                  dir="rtl"
+                  required
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-ink-700">كلمة المرور (10 أحرف على الأقل)</label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••••"
+                    className="w-full h-11 px-4 pl-10 rounded-sm border border-ink-300 text-ink-800 placeholder:text-ink-400 text-right outline-none focus:border-saffron-500 focus:ring-1 focus:ring-saffron-500/20 transition-colors"
+                    dir="rtl"
+                    required
+                    minLength={10}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 p-1 rounded-sm text-ink-400 hover:text-ink-600 transition-colors"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-ink-700">الرقم السري لنقطة البيع (6 أرقام)</label>
+                <div className="relative">
+                  <input
+                    type={showPin ? "text" : "password"}
+                    value={pin}
+                    onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    placeholder="••••••"
+                    className="w-full h-11 px-4 pl-10 rounded-sm border border-ink-300 text-ink-800 placeholder:text-ink-400 text-right outline-none focus:border-saffron-500 focus:ring-1 focus:ring-saffron-500/20 transition-colors"
+                    dir="rtl"
+                    required
+                    maxLength={6}
+                    inputMode="numeric"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPin(!showPin)}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 p-1 rounded-sm text-ink-400 hover:text-ink-600 transition-colors"
+                  >
+                    {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading || !name || password.length < 10 || pin.length !== 6}
+                className={`w-full h-11 rounded-sm font-bold text-white text-base transition-colors flex items-center justify-center gap-2 ${
+                  loading || !name || password.length < 10 || pin.length !== 6
+                    ? "bg-ink-300 cursor-not-allowed text-ink-500"
+                    : "bg-saffron-600 hover:bg-saffron-700 active:bg-saffron-800"
+                }`}
+              >
+                {loading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    <span>جاري الإعداد...</span>
+                  </>
+                ) : (
+                  <span>إنشاء حساب المالك</span>
+                )}
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { IconBackspace, IconX } from "@tabler/icons-react";
+import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../../db";
-import { verifyPassword } from "../../lib/auth";
 
 interface Props {
   title: string;
@@ -53,20 +53,10 @@ export default function ManagerPinModal({
         setLockedUntil(null);
       }
 
-      const manager = await db
-        .selectFrom("users")
-        .select(["password_hash"])
-        .where("role", "in", ["MANAGER", "ADMIN", "OWNER"])
-        .where("is_active", "=", 1)
-        .executeTakeFirst();
-
-      if (!manager) {
-        setError("لا يوجد مدير متاح");
-        setLoading(false);
-        return;
-      }
-
-      const valid = await verifyPassword(pin, manager.password_hash);
+      // `verify_manager_override` runs the comparison in Rust against
+      // `staff` (never `users`, which Decision A dropped) -- the
+      // password/PIN hash never reaches this renderer at all.
+      const valid = await invoke<boolean>("verify_manager_override", { passwordOrPin: pin }).catch(() => false);
       if (!valid) {
         const failuresRow = await db
           .selectFrom("app_settings")

@@ -54,14 +54,14 @@ export default function ReportsPage() {
 
       const staff = await db
         .selectFrom("orders")
-        .innerJoin("users", "users.id", "orders.user_id")
+        .innerJoin("staff", "staff.id", "orders.user_id")
         .select([
-          "users.name",
+          "staff.name",
           db.fn.count<number>("orders.id").as("orderCount"),
         ])
         .where("orders.status", "=", "PAID")
         .where("orders.closed_at", ">=", todayStart.toISOString())
-        .groupBy("users.name")
+        .groupBy("staff.name")
         .execute();
 
       const inventory = await db
@@ -179,7 +179,7 @@ export default function ReportsPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full text-slate-500 font-arabic">
+      <div className="flex items-center justify-center h-full text-ink-500 font-arabic">
         جاري التحميل...
       </div>
     );
@@ -196,10 +196,10 @@ export default function ReportsPage() {
   return (
     <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-slate-900">التقارير</h1>
+        <h1 className="text-xl font-bold text-ink-900">التقارير</h1>
         <button
           onClick={exportCsv}
-          className="h-10 px-4 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors"
+          className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
         >
           تصدير CSV
         </button>
@@ -213,18 +213,18 @@ export default function ReportsPage() {
 
       <div className="grid grid-cols-3 gap-4">
         <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sm">
-          <p className="text-slate-400 text-sm font-arabic">إجمالي المبيعات اليوم</p>
-          <p className="text-2xl font-bold text-emerald-600 font-mono">
+          <p className="text-ink-400 text-sm font-arabic">إجمالي المبيعات اليوم</p>
+          <p className="text-2xl font-bold text-saffron-600 font-mono">
             {fmt(Math.round(summary.totalSales * 100))}
           </p>
         </div>
         <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sm">
-          <p className="text-slate-400 text-sm font-arabic">عدد الطلبات</p>
-          <p className="text-2xl font-bold text-slate-900">{summary.orderCount}</p>
+          <p className="text-ink-400 text-sm font-arabic">عدد الطلبات</p>
+          <p className="text-2xl font-bold text-ink-900">{summary.orderCount}</p>
         </div>
         <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sm">
-          <p className="text-slate-400 text-sm font-arabic">متوسط الفاتورة</p>
-          <p className="text-2xl font-bold text-slate-900 font-mono">
+          <p className="text-ink-400 text-sm font-arabic">متوسط الفاتورة</p>
+          <p className="text-2xl font-bold text-ink-900 font-mono">
             {fmt(Math.round(summary.avgTicket * 100))}
           </p>
         </div>
@@ -232,36 +232,36 @@ export default function ReportsPage() {
 
       <div className="grid grid-cols-2 gap-4">
         <div className="bg-white rounded-2xl p-4 space-y-3 shadow-sm">
-          <h2 className="font-bold text-slate-900 font-arabic">أفضل الأصناف</h2>
+          <h2 className="font-bold text-ink-900 font-arabic">أفضل الأصناف</h2>
           {summary.topItems.map((item, i) => (
             <div key={i} className="flex justify-between text-sm">
-              <span className="text-slate-900">{item.name}</span>
-              <span className="text-slate-400">{item.quantity}</span>
+              <span className="text-ink-900">{item.name}</span>
+              <span className="text-ink-400">{item.quantity}</span>
             </div>
           ))}
         </div>
 
         <div className="bg-white rounded-2xl p-4 space-y-3 shadow-sm">
-          <h2 className="font-bold text-slate-900 font-arabic">أداء الموظفين</h2>
+          <h2 className="font-bold text-ink-900 font-arabic">أداء الموظفين</h2>
           {summary.staffPerformance.map((staff, i) => (
             <div key={i} className="flex justify-between text-sm">
-              <span className="text-slate-900">{staff.name}</span>
-              <span className="text-slate-400">{staff.orderCount} طلب</span>
+              <span className="text-ink-900">{staff.name}</span>
+              <span className="text-ink-400">{staff.orderCount} طلب</span>
             </div>
           ))}
         </div>
       </div>
 
       <div className="bg-white rounded-2xl p-4 space-y-3 shadow-sm">
-        <h2 className="font-bold text-slate-900 font-arabic">حالة المخزون</h2>
+        <h2 className="font-bold text-ink-900 font-arabic">حالة المخزون</h2>
         {summary.inventoryStatus.map((inv, i) => (
           <div key={i} className="flex justify-between text-sm">
-            <span className="text-slate-900">{inv.name}</span>
+            <span className="text-ink-900">{inv.name}</span>
             <span
               className={`font-mono ${
                 inv.currentStock <= inv.minStock
                   ? "text-red-500 font-bold"
-                  : "text-slate-400"
+                  : "text-ink-400"
               }`}
             >
               {inv.currentStock} / {inv.minStock}

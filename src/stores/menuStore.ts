@@ -26,6 +26,7 @@ export interface MenuItem {
   combo_original_price_cents: number | null;
   combo_description: string | null;
   combo_components: ComboComponent[];
+  barcode: string | null;
 }
 
 interface MenuState {
@@ -91,6 +92,7 @@ export const useMenuStore = create<MenuState>((set) => ({
           combo_original_price_cents: item.combo_original_price_cents,
           combo_description: item.combo_description,
           combo_components,
+          barcode: item.barcode,
         });
       }
 

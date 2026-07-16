@@ -1,6 +1,6 @@
 # زعيم نقاط البيع — Zaeem POS
 
-> The definitive Restaurant Operating System for the Middle East.
+> Restaurant operating system for the Middle East.
 
 **Version** 0.1.0 · **Identifier** `com.zaeem.pos` · **© 2026 Wenzdes**
 
@@ -11,17 +11,15 @@
 1. [Overview](#1-overview)
 2. [Tech Stack](#2-tech-stack)
 3. [Architecture](#3-architecture)
-4. [Database Schema (35 Tables)](#4-database-schema)
+4. [Database Schema](#4-database-schema)
 5. [User Roles & Permissions](#5-user-roles--permissions)
 6. [Pages & Features](#6-pages--features)
-7. [Modals (8)](#7-modals)
-8. [Zustand Stores (8)](#8-zustand-stores)
-9. [Services & Libraries (13)](#9-services--libraries)
-10. [Rust Backend (16 Commands)](#10-rust-backend)
-11. [Login Credentials](#11-login-credentials)
-12. [Project Structure](#12-project-structure)
-13. [Development](#13-development)
-14. [Building & Packaging](#14-building--packaging)
+7. [Modals](#7-modals)
+8. [Zustand Stores](#8-zustand-stores)
+9. [Services & Libraries](#9-services--libraries)
+10. [Rust Backend](#10-rust-backend)
+11. [Project Structure](#11-project-structure)
+12. [Development](#12-development)
 
 ---
 
@@ -29,24 +27,33 @@
 
 Zaeem POS is a **desktop-native** restaurant management system built with Tauri v2. It runs on Windows, Linux, and macOS as a standalone executable with no browser or server required. The entire state lives in a local SQLite database.
 
-### What it does
+### What works
 
-| Area | Capabilities |
-|------|-------------|
-| **Point of Sale** | Table management, item entry, modifiers, split/merge/transfer bills, barcode scanning, multiple payment methods, receipt printing (USB/Network) |
-| **Menu Management** | Categories with colors, menu items with barcodes, combo meals, happy-hour time-based discounts, cost tracking |
-| **Inventory** | Ingredient stock tracking, supplier management, auto low-stock alerts, purchase orders with receive workflow, movement audit log |
-| **Kitchen Display** | Live order feed with status progression (Pending → Preparing → Ready), sorted by oldest first |
-| **Staff Management** | Employee CRUD with QR badges, attendance clock-in/out with late (9 AM+) and half-day (<4 hrs) detection, attendance history, cash shift management with discrepancy alerts |
-| **Delivery Management** | Driver management (car/motorcycle/bike/van/truck), delivery zones with fee config, delivery log tracking, driver assignment in POS |
-| **Customer Management** | Customer profiles with order history, debt tracking with payment plans |
-| **Finance & Accounting** | Revenue dashboard with date range filtering, operational cost tracking, invoice creation & payment, tax summary with CSV export for VAT returns |
-| **Loyalty Program** | Tiered loyalty cards (Bronze/Silver/Gold/Platinum), points earning on POS purchases, scan-to-earn, point multipliers per tier |
-| **AI Assistant** | Premium owner-only chat interface: natural-language queries for sales, inventory, attendance, active orders, top items, and debts |
-| **Multi-Branch** | Branch configuration with per-branch timezone, currency, tax rates, and table limits |
-| **Reporting** | Data-driven reports and analytics |
-| **Settings** | Currency, tax mode (inclusive/exclusive), printer configuration, branch setup, subscription plan comparison, database backup/restore |
-| **Debt Management** | Full debtor ledger with debt/payment entries, balance tracking |
+| Area | Capabilities | Status |
+|------|-------------|--------|
+| **Point of Sale** | Table management, item entry, modifiers, split/merge/transfer bills, barcode scanning, CASH payment with change calculation, receipt printing (USB/Network), hold/retrieve drafts, delayed/scheduled orders | WORKS |
+| **Menu Management** | Categories with colors, menu items with barcodes, combo meals, happy-hour time-based discount rules | WORKS |
+| **Inventory** | Ingredient stock tracking, supplier management, purchase orders with receive workflow, movement audit log, low-stock alerts | WORKS |
+| **Kitchen Display** | Live order feed with status progression (Pending → Preparing → Ready) | WORKS |
+| **Staff Management** | Employee CRUD with QR badges, attendance clock-in/out with late and half-day detection, cash shift management with discrepancy alerts | WORKS |
+| **Delivery Management** | Driver management, delivery zones with fee config, driver assignment in POS | WORKS |
+| **Customer Management** | Customer profiles with order history, debt tracking with payment plans | WORKS |
+| **Finance** | Revenue dashboard (today/week/month), operational cost tracking, invoice creation, CSV export | WORKS |
+| **Loyalty Program** | Tiered loyalty cards, points earning on POS purchases, scan-to-earn | WORKS (redemption not yet implemented) |
+| **Printing** | ESC/POS receipt and kitchen tickets over USB and network, cash drawer, print queue with retry | WORKS |
+| **Debt Management** | Full debtor ledger with debt/payment entries, balance tracking | WORKS |
+| **Settings** | Currency, tax mode, printer config, branch config | WORKS |
+| **Reports** | Today's sales, top items, staff hours, low stock, PDF export | PARTIAL — today's data only, no historical trends or charts |
+
+### Not yet built
+
+These features have schema columns or UI placeholders but no working implementation:
+- **AI/LLM**: The AI page is a keyword→SQL router, not natural language. No LLM is integrated.
+- **Cloud sync**: Schema has a `sync_queue` table. No sync engine exists.
+- **Backup/restore**: UI toggle exists. No SQLite backup or restore code.
+- **ZATCA e-invoicing**: Saudi fiscal compliance not implemented.
+- **Multi-branch switching**: Branch CRUD works. No runtime branch switch or cross-branch reporting.
+- **Recipe-based stock depletion**: Schema links recipes to ingredients. No code decrements stock on order placement.
 
 ---
 
@@ -56,23 +63,22 @@ Zaeem POS is a **desktop-native** restaurant management system built with Tauri 
 |-------|-----------|
 | **Desktop Shell** | Tauri 2.11.3 |
 | **Frontend** | React 18 + TypeScript + Vite 5 |
-| **Styling** | Tailwind CSS (custom preset: emerald palette, Inter + IBM Plex Sans Arabic) |
+| **Styling** | Tailwind CSS (emerald palette, Inter + IBM Plex Sans Arabic) |
 | **State** | Zustand (8 stores) |
-| **Database** | SQLite via `@tauri-apps/plugin-sql` + Kysely ORM with custom `TauriSqliteDialect` |
+| **Database** | SQLite via `@tauri-apps/plugin-sql` + Kysely ORM |
 | **Rust DB** | rusqlite 0.31 (bundled, WAL mode, foreign keys enforced) |
-| **Auth** | bcrypt (password hashing), session-based token (`zaeem_{uuid}`) |
+| **Auth** | bcrypt (password hashing), session-based token |
 | **Validation** | Zod |
 | **Icons** | lucide-react |
 | **PDF** | jsPDF + jspdf-autotable |
 | **QR** | qrcode |
-| **Other** | jose (JWT), tauri-plugin-log |
 
 ### Conventions
 
-- **Monetary values** stored as **integer cents** everywhere — no floating-point rounding
+- **Monetary values** stored as integer cents everywhere — no floating-point
 - **Arabic-first** with `dir="rtl"` on every page
-- **Offline-first**: all data lives locally in SQLite; sync_queue table for future cloud sync
-- **Lazy-loaded** pages with `React.lazy` + `Suspense` for fast initial load
+- **Offline-first**: all data lives locally in SQLite
+- **Lazy-loaded** pages with `React.lazy` + `Suspense`
 
 ---
 
@@ -90,7 +96,7 @@ Zaeem POS is a **desktop-native** restaurant management system built with Tauri 
 │  │         ↕ tauri:invoke ↕               │   │
 │  ├─────────────────────────────────────────┤   │
 │  │         Rust Backend (lib.rs)           │   │
-│  │  16 Tauri Commands, SQLite via rusqlite │   │
+│  │  19 Tauri Commands, SQLite via rusqlite │   │
 │  └─────────────────────────────────────────┘   │
 │         ↕ rusqlite ↕                            │
 │  ┌─────────────────────────────────────────┐   │
@@ -104,15 +110,15 @@ Zaeem POS is a **desktop-native** restaurant management system built with Tauri 
 
 1. **UI events** trigger Zustand store actions
 2. Stores call **Kysely queries** via `getDb()` → `@tauri-apps/plugin-sql`
-3. **Rust commands** handle auth, debt, and kitchen operations via rusqlite directly
-4. **Printing** goes through the printer service → ESC/POS → USB/Network/Bluetooth
+3. **Rust commands** handle auth, setup, debt, kitchen operations, and diagnostics via rusqlite
+4. **Printing** goes through the printer service → ESC/POS → USB/Network
 5. **Barcode scans** come through a Tauri event listener → dispatch custom DOM events
 
 ---
 
 ## 4. Database Schema
 
-35 tables organized by domain:
+35 tables organized by domain.
 
 ### Core Business
 | Table | Key Columns | Foreign Keys |
@@ -125,7 +131,7 @@ Zaeem POS is a **desktop-native** restaurant management system built with Tauri 
 ### Orders & Payments
 | Table | Key Columns | Foreign Keys |
 |-------|-------------|--------------|
-| `orders` | id, table_id, user_id, status (9 states), order_type (4 types), subtotal/tax/total/discount_cents, customer_name/phone, delivery_address/zone_id/driver_id, scheduled_at | → tables(id), → users(id) |
+| `orders` | id, table_id, user_id, status (9 states), order_type (4 types), subtotal/tax/total/discount_cents, customer info, delivery fields, scheduled_at | → tables(id), → users(id) |
 | `order_items` | id, order_id, menu_item_id, quantity, unit_price_cents, voided, void_reason | → orders(id), → menu_items(id) |
 | `order_modifiers` | id, order_item_id, name, price_cents | → order_items(id) |
 | `payments` | id, order_id, method (CASH/CARD/WALLET/CREDIT), amount_cents, change_cents | → orders(id) |
@@ -137,32 +143,32 @@ Zaeem POS is a **desktop-native** restaurant management system built with Tauri 
 | `recipes` | id, menu_item_id, ingredient_id, quantity_needed | → menu_items(id), → ingredients(id) |
 | `inventory_logs` | id, ingredient_id, change_amount, reason, user_id | → ingredients(id), → users(id) |
 | `suppliers` | id, name, phone, email, total_orders, total_purchases_cents | — |
-| `purchase_orders` | id, supplier_id, status (PENDING/ORDERED/RECEIVED/CANCELLED), total_cents | → suppliers(id) |
-| `purchase_order_items` | id, purchase_order_id, ingredient_id, quantity_ordered, quantity_received, unit_cost_cents | → purchase_orders(id), → ingredients(id) |
+| `purchase_orders` | id, supplier_id, status, total_cents | → suppliers(id) |
+| `purchase_order_items` | id, purchase_order_id, ingredient_id, quantity_ordered/received, unit_cost_cents | → purchase_orders(id), → ingredients(id) |
 
 ### Staff & Attendance
 | Table | Key Columns | Foreign Keys |
 |-------|-------------|--------------|
-| `shifts` | id, user_id, opened_at, closed_at, starting_cash_cents, ending_cash_cents, difference_cents | → users(id) |
-| `attendance` | id, user_id, date, clock_in, clock_out, status (PRESENT/ABSENT/LATE/HALF_DAY) | → users(id) |
+| `shifts` | id, user_id, opened_at, closed_at, starting/ending_cash_cents, difference_cents | → users(id) |
+| `attendance` | id, user_id, date, clock_in, clock_out, status | → users(id) |
 
 ### Delivery
 | Table | Key Columns | Foreign Keys |
 |-------|-------------|--------------|
-| `drivers` | id, name, phone, vehicle_type (CAR/MOTORCYCLE/BIKE/VAN/TRUCK), status (AVAILABLE/BUSY/OFFLINE/INACTIVE), total_deliveries, rating | — |
+| `drivers` | id, name, phone, vehicle_type, status, total_deliveries, rating | — |
 | `delivery_zones` | id, name, boundaries (JSON), fee_cents, min_order_cents, estimated_minutes | — |
-| `delivery_logs` | id, order_id, driver_id, status (6 states with timestamps), failure_reason | → orders(id), → drivers(id) |
+| `delivery_logs` | id, order_id, driver_id, status (6 states with timestamps) | → orders(id), → drivers(id) |
 
 ### Loyalty
 | Table | Key Columns | Foreign Keys |
 |-------|-------------|--------------|
-| `loyalty_cards` | id, customer_id, card_number (unique), points, tier (BRONZE/SILVER/GOLD/PLATINUM), issued_at, last_used_at | → customers(id) |
-| `loyalty_transactions` | id, card_id, points, type (EARN/REDEEM/ADJUST/EXPIRE), reference_type, reference_id | → loyalty_cards(id) |
+| `loyalty_cards` | id, customer_id, card_number, points, tier, issued_at, last_used_at | → customers(id) |
+| `loyalty_transactions` | id, card_id, points, type, reference_type, reference_id | → loyalty_cards(id) |
 
 ### Finance
 | Table | Key Columns | Foreign Keys |
 |-------|-------------|--------------|
-| `invoices` | id, chain_id, period_start, period_end, amount_cents, status (PENDING/PAID/OVERDUE/CANCELLED), due_date, paid_at | — |
+| `invoices` | id, chain_id, period_start/end, amount_cents, status, due_date, paid_at | — |
 | `operational_costs` | id, category, amount_cents, date, branch_id, user_id | → users(id) |
 
 ### Debt
@@ -174,10 +180,10 @@ Zaeem POS is a **desktop-native** restaurant management system built with Tauri 
 ### Configuration
 | Table | Key Columns |
 |-------|-------------|
-| `chain_config` | id='default', chain_name, tax_mode, tax_rate_cents, currency, auto_print settings, barcode_prefix/suffix, customer_display settings |
+| `chain_config` | id='default', chain_name, tax_mode, tax_rate_cents, currency, auto_print settings |
 | `branches` | id, name, address, city, phone, timezone, currency, tax_rate_cents, max_tables |
-| `printers` | id, name, printer_type (RECEIPT/KITCHEN/LABEL), interface (USB/NETWORK/BLUETOOTH), ip_address, port, paper_width_mm, code_page |
-| `terminals` | id, branch_id, name, version, status (ACTIVE/INACTIVE/OFFLINE) |
+| `printers` | id, name, printer_type, interface, ip_address, port, paper_width_mm, code_page |
+| `terminals` | id, branch_id, name, version, status |
 | `app_settings` | key (PK), value |
 
 ### Support
@@ -187,9 +193,8 @@ Zaeem POS is a **desktop-native** restaurant management system built with Tauri 
 | `combo_items` | id, combo_id, menu_item_id, quantity, is_free, sort_order |
 | `happy_hour_rules` | id, menu_item_id, discount_percent, day_of_week, start/end_time |
 | `delayed_orders` | id, order_id, scheduled_at, activated |
-| `customers` | id, name, phone, email, total_orders, total_spent_cents, loyalty_points |
-| `audit_logs` | id, user_id, action, entity_type, entity_id, old/new_value |
-| `sync_queue` | id, table_name, operation (INSERT/UPDATE/DELETE), record_id, retry_count |
+| `customers` | id, name, phone, email, total_orders, total_spent_cents |
+| `audit_logs` | id, user_id, action, entity_type, entity_id, old/new_value — table exists, no runtime writes |
 | `login_sessions` | id, user_id, login_time, logout_time, device_info |
 | `notifications` | id, user_id, title, message, type, is_read |
 
@@ -199,9 +204,9 @@ Zaeem POS is a **desktop-native** restaurant management system built with Tauri 
 
 ### Roles
 
-| Role | Access Level |
-|------|-------------|
-| `OWNER` | Full system access — all 14 nav items including AI Assistant, Loyalty, Branches, Finance |
+| Role | Access |
+|------|--------|
+| `OWNER` | Full system access — all nav items |
 | `ADMIN` | Same as MANAGER |
 | `MANAGER` | POS, Shift, Customers (debt), Menu, KDS, Inventory, Delivery, Reports, Staff, Settings |
 | `ACCOUNTANT` | POS, Shift, Reports, Finance |
@@ -236,119 +241,116 @@ KITCHEN:     KDS
 
 ## 6. Pages & Features
 
-### 1. `pos/page.tsx` — Point of Sale (513 lines)
-- Table grid (FREE/OCCUPIED/MERGED status)
-- Category dock + menu grid with virtualized rendering
-- Left panel: cart items with quantity controls, modifiers, void
-- Right panel: order summary, subtotal/tax/total, discount
+### `pos/page.tsx` — Point of Sale
+- Table grid with FREE/OCCUPIED/MERGED status
+- Category dock + menu grid
+- Cart with quantity controls, modifiers, void
+- Order summary with subtotal/tax/total/discount
 - Order type selector: DINE_IN / TAKEAWAY / DELIVERY / ONLINE
-- Customer info inputs for non-dine-in orders
-- Driver selection for delivery orders
-- **Loyalty card scanning** with points earning on payment
+- Delivery driver selection
+- CASH payment with change calculation (CARD/WALLET/CREDIT methods defined but receive the same CASH logic)
+- Hold/retrieve draft orders
+- Delayed/scheduled orders
 - Barcode scanner integration
-- Modals: Payment, Split Bill, Merge Tables, Transfer Order, Void Item, Manager PIN, On-Screen Receipt, Driver Select
 - Keyboard shortcuts: F1-F5
 
-### 2. `menu/page.tsx` — Menu Management (≈1500 lines)
-- Category CRUD with drag-and-drop sort order
-- Menu item CRUD with price, cost, barcode, image
+### `menu/page.tsx` — Menu Management
+- Category CRUD with sort order and color
+- Menu item CRUD with price, cost, barcode
 - Combo meal builder (bundle pricing, free items)
-- Happy hour rules per day-of-week with time ranges
+- Happy hour rules (per day-of-week, time ranges, discount percent)
 - Search and filter
 
-### 3. `inventory/page.tsx` — Inventory (1945 lines)
-- **Stock tab**: ingredient list with stock levels, add/remove stock with reason, low-stock indicators, edit ingredients
-- **Suppliers tab**: supplier CRUD, purchase order creation
-- **Movements tab**: inventory log with date/type/material filters
-- **Alerts tab**: auto-detect low-stock items, one-click auto-ordering
-- **Purchases tab**: full PO lifecycle — create with line items, receive (auto-updates stock + logs), cancel, detail view
+### `inventory/page.tsx` — Inventory
+- Ingredient list with stock levels, add/remove with reason, low-stock indicators
+- Supplier CRUD
+- Purchase order lifecycle: create with line items, receive (auto-updates stock + logs), cancel, detail view
+- Inventory movement log with date/type/material filters
+- Low-stock auto-detection with one-click ordering
 
-### 4. `staff/page.tsx` — Staff (1112+ lines)
-- **Employees tab**: employee CRUD with photo, CV, QR badge generation, role assignment, activate/deactivate
-- **Shifts tab**: cash register shift management with date range + employee filter, force-close for managers, discrepancy alerts (>5000-cents threshold)
-- **Attendance tab**: 
-  - Today view: employee cards with clock-in/out, PRESENT/LATE/HALF_DAY/ABSENT badges
-  - History view: date range filter, employee filter, search button
+### `staff/page.tsx` — Staff
+- Employee CRUD with photo, CV, QR badge, role assignment, activate/deactivate
+- Shift management: open/close cash register, force-close for managers, discrepancy alerts
+- Attendance: clock-in/out with late detection (after 9 AM), half-day (<4 hrs), history with filters
 
-### 5. `finance/page.tsx` — Finance (773 lines)
-- **Revenue tab**: date range selector (today/week/month/custom), totals (revenue/orders/avg), payment method breakdown table, CSV export
-- **Costs tab**: operational cost CRUD with category selector (rent, salaries, utilities, etc.), cost summary
-- **Invoices tab**: invoice listing with status badges, **create invoice modal** (period, amount, due date, notes), **detail view**, pay invoice action
-- **Taxes tab**: tax configuration display, daily tax collected, CSV export for VAT
+### `finance/page.tsx` — Finance
+- Revenue tab: today/week/month totals, payment method breakdown, CSV export
+- Costs tab: operational cost CRUD with category selector
+- Invoices tab: create, list, detail view, pay action
+- Taxes tab: daily tax collected display, CSV export
 
-### 6. `delivery/page.tsx` — Delivery (650 lines)
-- **Active tab**: live delivery orders with driver assignment, status tracking
-- **Drivers tab**: driver CRUD with photo, vehicle info, rating, availability toggle
-- **Zones tab**: delivery zone management with fee/min-order config
-- **History tab**: completed delivery log
+### `delivery/page.tsx` — Delivery
+- Active delivery orders with driver assignment
+- Driver CRUD with vehicle info, availability toggle
+- Delivery zone management with fee/min-order config
+- Delivery log
 
-### 7. `customers/page.tsx` — Customers
-- Customer list with search, order count, total spent, loyalty points
+### `customers/page.tsx` — Customers
+- Customer list with search, order count, total spent
 - Customer detail with order history
 
-### 8. `debt/page.tsx` — Debt Management
+### `debt/page.tsx` — Debt Management
 - Debtor CRUD with balance tracking
 - Debt entry and payment recording
 - Per-debtor transaction history
 
-### 9. `kds/page.tsx` — Kitchen Display
-- Real-time order feed from rusqlite (`get_kitchen_orders`)
+### `kds/page.tsx` — Kitchen Display
+- Real-time order feed via Rust command
 - Items grouped by order with table name
-- Status progression buttons: PENDING → PREPARING → READY
-- Auto-refresh
+- Status: PENDING → PREPARING → READY
+- Auto-refresh every 3 seconds
 
-### 10. `branches/page.tsx` — Branches
-- Multi-branch CRUD
-- Per-branch timezone, currency, tax rate, table limit configuration
+### `branches/page.tsx` — Branches
+- Branch CRUD with per-branch timezone, currency, tax rate, table limit
 
-### 11. `reports/page.tsx` — Reports
-- Data aggregation and visualization
+### `reports/page.tsx` — Reports
+- Today's sales summary (total revenue, orders, average order value)
+- Today's top items (by quantity and revenue)
+- Staff hours worked
+- Low-stock inventory items
+- PDF export via jsPDF
 
-### 12. `settings/page.tsx` — Settings (685 lines)
-- **General**: currency, language, timezone
-- **Printer**: printer CRUD, paper width (58/80mm), interface type
-- **Tax**: tax rate, inclusive/exclusive mode
-- **Branch**: branch name, address, phone, max tables, open/close time
-- **Subscription**: plan comparison (Starter/Pro/Enterprise) with feature matrix
-- **Cloud Sync**: (placeholder) upcoming multi-branch sync features
-- **Backup**: one-click DB backup, auto-backup toggle
-- **About**: version, system info, support contact
+### `settings/page.tsx` — Settings
+- Currency, tax mode (inclusive/exclusive)
+- Printer CRUD (USB/Network, paper width)
+- Branch configuration
+- Subscription plan comparison (Starter/Pro/Enterprise — UI only, no feature gating)
 
-### 13. `shift/page.tsx` — Shift Management
-- Cashier shift open/close workflow
-- Starting/ending cash reconciliation
+### `shift/page.tsx` — Shift Management
+- Cashier shift open/close with cash reconciliation
 
-### 14. `loyalty/page.tsx` — Loyalty Program
-- Tier overview cards (Bronze/Silver/Gold/Platinum with point thresholds and multipliers)
-- Card management: issue new cards to customers, search by name/card number/phone
-- Card detail: points, tier, last used, progress to next tier
-- Transaction history with type filter (EARN/REDEEM/ADJUST/EXPIRE)
+### `loyalty/page.tsx` — Loyalty Program
+- Tier cards: Bronze/Silver/Gold/Platinum with point thresholds and multipliers
+- Card issuance to customers
+- Card search by name/card number/phone
+- Points earn on POS payment via QR scan
+- Transaction history with type filter
 
-### 15. `ai/page.tsx` — AI Assistant (Premium)
-- **Owner-only** access; blocks all other roles
-- Chat interface with 6 quick-action buttons: sales summary, low stock, attendance, active orders, top items, debt overview
-- Natural-language query execution against live database
-- Typing indicator, scroll-to-bottom, timestamp display
-- "مميز" (Premium) badge
+### `ai/page.tsx` — AI Assistant
+- Owner-only access
+- Chat interface with 6 quick-action buttons
+- Arabic keyword matching for database queries
+- **Not AI/LLM. No language model is integrated.** Queries are hardcoded keyword → SQL.
 
-### 16. `debug/page.tsx` — Diagnostics
-- Database path and table listing
-- System diagnostics
+### `debug/page.tsx` — Diagnostics (dev builds only)
+- Database table listing
+- Integrity check and WAL mode status
 
 ---
 
 ## 7. Modals
 
-| Modal | Trigger | Purpose |
-|-------|---------|---------|
-| **PaymentModal** | Pay button in POS | Multi-method payment (CASH/CARD/WALLET/CREDIT), received amount, change calculation, optional debt recording |
-| **SplitBillModal** | Split button | Split current order items into multiple bills |
-| **MergeTablesModal** | Merge button | Select source tables and target table to merge |
-| **TransferOrderModal** | Transfer button | Move current order to another table |
-| **VoidItemModal** | Void button per item | Void item with reason (requires manager PIN if item >2000¢) |
-| **ManagerPinModal** | Discount > limit, void > threshold | Manager PIN verification before privileged actions |
-| **OnScreenReceiptModal** | Print failure | Display receipt on screen when printer fails |
-| **DriverSelectModal** | Delivery order | Select/change driver for delivery order |
+| Modal | Purpose |
+|-------|---------|
+| **PaymentModal** | CASH payment with change calculation; other methods accepted but use same logic |
+| **SplitBillModal** | Split current order items into multiple bills |
+| **MergeTablesModal** | Merge tables, move items to target |
+| **TransferOrderModal** | Move order to another table |
+| **VoidItemModal** | Void item with reason (requires manager PIN above threshold) |
+| **ManagerPinModal** | PIN verification for discounts/voids |
+| **OnScreenReceiptModal** | Display receipt when printer fails |
+| **DriverSelectModal** | Select/change driver for delivery orders |
+| **SetupWizard** | First-run: create owner account with password (min 10 chars) and 6-digit PIN |
 
 ---
 
@@ -356,46 +358,45 @@ KITCHEN:     KDS
 
 | Store | Key State | Actions |
 |-------|-----------|---------|
-| `authStore` | user, isAuthenticated, isLoading | login(), logout(), checkSession(), loginWithRust() |
-| `cartStore` | items[], tableId, tableName, discountCents, discountReason | addItem(), removeItem(), updateQuantity(), voidItem(), clearCart(), subtotal(), tax(), total() |
-| `menuStore` | items[], categories[], loading, search | fetchMenu(), filteredItems, fetchCategories() |
-| `shiftStore` | activeShiftId, isOpen | openShift(), closeShift(), fetchActiveShift() |
-| `printerStore` | printers[], activePrinter | fetchPrinters(), setActivePrinter() |
-| `orderTypeStore` | orderType, customerName/Phone/Address, driverId, deliveryAddress | setOrderType(), setCustomerName(), setCustomerPhone(), setDriverId(), resetOrderInfo() |
-| `happyHourStore` | rules[] | fetchRules(), isHappyHour() |
-| `comboStore` | combos[] | fetchCombos(), getComboItems() |
+| `authStore` | user, token, isAuthenticated, needsSetup | login, logout, checkSession, checkNeedsSetup, setupOwner, changePassword |
+| `cartStore` | items, tableId, discount | addItem, removeItem, updateQuantity, voidItem, subtotal, tax, total |
+| `menuStore` | items, categories, loading, search | fetchMenu, filteredItems, fetchCategories |
+| `shiftStore` | activeShiftId, isOpen | openShift, closeShift, fetchActiveShift |
+| `printerStore` | printers, activePrinter | fetchPrinters, setActivePrinter |
+| `orderTypeStore` | orderType, customer details, driverId | setOrderType, setCustomerName, setDriverId, resetOrderInfo |
+| `happyHourStore` | rules | fetchRules, isHappyHour |
+| `comboStore` | combos | fetchCombos, getComboItems |
 
 ---
 
 ## 9. Services & Libraries
 
-| File | Purpose |
-|------|---------|
-| `lib/auth.ts` | Password hashing (via Tauri invoke `change_password`), local hash comparison |
-| `lib/backup.ts` | SQLite `.backup` via Tauri shell commands, export/restore workflows |
-| `lib/barcodeScanner.ts` | Barcode scanner event listener, prefix detection, external scanner support |
-| `lib/customerDisplay.ts` | Serial-port customer display (pole display) via Tauri |
-| `lib/deliveryService.ts` | 30+ functions: driver/zone CRUD, delivery assignment, status progression, distance calculation |
-| `lib/license.ts` | License plan enum (Starter/Professional/Enterprise), feature gating, on-prem fallback |
-| `lib/logger.ts` | Structured logger with levels, performance timers, ring-buffer, window.__DEBUG logger |
-| `lib/orderService.ts` | Order CRUD, kitchen ticket generation, hold/retrieve, split/merge/transfer, delayed order activation |
-| `lib/performance.ts` | FPS monitor, memory usage tracker, image cache with LRU eviction, idle detection |
-| `lib/printer.ts` | ESC/POS builder, thermal receipt formatting, cash drawer kick, USB/Network printer discovery, retry queue |
-| `lib/taxCalculator.ts` | Inclusive/exclusive tax calculation, secondary tax, service charge |
+| File | What it actually does |
+|------|----------------------|
+| `lib/auth.ts` | Password hashing (bcryptjs). Not used in login flow — Rust handles auth. |
+| `lib/barcodeScanner.ts` | Keyboard HID buffer (50ms interval), dispatches `barcode-scanned` event with prefix detection |
+| `lib/deliveryService.ts` | Driver/zone CRUD, delivery assignment, status progression, distance calculation utility |
+| `lib/logger.ts` | Structured logger with levels, performance timers, ring buffer |
+| `lib/orderService.ts` | Order CRUD, hold/retrieve, split/merge/transfer, delayed order activation |
+| `lib/performance.ts` | FPS monitor, memory usage tracker, image cache with LRU eviction |
+| `lib/printer.ts` | ESC/POS buffer builder, receipt/ticket formatting, USB and network printing, cash drawer, print queue with retry |
+| `lib/taxCalculator.ts` | Inclusive/exclusive tax calculation, service charge |
 | `lib/validation.ts` | Zod schemas for order items, payments, discounts |
 
 ---
 
 ## 10. Rust Backend
 
-16 Tauri commands in `src-tauri/src/lib.rs` (1196 lines):
+19 Tauri commands in `src-tauri/src/lib.rs`:
 
 | Command | Parameters | Returns |
 |---------|-----------|---------|
 | `login` | username, password, device_info | LoginResponse { success, user, token, message } |
 | `logout` | user_id | — |
-| `check_auth` | user_id | AuthCheckResponse { authenticated, user } |
-| `change_password` | user_id, old_password, new_password | bool |
+| `check_auth` | user_id | AuthCheckResponse |
+| `change_password` | session_token, old_password, new_password | bool |
+| `needs_setup` | — | bool |
+| `setup_owner` | name, username, password, pin | LoginResponse |
 | `get_debtors` | — | Vec\<Debtor\> |
 | `get_debtor_detail` | debtor_id | (Debtor, Vec\<DebtEntry\>) |
 | `create_debtor` | name, phone, email, address, notes | id (String) |
@@ -404,34 +405,22 @@ KITCHEN:     KDS
 | `add_debt` | debtor_id, amount_cents, notes, created_by, order_id | — |
 | `record_debt_payment` | debtor_id, amount_cents, notes, created_by | — |
 | `get_kitchen_orders` | — | Vec\<KitchenOrder\> |
-| `update_order_status` | order_id, status | — |
+| `update_order_status` | order_id, status (validated enum) | — |
 | `get_active_orders` | — | Vec\<serde_json::Value\> |
 | `get_settings` | — | SettingsData |
 | `update_settings` | settings | — |
-| `diagnose_db` | — | String |
+| `diagnose_db` | — | String (tables list) |
 
 ### Key Backend Details
 - **Password hashing**: bcrypt with cost factor 12
-- **Session management**: UUID session IDs stored in `login_sessions` table
-- **Database diagnostics**: reports path, existence, and all table names
-- **Migration system**: `init_db()` runs SCHEMA_SQL then applies ALTER TABLE migrations for columns added later (e.g., `photo_path`, `cv_path`, `qr_code`, `username`, `is_combo`, `delivery_fee_cents`, etc.)
+- **Session management**: UUID session IDs in `login_sessions` table, token format `zaeem_{uuid}`
+- **First-run**: `needs_setup` checks for any OWNER user. `setup_owner` creates the first account with password (min 10 chars) and 6-digit POS PIN. Seed users exist in debug builds only.
+- **Rate limiting**: `change_password` tracks failures in `app_settings`, locks for 1 hour after 10 failed attempts
+- **Order status validation**: `update_order_status` validates against the `OrderStatus` enum before writing
 
 ---
 
-## 11. Login Credentials
-
-Four seed users are created on first run (password `admin123` for all):
-
-| Username | Name | Role | Email | ID |
-|----------|------|------|-------|-----|
-| `owner` | المدير | OWNER | owner@zaeem.com | user-owner-001 |
-| `manager` | المشرف | MANAGER | manager@zaeem.com | user-mgr-001 |
-| `cashier` | الكاشير | CASHIER | cashier@zaeem.com | user-cash-001 |
-| `kitchen` | المطبخ | KITCHEN | kitchen@zaeem.com | user-kit-001 |
-
----
-
-## 12. Project Structure
+## 11. Project Structure
 
 ```
 zaeem-pos/
@@ -451,162 +440,65 @@ zaeem-pos/
 │   │   ├── shift/page.tsx        # Shift management
 │   │   ├── settings/page.tsx     # Settings
 │   │   ├── loyalty/page.tsx      # Loyalty cards
-│   │   ├── ai/page.tsx           # AI assistant (owner)
-│   │   └── debug/page.tsx        # Diagnostics
+│   │   ├── ai/page.tsx           # Keyword-query assistant (not AI)
+│   │   └── debug/page.tsx        # Diagnostics (dev builds only)
 │   ├── components/
 │   │   ├── layout/               # Sidebar, TopBar, LeftPanel, RightPanel, CartPanel, TableBar, TableGrid
-│   │   ├── ui/                   # ProductCard, MenuCard, VirtualizedMenuGrid, SearchBar
-│   │   │                         # CategoryDock, CategoryPill, ActionButton, EmptyState, OrderTypeSelector, LazyImage
-│   │   ├── modals/               # SplitBill, TransferOrder, MergeTables, ManagerPin, VoidItem, DriverSelect, OnScreenReceipt
-│   │   ├── LoginPage.tsx         # Auth with particle canvas
-│   │   ├── PaymentModal.tsx      # Payment processing
-│   │   ├── MenuGrid.tsx          # Menu grid with virtualization
-│   │   └── SplashScreen.tsx      # Loading screen
+│   │   ├── ui/                   # ProductCard, MenuCard, CategoryDock, SearchBar, etc.
+│   │   ├── modals/               # SplitBill, TransferOrder, MergeTables, ManagerPin, VoidItem, etc.
+│   │   ├── LoginPage.tsx
+│   │   ├── SetupWizard.tsx       # First-run owner account creation
+│   │   ├── PaymentModal.tsx
+│   │   ├── MenuGrid.tsx
+│   │   └── SplashScreen.tsx
 │   ├── stores/                   # 8 Zustand stores
-│   ├── lib/                      # 13 service/utility files
+│   ├── lib/                      # 9 service/utility files
 │   ├── hooks/                    # usePermissions, useKeyboardShortcuts, useCurrency
-│   ├── db/                       # schema.sql, types.ts (Kysely), index.ts, migrations.ts, corruption.ts
-│   ├── App.tsx                   # Root with routing
-│   └── main.tsx                  # Entry point
+│   ├── db/                       # schema.sql, types.ts, index.ts, migrations.ts, corruption.ts
+│   ├── App.tsx
+│   └── main.tsx
 ├── src-tauri/
-│   ├── src/lib.rs                # Rust backend (1196 lines)
-│   ├── Cargo.toml                # Rust dependencies
-│   ├── tauri.conf.json           # Tauri configuration
-│   └── icons/                    # App icons
+│   ├── src/lib.rs
+│   ├── Cargo.toml
+│   ├── tauri.conf.json
+│   └── icons/
+├── docs/
+│   ├── FEATURE_TRUTH.md
+│   ├── ARCHITECTURE_V2.md
+│   └── sprints/
 ├── package.json
+├── AGENTS.md
 └── README.md
 ```
 
 ---
 
-## 13. Development
+## 12. Development
 
 ### Prerequisites
-
-- **Node.js** 18+
-- **pnpm** 8+
-- **Rust** 1.77+ (for Tauri)
-- **System deps**: See [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
+- **Node.js** 18+, **pnpm** 8+, **Rust** 1.77+
 
 ### Setup
 
 ```bash
-# Install dependencies
 pnpm install
-
-# Run in development mode
-pnpm dev
-
-# Run Tauri desktop app with hot reload
-npm run tauri dev
+pnpm dev              # Vite dev server (frontend only)
+npm run tauri dev     # Full Tauri dev mode
+npm run tauri build   # Production build + installer
 ```
 
 ### Key Commands
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Start Vite dev server (frontend only) |
 | `npm run build` | TypeScript check + production build |
-| `npm run tauri dev` | Full Tauri dev mode (hot reload) |
-| `npm run tauri build` | Production build + installer package |
-| `npm run preview` | Preview production build |
+| `npm run tauri build` | Production build + installer (.msi/.exe/.deb/.AppImage/.dmg) |
 
 ### Code Conventions
 
 - Arabic UI labels, RTL layout (`dir="rtl"`)
-- All monetary values in **integer cents** (multiply by 100 on input, divide by 100 on display)
-- Kysely for SQL queries; rusqlite only for Rust commands
-- Components in `src/components/`, pages in `src/app/*/page.tsx`
-- Stores in `src/stores/`, services in `src/lib/`
+- Monetary values in integer cents
 - Lazy-loaded pages with `React.lazy`
 
 ---
 
-## 14. Building & Packaging
-
-```bash
-# Production build — creates installers
-npm run tauri build
-```
-
-This produces:
-- **Windows**: `.msi` (Wix) and `.exe` (NSIS) in `src-tauri/target/release/bundle/`
-- **Linux**: `.deb` and `.AppImage`
-- **macOS**: `.dmg`
-
-The build process:
-1. Runs `pnpm build` (TypeScript check + Vite production build)
-2. Compiles Rust backend with `--release`
-3. Bundles the native installer
-
-### Current Build Output
-
-```
-src-tauri/target/release/bundle/
-├── msi/zaeem-pos_0.1.0_x64_en-US.msi
-└── nsis/zaeem-pos_0.1.0_x64-setup.exe
-```
-
-### Configuration
-
-`tauri.conf.json` key settings:
-- **App ID**: `com.zaeem.pos`
-- **Window**: 1280×900, min 1024×700, resizable
-- **Security**: CSP disabled (null) for local SQLite access
-- **Bundle**: all targets, icons for all platforms
-
----
-
-## Design System
-
-### Colors
-
-| Token | Value | Usage |
-|-------|-------|-------|
-| `primary` (emerald) | `#10B981` | Buttons, active states, branding |
-| `primary-dark` | `#059669` | Hover states |
-| `surface` | `#F8FAFC` | Page background |
-| `card` | `#FFFFFF` | Card backgrounds |
-| `text-primary` | `#0F172A` | Primary text |
-| `text-secondary` | `#64748B` | Secondary/muted text |
-| `success` | emerald | Present, paid, active |
-| `warning` | amber | Low stock, pending, late |
-| `danger` | red | Absent, overdue, voided |
-| `info` | blue | Ordered, in-transit |
-
-### Typography
-
-| Usage | Font | Weight |
-|-------|------|--------|
-| Arabic UI | IBM Plex Sans Arabic | 400/500/700 |
-| Monospace | IBM Plex Mono | 400/700 |
-| Body | Inter | 400/500/600/700 |
-
-### Border Radius
-
-| Scale | Value |
-|-------|-------|
-| sm | 8px |
-| md | 12px |
-| lg | 16px |
-| xl | 20px |
-| 2xl | 24px |
-
-### Shadows
-
-| Level | Definition |
-|-------|-----------|
-| card | `0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)` |
-| card-hover | `0 10px 25px rgba(0,0,0,0.08), 0 4px 10px rgba(0,0,0,0.04)` |
-| elevated | `0 20px 60px rgba(0,0,0,0.12), 0 8px 20px rgba(0,0,0,0.06)` |
-
----
-
-## Notes
-
-- **Database location**: `%APPDATA%/com.zaeem.pos/zaeem_pos.db` (Windows) or equivalent on other platforms
-- **First run**: Schema auto-creates 35 tables and seeds 4 default users
-- **License**: On-prem by default (`lib/license.ts` returns active)
-- **Printing**: ESC/POS protocol over USB, Network (port 9100), or Bluetooth
-- **Barcode**: Configurable prefix/suffix in chain_config
-- **Offline**: All features work 100% offline — no internet connection required

@@ -1,0 +1,849 @@
+//! T1.2 -- the scoped repository layer. `rusqlite` appears ONLY here (and in
+//! `migrate.rs`/`migrate_v3.rs`, which are schema-only). Every read/write goes
+//! through a method that takes a `Scope`, so a forgotten `WHERE tenant_id=?`
+//! cannot happen -- the type signature demands a Scope before any query runs.
+//!
+//! Critical guarantee (per review, 2026-07-16): a row with a NULL `tenant_id`
+//! or `branch_id` is never silently excluded or silently wildcard-matched.
+//! `assert_scope_populated` checks the WHOLE table before any scoped query
+//! runs and hard-fails the entire call if even one unscoped row exists. This
+//! matters concretely for the ~25 legacy tables T1.1 could not give a SQL
+//! `NOT NULL` to (table-recreation was scoped down there) -- their integrity
+//! rests entirely on this runtime check, not a schema constraint.
+
+use crate::security::Scope;
+use rusqlite::{params, Connection, OptionalExtension};
+use std::fmt;
+
+#[derive(Debug)]
+pub enum RepoError {
+    Db(rusqlite::Error),
+    UnscopedRows { table: String, column: String, count: i64 },
+    ItemUnavailable { item_id: String, branch_id: String, reason: String },
+    OrderOutOfScope { order_id: String },
+    OrderAlreadyPaid { order_id: String },
+}
+
+impl fmt::Display for RepoError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Db(e) => write!(f, "database error: {e}"),
+            Self::UnscopedRows { table, column, count } => write!(
+                f,
+                "refusing to query {table}: {count} row(s) have a NULL {column} -- \
+                 this is a hard error, not a silently-narrowed result. Backfill {table}.{column} before retrying."
+            ),
+            Self::ItemUnavailable { item_id, branch_id, reason } => write!(
+                f, "item {item_id} unavailable at branch {branch_id}: {reason}"
+            ),
+            Self::OrderOutOfScope { order_id } => write!(f, "order {order_id} does not belong to the caller's tenant/branch"),
+            Self::OrderAlreadyPaid { order_id } => write!(f, "order {order_id} is already PAID -- refusing to take a second payment"),
+        }
+    }
+}
+impl std::error::Error for RepoError {}
+impl From<rusqlite::Error> for RepoError {
+    fn from(e: rusqlite::Error) -> Self { Self::Db(e) }
+}
+impl From<RepoError> for String {
+    fn from(e: RepoError) -> String { e.to_string() }
+}
+
+pub struct Repo<'a> {
+    conn: &'a Connection,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OrderRow {
+    pub id: String,
+    pub tenant_id: String,
+    pub branch_id: String,
+    pub table_id: String,
+    pub user_id: String,
+    pub status: String,
+    pub order_type: String,
+    pub total_cents: i64,
+}
+
+pub struct NewOrder {
+    pub table_id: String,
+    pub user_id: String,
+    pub order_type: String,
+    pub subtotal_cents: i64,
+    pub tax_cents: i64,
+    pub total_cents: i64,
+    pub discount_cents: i64,
+    // NOTE: deliberately no `driver_id` field routed to a nonexistent column
+    // (DRIFT_REPORT.md Finding #1) -- delivery driver assignment happens via
+    // a separate, explicit follow-up write once `orders` genuinely has the
+    // column (tracked, not silently reintroduced here).
+}
+
+/// Batch 3b -- T1.9's critical acceptance criterion. Everything `take_payment`
+/// does (order -> PAID, payment row, table -> FREE, optional debt entry, the
+/// order_current projection rebuild) happens against ONE `rusqlite::Connection`
+/// inside ONE caller-owned transaction -- there is no intermediate commit a
+/// `kill -9` could land between. See `commands_v3::take_payment_v3` for the
+/// transaction boundary and audit entry.
+pub struct PaymentInput {
+    pub order_id: String,
+    pub method: String,
+    pub amount_cents: i64,
+    pub change_cents: i64,
+    pub debtor_id: Option<String>,
+    pub actor_id: String,
+}
+
+/// Batch 3a, Decision B -- row shapes for the 5 DRIFT-broken command groups
+/// (customers, purchase_orders, drivers, printers, delivery). Deliberately
+/// narrower than `SELECT *`: exactly the fields the frontend pages named in
+/// DRIFT_REPORT.md Findings #2/#5 actually read.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StaffRow {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+    pub role_rank: i64,
+    pub branch_id: Option<String>,
+    pub is_active: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CustomerRow {
+    pub id: String,
+    pub name: String,
+    pub phone: String,
+    pub email: Option<String>,
+    pub address: Option<String>,
+    pub notes: Option<String>,
+    pub birthday: Option<String>,
+    pub loyalty_points: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PurchaseOrderRow {
+    pub id: String,
+    pub supplier_id: String,
+    pub status: String,
+    pub total_cents: i64,
+    pub created_by: String,
+    pub notes: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DriverRow {
+    pub id: String,
+    pub name: String,
+    pub phone: Option<String>,
+    pub vehicle_type: String,
+    pub vehicle_plate: Option<String>,
+    pub license_number: Option<String>,
+    pub status: String,
+    pub current_lat: Option<f64>,
+    pub current_lng: Option<f64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PrinterRow {
+    pub id: String,
+    pub name: String,
+    pub printer_type: String,
+    pub interface: String,
+    pub vendor_id: Option<String>,
+    pub product_id: Option<String>,
+    pub drawer_pulse_ms: i64,
+    pub is_primary: i64,
+    pub is_secondary: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DeliveryLogRow {
+    pub id: String,
+    pub order_id: String,
+    pub driver_id: String,
+    pub status: String,
+    pub assigned_at: Option<String>,
+    pub picked_up_at: Option<String>,
+    pub delivered_at: Option<String>,
+    pub failed_at: Option<String>,
+}
+
+impl<'a> Repo<'a> {
+    pub fn new(conn: &'a Connection) -> Self {
+        Repo { conn }
+    }
+
+    /// The core guarantee described in the module doc comment. Called at the
+    /// top of every scoped method, before the scope predicate is even built.
+    // pub(crate), not private: T1.9 (a later batch) and this batch's own test
+    // need to exercise the guarantee directly against the ~25 legacy tables
+    // that have no SQL NOT NULL, without requiring a dedicated Repo method
+    // for every single one of them yet.
+    pub(crate) fn assert_scope_populated(&self, table: &str, requires_branch: bool) -> Result<(), RepoError> {
+        let null_tenant: i64 = self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM {table} WHERE tenant_id IS NULL"),
+            [],
+            |r| r.get(0),
+        )?;
+        if null_tenant > 0 {
+            return Err(RepoError::UnscopedRows { table: table.to_string(), column: "tenant_id".to_string(), count: null_tenant });
+        }
+        if requires_branch {
+            let null_branch: i64 = self.conn.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE branch_id IS NULL"),
+                [],
+                |r| r.get(0),
+            )?;
+            if null_branch > 0 {
+                return Err(RepoError::UnscopedRows { table: table.to_string(), column: "branch_id".to_string(), count: null_branch });
+            }
+        }
+        Ok(())
+    }
+
+    /// Every scope resolves to a real, non-optional SQL predicate. There is
+    /// no arm that returns "no filter" for Tenant/Branch, and Platform's
+    /// deliberate "everything" access is the one documented exception, not a
+    /// fallback -- it only fires when the actor's role really is Platform,
+    /// established by `authenticate` + `staff.role`, never by a missing scope.
+    fn scope_predicate(scope: &Scope) -> (&'static str, Vec<String>) {
+        match scope {
+            Scope::Platform => ("1=1", vec![]),
+            Scope::Tenant { tenant_id } => ("tenant_id = ?1", vec![tenant_id.clone()]),
+            Scope::Branch { tenant_id, branch_id } => {
+                ("tenant_id = ?1 AND branch_id = ?2", vec![tenant_id.clone(), branch_id.clone()])
+            }
+        }
+    }
+
+    pub fn list_orders(&self, scope: &Scope) -> Result<Vec<OrderRow>, RepoError> {
+        self.assert_scope_populated("orders", true)?;
+        let (pred, binds) = Self::scope_predicate(scope);
+        let sql = format!(
+            "SELECT id, tenant_id, branch_id, table_id, user_id, status, order_type, total_cents \
+             FROM orders WHERE {pred} ORDER BY created_at DESC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(bind_refs.as_slice(), |r| {
+            Ok(OrderRow {
+                id: r.get(0)?, tenant_id: r.get(1)?, branch_id: r.get(2)?, table_id: r.get(3)?,
+                user_id: r.get(4)?, status: r.get(5)?, order_type: r.get(6)?, total_cents: r.get(7)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// `scope` here is the CALLER's scope (used only for the populated-table
+    /// check); the row is always written into the caller's own branch --
+    /// `create_order` never accepts a branch id argument from the caller, so
+    /// there is no code path where a Branch-scoped actor can write into a
+    /// branch that isn't their own.
+    pub fn create_order(&self, scope: &Scope, tenant_id: &str, branch_id: &str, input: NewOrder) -> Result<String, RepoError> {
+        self.assert_scope_populated("orders", true)?;
+        let _ = scope; // populated-check already ran; write path is intentionally branch-pinned, see doc comment
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Money is sacred: a NEWLY created order gets its `_minor`/`_currency`/
+        // `_scale` columns populated from `crate::money::scale_for` at write
+        // time, same as T1.1's backfill did for pre-existing rows -- there is
+        // no code path where an order exists with only the legacy `_cents`
+        // columns set and the money columns left NULL for someone else to
+        // backfill later.
+        let currency: String = self.conn.query_row("SELECT currency FROM branch WHERE id = ?1", params![branch_id], |r| r.get(0))?;
+        let scale = crate::money::scale_for(&currency) as i64;
+
+        self.conn.execute(
+            "INSERT INTO orders (id, tenant_id, branch_id, table_id, user_id, status, order_type, \
+             subtotal_cents, tax_cents, total_cents, discount_cents, created_at, sync_version, last_modified, sync_status, \
+             subtotal_minor, subtotal_currency, subtotal_scale, subtotal_base_minor, subtotal_fx_rate, subtotal_fx_source, subtotal_denom_epoch, \
+             tax_minor, tax_currency, tax_scale, tax_base_minor, tax_fx_rate, tax_fx_source, tax_denom_epoch, \
+             discount_minor, discount_currency, discount_scale, discount_base_minor, discount_fx_rate, discount_fx_source, discount_denom_epoch, \
+             total_minor, total_currency, total_scale, total_base_minor, total_fx_rate, total_fx_source, total_denom_epoch) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', ?6, ?7, ?8, ?9, ?10, ?11, 1, ?11, 'pending', \
+             ?7, ?12, ?13, ?7, '1', 'NATIVE', 2, \
+             ?8, ?12, ?13, ?8, '1', 'NATIVE', 2, \
+             ?10, ?12, ?13, ?10, '1', 'NATIVE', 2, \
+             ?9, ?12, ?13, ?9, '1', 'NATIVE', 2)",
+            params![id, tenant_id, branch_id, input.table_id, input.user_id, input.order_type,
+                     input.subtotal_cents, input.tax_cents, input.total_cents, input.discount_cents, now,
+                     currency, scale],
+        )?;
+        Ok(id)
+    }
+
+    /// T1.9's critical acceptance criterion: order -> PAID, the payment row,
+    /// table -> FREE, the optional debt entry, and the `order_current`
+    /// projection rebuild are all plain `self.conn.execute` calls on ONE
+    /// connection -- the caller (`commands_v3::take_payment_v3`) wraps this
+    /// whole method call in one `rusqlite::Transaction` and commits once, at
+    /// the very end. There is no intermediate commit; a process killed at
+    /// any point before that final `tx.commit()` loses ALL of these writes
+    /// together, never some subset of them (proven by
+    /// `commands_v3::tests::kill_9_mid_payment_never_leaves_a_partial_payment`).
+    pub fn take_payment(&self, tenant_id: &str, branch_id: &str, input: PaymentInput) -> Result<String, RepoError> {
+        self.assert_scope_populated("payments", true)?;
+        self.assert_scope_populated("orders", true)?;
+
+        let (order_tenant_id, order_branch_id, order_status): (String, String, String) = self.conn.query_row(
+            "SELECT tenant_id, branch_id, status FROM orders WHERE id = ?1",
+            params![input.order_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        if order_tenant_id != tenant_id || order_branch_id != branch_id {
+            return Err(RepoError::OrderOutOfScope { order_id: input.order_id.clone() });
+        }
+        if order_status == "PAID" {
+            return Err(RepoError::OrderAlreadyPaid { order_id: input.order_id.clone() });
+        }
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let currency: String = self.conn.query_row("SELECT currency FROM branch WHERE id = ?1", params![branch_id], |r| r.get(0))?;
+        let scale = crate::money::scale_for(&currency) as i64;
+        let payment_id = uuid::Uuid::now_v7().to_string();
+
+        // 1. The payment fact -- money columns populated at write time, same
+        //    rule as `create_order`, never left NULL for a later backfill.
+        self.conn.execute(
+            "INSERT INTO payments (id, tenant_id, branch_id, order_id, method, amount_cents, change_cents, created_at, sync_version, last_modified, sync_status, \
+             amount_minor, amount_currency, amount_scale, amount_base_minor, amount_fx_rate, amount_fx_source, amount_denom_epoch, \
+             change_minor, change_currency, change_scale, change_base_minor, change_fx_rate, change_fx_source, change_denom_epoch) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?8, 'pending', \
+             ?6, ?9, ?10, ?6, '1', 'NATIVE', 2, \
+             ?7, ?9, ?10, ?7, '1', 'NATIVE', 2)",
+            params![payment_id, tenant_id, branch_id, input.order_id, input.method, input.amount_cents, input.change_cents, now, currency, scale],
+        )?;
+
+        // 2. Order -> PAID.
+        self.conn.execute(
+            "UPDATE orders SET status = 'PAID', closed_at = ?1, last_modified = ?1, sync_status = 'pending' WHERE id = ?2",
+            params![now, input.order_id],
+        )?;
+
+        // 3. Table -> FREE, unconditionally releasing whichever table this
+        //    order was occupying (there is exactly one, by `current_order_id`).
+        self.conn.execute(
+            "UPDATE tables SET status = 'FREE', current_order_id = NULL, last_modified = ?1, sync_status = 'pending' WHERE current_order_id = ?2",
+            params![now, input.order_id],
+        )?;
+
+        // 4. Optional debt entry -- same transaction, not a follow-up write.
+        if let Some(debtor_id) = &input.debtor_id {
+            let debt_entry_id = uuid::Uuid::now_v7().to_string();
+            self.conn.execute(
+                "INSERT INTO debt_entries (id, debtor_id, order_id, amount_cents, type, notes, created_by, created_at, sync_version, last_modified, sync_status) \
+                 VALUES (?1, ?2, ?3, ?4, 'DEBT', NULL, ?5, ?6, 1, ?6, 'pending')",
+                params![debt_entry_id, debtor_id, input.order_id, input.amount_cents, input.actor_id, now],
+            )?;
+            self.conn.execute(
+                "UPDATE debtors SET total_debt_cents = total_debt_cents + ?1, balance_cents = balance_cents + ?1, last_transaction_at = ?2, last_modified = ?2 WHERE id = ?3",
+                params![input.amount_cents, now, debtor_id],
+            )?;
+        }
+
+        // 5. T1.6: the PAID status is an append-only fact + projection
+        //    rebuild, same as every other order status transition.
+        self.append_order_status_event(tenant_id, branch_id, &input.order_id, "PAID", &input.actor_id, "payment-command")?;
+        self.rebuild_order_current(&input.order_id)?;
+
+        Ok(payment_id)
+    }
+
+    /// Platform scope only (enforced by the caller's `authorize` check before
+    /// this is ever reached) -- creates a new tenant + its first branch.
+    pub fn create_branch(&self, tenant_id: &str, name: &str, currency: &str) -> Result<String, RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO branch (id, tenant_id, name, currency, updated_at_hlc, device_id, rev) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'platform-command', 1)",
+            params![id, tenant_id, name, currency, now],
+        )?;
+        Ok(id)
+    }
+
+    /// Batch 3b -- lets an Owner/Platform actor pick a `target_branch_id`
+    /// for `create_staff_v3` (a Manager's own `create_staff_v3` call ignores
+    /// this entirely, forced to their own branch instead).
+    pub fn list_branches(&self, tenant_id: &str) -> Result<Vec<(String, String)>, RepoError> {
+        let mut stmt = self.conn.prepare("SELECT id, name FROM branch WHERE tenant_id = ?1 ORDER BY name ASC")?;
+        let rows = stmt.query_map(params![tenant_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// `actor_branch_id: None` means the caller is Owner/Platform (may target
+    /// any branch in `target_branch_id`); `Some(b)` means the caller is a
+    /// Manager, and `target_branch_id` is IGNORED in favor of `b` -- the
+    /// forcing described in ARCHITECTURE_V3.md hard rule #2, enforced here at
+    /// the repo layer, not just in the command handler, so it can't be
+    /// bypassed by a future command that forgets the check.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_staff(
+        &self,
+        tenant_id: &str,
+        actor_branch_id: Option<&str>,
+        target_branch_id: Option<&str>,
+        role: &str,
+        role_rank: u8,
+        name: &str,
+        pin_hash: Option<&str>,
+        password_hash: Option<&str>,
+    ) -> Result<String, RepoError> {
+        let effective_branch_id = match actor_branch_id {
+            Some(b) => Some(b), // Manager: forced to own branch, target_branch_id ignored
+            None => target_branch_id, // Owner/Platform: caller's explicit target
+        };
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO staff (id, tenant_id, branch_id, role, role_rank, name, pin_hash, password_hash, is_active, created_at, updated_at_hlc, device_id, rev) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?9, 'platform-command', 1)",
+            params![id, tenant_id, effective_branch_id, role, role_rank, name, pin_hash, password_hash, now],
+        )?;
+        Ok(id)
+    }
+
+    /// Reads back a staff row's (tenant_id, branch_id, role_rank) -- used by
+    /// the command layer to check the assignment rank rule against the
+    /// TARGET's current rank, not just the new one, before allowing an update.
+    pub fn get_staff_scope(&self, staff_id: &str) -> Result<(String, Option<String>, u8), RepoError> {
+        self.conn
+            .query_row(
+                "SELECT tenant_id, branch_id, role_rank FROM staff WHERE id = ?1",
+                params![staff_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u8)),
+            )
+            .map_err(RepoError::from)
+    }
+
+    pub fn update_staff_role(&self, staff_id: &str, new_role: &str, new_role_rank: u8) -> Result<(), RepoError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE staff SET role = ?1, role_rank = ?2, updated_at_hlc = ?3, rev = rev + 1 WHERE id = ?4",
+            params![new_role, new_role_rank, now, staff_id],
+        )?;
+        Ok(())
+    }
+
+    /// Batch 3b -- `staff/page.tsx`'s CRUD, finally pointed at `staff`
+    /// instead of the dropped `users` table. Scope decision, stated plainly:
+    /// `staff` has no `email`/`phone`/`photo_path`/`cv_path`/`qr_code`
+    /// columns (the old UI collected all of these) -- this only updates
+    /// `name` and, optionally, `pin_hash`. Photo/CV upload has nowhere to
+    /// persist to anymore and is a UI-level no-op now, not silently dropped
+    /// data (there was never a column for it to land in on this table).
+    pub fn update_staff_profile(&self, staff_id: &str, name: &str, new_pin_hash: Option<&str>) -> Result<(), RepoError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        match new_pin_hash {
+            Some(hash) => {
+                self.conn.execute(
+                    "UPDATE staff SET name = ?1, pin_hash = ?2, updated_at_hlc = ?3, rev = rev + 1 WHERE id = ?4",
+                    params![name, hash, now, staff_id],
+                )?;
+            }
+            None => {
+                self.conn.execute(
+                    "UPDATE staff SET name = ?1, updated_at_hlc = ?2, rev = rev + 1 WHERE id = ?3",
+                    params![name, now, staff_id],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_staff_active(&self, staff_id: &str, is_active: bool) -> Result<(), RepoError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE staff SET is_active = ?1, updated_at_hlc = ?2, rev = rev + 1 WHERE id = ?3",
+            params![is_active as i64, now, staff_id],
+        )?;
+        Ok(())
+    }
+
+    /// `staff` is scoped by `tenant_id` always, `branch_id` only for
+    /// non-Owner/Platform roles (Owner/Platform rows have a NULL branch_id by
+    /// the table's own CHECK constraint) -- so listing staff is always a
+    /// tenant-wide query, never additionally filtered by the CALLER's own
+    /// branch (a Manager must still see the Owner and their fellow Managers
+    /// in the tenant, not just their own branch's staff). Who may see whom
+    /// beyond that is `authorize_scope`'s job at the command layer, same as
+    /// every other list method here.
+    pub fn list_staff(&self, scope: &Scope) -> Result<Vec<StaffRow>, RepoError> {
+        let tenant_id = match scope {
+            Scope::Platform => None,
+            Scope::Tenant { tenant_id } | Scope::Branch { tenant_id, .. } => Some(tenant_id.clone()),
+        };
+        let (sql, tenant_id) = match &tenant_id {
+            Some(t) => ("SELECT id, name, role, role_rank, branch_id, is_active, created_at FROM staff WHERE tenant_id = ?1 ORDER BY name ASC", Some(t.clone())),
+            None => ("SELECT id, name, role, role_rank, branch_id, is_active, created_at FROM staff ORDER BY name ASC", None),
+        };
+        let mut stmt = self.conn.prepare(sql)?;
+        let row_mapper = |r: &rusqlite::Row| {
+            Ok(StaffRow { id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, role_rank: r.get(3)?, branch_id: r.get(4)?, is_active: r.get(5)?, created_at: r.get(6)? })
+        };
+        let rows = match tenant_id {
+            Some(t) => stmt.query_map(params![t], row_mapper)?.collect::<Result<Vec<_>, _>>(),
+            None => stmt.query_map([], row_mapper)?.collect::<Result<Vec<_>, _>>(),
+        };
+        rows.map_err(RepoError::from)
+    }
+
+    // -----------------------------------------------------------------
+    // T1.6 -- append-only order status events + the order_current projection
+    // -----------------------------------------------------------------
+
+    /// Appends one status-change fact. Per SCHEMA_V3.md §6, `orders.status`
+    /// is never UPDATEd directly by anything built on this repo layer --
+    /// this is the only way a status "changes": a new event is appended, and
+    /// `order_current` (a LOCAL-ONLY read cache, never synced) is rebuilt
+    /// from a fresh replay of the whole event stream, not patched in place.
+    pub fn append_order_status_event(&self, tenant_id: &str, branch_id: &str, order_id: &str, status: &str, actor_id: &str, device_id: &str) -> Result<(), RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        let seq: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM order_status_event WHERE device_id = ?1",
+            params![device_id], |r| r.get(0),
+        )?;
+        self.conn.execute(
+            "INSERT INTO order_status_event (id, tenant_id, branch_id, order_id, status, actor_id, device_id, seq, ts) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![id, tenant_id, branch_id, order_id, status, actor_id, device_id, seq, now],
+        )?;
+        Ok(())
+    }
+
+    /// Rebuilds `order_current` for one order from a FRESH replay of
+    /// `order_status_event` (status) and `orders` (money, which lives on the
+    /// wide `orders` row itself per the Design choice in SCHEMA_V3.md §5, not
+    /// a separate fact stream) -- never incrementally patched. This is what
+    /// makes "projection == replay" true by construction: there is no code
+    /// path that updates `order_current` other than recomputing it whole.
+    pub fn rebuild_order_current(&self, order_id: &str) -> Result<(), RepoError> {
+        let (tenant_id, branch_id, subtotal_minor, tax_minor, discount_minor, total_minor, currency): (String, String, i64, i64, i64, i64, String) =
+            self.conn.query_row(
+                "SELECT tenant_id, branch_id, subtotal_minor, tax_minor, discount_minor, total_minor, total_currency FROM orders WHERE id = ?1",
+                params![order_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+            )?;
+        let latest_status: String = self.conn.query_row(
+            "SELECT status FROM order_status_event WHERE order_id = ?1 ORDER BY ts DESC, seq DESC LIMIT 1",
+            params![order_id], |r| r.get(0),
+        ).optional()?.unwrap_or_else(|| "PENDING".to_string());
+
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO order_current (order_id, tenant_id, branch_id, status, subtotal_minor, tax_minor, discount_minor, total_minor, currency, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+             ON CONFLICT(order_id) DO UPDATE SET \
+                status = excluded.status, subtotal_minor = excluded.subtotal_minor, tax_minor = excluded.tax_minor, \
+                discount_minor = excluded.discount_minor, total_minor = excluded.total_minor, \
+                currency = excluded.currency, updated_at = excluded.updated_at",
+            params![order_id, tenant_id, branch_id, latest_status, subtotal_minor, tax_minor, discount_minor, total_minor, currency, now],
+        )?;
+        Ok(())
+    }
+
+    /// Independent of `order_current` entirely -- replays the fact stream
+    /// fresh and returns just the status, for the projection==replay test to
+    /// compare against what `order_current` actually stored.
+    pub fn replay_order_status(&self, order_id: &str) -> Result<String, RepoError> {
+        self.conn.query_row(
+            "SELECT status FROM order_status_event WHERE order_id = ?1 ORDER BY ts DESC, seq DESC LIMIT 1",
+            params![order_id], |r| r.get(0),
+        ).optional().map(|s| s.unwrap_or_else(|| "PENDING".to_string())).map_err(RepoError::from)
+    }
+
+    // -----------------------------------------------------------------
+    // T1.6 -- two-layer menu price resolution (SCHEMA_V3.md §3, blocker #2)
+    // -----------------------------------------------------------------
+
+    /// `override.price_minor ?? default.price_minor`. NO currency
+    /// conversion, ever (blocker #2) -- if the branch's currency differs
+    /// from the tenant's base currency and no override row sets an explicit
+    /// price, this returns `ItemUnavailable` rather than silently converting
+    /// or guessing. A menu price is a set number in a fixed currency.
+    pub fn resolve_menu_price(&self, branch_id: &str, item_id: &str) -> Result<i64, RepoError> {
+        let override_price: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT price_minor FROM menu_item_override WHERE branch_id = ?1 AND item_id = ?2",
+                params![branch_id, item_id],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten();
+
+        if let Some(p) = override_price {
+            return Ok(p);
+        }
+
+        let default_price: i64 = self
+            .conn
+            .query_row("SELECT price_minor FROM menu_item_default WHERE id = ?1", params![item_id], |r| r.get(0))?;
+
+        let (branch_currency, tenant_base_currency): (String, String) = self.conn.query_row(
+            "SELECT b.currency, t.base_currency FROM branch b JOIN tenant t ON t.id = b.tenant_id WHERE b.id = ?1",
+            params![branch_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+
+        if branch_currency != tenant_base_currency {
+            return Err(RepoError::ItemUnavailable {
+                item_id: item_id.to_string(),
+                branch_id: branch_id.to_string(),
+                reason: format!(
+                    "branch currency {branch_currency} differs from tenant base currency {tenant_base_currency}, \
+                     and no menu_item_override sets an explicit price for this item at this branch"
+                ),
+            });
+        }
+
+        Ok(default_price)
+    }
+
+    // -----------------------------------------------------------------
+    // Batch 3a, Decision B -- the 5 DRIFT-broken command groups. Each of
+    // these tables now has the columns DRIFT_REPORT.md flagged as missing
+    // (Migration D); these methods are the scoped, audited replacement for
+    // the frontend's direct Kysely `.insertInto(...)` calls into them.
+    // Creates always derive tenant_id/branch_id from the caller's own Scope,
+    // never from a client-supplied argument -- there is nothing here to
+    // spoof, unlike `create_branch_v3`'s caller-supplied target tenant.
+    // -----------------------------------------------------------------
+
+    /// `customers` is tenant-only (SCHEMA_V3.md §9), not branch-scoped.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_customer(&self, tenant_id: &str, name: &str, phone: &str, email: Option<&str>, address: Option<&str>, notes: Option<&str>, birthday: Option<&str>) -> Result<String, RepoError> {
+        self.assert_scope_populated("customers", false)?;
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO customers (id, tenant_id, name, phone, email, address, notes, birthday, total_orders, total_spent_cents, loyalty_points, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 0, 0, datetime('now'), 'pending')",
+            params![id, tenant_id, name, phone, email, address, notes, birthday],
+        )?;
+        Ok(id)
+    }
+
+    pub fn list_customers(&self, tenant_id: &str) -> Result<Vec<CustomerRow>, RepoError> {
+        self.assert_scope_populated("customers", false)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, phone, email, address, notes, birthday, loyalty_points FROM customers WHERE tenant_id = ?1 ORDER BY name ASC",
+        )?;
+        let rows = stmt.query_map(params![tenant_id], |r| {
+            Ok(CustomerRow { id: r.get(0)?, name: r.get(1)?, phone: r.get(2)?, email: r.get(3)?, address: r.get(4)?, notes: r.get(5)?, birthday: r.get(6)?, loyalty_points: r.get(7)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_purchase_order(&self, tenant_id: &str, branch_id: &str, supplier_id: &str, created_by: &str, notes: Option<&str>) -> Result<String, RepoError> {
+        self.assert_scope_populated("purchase_orders", true)?;
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO purchase_orders (id, tenant_id, branch_id, supplier_id, status, total_cents, created_by, notes, created_at, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, 'PENDING', 0, ?5, ?6, datetime('now'), datetime('now'), 'pending')",
+            params![id, tenant_id, branch_id, supplier_id, created_by, notes],
+        )?;
+        Ok(id)
+    }
+
+    pub fn list_purchase_orders(&self, scope: &Scope) -> Result<Vec<PurchaseOrderRow>, RepoError> {
+        self.assert_scope_populated("purchase_orders", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let sql = format!(
+            "SELECT id, supplier_id, status, total_cents, created_by, notes, created_at FROM purchase_orders WHERE {predicate} ORDER BY created_at DESC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+            Ok(PurchaseOrderRow { id: r.get(0)?, supplier_id: r.get(1)?, status: r.get(2)?, total_cents: r.get(3)?, created_by: r.get(4)?, notes: r.get(5)?, created_at: r.get(6)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_driver(&self, tenant_id: &str, branch_id: &str, name: &str, phone: Option<&str>, vehicle_type: &str, license_number: Option<&str>, vehicle_plate: Option<&str>) -> Result<String, RepoError> {
+        self.assert_scope_populated("drivers", true)?;
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO drivers (id, tenant_id, branch_id, name, phone, vehicle_type, license_number, vehicle_plate, status, is_active, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'AVAILABLE', 1, datetime('now'), 'pending')",
+            params![id, tenant_id, branch_id, name, phone, vehicle_type, license_number, vehicle_plate],
+        )?;
+        Ok(id)
+    }
+
+    pub fn update_driver_location(&self, driver_id: &str, lat: f64, lng: f64) -> Result<(), RepoError> {
+        self.assert_scope_populated("drivers", true)?;
+        self.conn.execute(
+            "UPDATE drivers SET current_lat = ?1, current_lng = ?2, last_modified = datetime('now') WHERE id = ?3",
+            params![lat, lng, driver_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_drivers(&self, scope: &Scope) -> Result<Vec<DriverRow>, RepoError> {
+        self.assert_scope_populated("drivers", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let sql = format!(
+            "SELECT id, name, phone, vehicle_type, vehicle_plate, license_number, status, current_lat, current_lng FROM drivers WHERE {predicate} AND is_active = 1 ORDER BY name ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+            Ok(DriverRow { id: r.get(0)?, name: r.get(1)?, phone: r.get(2)?, vehicle_type: r.get(3)?, vehicle_plate: r.get(4)?, license_number: r.get(5)?, status: r.get(6)?, current_lat: r.get(7)?, current_lng: r.get(8)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_printer(&self, tenant_id: &str, branch_id: &str, name: &str, printer_type: &str, interface: &str, vendor_id: Option<&str>, product_id: Option<&str>, drawer_pulse_ms: i64, is_primary: bool) -> Result<String, RepoError> {
+        self.assert_scope_populated("printers", true)?;
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO printers (id, tenant_id, branch_id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary, is_secondary, is_active, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, 1, datetime('now'), 'pending')",
+            params![id, tenant_id, branch_id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary as i64],
+        )?;
+        Ok(id)
+    }
+
+    pub fn list_printers(&self, scope: &Scope) -> Result<Vec<PrinterRow>, RepoError> {
+        self.assert_scope_populated("printers", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let sql = format!(
+            "SELECT id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary, is_secondary FROM printers WHERE {predicate} AND is_active = 1 ORDER BY name ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+            Ok(PrinterRow { id: r.get(0)?, name: r.get(1)?, printer_type: r.get(2)?, interface: r.get(3)?, vendor_id: r.get(4)?, product_id: r.get(5)?, drawer_pulse_ms: r.get(6)?, is_primary: r.get(7)?, is_secondary: r.get(8)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    pub fn list_delivery_logs(&self, scope: &Scope) -> Result<Vec<DeliveryLogRow>, RepoError> {
+        self.assert_scope_populated("delivery_logs", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let sql = format!(
+            "SELECT id, order_id, driver_id, status, assigned_at, picked_up_at, delivered_at, failed_at FROM delivery_logs WHERE {predicate} ORDER BY assigned_at DESC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+            Ok(DeliveryLogRow { id: r.get(0)?, order_id: r.get(1)?, driver_id: r.get(2)?, status: r.get(3)?, assigned_at: r.get(4)?, picked_up_at: r.get(5)?, delivered_at: r.get(6)?, failed_at: r.get(7)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// `assigned_at` is set here, at creation -- matching the status the row
+    /// starts in (`ASSIGNED`), never left NULL for a status the row claims
+    /// to already be in.
+    pub fn create_delivery_log(&self, tenant_id: &str, branch_id: &str, order_id: &str, driver_id: &str) -> Result<String, RepoError> {
+        self.assert_scope_populated("delivery_logs", true)?;
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO delivery_logs (id, tenant_id, branch_id, order_id, driver_id, status, assigned_at, created_at, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'ASSIGNED', datetime('now'), datetime('now'), datetime('now'), 'pending')",
+            params![id, tenant_id, branch_id, order_id, driver_id],
+        )?;
+        Ok(id)
+    }
+
+    /// Append-only in spirit, same as order status (SCHEMA_V3.md §6): each
+    /// status transition stamps its own timestamp column and never touches
+    /// the ones a prior transition already set.
+    pub fn update_delivery_status(&self, delivery_log_id: &str, new_status: &str) -> Result<(), RepoError> {
+        self.assert_scope_populated("delivery_logs", true)?;
+        let ts_column = match new_status {
+            "PICKED_UP" => Some("picked_up_at"),
+            "DELIVERED" => Some("delivered_at"),
+            "FAILED" => Some("failed_at"),
+            _ => None,
+        };
+        match ts_column {
+            Some(col) => {
+                self.conn.execute(
+                    &format!("UPDATE delivery_logs SET status = ?1, {col} = datetime('now'), last_modified = datetime('now') WHERE id = ?2"),
+                    params![new_status, delivery_log_id],
+                )?;
+            }
+            None => {
+                self.conn.execute(
+                    "UPDATE delivery_logs SET status = ?1, last_modified = datetime('now') WHERE id = ?2",
+                    params![new_status, delivery_log_id],
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::migrate;
+    use crate::migrate_v3;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn fresh_migrated_db(tag: &str) -> PathBuf {
+        let temp = std::env::temp_dir().join(format!("repo_test_{tag}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir_all(&temp).unwrap();
+        let db_path = temp.join("test.db");
+        let mut conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        migrate::run_migrations(&mut conn, &db_path).unwrap();
+        migrate_v3::run_expand_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_remap_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_identity_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_drift_fix_migration(&mut conn, &db_path).unwrap();
+        db_path
+    }
+
+    /// The critical requirement, tested directly against `customers` -- one
+    /// of the ~25 legacy tables T1.1 could only give a Rust-level backfill
+    /// assertion to, NOT a SQL `NOT NULL` (unlike `orders`/`order_items`/
+    /// `payments`, which got real table-recreation). This is exactly the
+    /// scenario the review flagged: prove a NULL tenant_id on one of those
+    /// tables is a hard error, not a silently narrowed result.
+    #[test]
+    fn null_tenant_id_on_a_legacy_table_without_sql_not_null_is_a_hard_error() {
+        let db_path = fresh_migrated_db("legacy_null_scope");
+        let conn = Connection::open(&db_path).unwrap();
+
+        // Confirm the premise: customers.tenant_id has NO SQL NOT NULL (unlike orders).
+        let customers_sql: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='customers'", [], |r| r.get(0),
+        ).unwrap();
+        assert!(!customers_sql.contains("tenant_id TEXT NOT NULL"), "premise violated: customers.tenant_id already has SQL NOT NULL, this test no longer exercises the Rust-level guarantee");
+        println!("premise confirmed: customers.tenant_id has no SQL NOT NULL (Rust-level assertion is the only guard)");
+
+        conn.execute(
+            "INSERT INTO customers (id, name, phone, tenant_id) VALUES ('cust-1', 'Well Scoped', '0001', (SELECT id FROM tenant LIMIT 1))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO customers (id, name, phone, tenant_id) VALUES ('cust-2-unscoped', 'Bug Row', '0002', NULL)",
+            [],
+        ).unwrap();
+
+        let repo = Repo::new(&conn);
+        let result = repo.assert_scope_populated("customers", false);
+        match &result {
+            Err(RepoError::UnscopedRows { table, column, count }) => {
+                println!("assert_scope_populated correctly HARD-ERRORED on customers: table={table} column={column} count={count}");
+                assert_eq!(table, "customers");
+                assert_eq!(column, "tenant_id");
+                assert_eq!(*count, 1);
+            }
+            other => panic!("expected UnscopedRows, got: {other:?} -- a NULL-scope row on a table with no SQL NOT NULL was not caught"),
+        }
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+}

@@ -14,7 +14,7 @@ export default function MenuCard({
   onAdd,
 }: Props) {
   return (
-    <div className="bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-sm-hover hover:-translate-y-0.5 transition-all duration-200">
+    <div className="bg-white rounded-2xl overflow-hidden shadow-sm hover:border-ink-600 hover:-translate-y-0.5 transition-all duration-200">
       <div
         className="h-28 bg-white flex items-center justify-center overflow-hidden"
         style={categoryColor ? { borderTop: `3px solid ${categoryColor}` } : undefined}
@@ -30,9 +30,9 @@ export default function MenuCard({
         )}
       </div>
       <div className="p-3 space-y-2">
-        <h3 className="text-slate-900 font-medium text-sm truncate">{name}</h3>
+        <h3 className="text-ink-900 font-medium text-sm truncate">{name}</h3>
         <div className="flex items-center justify-between">
-          <span className="text-emerald-600 font-bold text-sm font-mono">
+          <span className="text-saffron-600 font-bold text-sm font-mono">
             {new Intl.NumberFormat("ar-SA", {
               style: "currency",
               currency: "SAR",
@@ -40,7 +40,7 @@ export default function MenuCard({
           </span>
           <button
             onClick={onAdd}
-            className="h-8 w-8 rounded-lg bg-emerald-600 text-white text-sm flex items-center justify-center hover:bg-emerald-700 transition-colors"
+            className="h-8 w-8 rounded-lg bg-saffron-600 text-white text-sm flex items-center justify-center hover:bg-saffron-700 transition-colors"
           >
             +
           </button>

@@ -44,7 +44,7 @@ export default function CategoryDock({ categories = [], active = null, onChange 
       {showScroll && (
         <button
           onClick={() => scroll("right")}
-          className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-7 h-7 flex items-center justify-center bg-white border border-slate-200 rounded-sm shadow-sm text-slate-500 hover:text-slate-700"
+          className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-7 h-7 flex items-center justify-center bg-white border border-ink-200 rounded-sm shadow-sm text-ink-500 hover:text-ink-700"
         >
           <ChevronRight className="w-4 h-4" />
         </button>
@@ -58,8 +58,8 @@ export default function CategoryDock({ categories = [], active = null, onChange 
             onClick={() => onChange(null)}
             className={`shrink-0 px-3.5 py-1.5 rounded-sm text-sm font-medium transition-colors ${
               active === null
-                ? "bg-emerald-600 text-white"
-                : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 hover:text-slate-700"
+                ? "bg-saffron-600 text-white"
+                : "bg-white text-ink-600 border border-ink-200 hover:bg-ink-50 hover:text-ink-700"
             }`}
           >
             الكل
@@ -71,8 +71,8 @@ export default function CategoryDock({ categories = [], active = null, onChange 
             onClick={() => onChange?.(cat.name)}
             className={`shrink-0 px-3.5 py-1.5 rounded-sm text-sm font-medium transition-colors whitespace-nowrap ${
               active === cat.name
-                ? "bg-emerald-600 text-white"
-                : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 hover:text-slate-700"
+                ? "bg-saffron-600 text-white"
+                : "bg-white text-ink-600 border border-ink-200 hover:bg-ink-50 hover:text-ink-700"
             }`}
           >
             {cat.name}
@@ -82,7 +82,7 @@ export default function CategoryDock({ categories = [], active = null, onChange 
       {showScroll && (
         <button
           onClick={() => scroll("left")}
-          className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-7 h-7 flex items-center justify-center bg-white border border-slate-200 rounded-sm shadow-sm text-slate-500 hover:text-slate-700"
+          className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-7 h-7 flex items-center justify-center bg-white border border-ink-200 rounded-sm shadow-sm text-ink-500 hover:text-ink-700"
         >
           <ChevronLeft className="w-4 h-4" />
         </button>

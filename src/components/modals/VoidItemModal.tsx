@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { getDb } from "../../db";
-import { verifyPassword } from "../../lib/auth";
+import { invoke } from "@tauri-apps/api/core";
 
 interface Props {
   itemName: string;
@@ -28,18 +27,9 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
       setVerifying(true);
       setPinError(null);
       try {
-        const db = await getDb();
-        const manager = await db
-          .selectFrom("users")
-          .select(["password_hash"])
-          .where("role", "in", ["MANAGER", "ADMIN", "OWNER"])
-          .where("is_active", "=", 1)
-          .executeTakeFirst();
-        if (!manager) {
-          setPinError("لا يوجد مدير متاح");
-          return;
-        }
-        const valid = await verifyPassword(pin, manager.password_hash);
+        // Same as ManagerPinModal: verified in Rust against `staff`, never
+        // the dropped `users` table, and the hash never reaches this renderer.
+        const valid = await invoke<boolean>("verify_manager_override", { passwordOrPin: pin }).catch(() => false);
         if (!valid) {
           setPinError("كلمة مرور المدير غير صحيحة");
           return;

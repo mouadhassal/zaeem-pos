@@ -90,8 +90,8 @@ function StockBadge({ qty, min }: { qty: number; min: number }) {
     );
   }
   return (
-    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600 text-xs font-medium">
-      <span className="w-1.5 h-1.5 rounded-full bg-emerald-600" />
+    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-saffron-50 text-saffron-600 text-xs font-medium">
+      <span className="w-1.5 h-1.5 rounded-full bg-saffron-600" />
       {qty}
     </span>
   );
@@ -130,10 +130,10 @@ function Modal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6 space-y-4" dir="rtl">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-bold text-slate-900">{title}</h2>
+          <h2 className="text-lg font-bold text-ink-900">{title}</h2>
           <button
             onClick={onClose}
-            className="text-slate-500 hover:text-slate-500 text-xl leading-none"
+            className="text-ink-500 hover:text-ink-500 text-xl leading-none"
           >
             ✕
           </button>
@@ -187,9 +187,9 @@ export default function InventoryPage() {
   return (
     <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-slate-900">إدارة المخزون</h1>
+        <h1 className="text-xl font-bold text-ink-900">إدارة المخزون</h1>
         <div className="flex gap-2">
-          <button onClick={() => setShowAddIngredient(true)} className="h-10 px-5 rounded-lg bg-emerald-600 text-white text-sm font-medium shadow-sm shadow-200 hover:bg-emerald-700 hover:shadow-md hover:shadow-200 active:scale-[0.98] transition-all duration-150">
+          <button onClick={() => setShowAddIngredient(true)} className="h-10 px-5 rounded-lg bg-saffron-600 text-white text-sm font-medium shadow-sm shadow-200 hover:bg-saffron-700 hover:shadow-md hover:shadow-200 active:scale-[0.98] transition-all duration-150">
             + إضافة مادة
           </button>
           <AddIngredientModal
@@ -197,10 +197,10 @@ export default function InventoryPage() {
             onClose={() => setShowAddIngredient(false)}
             onSaved={() => { setShowAddIngredient(false); setRefreshKey((k) => k + 1); }}
           />
-          <button className="h-10 px-5 rounded-lg bg-white text-slate-900 text-sm font-medium border border-slate-200 hover:bg-white hover:border-slate-300 active:scale-[0.98] transition-all duration-150">
+          <button className="h-10 px-5 rounded-lg bg-white text-ink-900 text-sm font-medium border border-ink-200 hover:bg-white hover:border-ink-300 active:scale-[0.98] transition-all duration-150">
             جرد المخزون
           </button>
-          <button className="h-10 px-4 rounded-lg text-slate-400 text-sm hover:bg-white hover:text-slate-900 active:scale-[0.98] transition-all duration-150">
+          <button className="h-10 px-4 rounded-lg text-ink-400 text-sm hover:bg-white hover:text-ink-900 active:scale-[0.98] transition-all duration-150">
             تقرير الهالك
           </button>
         </div>
@@ -234,8 +234,8 @@ function TabBar({
           onClick={() => onChange(t.key)}
           className={`px-5 py-2 rounded-lg text-sm font-bold transition-colors ${
             active === t.key
-              ? "bg-white text-emerald-600 shadow-sm"
-              : "text-slate-400 hover:text-slate-900"
+              ? "bg-white text-saffron-600 shadow-sm"
+              : "text-ink-400 hover:text-ink-900"
           }`}
         >
           {t.label}
@@ -342,7 +342,7 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64 text-slate-500 font-arabic">
+      <div className="flex items-center justify-center h-64 text-ink-500 font-arabic">
         جاري التحميل...
       </div>
     );
@@ -351,30 +351,30 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
   return (
     <div className="space-y-4">
       <div className="relative max-w-sm">
-        <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+        <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-500" />
         <input
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="بحث..."
-          className="w-full h-10 pr-10 pl-4 rounded-lg bg-white border border-slate-200 text-sm text-right focus:bg-white focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100 transition-all outline-none"
+          className="w-full h-10 pr-10 pl-4 rounded-lg bg-white border border-ink-200 text-sm text-right focus:bg-white focus:border-saffron-300 focus:ring-2 focus:ring-saffron-100 transition-all outline-none"
         />
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="grid grid-cols-7 gap-4 px-6 py-3 bg-white/80 border-b border-slate-200">
-          <div className="text-xs font-semibold text-slate-400">المادة</div>
-          <div className="text-xs font-semibold text-slate-400">الوحدة</div>
-          <div className="text-xs font-semibold text-slate-400 text-center">الكمية الحالية</div>
-          <div className="text-xs font-semibold text-slate-400 text-center">الحد الأدنى</div>
-          <div className="text-xs font-semibold text-slate-400 text-center">الكمية المطلوبة</div>
-          <div className="text-xs font-semibold text-slate-400 text-center">آخر تحديث</div>
-          <div className="text-xs font-semibold text-slate-400 text-left">إجراءات</div>
+      <div className="bg-white rounded-xl border border-ink-200 shadow-sm overflow-hidden">
+        <div className="grid grid-cols-7 gap-4 px-6 py-3 bg-white/80 border-b border-ink-200">
+          <div className="text-xs font-semibold text-ink-400">المادة</div>
+          <div className="text-xs font-semibold text-ink-400">الوحدة</div>
+          <div className="text-xs font-semibold text-ink-400 text-center">الكمية الحالية</div>
+          <div className="text-xs font-semibold text-ink-400 text-center">الحد الأدنى</div>
+          <div className="text-xs font-semibold text-ink-400 text-center">الكمية المطلوبة</div>
+          <div className="text-xs font-semibold text-ink-400 text-center">آخر تحديث</div>
+          <div className="text-xs font-semibold text-ink-400 text-left">إجراءات</div>
         </div>
 
         {filtered.length === 0 ? (
           <EmptyState
-            icon={<Package className="w-8 h-8 text-slate-400" />}
+            icon={<Package className="w-8 h-8 text-ink-400" />}
             title="لا توجد مواد في المخزون"
             description="ابدأ بإضافة أول مادة لتتبع المخزون بشكل فعال"
           />
@@ -385,50 +385,50 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
               <div
                 key={ing.id}
                 className={`grid grid-cols-7 gap-4 px-6 py-4 items-center transition-colors ${
-                  i !== filtered.length - 1 ? "border-b border-slate-50" : ""
-                } hover:bg-slate-50`}
+                  i !== filtered.length - 1 ? "border-b border-ink-50" : ""
+                } hover:bg-ink-50`}
               >
                 <div className="flex items-center gap-3">
                   <div className="w-8 h-8 rounded-lg bg-white flex items-center justify-center">
-                    <Package className="w-4 h-4 text-slate-500" />
+                    <Package className="w-4 h-4 text-ink-500" />
                   </div>
-                  <span className="text-sm font-medium text-slate-900">{ing.name}</span>
+                  <span className="text-sm font-medium text-ink-900">{ing.name}</span>
                 </div>
 
-                <div className="text-sm text-slate-400">{ing.unit}</div>
+                <div className="text-sm text-ink-400">{ing.unit}</div>
 
                 <div className="text-center">
                   <StockBadge qty={ing.current_stock} min={ing.min_stock} />
                 </div>
 
-                <div className="text-center text-sm text-slate-400">{ing.min_stock}</div>
+                <div className="text-center text-sm text-ink-400">{ing.min_stock}</div>
 
-                <div className="text-center text-sm text-slate-400">
+                <div className="text-center text-sm text-ink-400">
                   {required > 0 ? required : "—"}
                 </div>
 
-                <div className="text-center text-xs text-slate-500">
+                <div className="text-center text-xs text-ink-500">
                   {formatDate(ing.last_modified)}
                 </div>
 
                 <div className="flex items-center justify-end gap-1">
                   <button
                     onClick={() => setAddTarget(ing)}
-                    className="p-2 rounded-lg text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 transition-colors"
+                    className="p-2 rounded-lg text-ink-500 hover:text-saffron-600 hover:bg-saffron-50 transition-colors"
                     title="إضافة كمية"
                   >
                     <ChevronUp className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => setRemoveTarget(ing)}
-                    className="p-2 rounded-lg text-slate-500 hover:text-red-500 hover:bg-red-50 transition-colors"
+                    className="p-2 rounded-lg text-ink-500 hover:text-red-500 hover:bg-red-50 transition-colors"
                     title="خصم كمية"
                   >
                     <ChevronDown className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => setEditTarget(ing)}
-                    className="p-2 rounded-lg text-slate-500 hover:text-blue-500 hover:bg-blue-50 transition-colors"
+                    className="p-2 rounded-lg text-ink-500 hover:text-blue-500 hover:bg-blue-50 transition-colors"
                     title="تعديل"
                   >
                     <Edit3 className="w-4 h-4" />
@@ -491,7 +491,7 @@ function AddStockModal({
   return (
     <Modal open={!!target} onClose={onClose} title="إضافة كمية">
       <div className="space-y-3">
-        <p className="text-sm text-slate-900">
+        <p className="text-sm text-ink-900">
           المادة: <span className="font-bold">{target.name}</span>
         </p>
         <input
@@ -499,33 +499,33 @@ function AddStockModal({
           value={qty || ""}
           onChange={(e) => setQty(Number(e.target.value))}
           placeholder="الكمية"
-          className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
         />
         <input
           type="text"
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           placeholder="السبب (مطلوب)"
-          className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
         />
         <input
           type="text"
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           placeholder="ملاحظات (اختياري)"
-          className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
         />
         <div className="flex gap-2 pt-2">
           <button
             onClick={handleSubmit}
             disabled={qty <= 0 || !reason.trim()}
-            className="flex-1 h-10 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors disabled:opacity-40"
+            className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
             تأكيد
           </button>
           <button
             onClick={onClose}
-            className="px-6 h-10 rounded-xl border border-slate-200 text-slate-500 text-sm font-bold hover:bg-white transition-colors"
+            className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors"
           >
             إلغاء
           </button>
@@ -567,9 +567,9 @@ function RemoveStockModal({
   return (
     <Modal open={!!target} onClose={onClose} title="خصم كمية">
       <div className="space-y-3">
-        <p className="text-sm text-slate-900">
+        <p className="text-sm text-ink-900">
           المادة: <span className="font-bold">{target.name}</span>
-          <span className="mr-2 text-slate-500 text-xs font-mono">
+          <span className="mr-2 text-ink-500 text-xs font-mono">
             (المخزون: {target.current_stock})
           </span>
         </p>
@@ -579,7 +579,7 @@ function RemoveStockModal({
           onChange={(e) => setQty(Number(e.target.value))}
           placeholder="الكمية"
           max={target.current_stock}
-          className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
         />
         {qty > target.current_stock && (
           <p className="text-red-500 text-xs">الكمية تتجاوز المخزون المتاح</p>
@@ -589,26 +589,26 @@ function RemoveStockModal({
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           placeholder="السبب (مطلوب)"
-          className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
         />
         <input
           type="text"
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           placeholder="ملاحظات (اختياري)"
-          className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
         />
         <div className="flex gap-2 pt-2">
           <button
             onClick={handleSubmit}
             disabled={qty <= 0 || !reason.trim() || qty > target.current_stock}
-            className="flex-1 h-10 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors disabled:opacity-40"
+            className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
             تأكيد
           </button>
           <button
             onClick={onClose}
-            className="px-6 h-10 rounded-xl border border-slate-200 text-slate-500 text-sm font-bold hover:bg-white transition-colors"
+            className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors"
           >
             إلغاء
           </button>
@@ -670,25 +670,25 @@ function AddIngredientModal({
     <Modal open={open} onClose={onClose} title="إضافة مادة جديدة">
       <div className="space-y-3">
         <div>
-          <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="اسم المادة" className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+          <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="اسم المادة" className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
           {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name}</p>}
         </div>
         <div>
-          <input type="text" value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="الوحدة (كجم, لتر, قطعة...)" className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+          <input type="text" value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="الوحدة (كجم, لتر, قطعة...)" className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
           {errors.unit && <p className="text-red-500 text-xs mt-1">{errors.unit}</p>}
         </div>
         <div>
-          <input type="number" value={cost || ""} onChange={(e) => setCost(Number(e.target.value))} placeholder="التكلفة لكل وحدة (هللة)" className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+          <input type="number" value={cost || ""} onChange={(e) => setCost(Number(e.target.value))} placeholder="التكلفة لكل وحدة (هللة)" className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
           {errors.cost_cents_per_unit && <p className="text-red-500 text-xs mt-1">{errors.cost_cents_per_unit}</p>}
         </div>
         <div>
-          <input type="number" value={minStock || ""} onChange={(e) => setMinStock(Number(e.target.value))} placeholder="الحد الأدنى للمخزون" className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+          <input type="number" value={minStock || ""} onChange={(e) => setMinStock(Number(e.target.value))} placeholder="الحد الأدنى للمخزون" className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
           {errors.min_stock && <p className="text-red-500 text-xs mt-1">{errors.min_stock}</p>}
         </div>
         {errors._form && <p className="text-sm text-red-500">{errors._form}</p>}
         <div className="flex gap-2 pt-2">
-          <button onClick={handleSubmit} disabled={saving} className="flex-1 h-10 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors disabled:opacity-40">{saving ? "جاري..." : "إضافة"}</button>
-          <button onClick={onClose} className="px-6 h-10 rounded-xl border border-slate-200 text-slate-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
+          <button onClick={handleSubmit} disabled={saving} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{saving ? "جاري..." : "إضافة"}</button>
+          <button onClick={onClose} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
         </div>
       </div>
     </Modal>
@@ -766,7 +766,7 @@ function EditIngredientModal({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="اسم المادة"
-            className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
           />
           {errors.name && (
             <p className="text-red-500 text-xs mt-1">{errors.name}</p>
@@ -778,7 +778,7 @@ function EditIngredientModal({
             value={unit}
             onChange={(e) => setUnit(e.target.value)}
             placeholder="الوحدة (كجم, لتر, قطعة...)"
-            className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
           />
           {errors.unit && (
             <p className="text-red-500 text-xs mt-1">{errors.unit}</p>
@@ -790,7 +790,7 @@ function EditIngredientModal({
             value={cost || ""}
             onChange={(e) => setCost(Number(e.target.value))}
             placeholder="التكلفة لكل وحدة (هللة)"
-            className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
           />
           {errors.cost_cents_per_unit && (
             <p className="text-red-500 text-xs mt-1">
@@ -804,7 +804,7 @@ function EditIngredientModal({
             value={minStock || ""}
             onChange={(e) => setMinStock(Number(e.target.value))}
             placeholder="الحد الأدنى للمخزون"
-            className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
           />
           {errors.min_stock && (
             <p className="text-red-500 text-xs mt-1">{errors.min_stock}</p>
@@ -813,13 +813,13 @@ function EditIngredientModal({
         <div className="flex gap-2 pt-2">
           <button
             onClick={handleSubmit}
-            className="flex-1 h-10 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors"
+            className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
             حفظ
           </button>
           <button
             onClick={onClose}
-            className="px-6 h-10 rounded-xl border border-slate-200 text-slate-500 text-sm font-bold hover:bg-white transition-colors"
+            className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors"
           >
             إلغاء
           </button>
@@ -871,7 +871,7 @@ function SuppliersTab() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64 text-slate-500 font-arabic">
+      <div className="flex items-center justify-center h-64 text-ink-500 font-arabic">
         جاري التحميل...
       </div>
     );
@@ -881,7 +881,7 @@ function SuppliersTab() {
     <div className="space-y-4">
       <button
         onClick={() => setShowAdd(true)}
-        className="h-10 px-4 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors"
+        className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
       >
         + إضافة مورد
       </button>
@@ -889,7 +889,7 @@ function SuppliersTab() {
       <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-200 text-slate-400 font-arabic">
+            <tr className="border-b border-ink-200 text-ink-400 font-arabic">
               <th className="text-right p-3">اسم المورد</th>
               <th className="text-right p-3">الهاتف</th>
               <th className="text-right p-3">البريد</th>
@@ -902,17 +902,17 @@ function SuppliersTab() {
             {suppliers.map((s) => (
               <tr
                 key={s.id}
-                className="border-b border-slate-200 hover:bg-white transition-colors"
+                className="border-b border-ink-200 hover:bg-white transition-colors"
               >
-                <td className="p-3 font-medium text-slate-900">{s.name}</td>
-                <td className="p-3 text-slate-400 font-mono" dir="ltr">
+                <td className="p-3 font-medium text-ink-900">{s.name}</td>
+                <td className="p-3 text-ink-400 font-mono" dir="ltr">
                   {s.phone || "—"}
                 </td>
-                <td className="p-3 text-slate-400">{s.email || "—"}</td>
-                <td className="p-3 font-mono text-slate-900">
+                <td className="p-3 text-ink-400">{s.email || "—"}</td>
+                <td className="p-3 font-mono text-ink-900">
                   {s.total_orders}
                 </td>
-                <td className="p-3 font-mono text-slate-900">
+                <td className="p-3 font-mono text-ink-900">
                   {formatCurrency(s.total_purchases_cents)}
                 </td>
                 <td className="p-3">
@@ -944,7 +944,7 @@ function SuppliersTab() {
             ))}
             {suppliers.length === 0 && (
               <tr>
-                <td colSpan={6} className="text-center p-6 text-slate-500 font-arabic">
+                <td colSpan={6} className="text-center p-6 text-ink-500 font-arabic">
                   لا يوجد موردون
                 </td>
               </tr>
@@ -1071,7 +1071,7 @@ function SupplierModal({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="اسم المورد"
-            className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
           />
           {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name}</p>}
         </div>
@@ -1080,7 +1080,7 @@ function SupplierModal({
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
           placeholder="رقم الهاتف"
-          className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
         />
         <div>
           <input
@@ -1088,7 +1088,7 @@ function SupplierModal({
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="البريد الإلكتروني"
-            className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
           />
           {errors.email && <p className="text-red-500 text-xs mt-1">{errors.email}</p>}
         </div>
@@ -1097,25 +1097,25 @@ function SupplierModal({
           value={address}
           onChange={(e) => setAddress(e.target.value)}
           placeholder="العنوان"
-          className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
         />
         <input
           type="text"
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           placeholder="ملاحظات"
-          className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
         />
         <div className="flex gap-2 pt-2">
           <button
             onClick={handleSubmit}
-            className="flex-1 h-10 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors"
+            className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
             {isEdit ? "حفظ" : "إضافة"}
           </button>
           <button
             onClick={onClose}
-            className="px-6 h-10 rounded-xl border border-slate-200 text-slate-500 text-sm font-bold hover:bg-white transition-colors"
+            className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors"
           >
             إلغاء
           </button>
@@ -1168,22 +1168,22 @@ function NewOrderModal({
 
   return (
     <Modal open={!!supplier} onClose={onClose} title="طلبية جديدة">
-      <p className="text-sm text-slate-900">
+      <p className="text-sm text-ink-900">
         إنشاء طلبية شراء للمورد: <span className="font-bold">{supplier.name}</span>
       </p>
-      <p className="text-xs text-slate-500">
+      <p className="text-xs text-ink-500">
         سيتم إنشاء طلبية بحالة "قيد الانتظار"
       </p>
       <div className="flex gap-2 pt-2">
         <button
           onClick={handleCreate}
-          className="flex-1 h-10 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors"
+          className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
         >
           إنشاء
         </button>
         <button
           onClick={onClose}
-          className="px-6 h-10 rounded-xl border border-slate-200 text-slate-500 text-sm font-bold hover:bg-white transition-colors"
+          className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors"
         >
           إلغاء
         </button>
@@ -1209,7 +1209,7 @@ function PurchasesTab() {
       const rows = await db
         .selectFrom("purchase_orders")
         .innerJoin("suppliers", "suppliers.id", "purchase_orders.supplier_id")
-        .innerJoin("users", "users.id", "purchase_orders.created_by")
+        .innerJoin("staff", "staff.id", "purchase_orders.created_by")
         .select([
           "purchase_orders.id",
           "purchase_orders.supplier_id",
@@ -1221,7 +1221,7 @@ function PurchasesTab() {
           "purchase_orders.created_at",
           "purchase_orders.received_at",
           "suppliers.name as supplier_name",
-          "users.name as creator_name",
+          "staff.name as creator_name",
         ])
         .orderBy("purchase_orders.created_at", "desc")
         .execute();
@@ -1247,9 +1247,9 @@ function PurchasesTab() {
   const statusBadge = (s: string) => {
     if (s === "PENDING") return "bg-amber-100 text-amber-700";
     if (s === "ORDERED") return "bg-blue-100 text-blue-700";
-    if (s === "RECEIVED") return "bg-emerald-100 text-emerald-600";
+    if (s === "RECEIVED") return "bg-saffron-100 text-saffron-600";
     if (s === "CANCELLED") return "bg-red-100 text-red-700";
-    return "bg-white text-slate-500";
+    return "bg-white text-ink-500";
   };
 
   const statusLabel = (s: string) => {
@@ -1261,13 +1261,13 @@ function PurchasesTab() {
   };
 
   if (loading) {
-    return <div className="flex items-center justify-center h-64 text-slate-500 font-arabic">جاري التحميل...</div>;
+    return <div className="flex items-center justify-center h-64 text-ink-500 font-arabic">جاري التحميل...</div>;
   }
 
   return (
     <div className="space-y-4">
       <div className="flex gap-2">
-        <button onClick={() => setShowCreate(true)} className="h-10 px-4 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors">
+        <button onClick={() => setShowCreate(true)} className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">
           + طلبية شراء جديدة
         </button>
       </div>
@@ -1275,7 +1275,7 @@ function PurchasesTab() {
       <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-200 text-slate-400 font-arabic">
+            <tr className="border-b border-ink-200 text-ink-400 font-arabic">
               <th className="text-right p-3 font-medium">رقم الطلبية</th>
               <th className="text-right p-3 font-medium">المورد</th>
               <th className="text-right p-3 font-medium">التاريخ</th>
@@ -1286,11 +1286,11 @@ function PurchasesTab() {
           </thead>
           <tbody>
             {orders.map((po) => (
-              <tr key={po.id} className="border-b border-slate-200 hover:bg-white">
-                <td className="p-3 font-mono text-slate-900 text-xs">{po.id.slice(0, 8)}</td>
-                <td className="p-3 font-arabic text-slate-900 font-medium">{po.supplier_name}</td>
-                <td className="p-3 font-mono text-slate-500 text-xs">{po.created_at.slice(0, 10)}</td>
-                <td className="p-3 font-mono text-emerald-600 font-bold">{formatCurrency(po.total_cents)}</td>
+              <tr key={po.id} className="border-b border-ink-200 hover:bg-white">
+                <td className="p-3 font-mono text-ink-900 text-xs">{po.id.slice(0, 8)}</td>
+                <td className="p-3 font-arabic text-ink-900 font-medium">{po.supplier_name}</td>
+                <td className="p-3 font-mono text-ink-500 text-xs">{po.created_at.slice(0, 10)}</td>
+                <td className="p-3 font-mono text-saffron-600 font-bold">{formatCurrency(po.total_cents)}</td>
                 <td className="p-3">
                   <span className={`inline-block px-3 py-1 rounded-full text-xs font-arabic font-medium ${statusBadge(po.status)}`}>
                     {statusLabel(po.status)}
@@ -1298,10 +1298,10 @@ function PurchasesTab() {
                 </td>
                 <td className="p-3 text-center">
                   <div className="flex items-center justify-center gap-1">
-                    <button onClick={() => setDetailTarget(po)} className="px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:bg-white transition-colors" title="عرض التفاصيل">👁️</button>
+                    <button onClick={() => setDetailTarget(po)} className="px-3 py-1.5 rounded-lg text-xs text-ink-400 hover:bg-white transition-colors" title="عرض التفاصيل">👁️</button>
                     {po.status === "PENDING" && (
                       <>
-                        <button onClick={() => setReceiveTarget(po)} className="px-3 py-1.5 rounded-lg text-xs text-emerald-600 hover:bg-emerald-50 transition-colors" title="استلام">📦</button>
+                        <button onClick={() => setReceiveTarget(po)} className="px-3 py-1.5 rounded-lg text-xs text-saffron-600 hover:bg-saffron-50 transition-colors" title="استلام">📦</button>
                         <button onClick={() => setCancelTarget(po.id)} className="px-3 py-1.5 rounded-lg text-xs text-red-500 hover:bg-red-50 transition-colors" title="إلغاء">❌</button>
                       </>
                     )}
@@ -1310,7 +1310,7 @@ function PurchasesTab() {
               </tr>
             ))}
             {orders.length === 0 && (
-              <tr><td colSpan={6} className="p-6 text-center text-slate-500 font-arabic">لا توجد طلبيات شراء</td></tr>
+              <tr><td colSpan={6} className="p-6 text-center text-ink-500 font-arabic">لا توجد طلبيات شراء</td></tr>
             )}
           </tbody>
         </table>
@@ -1322,11 +1322,11 @@ function PurchasesTab() {
       {cancelTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold text-slate-900 font-arabic">تأكيد الإلغاء</h2>
-            <p className="text-sm text-slate-600 font-arabic">هل أنت متأكد من إلغاء طلبية الشراء هذه؟</p>
+            <h2 className="text-lg font-bold text-ink-900 font-arabic">تأكيد الإلغاء</h2>
+            <p className="text-sm text-ink-600 font-arabic">هل أنت متأكد من إلغاء طلبية الشراء هذه؟</p>
             <div className="flex gap-2 pt-2">
               <button onClick={() => handleCancel(cancelTarget)} className="flex-1 h-10 rounded-xl bg-red-600 text-white text-sm font-bold hover:bg-red-700 transition-colors">تأكيد الإلغاء</button>
-              <button onClick={() => setCancelTarget(null)} className="px-6 h-10 rounded-xl border border-slate-200 text-slate-500 text-sm font-bold hover:bg-white transition-colors">رجوع</button>
+              <button onClick={() => setCancelTarget(null)} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">رجوع</button>
             </div>
           </div>
         </div>
@@ -1399,46 +1399,46 @@ function CreatePOModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
-        <h2 className="text-lg font-bold text-slate-900 font-arabic">طلبية شراء جديدة</h2>
+        <h2 className="text-lg font-bold text-ink-900 font-arabic">طلبية شراء جديدة</h2>
         <div className="space-y-3">
           <div>
-            <label className="block text-sm font-arabic text-slate-900 mb-1">المورد</label>
-            <select value={selectedSupplier} onChange={(e) => setSelectedSupplier(e.target.value)} className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+            <label className="block text-sm font-arabic text-ink-900 mb-1">المورد</label>
+            <select value={selectedSupplier} onChange={(e) => setSelectedSupplier(e.target.value)} className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500">
               <option value="">اختر المورد</option>
               {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </div>
           <div>
-            <label className="block text-sm font-arabic text-slate-900 mb-1">ملاحظات</label>
-            <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full h-10 px-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+            <label className="block text-sm font-arabic text-ink-900 mb-1">ملاحظات</label>
+            <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
           </div>
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <label className="text-sm font-arabic text-slate-900 font-bold">الأصناف</label>
+              <label className="text-sm font-arabic text-ink-900 font-bold">الأصناف</label>
               <button onClick={addItem} className="px-3 py-1.5 rounded-lg bg-indigo-100 text-indigo-700 text-xs font-bold hover:bg-indigo-200 transition-colors">+ إضافة صنف</button>
             </div>
             {items.map((item, idx) => (
               <div key={idx} className="flex gap-2 items-start">
-                <select value={item.ingredient_id} onChange={(e) => updateItem(idx, "ingredient_id", e.target.value)} className="flex-1 h-10 px-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                <select value={item.ingredient_id} onChange={(e) => updateItem(idx, "ingredient_id", e.target.value)} className="flex-1 h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500">
                   <option value="">اختر المادة</option>
                   {ingredients.map((ing) => <option key={ing.id} value={ing.id}>{ing.name}</option>)}
                 </select>
-                <input type="number" min="0" step="0.01" value={item.quantity_ordered || ""} onChange={(e) => updateItem(idx, "quantity_ordered", Number(e.target.value))} placeholder="الكمية" className="w-24 h-10 px-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
-                <input type="number" min="0" value={item.unit_cost_cents || ""} onChange={(e) => updateItem(idx, "unit_cost_cents", Number(e.target.value))} placeholder="سعر الوحدة" className="w-28 h-10 px-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+                <input type="number" min="0" step="0.01" value={item.quantity_ordered || ""} onChange={(e) => updateItem(idx, "quantity_ordered", Number(e.target.value))} placeholder="الكمية" className="w-24 h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
+                <input type="number" min="0" value={item.unit_cost_cents || ""} onChange={(e) => updateItem(idx, "unit_cost_cents", Number(e.target.value))} placeholder="سعر الوحدة" className="w-28 h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
                 <button onClick={() => removeItem(idx)} className="h-10 px-3 rounded-xl text-red-500 hover:bg-red-50 transition-colors">✕</button>
               </div>
             ))}
           </div>
 
           <div className="text-left">
-            <span className="text-sm text-slate-500 font-arabic">الإجمالي: </span>
-            <span className="text-lg font-bold text-emerald-600 font-mono">{formatCurrency(total)}</span>
+            <span className="text-sm text-ink-500 font-arabic">الإجمالي: </span>
+            <span className="text-lg font-bold text-saffron-600 font-mono">{formatCurrency(total)}</span>
           </div>
 
           <div className="flex gap-2 pt-2">
-            <button onClick={handleCreate} disabled={!selectedSupplier || items.length === 0} className="flex-1 h-10 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors disabled:opacity-40">إنشاء الطلبية</button>
-            <button onClick={onClose} className="px-6 h-10 rounded-xl border border-slate-200 text-slate-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
+            <button onClick={handleCreate} disabled={!selectedSupplier || items.length === 0} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">إنشاء الطلبية</button>
+            <button onClick={onClose} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
           </div>
         </div>
       </div>
@@ -1513,25 +1513,25 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
-        <h2 className="text-lg font-bold text-slate-900 font-arabic">استلام طلبية - {po.id.slice(0, 8)}</h2>
-        <p className="text-sm text-slate-500 font-arabic">المورد: {po.supplier_name}</p>
+        <h2 className="text-lg font-bold text-ink-900 font-arabic">استلام طلبية - {po.id.slice(0, 8)}</h2>
+        <p className="text-sm text-ink-500 font-arabic">المورد: {po.supplier_name}</p>
         <div className="space-y-3">
           {items.map((item, idx) => (
-            <div key={item.id} className="bg-white rounded-xl border border-slate-200 p-3 space-y-2">
+            <div key={item.id} className="bg-white rounded-xl border border-ink-200 p-3 space-y-2">
               <div className="flex justify-between">
-                <span className="font-bold text-slate-900">{item.ingredient_name}</span>
-                <span className="text-sm text-slate-500">الكمية المطلوبة: {item.quantity_ordered}</span>
+                <span className="font-bold text-ink-900">{item.ingredient_name}</span>
+                <span className="text-sm text-ink-500">الكمية المطلوبة: {item.quantity_ordered}</span>
               </div>
               <div className="flex items-center gap-2">
-                <label className="text-sm text-slate-500 font-arabic">الكمية المستلمة:</label>
-                <input type="number" min="0" max={item.quantity_ordered} step="0.01" value={item.quantity_received || ""} onChange={(e) => updateReceived(idx, Number(e.target.value))} className="w-24 h-10 px-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
-                <span className="text-xs text-slate-400">من أصل {item.quantity_ordered}</span>
+                <label className="text-sm text-ink-500 font-arabic">الكمية المستلمة:</label>
+                <input type="number" min="0" max={item.quantity_ordered} step="0.01" value={item.quantity_received || ""} onChange={(e) => updateReceived(idx, Number(e.target.value))} className="w-24 h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
+                <span className="text-xs text-ink-400">من أصل {item.quantity_ordered}</span>
               </div>
             </div>
           ))}
           <div className="flex gap-2 pt-2">
-            <button onClick={handleReceive} className="flex-1 h-10 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors">تأكيد الاستلام</button>
-            <button onClick={onClose} className="px-6 h-10 rounded-xl border border-slate-200 text-slate-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
+            <button onClick={handleReceive} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">تأكيد الاستلام</button>
+            <button onClick={onClose} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
           </div>
         </div>
       </div>
@@ -1580,24 +1580,24 @@ function PODetailModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-bold text-slate-900 font-arabic">تفاصيل الطلبية</h2>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-500 text-xl leading-none">✕</button>
+          <h2 className="text-lg font-bold text-ink-900 font-arabic">تفاصيل الطلبية</h2>
+          <button onClick={onClose} className="text-ink-500 hover:text-ink-500 text-xl leading-none">✕</button>
         </div>
         <div className="grid grid-cols-2 gap-4 text-sm">
-          <div><span className="text-slate-400 font-arabic">رقم الطلبية: </span><span className="font-mono text-slate-900">{po.id.slice(0, 8)}</span></div>
-          <div><span className="text-slate-400 font-arabic">المورد: </span><span className="text-slate-900">{po.supplier_name}</span></div>
-          <div><span className="text-slate-400 font-arabic">التاريخ: </span><span className="text-slate-900">{po.created_at.slice(0, 10)}</span></div>
-          <div><span className="text-slate-400 font-arabic">الحالة: </span><span className="text-slate-900">{statusLabel(po.status)}</span></div>
-          <div><span className="text-slate-400 font-arabic">المنشئ: </span><span className="text-slate-900">{po.creator_name}</span></div>
-          {po.received_at && <div><span className="text-slate-400 font-arabic">تاريخ الاستلام: </span><span className="text-slate-900">{po.received_at.slice(0, 10)}</span></div>}
+          <div><span className="text-ink-400 font-arabic">رقم الطلبية: </span><span className="font-mono text-ink-900">{po.id.slice(0, 8)}</span></div>
+          <div><span className="text-ink-400 font-arabic">المورد: </span><span className="text-ink-900">{po.supplier_name}</span></div>
+          <div><span className="text-ink-400 font-arabic">التاريخ: </span><span className="text-ink-900">{po.created_at.slice(0, 10)}</span></div>
+          <div><span className="text-ink-400 font-arabic">الحالة: </span><span className="text-ink-900">{statusLabel(po.status)}</span></div>
+          <div><span className="text-ink-400 font-arabic">المنشئ: </span><span className="text-ink-900">{po.creator_name}</span></div>
+          {po.received_at && <div><span className="text-ink-400 font-arabic">تاريخ الاستلام: </span><span className="text-ink-900">{po.received_at.slice(0, 10)}</span></div>}
         </div>
-        {po.notes && <div className="text-sm"><span className="text-slate-400 font-arabic">ملاحظات: </span><span className="text-slate-900">{po.notes}</span></div>}
+        {po.notes && <div className="text-sm"><span className="text-ink-400 font-arabic">ملاحظات: </span><span className="text-ink-900">{po.notes}</span></div>}
 
         <div>
-          <h3 className="font-bold text-slate-900 font-arabic mb-2">الأصناف</h3>
+          <h3 className="font-bold text-ink-900 font-arabic mb-2">الأصناف</h3>
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-slate-200 text-slate-400 font-arabic">
+              <tr className="border-b border-ink-200 text-ink-400 font-arabic">
                 <th className="text-right p-2 font-medium">المادة</th>
                 <th className="text-right p-2 font-medium">الكمية المطلوبة</th>
                 <th className="text-right p-2 font-medium">الكمية المستلمة</th>
@@ -1607,16 +1607,16 @@ function PODetailModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={5} className="p-4 text-center text-slate-500">جاري التحميل...</td></tr>
+                <tr><td colSpan={5} className="p-4 text-center text-ink-500">جاري التحميل...</td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={5} className="p-4 text-center text-slate-500">لا توجد أصناف</td></tr>
+                <tr><td colSpan={5} className="p-4 text-center text-ink-500">لا توجد أصناف</td></tr>
               ) : items.map((item) => (
-                <tr key={item.id} className="border-b border-slate-200">
-                  <td className="p-2 text-slate-900">{item.ingredient_name}</td>
+                <tr key={item.id} className="border-b border-ink-200">
+                  <td className="p-2 text-ink-900">{item.ingredient_name}</td>
                   <td className="p-2 font-mono">{item.quantity_ordered}</td>
                   <td className="p-2 font-mono">{item.quantity_received}</td>
                   <td className="p-2 font-mono">{formatCurrency(item.unit_cost_cents)}</td>
-                  <td className="p-2 font-mono font-bold text-emerald-600">{formatCurrency(item.quantity_ordered * item.unit_cost_cents)}</td>
+                  <td className="p-2 font-mono font-bold text-saffron-600">{formatCurrency(item.quantity_ordered * item.unit_cost_cents)}</td>
                 </tr>
               ))}
             </tbody>
@@ -1624,8 +1624,8 @@ function PODetailModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void
         </div>
 
         <div className="text-left">
-          <span className="text-lg font-bold text-slate-900 font-arabic">الإجمالي: </span>
-          <span className="text-lg font-bold text-emerald-600 font-mono">{formatCurrency(po.total_cents)}</span>
+          <span className="text-lg font-bold text-ink-900 font-arabic">الإجمالي: </span>
+          <span className="text-lg font-bold text-saffron-600 font-mono">{formatCurrency(po.total_cents)}</span>
         </div>
       </div>
     </div>
@@ -1652,7 +1652,7 @@ function MovementsTab() {
       const rows = await db
         .selectFrom("inventory_logs")
         .innerJoin("ingredients", "ingredients.id", "inventory_logs.ingredient_id")
-        .innerJoin("users", "users.id", "inventory_logs.user_id")
+        .innerJoin("staff", "staff.id", "inventory_logs.user_id")
         .select([
           "inventory_logs.id",
           "inventory_logs.ingredient_id",
@@ -1661,7 +1661,7 @@ function MovementsTab() {
           "inventory_logs.user_id",
           "inventory_logs.created_at",
           "ingredients.name as ingredient_name",
-          "users.name as user_name",
+          "staff.name as user_name",
         ])
         .orderBy("inventory_logs.created_at", "desc")
         .execute();
@@ -1703,7 +1703,7 @@ function MovementsTab() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64 text-slate-500 font-arabic">
+      <div className="flex items-center justify-center h-64 text-ink-500 font-arabic">
         جاري التحميل...
       </div>
     );
@@ -1713,29 +1713,29 @@ function MovementsTab() {
     <div className="space-y-4">
       <div className="flex gap-3 flex-wrap">
         <div>
-          <label className="block text-xs text-slate-400 mb-1 font-arabic">من</label>
+          <label className="block text-xs text-ink-400 mb-1 font-arabic">من</label>
           <input
             type="date"
             value={dateFrom}
             onChange={(e) => setDateFrom(e.target.value)}
-            className="h-10 px-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            className="h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
           />
         </div>
         <div>
-          <label className="block text-xs text-slate-400 mb-1 font-arabic">إلى</label>
+          <label className="block text-xs text-ink-400 mb-1 font-arabic">إلى</label>
           <input
             type="date"
             value={dateTo}
             onChange={(e) => setDateTo(e.target.value)}
-            className="h-10 px-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            className="h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
           />
         </div>
         <div>
-          <label className="block text-xs text-slate-400 mb-1 font-arabic">المادة</label>
+          <label className="block text-xs text-ink-400 mb-1 font-arabic">المادة</label>
           <select
             value={filterMaterial}
             onChange={(e) => setFilterMaterial(e.target.value)}
-            className="h-10 px-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            className="h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
           >
             <option value="">الكل</option>
             {ingredients.map((ing) => (
@@ -1746,11 +1746,11 @@ function MovementsTab() {
           </select>
         </div>
         <div>
-          <label className="block text-xs text-slate-400 mb-1 font-arabic">النوع</label>
+          <label className="block text-xs text-ink-400 mb-1 font-arabic">النوع</label>
           <select
             value={filterType}
             onChange={(e) => setFilterType(e.target.value)}
-            className="h-10 px-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            className="h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
           >
             <option value="all">الكل</option>
             <option value="add">إضافة</option>
@@ -1764,7 +1764,7 @@ function MovementsTab() {
       <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-200 text-slate-400 font-arabic">
+            <tr className="border-b border-ink-200 text-ink-400 font-arabic">
               <th className="text-right p-3">التاريخ</th>
               <th className="text-right p-3">المادة</th>
               <th className="text-right p-3">النوع</th>
@@ -1782,16 +1782,16 @@ function MovementsTab() {
                 هالك: "text-amber-600 bg-amber-50",
                 بيع: "text-blue-600 bg-blue-50",
               };
-              const colorClass = typeColors[typeLabel] ?? "text-slate-500 bg-white";
+              const colorClass = typeColors[typeLabel] ?? "text-ink-500 bg-white";
               return (
                 <tr
                   key={log.id}
-                  className="border-b border-slate-200 hover:bg-white transition-colors"
+                  className="border-b border-ink-200 hover:bg-white transition-colors"
                 >
-                  <td className="p-3 text-slate-400 text-xs font-mono">
+                  <td className="p-3 text-ink-400 text-xs font-mono">
                     {formatDate(log.created_at)}
                   </td>
-                  <td className="p-3 text-slate-900">{log.ingredient_name}</td>
+                  <td className="p-3 text-ink-900">{log.ingredient_name}</td>
                   <td className="p-3">
                     <span
                       className={`inline-block px-2 py-0.5 rounded-lg text-xs font-bold ${colorClass}`}
@@ -1807,16 +1807,16 @@ function MovementsTab() {
                     {log.change_amount > 0 ? "+" : ""}
                     {log.change_amount}
                   </td>
-                  <td className="p-3 text-slate-400 text-xs max-w-xs truncate">
+                  <td className="p-3 text-ink-400 text-xs max-w-xs truncate">
                     {log.reason}
                   </td>
-                  <td className="p-3 text-slate-500">{log.user_name}</td>
+                  <td className="p-3 text-ink-500">{log.user_name}</td>
                 </tr>
               );
             })}
             {filteredLogs.length === 0 && (
               <tr>
-                <td colSpan={6} className="text-center p-6 text-slate-500 font-arabic">
+                <td colSpan={6} className="text-center p-6 text-ink-500 font-arabic">
                   لا توجد حركات
                 </td>
               </tr>
@@ -1895,7 +1895,7 @@ function AlertsTab() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64 text-slate-500 font-arabic">
+      <div className="flex items-center justify-center h-64 text-ink-500 font-arabic">
         جاري التحميل...
       </div>
     );
@@ -1921,21 +1921,21 @@ function AlertsTab() {
           className="bg-white rounded-2xl shadow-sm p-4 flex items-center justify-between"
         >
           <div className="space-y-1">
-            <h3 className="font-bold text-slate-900">{ing.name}</h3>
-            <p className="text-sm text-slate-400 font-arabic">
+            <h3 className="font-bold text-ink-900">{ing.name}</h3>
+            <p className="text-sm text-ink-400 font-arabic">
               المخزون الحالي:{" "}
               <span className="font-mono font-bold text-red-500">
                 {ing.current_stock}
               </span>{" "}
               / الحد الأدنى:{" "}
-              <span className="font-mono text-slate-900">{ing.min_stock}</span>{" "}
+              <span className="font-mono text-ink-900">{ing.min_stock}</span>{" "}
               {ing.unit}
             </p>
           </div>
           <button
             onClick={() => handleAutoOrder(ing)}
             disabled={creating === ing.id || suppliers.length === 0}
-            className="h-10 px-4 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors disabled:opacity-40"
+            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
             {creating === ing.id ? "جاري الإنشاء..." : "طلبية تلقائية"}
           </button>

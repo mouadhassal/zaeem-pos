@@ -170,7 +170,7 @@ export default function DebtPage() {
   };
 
   if (loading) {
-    return <div className="flex items-center justify-center h-full text-slate-500 font-arabic">جاري التحميل...</div>;
+    return <div className="flex items-center justify-center h-full text-ink-500 font-arabic">جاري التحميل...</div>;
   }
 
   if (error) {
@@ -180,22 +180,22 @@ export default function DebtPage() {
   return (
     <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-slate-900">إدارة الديون</h1>
+        <h1 className="text-xl font-bold text-ink-900">إدارة الديون</h1>
         <div className="flex gap-2">
-          <button onClick={openAdd} className="h-10 px-4 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors">+ إضافة مدين</button>
+          <button onClick={openAdd} className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">+ إضافة مدين</button>
         </div>
       </div>
 
       <input
         type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
         placeholder="ابحث بالاسم أو الهاتف..."
-        className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+        className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
       />
 
       <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-200 text-slate-400 font-arabic">
+            <tr className="border-b border-ink-200 text-ink-400 font-arabic">
               <th className="text-right p-3 font-medium">الاسم</th>
               <th className="text-right p-3 font-medium">الهاتف</th>
               <th className="text-center p-3 font-medium">إجمالي الديون</th>
@@ -207,16 +207,16 @@ export default function DebtPage() {
           </thead>
           <tbody>
             {filtered.map((d) => (
-              <tr key={d.id} className="border-b border-slate-200 hover:bg-white cursor-pointer" onClick={() => openDetail(d)}>
-                <td className="p-3 font-arabic text-slate-900 font-medium">{d.name}</td>
-                <td className="p-3 font-mono text-slate-500" dir="ltr">{d.phone}</td>
+              <tr key={d.id} className="border-b border-ink-200 hover:bg-white cursor-pointer" onClick={() => openDetail(d)}>
+                <td className="p-3 font-arabic text-ink-900 font-medium">{d.name}</td>
+                <td className="p-3 font-mono text-ink-500" dir="ltr">{d.phone}</td>
                 <td className="p-3 text-center font-mono text-red-500 font-bold">{fmt(d.total_debt_cents)}</td>
-                <td className="p-3 text-center font-mono text-emerald-600 font-bold">{fmt(d.total_paid_cents)}</td>
+                <td className="p-3 text-center font-mono text-saffron-600 font-bold">{fmt(d.total_paid_cents)}</td>
                 <td className={`p-3 text-center font-mono font-bold ${d.balance_cents > 0 ? "text-red-600" : "text-green-600"}`}>{fmt(d.balance_cents)}</td>
-                <td className="p-3 font-arabic text-slate-400 text-xs">{fmtDateTime(d.last_transaction_at)}</td>
+                <td className="p-3 font-arabic text-ink-400 text-xs">{fmtDateTime(d.last_transaction_at)}</td>
                 <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center justify-center gap-1">
-                    <button onClick={() => { setPayModal(d); setPayAmount(""); setPayNotes(""); }} className="p-1.5 rounded-lg text-xs text-emerald-600 hover:bg-emerald-50 transition-colors" title="تسديد">💰</button>
+                    <button onClick={() => { setPayModal(d); setPayAmount(""); setPayNotes(""); }} className="p-1.5 rounded-lg text-xs text-saffron-600 hover:bg-saffron-50 transition-colors" title="تسديد">💰</button>
                     <button onClick={() => openEdit(d)} className="p-1.5 rounded-lg text-xs text-amber-600 hover:bg-amber-50 transition-colors" title="تعديل">✏️</button>
                     <button onClick={() => setDeleteId(d.id)} className="p-1.5 rounded-lg text-xs text-red-500 hover:bg-red-50 transition-colors" title="حذف">🗑️</button>
                   </div>
@@ -224,7 +224,7 @@ export default function DebtPage() {
               </tr>
             ))}
             {filtered.length === 0 && (
-              <tr><td colSpan={7} className="p-6 text-center text-slate-500 font-arabic">{searchQuery ? "لا توجد نتائج" : "لا يوجد مدينون"}</td></tr>
+              <tr><td colSpan={7} className="p-6 text-center text-ink-500 font-arabic">{searchQuery ? "لا توجد نتائج" : "لا يوجد مدينون"}</td></tr>
             )}
           </tbody>
         </table>
@@ -233,20 +233,20 @@ export default function DebtPage() {
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-slate-900">{editId ? "تعديل مدين" : "إضافة مدين"}</h2>
+            <h2 className="text-lg font-bold font-arabic text-ink-900">{editId ? "تعديل مدين" : "إضافة مدين"}</h2>
             <div className="space-y-3">
               {(["name", "phone", "email", "address", "notes"] as (keyof DebtorForm)[]).map((field) => (
                 <div key={field}>
-                  <label className="block text-sm font-arabic text-slate-900 mb-1">
+                  <label className="block text-sm font-arabic text-ink-900 mb-1">
                     {field === "name" ? "الاسم *" : field === "phone" ? "رقم الهاتف *" : field === "email" ? "البريد الإلكتروني" : field === "address" ? "العنوان" : "ملاحظات"}
                   </label>
                   {field === "notes" ? (
-                    <textarea value={form[field]} onChange={(e) => setForm((p) => ({ ...p, [field]: e.target.value }))} rows={3} className="w-full px-4 py-2 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500 resize-none" />
+                    <textarea value={form[field]} onChange={(e) => setForm((p) => ({ ...p, [field]: e.target.value }))} rows={3} className="w-full px-4 py-2 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500 resize-none" />
                   ) : (
                     <input
                       type={field === "email" ? "email" : "text"}
                       value={form[field]} onChange={(e) => setForm((p) => ({ ...p, [field]: e.target.value }))}
-                      className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                      className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                       dir={field === "phone" ? "ltr" : "rtl"}
                     />
                   )}
@@ -256,8 +256,8 @@ export default function DebtPage() {
               {formErrors._form && <p className="text-sm text-red-500 font-arabic">{formErrors._form}</p>}
             </div>
             <div className="flex gap-3 justify-end pt-2">
-              <button onClick={() => setShowModal(false)} className="h-10 px-6 rounded-xl bg-white text-slate-900 font-arabic text-sm hover:bg-slate-200 transition-colors">إلغاء</button>
-              <button onClick={save} disabled={saving} className="h-10 px-6 rounded-xl bg-emerald-600 text-white font-arabic text-sm hover:bg-emerald-700 transition-colors disabled:opacity-50">{saving ? "جاري الحفظ..." : "حفظ"}</button>
+              <button onClick={() => setShowModal(false)} className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors">إلغاء</button>
+              <button onClick={save} disabled={saving} className="h-10 px-6 rounded-xl bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50">{saving ? "جاري الحفظ..." : "حفظ"}</button>
             </div>
           </div>
         </div>
@@ -266,10 +266,10 @@ export default function DebtPage() {
       {deleteId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-slate-900">تأكيد الحذف</h2>
-            <p className="text-sm font-arabic text-slate-500">هل أنت متأكد من حذف هذا المدين؟</p>
+            <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد الحذف</h2>
+            <p className="text-sm font-arabic text-ink-500">هل أنت متأكد من حذف هذا المدين؟</p>
             <div className="flex gap-3 justify-end">
-              <button onClick={() => setDeleteId(null)} className="h-10 px-6 rounded-xl bg-white text-slate-900 font-arabic text-sm hover:bg-slate-200 transition-colors">إلغاء</button>
+              <button onClick={() => setDeleteId(null)} className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors">إلغاء</button>
               <button onClick={confirmDelete} className="h-10 px-6 rounded-xl bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors">حذف</button>
             </div>
           </div>
@@ -279,14 +279,14 @@ export default function DebtPage() {
       {payModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-slate-900">تسديد دفعة</h2>
-            <p className="text-sm font-arabic text-slate-500">المدين: <span className="font-bold">{payModal.name}</span></p>
-            <p className="text-sm font-arabic text-slate-400">المتبقي: <span className="font-mono font-bold text-red-600">{fmt(payModal.balance_cents)}</span></p>
-            <input type="number" min="0" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder="المبلغ" className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500" dir="ltr" />
-            <input type="text" value={payNotes} onChange={(e) => setPayNotes(e.target.value)} placeholder="ملاحظات (اختياري)" className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500" />
+            <h2 className="text-lg font-bold font-arabic text-ink-900">تسديد دفعة</h2>
+            <p className="text-sm font-arabic text-ink-500">المدين: <span className="font-bold">{payModal.name}</span></p>
+            <p className="text-sm font-arabic text-ink-400">المتبقي: <span className="font-mono font-bold text-red-600">{fmt(payModal.balance_cents)}</span></p>
+            <input type="number" min="0" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder="المبلغ" className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500" dir="ltr" />
+            <input type="text" value={payNotes} onChange={(e) => setPayNotes(e.target.value)} placeholder="ملاحظات (اختياري)" className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500" />
             <div className="flex gap-2 pt-2">
-              <button onClick={handlePay} disabled={!payAmount || parseFloat(payAmount) <= 0} className="flex-1 h-10 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors disabled:opacity-40">تسديد</button>
-              <button onClick={() => setPayModal(null)} className="px-6 h-10 rounded-xl border border-slate-200 text-slate-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
+              <button onClick={handlePay} disabled={!payAmount || parseFloat(payAmount) <= 0} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">تسديد</button>
+              <button onClick={() => setPayModal(null)} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
             </div>
           </div>
         </div>
@@ -298,8 +298,8 @@ export default function DebtPage() {
           <div className="w-full max-w-lg bg-white shadow-2xl h-full overflow-y-auto animate-slide-in-left">
             <div className="p-6 space-y-6">
               <div className="flex items-center justify-between">
-                <h2 className="text-lg font-bold font-arabic text-slate-900">{detail.debtor.name}</h2>
-                <button onClick={() => setDetailOpen(false)} className="p-2 rounded-lg text-slate-500 hover:bg-white transition-colors">✕</button>
+                <h2 className="text-lg font-bold font-arabic text-ink-900">{detail.debtor.name}</h2>
+                <button onClick={() => setDetailOpen(false)} className="p-2 rounded-lg text-ink-500 hover:bg-white transition-colors">✕</button>
               </div>
 
               <div className="grid grid-cols-3 gap-3">
@@ -307,45 +307,45 @@ export default function DebtPage() {
                   <p className="text-2xl font-bold text-red-600 font-mono">{fmt(detail.debtor.total_debt_cents)}</p>
                   <p className="text-xs text-red-700 font-arabic mt-1">إجمالي الديون</p>
                 </div>
-                <div className="bg-emerald-50 rounded-xl p-3 text-center">
-                  <p className="text-2xl font-bold text-emerald-600 font-mono">{fmt(detail.debtor.total_paid_cents)}</p>
-                  <p className="text-xs text-emerald-600 font-arabic mt-1">المدفوع</p>
+                <div className="bg-saffron-50 rounded-xl p-3 text-center">
+                  <p className="text-2xl font-bold text-saffron-600 font-mono">{fmt(detail.debtor.total_paid_cents)}</p>
+                  <p className="text-xs text-saffron-600 font-arabic mt-1">المدفوع</p>
                 </div>
-                <div className={`rounded-xl p-3 text-center ${detail.debtor.balance_cents > 0 ? "bg-red-50" : "bg-emerald-50"}`}>
-                  <p className={`text-2xl font-bold font-mono ${detail.debtor.balance_cents > 0 ? "text-red-600" : "text-emerald-600"}`}>{fmt(detail.debtor.balance_cents)}</p>
+                <div className={`rounded-xl p-3 text-center ${detail.debtor.balance_cents > 0 ? "bg-red-50" : "bg-saffron-50"}`}>
+                  <p className={`text-2xl font-bold font-mono ${detail.debtor.balance_cents > 0 ? "text-red-600" : "text-saffron-600"}`}>{fmt(detail.debtor.balance_cents)}</p>
                   <p className="text-xs font-arabic mt-1">المتبقي</p>
                 </div>
               </div>
 
               <div className="bg-white rounded-2xl p-4 space-y-2 shadow-sm">
-                <h3 className="font-bold font-arabic text-sm text-slate-900">سجل المعاملات</h3>
+                <h3 className="font-bold font-arabic text-sm text-ink-900">سجل المعاملات</h3>
                 {detail.entries.length > 0 ? (
                   <div className="space-y-1">
                     {detail.entries.map((e) => (
-                      <div key={e.id} className="flex justify-between items-center text-xs py-1.5 border-b border-slate-200 last:border-0">
+                      <div key={e.id} className="flex justify-between items-center text-xs py-1.5 border-b border-ink-200 last:border-0">
                         <div className="flex items-center gap-2">
-                          <span className={`inline-block w-2 h-2 rounded-full ${e.type === "DEBT" ? "bg-red-400" : "bg-emerald-400"}`} />
-                          <span className="font-arabic text-slate-400">{e.type === "DEBT" ? "دين" : "دفعة"}</span>
-                          <span className="font-arabic text-slate-500">{fmtDateTime(e.created_at)}</span>
+                          <span className={`inline-block w-2 h-2 rounded-full ${e.type === "DEBT" ? "bg-red-400" : "bg-saffron-400"}`} />
+                          <span className="font-arabic text-ink-400">{e.type === "DEBT" ? "دين" : "دفعة"}</span>
+                          <span className="font-arabic text-ink-500">{fmtDateTime(e.created_at)}</span>
                         </div>
-                        <span className={`font-mono font-bold ${e.type === "DEBT" ? "text-red-500" : "text-emerald-600"}`}>
+                        <span className={`font-mono font-bold ${e.type === "DEBT" ? "text-red-500" : "text-saffron-600"}`}>
                           {e.type === "DEBT" ? "+" : "-"}{fmt(e.amount_cents)}
                         </span>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <p className="text-xs text-slate-500 font-arabic">لا توجد معاملات</p>
+                  <p className="text-xs text-ink-500 font-arabic">لا توجد معاملات</p>
                 )}
               </div>
 
               <div className="bg-white rounded-2xl p-4 space-y-2">
-                <h3 className="font-bold font-arabic text-sm text-slate-900">معلومات الاتصال</h3>
+                <h3 className="font-bold font-arabic text-sm text-ink-900">معلومات الاتصال</h3>
                 <div className="space-y-1 text-sm">
-                  <div className="flex justify-between"><span className="text-slate-400 font-arabic">الهاتف</span><span className="font-mono text-slate-900" dir="ltr">{detail.debtor.phone}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-400 font-arabic">البريد</span><span className="text-slate-900">{detail.debtor.email || "-"}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-400 font-arabic">العنوان</span><span className="text-slate-900">{detail.debtor.address || "-"}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-400 font-arabic">ملاحظات</span><span className="text-slate-900">{detail.debtor.notes || "-"}</span></div>
+                  <div className="flex justify-between"><span className="text-ink-400 font-arabic">الهاتف</span><span className="font-mono text-ink-900" dir="ltr">{detail.debtor.phone}</span></div>
+                  <div className="flex justify-between"><span className="text-ink-400 font-arabic">البريد</span><span className="text-ink-900">{detail.debtor.email || "-"}</span></div>
+                  <div className="flex justify-between"><span className="text-ink-400 font-arabic">العنوان</span><span className="text-ink-900">{detail.debtor.address || "-"}</span></div>
+                  <div className="flex justify-between"><span className="text-ink-400 font-arabic">ملاحظات</span><span className="text-ink-900">{detail.debtor.notes || "-"}</span></div>
                 </div>
               </div>
             </div>

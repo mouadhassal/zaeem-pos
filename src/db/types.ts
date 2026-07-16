@@ -38,6 +38,28 @@ export interface UsersTable extends SyncFields {
   restaurant_id: string | null;
 }
 
+/// `staff` (T1.1's Migration A) replaced `users` (dropped by Decision A,
+/// 2026-07-16) as the sole identity table. Minimal Kysely type -- just
+/// enough for the read-only joins the frontend still does directly (shifts/
+/// attendance/purchase_orders/inventory_logs by `.user_id`/`.created_by`);
+/// full staff CRUD goes through `create_staff_v3`/`update_staff_v3`
+/// (different shape entirely: no email/phone/photo/cv/qr_code columns, a
+/// `role_rank` + branch_id/tenant_id scope, and hashed server-side), not a
+/// direct Kysely insert/update against this table.
+export interface StaffTable extends SyncFields {
+  id: string;
+  tenant_id: string;
+  branch_id: string | null;
+  role: string;
+  role_rank: number;
+  name: string;
+  email: string | null;
+  pin_hash: string | null;
+  password_hash: string | null;
+  is_active: number;
+  created_at: string;
+}
+
 export interface CategoriesTable extends SyncFields {
   id: string;
   name: string;
@@ -471,6 +493,7 @@ export interface LoyaltyTransactionsTable extends SyncFields {
 export interface Database {
   audit_logs: AuditLogsTable;
   users: UsersTable;
+  staff: StaffTable;
   categories: CategoriesTable;
   menu_items: MenuItemsTable;
   ingredients: IngredientsTable;

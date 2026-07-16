@@ -277,15 +277,15 @@ export default function SettingsPage() {
 
   return (
     <div className="flex h-full overflow-hidden" dir="rtl">
-      <nav className="w-44 bg-white border-l border-slate-200 flex flex-col py-3 gap-0.5 shrink-0 overflow-y-auto">
+      <nav className="w-44 bg-white border-l border-ink-200 flex flex-col py-3 gap-0.5 shrink-0 overflow-y-auto">
         {TABS.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
             className={`text-right px-4 py-3 font-arabic text-sm transition-colors ${
               tab === t.id
-                ? "bg-emerald-50 text-emerald-600 font-bold border-r-2 border-emerald-600"
-                : "text-slate-500 hover:bg-white hover:text-slate-900"
+                ? "bg-saffron-50 text-saffron-600 font-bold border-r-2 border-saffron-600"
+                : "text-ink-500 hover:bg-white hover:text-ink-900"
             } ${t.id === "subscription" && !isOwner ? "opacity-50 cursor-not-allowed" : ""}`}
             disabled={t.id === "subscription" && !isOwner}
           >
@@ -297,26 +297,26 @@ export default function SettingsPage() {
       <div className="flex-1 p-6 space-y-6 overflow-y-auto">
         {tab === "general" && (
           <div className="space-y-6 max-w-xl">
-            <h2 className="text-lg font-bold text-slate-900 font-arabic">الإعدادات العامة</h2>
+            <h2 className="text-lg font-bold text-ink-900 font-arabic">الإعدادات العامة</h2>
             <div className="bg-white rounded-2xl p-5 shadow-sm space-y-4">
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">اللغة</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">اللغة</label>
                 <select
                   value={language}
                   onChange={(e) => setLanguage(e.target.value)}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 >
                   <option value="ar">العربية</option>
                   <option value="en">English</option>
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">العملة</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">العملة</label>
                 <div className="flex gap-3">
                   <select
                     value={currency}
                     onChange={(e) => setCurrency(e.target.value)}
-                    className="flex-1 h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                    className="flex-1 h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                   >
                     {CURRENCIES.map((c) => (
                       <option key={c.value} value={c.value}>{c.label}</option>
@@ -325,18 +325,18 @@ export default function SettingsPage() {
                   <button
                     onClick={saveCurrency}
                     disabled={saving}
-                    className="h-10 px-6 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors disabled:opacity-50"
+                    className="h-10 px-6 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
                   >
                     حفظ
                   </button>
                 </div>
               </div>
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">المنطقة الزمنية</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">المنطقة الزمنية</label>
                 <select
                   value={timezone}
                   onChange={(e) => setTimezone(e.target.value)}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                 >
                   <option value="Asia/Riyadh">الرياض (UTC+3)</option>
                   <option value="Asia/Baghdad">بغداد (UTC+3)</option>
@@ -350,20 +350,20 @@ export default function SettingsPage() {
 
         {tab === "printer" && (
           <div className="space-y-6 max-w-xl">
-            <h2 className="text-lg font-bold text-slate-900 font-arabic">إعدادات الطابعة</h2>
+            <h2 className="text-lg font-bold text-ink-900 font-arabic">إعدادات الطابعة</h2>
             {printers.length === 0 && (
-              <div className="bg-white rounded-2xl p-8 shadow-sm text-center text-slate-500 font-arabic">
+              <div className="bg-white rounded-2xl p-8 shadow-sm text-center text-ink-500 font-arabic">
                 لا توجد طابعات مسجلة
               </div>
             )}
             {printers.map((printer) => (
               <div key={printer.id} className="bg-white rounded-2xl p-5 shadow-sm space-y-3">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-arabic font-bold text-slate-900">{printer.name}</h3>
+                  <h3 className="font-arabic font-bold text-ink-900">{printer.name}</h3>
                   <button
                     onClick={() => togglePrinterActive(printer)}
                     className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                      printer.is_active ? "bg-emerald-600" : "bg-slate-300"
+                      printer.is_active ? "bg-saffron-600" : "bg-ink-300"
                     }`}
                   >
                     <span
@@ -374,7 +374,7 @@ export default function SettingsPage() {
                   </button>
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="text-sm text-slate-400 font-arabic">عرض الورق:</span>
+                  <span className="text-sm text-ink-400 font-arabic">عرض الورق:</span>
                   <div className="flex gap-2">
                     {PAPER_WIDTHS.map((w) => (
                       <button
@@ -382,8 +382,8 @@ export default function SettingsPage() {
                         onClick={() => updatePaperWidth(printer, w)}
                         className={`px-3 py-1 rounded-lg text-xs font-mono transition-colors ${
                           printer.paper_width_mm === w
-                            ? "bg-emerald-600 text-white"
-                            : "bg-white text-slate-500 hover:bg-slate-200"
+                            ? "bg-saffron-600 text-white"
+                            : "bg-white text-ink-500 hover:bg-ink-200"
                         }`}
                       >
                         {w}mm
@@ -401,7 +401,7 @@ export default function SettingsPage() {
                       showMsg("فشلت الطباعة التجريبية");
                     }
                   }}
-                  className="px-4 py-2 rounded-xl bg-white text-slate-500 text-sm font-arabic hover:bg-slate-200 transition-colors"
+                  className="px-4 py-2 rounded-xl bg-white text-ink-500 text-sm font-arabic hover:bg-ink-200 transition-colors"
                 >
                   اختبار الطباعة
                 </button>
@@ -412,10 +412,10 @@ export default function SettingsPage() {
 
         {tab === "tax" && (
           <div className="space-y-6 max-w-xl">
-            <h2 className="text-lg font-bold text-slate-900 font-arabic">إعدادات الضرائب</h2>
+            <h2 className="text-lg font-bold text-ink-900 font-arabic">إعدادات الضرائب</h2>
             <div className="bg-white rounded-2xl p-5 shadow-sm space-y-4">
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">نسبة الضريبة (%)</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">نسبة الضريبة (%)</label>
                 <div className="flex items-center gap-4">
                   <input
                     type="range"
@@ -424,7 +424,7 @@ export default function SettingsPage() {
                     step="0.5"
                     value={taxRate}
                     onChange={(e) => setTaxRate(e.target.value)}
-                    className="flex-1 accent-emerald-600"
+                    className="flex-1 accent-saffron-600"
                   />
                   <input
                     type="number"
@@ -433,20 +433,20 @@ export default function SettingsPage() {
                     step="0.5"
                     value={taxRate}
                     onChange={(e) => setTaxRate(e.target.value)}
-                    className="w-20 h-10 px-3 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm text-center outline-none focus:border-emerald-500"
+                    className="w-20 h-10 px-3 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm text-center outline-none focus:border-saffron-500"
                     dir="ltr"
                   />
                 </div>
               </div>
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">نظام الضريبة</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">نظام الضريبة</label>
                 <div className="flex gap-3">
                   <button
                     onClick={() => setTaxMode("exclusive")}
                     className={`flex-1 h-10 rounded-xl font-arabic text-sm transition-colors ${
                       taxMode === "exclusive"
-                        ? "bg-emerald-600 text-white shadow-sm"
-                        : "bg-white text-slate-500 hover:bg-slate-200"
+                        ? "bg-saffron-600 text-white shadow-sm"
+                        : "bg-white text-ink-500 hover:bg-ink-200"
                     }`}
                   >
                     غير شامل
@@ -455,8 +455,8 @@ export default function SettingsPage() {
                     onClick={() => setTaxMode("inclusive")}
                     className={`flex-1 h-10 rounded-xl font-arabic text-sm transition-colors ${
                       taxMode === "inclusive"
-                        ? "bg-emerald-600 text-white shadow-sm"
-                        : "bg-white text-slate-500 hover:bg-slate-200"
+                        ? "bg-saffron-600 text-white shadow-sm"
+                        : "bg-white text-ink-500 hover:bg-ink-200"
                     }`}
                   >
                     شامل
@@ -466,7 +466,7 @@ export default function SettingsPage() {
               <button
                 onClick={saveTax}
                 disabled={saving}
-                className="h-10 px-6 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors disabled:opacity-50"
+                className="h-10 px-6 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 حفظ إعدادات الضريبة
               </button>
@@ -476,69 +476,69 @@ export default function SettingsPage() {
 
         {tab === "branch" && (
           <div className="space-y-6 max-w-xl">
-            <h2 className="text-lg font-bold text-slate-900 font-arabic">بيانات الفرع</h2>
+            <h2 className="text-lg font-bold text-ink-900 font-arabic">بيانات الفرع</h2>
             <div className="bg-white rounded-2xl p-5 shadow-sm space-y-4">
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">اسم الفرع</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">اسم الفرع</label>
                 <input
                   type="text"
                   value={branchName}
                   onChange={(e) => setBranchName(e.target.value)}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 />
               </div>
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">العنوان</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">العنوان</label>
                 <input
                   type="text"
                   value={branchAddress}
                   onChange={(e) => setBranchAddress(e.target.value)}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 />
               </div>
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">رقم الهاتف</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">رقم الهاتف</label>
                 <input
                   type="text"
                   value={branchPhone}
                   onChange={(e) => setBranchPhone(e.target.value)}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                   dir="ltr"
                 />
               </div>
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">الحد الأقصى للطاولات</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">الحد الأقصى للطاولات</label>
                 <input
                   type="number"
                   min="1"
                   value={branchMaxTables}
                   onChange={(e) => setBranchMaxTables(e.target.value)}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                   dir="ltr"
                 />
               </div>
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">ساعات العمل</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">ساعات العمل</label>
                 <div className="flex gap-3 items-center">
                   <input
                     type="time"
                     value={branchOpenTime}
                     onChange={(e) => setBranchOpenTime(e.target.value)}
-                    className="flex-1 h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 text-sm outline-none focus:border-emerald-500"
+                    className="flex-1 h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                   />
-                  <span className="text-slate-500 font-arabic">إلى</span>
+                  <span className="text-ink-500 font-arabic">إلى</span>
                   <input
                     type="time"
                     value={branchCloseTime}
                     onChange={(e) => setBranchCloseTime(e.target.value)}
-                    className="flex-1 h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 text-sm outline-none focus:border-emerald-500"
+                    className="flex-1 h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                   />
                 </div>
               </div>
               <button
                 onClick={saveBranch}
                 disabled={saving}
-                className="h-10 px-6 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors disabled:opacity-50"
+                className="h-10 px-6 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 حفظ بيانات الفرع
               </button>
@@ -548,7 +548,7 @@ export default function SettingsPage() {
 
         {tab === "subscription" && (
           <div className="space-y-6 max-w-xl">
-            <h2 className="text-lg font-bold text-slate-900 font-arabic">الاشتراك</h2>
+            <h2 className="text-lg font-bold text-ink-900 font-arabic">الاشتراك</h2>
             {!isOwner && (
               <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-amber-700 font-arabic text-sm">
                 هذه الصفحة متاحة للمالك فقط
@@ -559,27 +559,27 @@ export default function SettingsPage() {
                 <div
                   key={plan}
                   className={`bg-white rounded-2xl p-5 shadow-sm space-y-3 ${
-                    plan === "PRO" ? "ring-2 ring-emerald-400" : ""
+                    plan === "PRO" ? "ring-2 ring-saffron-400" : ""
                   }`}
                 >
                   <div className="text-center">
-                    <h3 className="font-bold text-slate-900 font-arabic text-lg">
+                    <h3 className="font-bold text-ink-900 font-arabic text-lg">
                       {plan === "STARTER" ? "ستارتر" : plan === "PRO" ? "برو" : "إنتربرايز"}
                     </h3>
                     {plan === "PRO" && (
-                      <span className="inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-arabic font-medium bg-emerald-100 text-emerald-700">
+                      <span className="inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-arabic font-medium bg-saffron-100 text-saffron-700">
                         الاشتراك الحالي
                       </span>
                     )}
                   </div>
-                  <div className="text-2xl font-bold text-center text-emerald-600 font-mono">
+                  <div className="text-2xl font-bold text-center text-saffron-600 font-mono">
                     {plan === "STARTER" ? "مجاني" : plan === "PRO" ? "99 $" : "199 $"}
                   </div>
                   <ul className="space-y-2 text-sm">
                     {FEATURES.map((f) => (
-                      <li key={f.name} className="flex justify-between text-slate-500">
+                      <li key={f.name} className="flex justify-between text-ink-500">
                         <span className="font-arabic">{f.name}</span>
-                        <span className="font-mono text-slate-900 font-medium">
+                        <span className="font-mono text-ink-900 font-medium">
                           {f[plan.toLowerCase() as keyof typeof f]}
                         </span>
                       </li>
@@ -591,10 +591,10 @@ export default function SettingsPage() {
             {isOwner && (
               <div className="bg-white rounded-2xl p-5 shadow-sm flex items-center justify-between">
                 <div>
-                  <p className="font-arabic text-slate-900">تاريخ انتهاء الاشتراك</p>
-                  <p className="font-mono text-slate-900 font-bold">2027-12-31</p>
+                  <p className="font-arabic text-ink-900">تاريخ انتهاء الاشتراك</p>
+                  <p className="font-mono text-ink-900 font-bold">2027-12-31</p>
                 </div>
-                <button className="h-10 px-6 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors">
+                <button className="h-10 px-6 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">
                   تجديد الاشتراك
                 </button>
               </div>
@@ -604,18 +604,18 @@ export default function SettingsPage() {
 
         {tab === "cloud" && (
           <div className="space-y-6 max-w-xl">
-            <h2 className="text-lg font-bold text-slate-900 font-arabic">المزامنة السحابية</h2>
+            <h2 className="text-lg font-bold text-ink-900 font-arabic">المزامنة السحابية</h2>
             <div className="bg-white rounded-2xl p-8 shadow-sm flex flex-col items-center justify-center text-center space-y-4">
-              <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center">
-                <svg className="w-8 h-8 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
+              <div className="w-16 h-16 rounded-full bg-ink-100 flex items-center justify-center">
+                <svg className="w-8 h-8 text-ink-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
               </div>
-              <h3 className="text-lg font-bold text-slate-900 font-arabic">قريباً</h3>
-              <p className="text-slate-500 font-arabic text-sm max-w-md">
+              <h3 className="text-lg font-bold text-ink-900 font-arabic">قريباً</h3>
+              <p className="text-ink-500 font-arabic text-sm max-w-md">
                 المزامنة السحابية ستتيح لك مزامنة البيانات بين عدة فروع وأجهزة بشكل آلي وآمن.
               </p>
-              <div className="bg-slate-50 rounded-xl p-4 w-full text-right space-y-2">
-                <p className="text-sm font-arabic text-slate-700 font-bold">الميزات القادمة:</p>
-                <ul className="text-sm text-slate-500 space-y-1 font-arabic list-disc pr-4">
+              <div className="bg-ink-50 rounded-xl p-4 w-full text-right space-y-2">
+                <p className="text-sm font-arabic text-ink-700 font-bold">الميزات القادمة:</p>
+                <ul className="text-sm text-ink-500 space-y-1 font-arabic list-disc pr-4">
                   <li>مزامنة فورية مع جميع الفروع</li>
                   <li>نسخ احتياطي تلقائي على السحابة</li>
                   <li>لوحة تحكم ويب للإدارة عن بعد</li>
@@ -631,11 +631,11 @@ export default function SettingsPage() {
 
         {tab === "backup" && (
           <div className="space-y-6 max-w-xl">
-            <h2 className="text-lg font-bold text-slate-900 font-arabic">النسخ الاحتياطي</h2>
+            <h2 className="text-lg font-bold text-ink-900 font-arabic">النسخ الاحتياطي</h2>
             <div className="bg-white rounded-2xl p-5 shadow-sm space-y-4">
               <div className="flex justify-between items-center">
-                <span className="text-sm text-slate-400 font-arabic">آخر نسخة احتياطية</span>
-                <span className="text-sm font-mono text-slate-900">
+                <span className="text-sm text-ink-400 font-arabic">آخر نسخة احتياطية</span>
+                <span className="text-sm font-mono text-ink-900">
                   {lastBackup
                     ? new Date(lastBackup).toLocaleString("ar-SA")
                     : "لم يتم إنشاء نسخة بعد"}
@@ -644,16 +644,16 @@ export default function SettingsPage() {
               <button
                 onClick={handleBackup}
                 disabled={backingUp}
-                className="w-full h-12 rounded-xl bg-emerald-600 text-white font-bold text-sm hover:bg-emerald-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                className="w-full h-12 rounded-xl bg-saffron-600 text-white font-bold text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {backingUp ? "جاري..." : "نسخ احتياطي الآن"}
               </button>
-              <div className="flex items-center justify-between pt-2 border-t border-slate-200">
-                <span className="text-sm font-arabic text-slate-900">النسخ الاحتياطي التلقائي</span>
+              <div className="flex items-center justify-between pt-2 border-t border-ink-200">
+                <span className="text-sm font-arabic text-ink-900">النسخ الاحتياطي التلقائي</span>
                 <button
                   onClick={() => setAutoBackup(!autoBackup)}
                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                    autoBackup ? "bg-emerald-600" : "bg-slate-300"
+                    autoBackup ? "bg-saffron-600" : "bg-ink-300"
                   }`}
                 >
                   <span
@@ -669,29 +669,29 @@ export default function SettingsPage() {
 
         {tab === "about" && (
           <div className="space-y-6 max-w-xl">
-            <h2 className="text-lg font-bold text-slate-900 font-arabic">عن النظام</h2>
+            <h2 className="text-lg font-bold text-ink-900 font-arabic">عن النظام</h2>
             <div className="bg-white rounded-2xl p-5 shadow-sm space-y-4">
               <div className="flex justify-between items-center">
-                <span className="text-sm text-slate-400 font-arabic">الإصدار</span>
-                <span className="font-mono font-bold text-slate-900">1.0.0</span>
+                <span className="text-sm text-ink-400 font-arabic">الإصدار</span>
+                <span className="font-mono font-bold text-ink-900">1.0.0</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-sm text-slate-400 font-arabic">آخر تحديث</span>
-                <span className="font-mono text-slate-900">2026-07-01</span>
+                <span className="text-sm text-ink-400 font-arabic">آخر تحديث</span>
+                <span className="font-mono text-ink-900">2026-07-01</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-sm text-slate-400 font-arabic">نظام التشغيل</span>
-                <span className="font-mono text-slate-900">Windows / Linux / macOS</span>
+                <span className="text-sm text-ink-400 font-arabic">نظام التشغيل</span>
+                <span className="font-mono text-ink-900">Windows / Linux / macOS</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-sm text-slate-400 font-arabic">قاعدة البيانات</span>
-                <span className="font-mono text-slate-900">SQLite</span>
+                <span className="text-sm text-ink-400 font-arabic">قاعدة البيانات</span>
+                <span className="font-mono text-ink-900">SQLite</span>
               </div>
-              <div className="border-t border-slate-200 pt-4">
-                <p className="text-sm font-arabic text-slate-900 mb-2">الدعم الفني</p>
+              <div className="border-t border-ink-200 pt-4">
+                <p className="text-sm font-arabic text-ink-900 mb-2">الدعم الفني</p>
                 <a
                   href="mailto:support@zaeem.com"
-                  className="text-emerald-600 hover:underline font-arabic text-sm"
+                  className="text-saffron-600 hover:underline font-arabic text-sm"
                   dir="ltr"
                 >
                   support@zaeem.com
@@ -703,7 +703,7 @@ export default function SettingsPage() {
       </div>
 
       {message && (
-        <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-lg z-50 font-arabic">
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-saffron-600 text-white px-6 py-3 rounded-xl shadow-lg z-50 font-arabic">
           {message}
         </div>
       )}

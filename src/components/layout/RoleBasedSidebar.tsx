@@ -21,7 +21,7 @@ export default function RoleBasedSidebar({ active, onNavigate }: Props) {
   const { navItems } = usePermissions();
 
   return (
-    <nav className="w-[68px] bg-white border-l border-slate-200 flex flex-col items-center py-3 gap-1 shrink-0" dir="rtl">
+    <nav className="w-[68px] bg-white border-l border-ink-200 flex flex-col items-center py-3 gap-1 shrink-0" dir="rtl">
       {navItems.map((item) => {
         const isActive = active === item.id;
         return (
@@ -30,8 +30,8 @@ export default function RoleBasedSidebar({ active, onNavigate }: Props) {
             onClick={() => onNavigate(item.id)}
             className={`w-14 h-14 rounded-xl flex flex-col items-center justify-center gap-0.5 transition-all ${
               isActive
-                ? "bg-emerald-50 text-emerald-600 border-r-2 border-emerald-600"
-                : "text-slate-500 hover:bg-white hover:text-slate-500"
+                ? "bg-saffron-50 text-saffron-600 border-r-2 border-saffron-600"
+                : "text-ink-500 hover:bg-white hover:text-ink-500"
             } ${item.readOnly ? "opacity-60" : ""}`}
             title={item.label}
           >

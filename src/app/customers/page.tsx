@@ -323,7 +323,7 @@ export default function CustomersPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full text-slate-500 font-arabic">
+      <div className="flex items-center justify-center h-full text-ink-500 font-arabic">
         جاري التحميل...
       </div>
     );
@@ -341,17 +341,17 @@ export default function CustomersPage() {
     <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-slate-900">قاعدة العملاء</h1>
+        <h1 className="text-xl font-bold text-ink-900">قاعدة العملاء</h1>
         <div className="flex gap-2">
           <button
             onClick={openAdd}
-            className="h-10 px-4 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors"
+            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
             + إضافة عميل
           </button>
           <button
             onClick={exportCsv}
-            className="h-10 px-4 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors"
+            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
             📤 تصدير
           </button>
@@ -364,14 +364,14 @@ export default function CustomersPage() {
         value={searchQuery}
         onChange={(e) => setSearchQuery(e.target.value)}
         placeholder="ابحث بالاسم أو الهاتف..."
-        className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+        className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
       />
 
       {/* Table */}
       <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-200 text-slate-400 font-arabic">
+            <tr className="border-b border-ink-200 text-ink-400 font-arabic">
               <th className="text-right p-3 font-medium">الاسم</th>
               <th className="text-right p-3 font-medium">الهاتف</th>
               <th className="text-center p-3 font-medium">عدد الطلبات</th>
@@ -385,26 +385,26 @@ export default function CustomersPage() {
             {filtered.map((c) => (
               <tr
                 key={c.id}
-                className="border-b border-slate-200 hover:bg-white cursor-pointer"
+                className="border-b border-ink-200 hover:bg-white cursor-pointer"
                 onClick={() => openDetail(c)}
               >
-                <td className="p-3 font-arabic text-slate-900 font-medium">{c.name}</td>
-                <td className="p-3 font-mono text-slate-500" dir="ltr">{c.phone}</td>
-                <td className="p-3 text-center font-mono text-slate-900">{c.total_orders}</td>
-                <td className="p-3 text-center font-mono text-emerald-600 font-bold">
+                <td className="p-3 font-arabic text-ink-900 font-medium">{c.name}</td>
+                <td className="p-3 font-mono text-ink-500" dir="ltr">{c.phone}</td>
+                <td className="p-3 text-center font-mono text-ink-900">{c.total_orders}</td>
+                <td className="p-3 text-center font-mono text-saffron-600 font-bold">
                   {fromCents(c.total_spent_cents)}
                 </td>
-                <td className="p-3 font-arabic text-slate-400 text-xs">
+                <td className="p-3 font-arabic text-ink-400 text-xs">
                   {formatDateTime(c.last_order_at)}
                 </td>
-                <td className="p-3 font-arabic text-slate-400 text-xs">
+                <td className="p-3 font-arabic text-ink-400 text-xs">
                   {formatDate(c.last_modified)}
                 </td>
                 <td className="p-3 text-center">
                   <div className="flex items-center justify-center gap-1">
                     <button
                       onClick={(e) => { e.stopPropagation(); openDetail(c); }}
-                      className="p-1.5 rounded-lg text-xs text-emerald-600 hover:bg-emerald-50 transition-colors"
+                      className="p-1.5 rounded-lg text-xs text-saffron-600 hover:bg-saffron-50 transition-colors"
                       title="الطلبات"
                     >
                       👁️
@@ -429,7 +429,7 @@ export default function CustomersPage() {
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={7} className="p-6 text-center text-slate-500 font-arabic">
+                <td colSpan={7} className="p-6 text-center text-ink-500 font-arabic">
                   {searchQuery ? "لا توجد نتائج" : "لا يوجد عملاء"}
                 </td>
               </tr>
@@ -442,74 +442,74 @@ export default function CustomersPage() {
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-slate-900">
+            <h2 className="text-lg font-bold font-arabic text-ink-900">
               {editId ? "تعديل عميل" : "إضافة عميل"}
             </h2>
 
             <div className="space-y-3">
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">الاسم *</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">الاسم *</label>
                 <input
                   type="text"
                   value={form.name}
                   onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
                   maxLength={100}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 />
                 {formErrors.name && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.name}</p>}
               </div>
 
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">رقم الهاتف *</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">رقم الهاتف *</label>
                 <input
                   type="text"
                   value={form.phone}
                   onChange={(e) => setForm((p) => ({ ...p, phone: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                   dir="ltr"
                 />
                 {formErrors.phone && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.phone}</p>}
               </div>
 
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">البريد الإلكتروني</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">البريد الإلكتروني</label>
                 <input
                   type="email"
                   value={form.email}
                   onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                   dir="ltr"
                 />
                 {formErrors.email && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.email}</p>}
               </div>
 
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">العنوان</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">العنوان</label>
                 <input
                   type="text"
                   value={form.address}
                   onChange={(e) => setForm((p) => ({ ...p, address: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">ملاحظات</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">ملاحظات</label>
                 <textarea
                   value={form.notes}
                   onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))}
                   rows={3}
-                  className="w-full px-4 py-2 rounded-xl bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500 resize-none"
+                  className="w-full px-4 py-2 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500 resize-none"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-arabic text-slate-900 mb-1">تاريخ الميلاد</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">تاريخ الميلاد</label>
                 <input
                   type="date"
                   value={form.birthday}
                   onChange={(e) => setForm((p) => ({ ...p, birthday: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                 />
               </div>
 
@@ -521,14 +521,14 @@ export default function CustomersPage() {
             <div className="flex gap-3 justify-end pt-2">
               <button
                 onClick={() => setShowModal(false)}
-                className="h-10 px-6 rounded-xl bg-white text-slate-900 font-arabic text-sm hover:bg-slate-200 transition-colors"
+                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={save}
                 disabled={saving}
-                className="h-10 px-6 rounded-xl bg-emerald-600 text-white font-arabic text-sm hover:bg-emerald-700 transition-colors disabled:opacity-50"
+                className="h-10 px-6 rounded-xl bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 {saving ? "جاري الحفظ..." : "حفظ"}
               </button>
@@ -541,12 +541,12 @@ export default function CustomersPage() {
       {deleteId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-slate-900">تأكيد الحذف</h2>
-            <p className="text-sm font-arabic text-slate-500">هل أنت متأكد من حذف هذا العميل؟</p>
+            <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد الحذف</h2>
+            <p className="text-sm font-arabic text-ink-500">هل أنت متأكد من حذف هذا العميل؟</p>
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setDeleteId(null)}
-                className="h-10 px-6 rounded-xl bg-white text-slate-900 font-arabic text-sm hover:bg-slate-200 transition-colors"
+                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
@@ -569,12 +569,12 @@ export default function CustomersPage() {
             <div className="p-6 space-y-6">
               {/* Header */}
               <div className="flex items-center justify-between">
-                <h2 className="text-lg font-bold font-arabic text-slate-900">
+                <h2 className="text-lg font-bold font-arabic text-ink-900">
                   {detailCustomer.customer.name}
                 </h2>
                 <button
                   onClick={closeDetail}
-                  className="p-2 rounded-lg text-slate-500 hover:bg-white transition-colors"
+                  className="p-2 rounded-lg text-ink-500 hover:bg-white transition-colors"
                 >
                   ✕
                 </button>
@@ -582,44 +582,44 @@ export default function CustomersPage() {
 
               {/* Customer Info */}
               <div className="bg-white rounded-2xl p-4 space-y-3">
-                <h3 className="font-bold font-arabic text-sm text-slate-900">معلومات العميل</h3>
+                <h3 className="font-bold font-arabic text-sm text-ink-900">معلومات العميل</h3>
                 <div className="space-y-2">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 font-arabic w-20">الاسم</span>
+                    <span className="text-xs text-ink-500 font-arabic w-20">الاسم</span>
                     <input
                       type="text"
                       value={detailCustomer.customer.name}
                       onChange={(e) => updateDetailField("name", e.target.value)}
-                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 font-arabic w-20">الهاتف</span>
+                    <span className="text-xs text-ink-500 font-arabic w-20">الهاتف</span>
                     <input
                       type="text"
                       value={detailCustomer.customer.phone}
                       onChange={(e) => updateDetailField("phone", e.target.value)}
-                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-slate-200 text-slate-900 font-mono text-sm outline-none focus:border-emerald-500"
+                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                       dir="ltr"
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 font-arabic w-20">البريد</span>
+                    <span className="text-xs text-ink-500 font-arabic w-20">البريد</span>
                     <input
                       type="email"
                       value={detailCustomer.customer.email ?? ""}
                       onChange={(e) => updateDetailField("email", e.target.value)}
-                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-slate-200 text-slate-900 text-sm outline-none focus:border-emerald-500"
+                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                       dir="ltr"
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 font-arabic w-20">العنوان</span>
+                    <span className="text-xs text-ink-500 font-arabic w-20">العنوان</span>
                     <input
                       type="text"
                       value={detailCustomer.customer.address ?? ""}
                       onChange={(e) => updateDetailField("address", e.target.value)}
-                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-slate-200 text-slate-900 font-arabic text-sm outline-none focus:border-emerald-500"
+                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                     />
                   </div>
                 </div>
@@ -627,17 +627,17 @@ export default function CustomersPage() {
 
               {/* Stats */}
               <div className="grid grid-cols-3 gap-3">
-                <div className="bg-emerald-50 rounded-xl p-3 text-center">
-                  <p className="text-2xl font-bold text-emerald-600 font-mono">
+                <div className="bg-saffron-50 rounded-xl p-3 text-center">
+                  <p className="text-2xl font-bold text-saffron-600 font-mono">
                     {detailCustomer.customer.total_orders}
                   </p>
-                  <p className="text-xs text-emerald-700 font-arabic mt-1">الطلبات</p>
+                  <p className="text-xs text-saffron-700 font-arabic mt-1">الطلبات</p>
                 </div>
-                <div className="bg-emerald-50 rounded-xl p-3 text-center">
-                  <p className="text-2xl font-bold text-emerald-600 font-mono">
+                <div className="bg-saffron-50 rounded-xl p-3 text-center">
+                  <p className="text-2xl font-bold text-saffron-600 font-mono">
                     {fromCents(detailCustomer.avgOrderValue)}
                   </p>
-                  <p className="text-xs text-emerald-600 font-arabic mt-1">متوسط الفاتورة</p>
+                  <p className="text-xs text-saffron-600 font-arabic mt-1">متوسط الفاتورة</p>
                 </div>
                 <div className="bg-amber-50 rounded-xl p-3 text-center">
                   <p className="text-2xl font-bold text-amber-600 font-mono">
@@ -649,39 +649,39 @@ export default function CustomersPage() {
 
               {/* Favorite Items */}
               <div className="bg-white rounded-2xl p-4 space-y-2 shadow-sm">
-                <h3 className="font-bold font-arabic text-sm text-slate-900">الأصناف المفضلة</h3>
+                <h3 className="font-bold font-arabic text-sm text-ink-900">الأصناف المفضلة</h3>
                 {detailCustomer.favoriteItems.length > 0 ? (
                   <div className="space-y-1">
                     {detailCustomer.favoriteItems.map((item, i) => (
                       <div key={i} className="flex justify-between text-sm">
-                        <span className="font-arabic text-slate-900">{item.name}</span>
-                        <span className="font-mono text-slate-400">{item.quantity}</span>
+                        <span className="font-arabic text-ink-900">{item.name}</span>
+                        <span className="font-mono text-ink-400">{item.quantity}</span>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <p className="text-xs text-slate-500 font-arabic">لا توجد طلبات سابقة</p>
+                  <p className="text-xs text-ink-500 font-arabic">لا توجد طلبات سابقة</p>
                 )}
               </div>
 
               {/* Order History */}
               <div className="bg-white rounded-2xl p-4 space-y-2 shadow-sm">
-                <h3 className="font-bold font-arabic text-sm text-slate-900">آخر الطلبات</h3>
+                <h3 className="font-bold font-arabic text-sm text-ink-900">آخر الطلبات</h3>
                 {detailCustomer.orders.length > 0 ? (
                   <div className="space-y-1">
                     {detailCustomer.orders.map((o) => (
-                      <div key={o.id} className="flex justify-between items-center text-xs py-1.5 border-b border-slate-200 last:border-0">
-                        <span className="font-arabic text-slate-400">
+                      <div key={o.id} className="flex justify-between items-center text-xs py-1.5 border-b border-ink-200 last:border-0">
+                        <span className="font-arabic text-ink-400">
                           {formatDateTime(o.created_at)}
                         </span>
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-emerald-600 font-bold">
+                          <span className="font-mono text-saffron-600 font-bold">
                             {fromCents(o.total_cents)}
                           </span>
                           <span className={`px-2 py-0.5 rounded-full text-[10px] font-arabic ${
-                            o.status === "PAID" ? "bg-emerald-50 text-emerald-600" :
+                            o.status === "PAID" ? "bg-saffron-50 text-saffron-600" :
                             o.status === "CANCELLED" ? "bg-red-50 text-red-700" :
-                            o.status === "VOIDED" ? "bg-white text-slate-400" :
+                            o.status === "VOIDED" ? "bg-white text-ink-400" :
                             "bg-amber-50 text-amber-700"
                           }`}>
                             {o.status === "PAID" ? "مدفوع" :
@@ -698,7 +698,7 @@ export default function CustomersPage() {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-xs text-slate-500 font-arabic">لا توجد طلبات</p>
+                  <p className="text-xs text-ink-500 font-arabic">لا توجد طلبات</p>
                 )}
               </div>
             </div>

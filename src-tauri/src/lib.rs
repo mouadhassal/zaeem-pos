@@ -3,9 +3,14 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{Manager, State};
 use tauri_plugin_sql::{Migration, MigrationKind};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 mod migrate;
+mod migrate_v3;
+mod money;
+mod security;
+mod repo;
+mod audit;
+mod commands_v3;
 mod ai;
 
 use bcrypt::{hash, verify, DEFAULT_COST};
@@ -63,23 +68,24 @@ impl OrderStatus {
     }
 }
 
+// `users` is DELIBERATELY ABSENT from this schema (2026-07-16, root-caused
+// during Batch 3a hand-testing). This constant is `tauri_plugin_sql`'s OWN
+// lazy migration -- a SEPARATE SQLite connection from Rust's `init_db()`,
+// registered once and run the first time the frontend calls `getDb()`,
+// which happens strictly after `init_db()` has already run (and, post
+// Decision A, already dropped the real `users` table via Migration C).
+// `CREATE TABLE IF NOT EXISTS` used to silently resurrect a bare, INCOMPLETE
+// `users` table right here (no `username`, no anything Decision A's `staff`
+// migration produces) the moment ANY frontend page called `getDb()` --
+// exactly the bug a fresh-install hand-test caught: the setup wizard failed
+// with \"table users has no column named username\" because this exact
+// block recreated `users` without one. Removed entirely, not patched to add
+// the missing column back -- `staff` is the only identity table now, and
+// resurrecting a zombie `users` table here would only let some future bug
+// silently succeed against a half-broken shape instead of failing loud.
 const SCHEMA_SQL: &str = "
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
-
-CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    email TEXT NOT NULL UNIQUE,
-    name TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
-    manager_pin_hash TEXT,
-    role TEXT NOT NULL CHECK(role IN ('CASHIER','MANAGER','ADMIN','OWNER','ACCOUNTANT','KITCHEN')),
-    is_active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    sync_version INTEGER NOT NULL DEFAULT 1,
-    last_modified TEXT NOT NULL DEFAULT (datetime('now')),
-    sync_status TEXT NOT NULL DEFAULT 'pending'
-);
 
 CREATE TABLE IF NOT EXISTS categories (
     id TEXT PRIMARY KEY,
@@ -618,109 +624,59 @@ fn db_path(app: &tauri::AppHandle) -> std::path::PathBuf {
     dir.join("zaeem_pos.db")
 }
 
-fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), migrate::MigrationError> {
-    migrate::run_migrations(conn, db_path)
+fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), String> {
+    migrate::run_migrations(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_expand_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_remap_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_identity_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_drift_fix_migration(conn, db_path).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
+/// Replaces the old `seed_default_users` (which wrote to the now-dropped
+/// `users` table). Seeds `staff` instead, and -- unlike the old seed, which
+/// never set a PIN at all -- gives each seeded row a working `pin_hash`,
+/// because `LoginPage.tsx` (the app's actual, only login screen) is a PIN pad
+/// with no username/password field. Without this, dev builds could never log
+/// in through the UI at all, independent of anything this sprint touched.
 #[cfg(debug_assertions)]
-fn seed_default_users(conn: &Connection) -> rusqlite::Result<()> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM users WHERE username IS NOT NULL",
-        [],
-        |row| row.get(0),
-    ).unwrap_or(0);
+fn seed_default_staff(conn: &Connection) -> rusqlite::Result<()> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM staff", [], |row| row.get(0)).unwrap_or(0);
     if count > 0 { return Ok(()); }
 
-    let cost = 12;
-    let password_hash = hash("admin123", cost).unwrap_or_else(|_| "$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/X4.VTtYA.qGZvKG6G".to_string());
+    let tenant_id: String = match conn.query_row("SELECT id FROM tenant LIMIT 1", [], |r| r.get(0)) {
+        Ok(id) => id,
+        Err(_) => return Ok(()), // migrations haven't seeded a tenant yet
+    };
+    let branch_id: String = match conn.query_row("SELECT id FROM branch WHERE tenant_id = ?1 LIMIT 1", params![tenant_id], |r| r.get(0)) {
+        Ok(id) => id,
+        Err(_) => return Ok(()),
+    };
+
     let now = chrono::Utc::now().to_rfc3339();
-
-    let users = [
-        ("user-owner-001", "المدير", "owner", "OWNER", "rest-001", "owner@zaeem.com"),
-        ("user-mgr-001", "المشرف", "manager", "MANAGER", "rest-001", "manager@zaeem.com"),
-        ("user-cash-001", "الكاشير", "cashier", "CASHIER", "rest-001", "cashier@zaeem.com"),
-        ("user-kit-001", "المطبخ", "kitchen", "KITCHEN", "rest-001", "kitchen@zaeem.com"),
+    struct SeedStaff<'a> { id: &'a str, name: &'a str, role: &'a str, role_rank: u8, branch: Option<&'a str>, pin: &'a str }
+    // PINs are distinct and documented here since CredentialsModal.tsx's
+    // displayed credentials are for the old username/password path, not
+    // this PIN pad.
+    let staff = [
+        SeedStaff { id: "staff-owner-001", name: "المدير العام", role: "OWNER", role_rank: 3, branch: None, pin: "123456" },
+        SeedStaff { id: "staff-mgr-001", name: "المشرف", role: "MANAGER", role_rank: 2, branch: Some(branch_id.as_str()), pin: "222222" },
+        SeedStaff { id: "staff-cash-001", name: "الكاشير", role: "CASHIER", role_rank: 1, branch: Some(branch_id.as_str()), pin: "333333" },
+        SeedStaff { id: "staff-kit-001", name: "المطبخ", role: "KITCHEN", role_rank: 1, branch: Some(branch_id.as_str()), pin: "444444" },
     ];
-
-    for (id, name, username, role, rest_id, email) in &users {
-        let inserted = conn.execute(
-            "INSERT OR IGNORE INTO users (id, email, name, username, password_hash, role, is_active, created_at, restaurant_id, sync_version, last_modified, sync_status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, 1, ?7, 'synced')",
-            params![id, email, name, username, &password_hash, role, now, rest_id],
-        ).unwrap_or(0);
-        if inserted == 0 {
-            conn.execute(
-                "UPDATE users SET username = ?1, password_hash = ?2, role = ?3 WHERE email = ?4",
-                params![username, &password_hash, role, email],
-            ).ok();
-        }
+    for SeedStaff { id, name, role, role_rank, branch, pin } in staff {
+        let pin_hash = hash(pin, DEFAULT_COST).unwrap_or_default();
+        conn.execute(
+            "INSERT OR IGNORE INTO staff (id, tenant_id, branch_id, role, role_rank, name, pin_hash, is_active, created_at, updated_at_hlc, device_id, rev) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8, 'dev-seed', 1)",
+            params![id, tenant_id, branch, role, role_rank, name, pin_hash, now],
+        )?;
     }
     Ok(())
 }
 
-#[tauri::command]
-fn needs_setup(state: State<Db>) -> Result<bool, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    if cfg!(debug_assertions) {
-        return Ok(false);
-    }
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM users WHERE role = 'OWNER' AND is_active = 1",
-        [],
-        |row| row.get(0),
-    ).unwrap_or(0);
-    Ok(count == 0)
-}
-
-#[tauri::command]
-fn setup_owner(state: State<Db>, name: String, username: String, password: String, pin: String) -> Result<LoginResponse, String> {
-    if password.len() < 10 {
-        return Err("كلمة المرور يجب أن تكون 10 أحرف على الأقل".to_string());
-    }
-    if pin.len() != 6 || !pin.chars().all(|c| c.is_ascii_digit()) {
-        return Err("الرقم السري يجب أن يكون 6 أرقام".to_string());
-    }
-
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let existing: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM users WHERE role = 'OWNER' AND is_active = 1",
-        [],
-        |row| row.get(0),
-    ).unwrap_or(0);
-    if existing > 0 {
-        return Err("المالك موجود بالفعل".to_string());
-    }
-
-    let password_hash = hash(&password, DEFAULT_COST).map_err(|e| e.to_string())?;
-    let pin_hash = hash(&pin, DEFAULT_COST).map_err(|e| e.to_string())?;
-    let id = format!("user-{}", uuid::Uuid::new_v4());
-    let now = chrono::Utc::now().to_rfc3339();
-
-    conn.execute(
-        "INSERT INTO users (id, email, name, username, password_hash, manager_pin_hash, role, is_active, created_at, restaurant_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'OWNER', 1, ?7, 'main')",
-        params![id, format!("{}@zaeem.local", username), name, username, password_hash, pin_hash, now],
-    ).map_err(|e| e.to_string())?;
-
-    let session_id = uuid::Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO login_sessions (id, user_id, login_time, device_info, is_active) VALUES (?1, ?2, ?3, 'setup-wizard', 1)",
-        params![session_id, id, now],
-    ).ok();
-
-    let token = format!("zaeem_{}", session_id);
-    Ok(LoginResponse {
-        success: true,
-        user: Some(AuthUser {
-            id,
-            name,
-            username,
-            role: "OWNER".to_string(),
-            photo_path: None,
-            restaurant_id: "main".to_string(),
-        }),
-        token: Some(token),
-        message: "تم إنشاء حساب المالك".to_string(),
-    })
-}
+// `needs_setup`/`setup_owner` (old, `users`-backed) are superseded by
+// `commands_v3::needs_setup_v3`/`setup_owner_v3`, which target `staff`.
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Debtor {
@@ -778,279 +734,11 @@ pub struct SettingsData {
     pub default_paper_width: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AuthUser {
-    pub id: String,
-    pub name: String,
-    pub username: String,
-    pub role: String,
-    pub photo_path: Option<String>,
-    pub restaurant_id: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct LoginRequest {
-    pub username: String,
-    pub password: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct LoginResponse {
-    pub success: bool,
-    pub user: Option<AuthUser>,
-    pub token: Option<String>,
-    pub message: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AuthCheckResponse {
-    pub authenticated: bool,
-    pub user: Option<AuthUser>,
-}
-
-#[tauri::command]
-fn login(state: State<Db>, request: LoginRequest, device_info: String) -> Result<LoginResponse, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-
-    let user_result = conn.query_row(
-        "SELECT id, name, username, password_hash, role, photo_path, restaurant_id, is_active FROM users WHERE username = ?1",
-        [&request.username],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, String>(6)?,
-                row.get::<_, i32>(7)?,
-            ))
-        },
-    );
-
-    let (id, name, username, password_hash, role, photo_path, restaurant_id, is_active) = match user_result {
-        Ok(u) => u,
-        Err(_) => {
-            return Ok(LoginResponse {
-                success: false,
-                user: None,
-                token: None,
-                message: "اسم المستخدم أو كلمة المرور غير صحيحة".to_string(),
-            });
-        }
-    };
-
-    if is_active == 0 {
-        return Ok(LoginResponse {
-            success: false,
-            user: None,
-            token: None,
-            message: "هذا الحساب معطل. تواصل مع المدير.".to_string(),
-        });
-    }
-
-    let valid = verify(&request.password, &password_hash).map_err(|e| e.to_string())?;
-    if !valid {
-        return Ok(LoginResponse {
-            success: false,
-            user: None,
-            token: None,
-            message: "اسم المستخدم أو كلمة المرور غير صحيحة".to_string(),
-        });
-    }
-
-    let now = chrono::Utc::now().to_rfc3339();
-    conn.execute("UPDATE users SET last_login = ?1 WHERE id = ?2", params![now, id])
-        .map_err(|e| e.to_string())?;
-
-    let session_id = uuid::Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO login_sessions (id, user_id, login_time, device_info, is_active) VALUES (?1, ?2, ?3, ?4, 1)",
-        params![session_id, id, now, device_info],
-    ).map_err(|e| e.to_string())?;
-
-    let token = format!("zaeem_{}", session_id);
-
-    Ok(LoginResponse {
-        success: true,
-        user: Some(AuthUser { id, name, username, role, photo_path, restaurant_id }),
-        token: Some(token),
-        message: "تم تسجيل الدخول بنجاح".to_string(),
-    })
-}
-
-type PinUserRow = (
-    String,
-    String,
-    String,
-    String,
-    String,
-    Option<String>,
-    String,
-    String,
-    i32,
-);
-
-#[tauri::command]
-fn login_with_pin(state: State<Db>, pin: String, device_info: String) -> Result<LoginResponse, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT id, name, username, password_hash, role, photo_path, restaurant_id, manager_pin_hash, is_active FROM users WHERE manager_pin_hash IS NOT NULL"
-    ).map_err(|e| e.to_string())?;
-
-    let users: Vec<PinUserRow> = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, String>(4)?,
-            row.get::<_, Option<String>>(5)?,
-            row.get::<_, String>(6)?,
-            row.get::<_, String>(7)?,
-            row.get::<_, i32>(8)?,
-        ))
-    }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
-
-    for (id, name, username, _password_hash, role, photo_path, restaurant_id, pin_hash, is_active) in &users {
-        if *is_active == 0 { continue; }
-        if verify(&pin, pin_hash).unwrap_or(false) {
-            let now = chrono::Utc::now().to_rfc3339();
-            conn.execute("UPDATE users SET last_login = ?1 WHERE id = ?2", params![now, id])
-                .map_err(|e| e.to_string())?;
-            let session_id = uuid::Uuid::new_v4().to_string();
-            conn.execute(
-                "INSERT INTO login_sessions (id, user_id, login_time, device_info, is_active) VALUES (?1, ?2, ?3, ?4, 1)",
-                params![session_id, id, now, device_info],
-            ).map_err(|e| e.to_string())?;
-            let token = format!("zaeem_{}", session_id);
-            return Ok(LoginResponse {
-                success: true,
-                user: Some(AuthUser {
-                    id: id.clone(),
-                    name: name.clone(),
-                    username: username.clone(),
-                    role: role.clone(),
-                    photo_path: photo_path.clone(),
-                    restaurant_id: restaurant_id.clone(),
-                }),
-                token: Some(token),
-                message: "تم تسجيل الدخول بنجاح".to_string(),
-            });
-        }
-    }
-
-    Ok(LoginResponse {
-        success: false,
-        user: None,
-        token: None,
-        message: "رمز PIN غير صحيح".to_string(),
-    })
-}
-
-#[tauri::command]
-fn logout(state: State<Db>, user_id: String) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let now = chrono::Utc::now().to_rfc3339();
-    conn.execute(
-        "UPDATE login_sessions SET logout_time = ?1, is_active = 0 WHERE user_id = ?2 AND is_active = 1",
-        params![now, user_id],
-    ).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-fn check_auth(state: State<Db>, user_id: String) -> Result<AuthCheckResponse, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let user = conn.query_row(
-        "SELECT id, name, username, role, photo_path, restaurant_id FROM users WHERE id = ?1 AND is_active = 1",
-        [&user_id],
-        |row| {
-            Ok(AuthUser {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                username: row.get(2)?,
-                role: row.get(3)?,
-                photo_path: row.get(4)?,
-                restaurant_id: row.get(5)?,
-            })
-        },
-    ).ok();
-    Ok(AuthCheckResponse { authenticated: user.is_some(), user })
-}
-
-#[tauri::command]
-fn change_password(state: State<Db>, session_token: String, old_password: String, new_password: String) -> Result<bool, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-
-    let session_id = session_token.strip_prefix("zaeem_")
-        .ok_or_else(|| "رمز الجلسة غير صالح".to_string())?;
-
-    let user_id: String = conn.query_row(
-        "SELECT user_id FROM login_sessions WHERE id = ?1 AND is_active = 1",
-        [session_id],
-        |row| row.get(0),
-    ).map_err(|_| "الجلسة غير صالحة أو منتهية".to_string())?;
-
-    let failures_key = format!("pwd_attempts_{}", user_id);
-    let lock_key = format!("pwd_locked_{}", user_id);
-
-    let locked_until_raw: Option<String> = conn.query_row(
-        "SELECT value FROM app_settings WHERE key = ?1",
-        params![&lock_key],
-        |row| row.get(0),
-    ).ok();
-    if let Some(ref until) = locked_until_raw {
-        if let Ok(locked_epoch) = until.parse::<u64>() {
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-            if now < locked_epoch {
-                return Err("تم قفل تغيير كلمة المرور. حاول بعد ساعة.".to_string());
-            }
-            conn.execute("DELETE FROM app_settings WHERE key = ?1", params![&lock_key]).ok();
-        }
-    }
-
-    let failures: i64 = conn.query_row(
-        "SELECT value FROM app_settings WHERE key = ?1",
-        params![&failures_key],
-        |row| row.get::<_, String>(0).and_then(|v| v.parse::<i64>().map_err(|_| rusqlite::Error::ToSqlConversionFailure(Box::new(std::fmt::Error)))),
-    ).unwrap_or(0);
-
-    if failures >= 10 {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-        let lock_until = (now + 3600).to_string();
-        conn.execute(
-            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
-            params![&lock_key, lock_until],
-        ).map_err(|e| e.to_string())?;
-        return Err("تم قفل تغيير كلمة المرور بسبب كثرة المحاولات. حاول بعد ساعة.".to_string());
-    }
-
-    let current_hash: String = conn.query_row(
-        "SELECT password_hash FROM users WHERE id = ?1",
-        [&user_id],
-        |row| row.get(0),
-    ).map_err(|e| e.to_string())?;
-
-    let valid = verify(&old_password, &current_hash).map_err(|e| e.to_string())?;
-    if !valid {
-        let new_count = failures + 1;
-        conn.execute(
-            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
-            params![&failures_key, new_count.to_string()],
-        ).map_err(|e| e.to_string())?;
-        return Ok(false);
-    }
-
-    conn.execute("DELETE FROM app_settings WHERE key = ?1", params![&failures_key]).ok();
-    conn.execute("DELETE FROM app_settings WHERE key = ?1", params![&lock_key]).ok();
-
-    let new_hash = hash(&new_password, DEFAULT_COST).map_err(|e| e.to_string())?;
-    conn.execute("UPDATE users SET password_hash = ?1 WHERE id = ?2", params![new_hash, user_id])
-        .map_err(|e| e.to_string())?;
-    Ok(true)
-}
+// `login`/`login_with_pin`/`logout`/`check_auth`/`change_password` (old,
+// `users`-backed) are superseded by `commands_v3::login_v3`/`login_pin_v3`/
+// `logout_v3`/`change_own_password_v3` -- `AuthUser`/`LoginRequest`/
+// `LoginResponse`/`AuthCheckResponse` went with them; `commands_v3::LoginV3Response`
+// is their replacement.
 
 #[tauri::command]
 fn get_debtors(state: State<Db>) -> Result<Vec<Debtor>, String> {
@@ -1372,19 +1060,24 @@ fn diagnose_db(_state: State<Db>) -> Result<String, String> {
 #[tauri::command]
 fn verify_manager_override(state: State<Db>, password_or_pin: String) -> Result<bool, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let manager: Option<(String, Option<String>)> = conn
+    // `staff`, not `users` (Decision A) -- `ADMIN` no longer exists as a role
+    // (Migration C folded it into `MANAGER`); `PLATFORM` added since it's a
+    // real staff role now and should be able to override same as OWNER.
+    let manager: Option<(Option<String>, Option<String>)> = conn
         .query_row(
-            "SELECT password_hash, manager_pin_hash FROM users \
-             WHERE role IN ('MANAGER', 'ADMIN', 'OWNER') AND is_active = 1 LIMIT 1",
+            "SELECT password_hash, pin_hash FROM staff \
+             WHERE role IN ('MANAGER', 'OWNER', 'PLATFORM') AND is_active = 1 LIMIT 1",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .ok();
 
-    let Some((password_hash, manager_pin_hash)) = manager else {
+    let Some((password_hash, pin_hash)) = manager else {
         return Ok(false);
     };
-    let hash = manager_pin_hash.unwrap_or(password_hash);
+    let Some(hash) = pin_hash.or(password_hash) else {
+        return Ok(false);
+    };
     Ok(verify(&password_or_pin, &hash).unwrap_or(false))
 }
 
@@ -1415,7 +1108,7 @@ pub fn run() {
             let mut conn = Connection::open(&db_path).expect("Failed to open database");
             init_db(&mut conn, &db_path).expect("Failed to initialize database");
             #[cfg(debug_assertions)]
-            seed_default_users(&conn).expect("Failed to seed default users");
+            seed_default_staff(&conn).expect("Failed to seed default staff");
             app.manage(Db(Mutex::new(conn)));
 
             // AI onboarding state
@@ -1437,13 +1130,36 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             diagnose_db,
             verify_manager_override,
-            login,
-            login_with_pin,
-            logout,
-            check_auth,
-            change_password,
-            needs_setup,
-            setup_owner,
+            commands_v3::login_v3,
+            commands_v3::login_pin_v3,
+            commands_v3::setup_owner_v3,
+            commands_v3::needs_setup_v3,
+            commands_v3::logout_v3,
+            commands_v3::create_branch_v3,
+            commands_v3::create_staff_v3,
+            commands_v3::update_staff_v3,
+            commands_v3::list_branches_v3,
+            commands_v3::list_staff_v3,
+            commands_v3::update_staff_profile_v3,
+            commands_v3::set_staff_active_v3,
+            commands_v3::list_orders_v3,
+            commands_v3::create_order_v3,
+            commands_v3::update_order_status_v3,
+            commands_v3::take_payment_v3,
+            commands_v3::resolve_menu_price_v3,
+            commands_v3::create_customer_v3,
+            commands_v3::list_customers_v3,
+            commands_v3::create_purchase_order_v3,
+            commands_v3::list_purchase_orders_v3,
+            commands_v3::create_driver_v3,
+            commands_v3::update_driver_location_v3,
+            commands_v3::list_drivers_v3,
+            commands_v3::create_printer_v3,
+            commands_v3::list_printers_v3,
+            commands_v3::list_delivery_logs_v3,
+            commands_v3::create_delivery_log_v3,
+            commands_v3::update_delivery_status_v3,
+            commands_v3::change_own_password_v3,
             get_debtors,
             get_debtor_detail,
             create_debtor,

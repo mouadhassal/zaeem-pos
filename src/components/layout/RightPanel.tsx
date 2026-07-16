@@ -33,24 +33,24 @@ export default function RightPanel({ onSplit, onOrderType }: Props) {
   const taxCents = tax.taxCents + tax.secondaryTaxCents + tax.serviceChargeCents;
 
   return (
-    <div className="w-[360px] bg-slate-50 border-r border-slate-200 flex flex-col shrink-0">
-      <div className="h-14 flex items-center gap-2 px-4 border-b border-slate-200">
-        <Receipt className="w-4 h-4 text-slate-400" />
-        <span className="font-semibold text-slate-700 text-sm">الفاتورة</span>
+    <div className="w-[360px] bg-ink-50 border-r border-ink-200 flex flex-col shrink-0">
+      <div className="h-14 flex items-center gap-2 px-4 border-b border-ink-200">
+        <Receipt className="w-4 h-4 text-ink-400" />
+        <span className="font-semibold text-ink-700 text-sm">الفاتورة</span>
       </div>
 
       {customerName && (
-        <div className="px-4 py-2 bg-slate-100 border-b border-slate-200">
-          <p className="text-xs text-slate-500">العميل</p>
-          <p className="text-sm font-semibold text-slate-700">{customerName}</p>
-          {customerPhone && <p className="text-xs text-slate-400">{customerPhone}</p>}
+        <div className="px-4 py-2 bg-ink-100 border-b border-ink-200">
+          <p className="text-xs text-ink-500">العميل</p>
+          <p className="text-sm font-semibold text-ink-700">{customerName}</p>
+          {customerPhone && <p className="text-xs text-ink-400">{customerPhone}</p>}
         </div>
       )}
 
-      <div className="px-4 py-3 border-b border-slate-200 flex items-center gap-2">
+      <div className="px-4 py-3 border-b border-ink-200 flex items-center gap-2">
         <button
           onClick={onOrderType}
-          className="flex-1 h-9 rounded-sm text-sm font-medium bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors"
+          className="flex-1 h-9 rounded-sm text-sm font-medium bg-white text-ink-600 border border-ink-200 hover:bg-ink-50 transition-colors"
         >
           {orderType === "DINE_IN" ? "داخلي" : orderType === "TAKEAWAY" ? "طلبات خارجية" : "توصيل"}
         </button>
@@ -59,41 +59,41 @@ export default function RightPanel({ onSplit, onOrderType }: Props) {
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {items.length === 0 ? (
           <div className="text-center py-8">
-            <Receipt className="w-10 h-10 text-slate-200 mx-auto mb-2" />
-            <p className="text-sm text-slate-400">لا توجد أصناف</p>
+            <Receipt className="w-10 h-10 text-ink-200 mx-auto mb-2" />
+            <p className="text-sm text-ink-400">لا توجد أصناف</p>
           </div>
         ) : (
           items.map((item) => (
-            <div key={item.id} className="bg-white border border-slate-200 rounded-sm p-3">
+            <div key={item.id} className="bg-white border border-ink-200 rounded-sm p-3">
               <div className="flex justify-between items-start">
-                <p className="text-sm font-medium text-slate-800">{item.name}</p>
-                <span className="text-sm font-semibold text-slate-700">
+                <p className="text-sm font-medium text-ink-800">{item.name}</p>
+                <span className="text-sm font-semibold text-ink-700">
                   {fmt(item.unitPriceCents * item.quantity)}
                 </span>
               </div>
               <div className="flex justify-between items-center mt-1">
-                <p className="text-xs text-slate-400">سعر الوحدة: {fmt(item.unitPriceCents)}</p>
-                <span className="text-xs text-slate-500">الكمية: {item.quantity}</span>
+                <p className="text-xs text-ink-400">سعر الوحدة: {fmt(item.unitPriceCents)}</p>
+                <span className="text-xs text-ink-500">الكمية: {item.quantity}</span>
               </div>
             </div>
           ))
         )}
       </div>
 
-      <div className="p-4 border-t border-slate-200 bg-white space-y-2">
+      <div className="p-4 border-t border-ink-200 bg-white space-y-2">
         <div className="flex justify-between text-sm">
-          <span className="text-slate-500">المجموع</span>
-          <span className="text-slate-700">{fmt(subtotal)}</span>
+          <span className="text-ink-500">المجموع</span>
+          <span className="text-ink-700">{fmt(subtotal)}</span>
         </div>
         {taxCents > 0 && (
           <div className="flex justify-between text-sm">
-            <span className="text-slate-500">الضريبة</span>
-            <span className="text-slate-700">{fmt(taxCents)}</span>
+            <span className="text-ink-500">الضريبة</span>
+            <span className="text-ink-700">{fmt(taxCents)}</span>
           </div>
         )}
-        <div className="border-t border-slate-200 pt-2 flex justify-between">
-          <span className="font-bold text-slate-800">الإجمالي</span>
-          <span className="font-bold text-emerald-700">{fmt(total)}</span>
+        <div className="border-t border-ink-200 pt-2 flex justify-between">
+          <span className="font-bold text-ink-800">الإجمالي</span>
+          <span className="font-bold text-saffron-700">{fmt(total)}</span>
         </div>
         <div className="flex gap-2">
           <ActionButton onClick={handlePayment} className="flex-1 h-11" disabled={items.length === 0}>

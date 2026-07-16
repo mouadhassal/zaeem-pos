@@ -13,6 +13,7 @@ export interface CartItem {
   id: string;
   menuItemId: string;
   name: string;
+  categoryName?: string;
   quantity: number;
   unitPriceCents: number;
   modifiers: CartModifier[];
@@ -24,6 +25,8 @@ export interface CartItem {
   comboOriginalPriceCents?: number;
   comboComponents?: ComboComponent[];
   savingsCents?: number;
+  /** Present only when this item was loaded from an already-persisted order_items row (a held/reopened order). */
+  dbItemId?: string;
 }
 
 export interface SplitItem {

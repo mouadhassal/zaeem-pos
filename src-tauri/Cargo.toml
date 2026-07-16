@@ -25,6 +25,10 @@ tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v7"] }
 chrono = "0.4"
 bcrypt = "0.15"
+sha2 = "0.10"
+
+[dev-dependencies]
+rand = "0.8"
