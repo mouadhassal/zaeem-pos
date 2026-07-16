@@ -1,36 +1,86 @@
 # PROGRESS.md — SPRINT_01_multitenant_trust_boundary_v3.md
 
-**Last updated:** 2026-07-16, after Batch 3b (partial -- payment atomicity + zombie sweep +
-staff CRUD; the remaining command groups are an explicit, honest carry-forward, not a hidden gap).
+**Last updated:** 2026-07-16, after Batch 3b slice 2 (guard-script verification + menu CRUD +
+inventory + shifts, each its own commit).
 **Method:** percentages reflect what's implemented AND tested, not what's designed/planned.
 A phase at 100% means its own stated Definition of Done is met; a phase with sub-scope
 (e.g. "N of ~150 commands") is intentionally not rounded up.
 
-## Batch 3b status: real numbers, not 150/150
+**Git**: a repo already existed at `apps/zaeem-pos/.git` (real prior history) -- my earlier claim
+that "no git repository exists in this tree" was wrong (I'd checked from the parent
+`zaeem-enterprise` directory and missed it). From `s1-slice1` onward, every group in this document
+is a real commit; check `git log` for the authoritative list, not just this file's prose.
 
-You (2026-07-16) confirmed the full sprint scope for 3b (every remaining command group, payment
-atomicity, the zombie-table sweep, `check-no-sql-in-frontend.sh` blocking, kysely/tauri_plugin_sql
-removal) and, when asked how to sequence work of this size responsibly, chose "prioritized slice
-now, rest next session." What that produced, honestly:
+## Batch 3b, slice 2: real numbers, not 150/150
 
-**Done this pass, full quality, tested:**
-1. Zombie-table sweep (below) -- confirmed no other table can be silently resurrected.
-2. Payment atomicity -- `take_payment_v3`, ONE transaction, kill-9 test included (T1.9's explicit
-   critical item).
-3. Staff CRUD -- `staff/page.tsx` restored (was actively broken in the UI), `create_staff_v3`
-   (already existed) now actually reachable, plus 3 new commands.
+Per your instruction, this slice (1) proved both guard scripts (`check-no-sql-in-frontend.sh`,
+`check-no-country-in-core.sh`) actually detect violations with red/green fixture tests, since the
+first was found silently broken all sprint, and (2) converted 3 more command groups -- menu CRUD,
+inventory, shifts -- each committed separately, full quality, tested.
 
-**Commands converted to the v3 scoped shape: 30 / 150** (up from 25). New this pass:
-`take_payment_v3`, `list_branches_v3`, `list_staff_v3`, `update_staff_profile_v3`,
-`set_staff_active_v3`.
+**Commands converted to the v3 scoped shape: 47 / 150** (up from 30). New this slice (17):
+menu -- `list_categories_v3`, `create_category_v3`, `update_category_v3`, `delete_category_v3`,
+`list_menu_items_v3`, `create_menu_item_v3`, `update_menu_item_v3`, `delete_menu_item_v3`,
+`set_menu_item_active_v3`; inventory -- `list_ingredients_v3`, `create_ingredient_v3`,
+`update_ingredient_v3`, `adjust_stock_v3`; shifts -- `get_active_shift_v3`, `get_shift_stats_v3`,
+`open_shift_v3`, `close_shift_v3`.
 
-**NOT done this pass -- explicit, not hidden:** menu CRUD, inventory, shifts, finance, debt,
-loyalty, settings, reports, and the 4 remaining drift-group pages (customers, PO tab, delivery,
-printer.ts) are UNCHANGED from Batch 3a -- still `getDb()`/old commands. `check-no-sql-in-
-frontend.sh` cannot be flipped to blocking yet (132 real frontend SQL references remain, see
-below) and kysely/`tauri_plugin_sql` cannot be removed from `package.json` yet (still load-bearing
-for every one of those unconverted pages). Both are next-session work, explicitly, not silently
-dropped requirements.
+**NOT done this slice -- explicit, not hidden:** `combo_meals`/`combo_items`/`happy_hour_rules`
+(menu page's offers tab), `suppliers` CRUD + PO-receiving's stock bump + movements/alerts tabs
+(inventory page), and everything from finance, debt, loyalty, settings, reports, and the 4
+drift-group pages (customers, PO tab, delivery, printer.ts). `check-no-sql-in-frontend.sh` still
+NOT flipped to blocking (121 real references remain, down from 132) -- per your explicit
+instruction, only flip it once `getDb()` reaches zero. `kysely`/`tauri_plugin_sql` still required.
+
+## Guard scripts proven, not just fixed (requested explicitly: "a guard you've never seen fail is not a guard")
+
+`check-no-country-in-core.sh` turned out to have the SAME bug class as `check-no-sql-in-
+frontend.sh` (confirmed by grep review, same author/era, as you predicted): `PATTERNS="Syria|SY|
+Saudi|ZATCA|SYP"` used `|` alternation, but every `grep -rn` call was missing `-E` -- default
+`grep` (POSIX BRE) treats `|` as a literal character, so the pattern only ever matched the literal
+27-character string `"Syria|SY|Saudi|ZATCA|SYP"` verbatim, never once on any real file. Fixed by
+adding `-E`.
+
+**Both scripts proven with isolated red/green fixtures** (not the real `src/` tree, which already
+has legitimate pending violations that would confuse a before/after test): added `CHECK_FRONTEND_
+SRC`/`CHECK_CORE_DIR` env-var overrides to both scripts, wrote a deliberately-bad file and a
+deliberately-clean file for each, ran the script against both.
+
+- `check-no-sql-in-frontend.sh`: dirty fixture (`getDb()` call) → correctly reported "NOT YET
+  GREEN: 1 frontend SQL reference(s) found" with the exact file:line. Clean fixture (an `invoke()`
+  call) → "OK: No frontend SQL violations." Detection is real; this script's exit code is
+  deliberately 0 either way (not blocking yet, per your instruction).
+- `check-no-country-in-core.sh`: dirty fixture (a `core/` file containing `"SYP"`) → **`FAIL:
+  Country logic found in core/`, exit code 1** (this script's blocking codepath was already live,
+  just silently unreachable before the regex fix). Clean fixture → `OK`, exit 0.
+
+Re-ran both against the real repo after fixing: `check-no-sql-in-frontend.sh` correctly finds 121
+real violations (down from 132 before this slice's conversions); `check-no-country-in-core.sh`
+finds no `core/` violations (the directory doesn't exist yet) and a long list of frontend
+`WARNING`s (currency codes like `"SYP"` in legitimate currency-selector code, `"SY"` matching
+inside unrelated words like `BUSY`/`SYNC_STARTED` -- the pattern itself is broad/noisy, a
+pre-existing design property, not something this pass changed or was asked to fix).
+
+## Menu CRUD, inventory, shifts (slice 2, 3 groups, 3 separate commits)
+
+- **Menu** (`f4d4c61`): `categories` + `menu_items` CRUD (list/create/update/delete/set-active),
+  `Permission::ManageMenu` (Manager+), `Action::MenuItemChanged`. Wired `menu/page.tsx`'s items and
+  categories tabs. Deliberately NOT `combo_meals`/`combo_items`/`happy_hour_rules` -- still
+  `getDb()`. Note for later: T1.6's `menu_item_default`/`menu_item_override` (the two-layer price
+  model) and these real `menu_items`/`categories` tables are two unreconciled schemas -- this slice
+  targeted the real, populated tables (what the app actually uses), not the empty T1.6 scaffold.
+- **Inventory** (`9015ef1`): `ingredients` CRUD + `adjust_stock_v3` (one transaction:
+  `current_stock` update + a new `inventory_logs` fact + the audit entry -- same atomicity
+  principle as `take_payment_v3`, proven by test that repeated adjustments accumulate correctly and
+  every one stays a separate append-only row). `Permission::ManageIngredients` (Manager+),
+  `Permission::AdjustStock` (Cashier+ -- routine floor work). Wired `StockTab` +
+  `AddIngredientModal` + `EditIngredientModal`. Deliberately NOT `suppliers` CRUD, PO-receiving's
+  stock bump, or the movements/alerts read tabs.
+- **Shifts** (`11c3f4b`): `open_shift_v3`/`close_shift_v3`/`get_active_shift_v3`/
+  `get_shift_stats_v3` -- the last replaces 2 separate Kysely queries (`orders` aggregate +
+  `payments` grouped by method) with one Rust method. `Permission::ManageShift` (Cashier+).
+  `verify_manager_override` (the large-cash-discrepancy override) was already a v3 command,
+  untouched. Wired `shift/page.tsx` fully.
 
 ## Zombie-table sweep (Decision, requested explicitly after the `users` incident)
 
@@ -281,42 +331,48 @@ frontend work (each page has its own form validation, detail views, CSV export, 
 attempted in this batch to avoid rushing UI changes in files not fully read. Flagged as the next
 concrete T1.7 scope, not silently deferred.
 
-## T1.2 breakdown (~62%)
+## T1.2 breakdown (~68%)
 
 **Done:** command shape (`authn → resolve Scope → authz → validate → repo → audit → commit`)
-followed by all 6 new commands this batch (`take_payment_v3`, `list_branches_v3`, `list_staff_v3`,
-`update_staff_profile_v3`, `set_staff_active_v3`, plus `create_staff_v3` finally reachable).
+followed by all 23 new commands across both slices (slice 1: `take_payment_v3`,
+`list_branches_v3`, `list_staff_v3`, `update_staff_profile_v3`, `set_staff_active_v3`, plus
+`create_staff_v3` finally reachable; slice 2: the 17 menu/inventory/shift commands listed above).
 
-**Not done:** of the ~150 commands identified in T1.0a's inventory, **30 exist** in the new scoped
-shape. The remaining ~120 (menu CRUD, inventory, shifts, debt, finance, loyalty, settings, reports,
-and the 4 drift-group pages) still run as direct `getDb()` Kysely calls or old commands -- explicit
-carry-forward for next session, listed in full at the top of this file.
+**Not done:** of the ~150 commands identified in T1.0a's inventory, **47 exist** in the new scoped
+shape. The remaining ~103 (finance, debt, loyalty, settings, reports, the 4 drift-group pages,
+combo/happy-hour, suppliers, staff shifts/attendance tabs) still run as direct `getDb()` Kysely
+calls or old commands — explicit carry-forward, listed in full in the punch list above.
 
-## T1.3 breakdown (~57%)
+## T1.3 breakdown (~61%)
 
-**Done:** `Permission` grew from 12 to 13 variants (`TakePayment`, Cashier rank), full RBAC matrix
-test updated and still exhaustive (13 permissions × 6 roles).
+**Done:** `Permission` grew from 13 to 17 variants this slice (`ManageMenu`, `ManageIngredients`,
+`AdjustStock`, `ManageShift`), full RBAC matrix test updated and still exhaustive (17 permissions
+× 6 roles).
 
 **Not done:** same as before — `ARCHITECTURE_V3.md` §2's full table has more actions than exist yet;
 each future command adds its own permission(s) as built.
 
-## T1.4 breakdown (~70%, unchanged this batch)
+## T1.4 breakdown (~70%, unchanged this slice)
 
 No auth-mechanism changes this pass. Idle-timeout enforcement, rate-limiting on `login_pin_v3`,
-session-to-device re-verification per call — all still frontend/T1.7 concerns.
+session-to-device re-verification per call — all still frontend/T1.7 concerns. PIN-uniqueness gap
+added to the punch list above (not urgent, not fixed this slice).
 
-## T1.7 breakdown (~20%)
+## T1.7 breakdown (~30%)
 
-**Done:** the auth path (unchanged from 3a) plus `staff/page.tsx`'s employees tab (this batch) --
-list/create/edit/deactivate all call v3 commands now, not raw SQL.
+**Done:** the auth path, `staff/page.tsx`'s employees tab (slice 1), plus `menu/page.tsx`'s items
+and categories tabs, `inventory/page.tsx`'s stock tab, and `shift/page.tsx` in full (slice 2) --
+all calling v3 commands now, not raw SQL.
 
-**Not done:** `staff/page.tsx`'s shifts/attendance tabs (untouched, still `getDb()`), and the 4
-drift-group pages (customers, PO tab, delivery, printer.ts) — explicit next-session items.
+**Not done:** `staff/page.tsx`'s shifts/attendance tabs, `menu/page.tsx`'s offers tab,
+`inventory/page.tsx`'s suppliers/PO-receiving/movements/alerts, and the 4 drift-group pages —
+explicit next-session items, listed in the punch list above.
 
 ## Known gaps carried forward (not fixed this batch, tracked explicitly)
 
-1. **~120 commands still on the old path** — menu CRUD, inventory, shifts, finance, debt, loyalty,
-   settings, reports, and the 4 drift-group pages. Explicit next-session scope, detailed above.
+1. **~103 commands still on the old path** — finance, debt, loyalty, settings, reports, the 4
+   drift-group pages, combo/happy-hour, suppliers, staff's remaining tabs. Explicit next-session
+   scope, detailed in the punch list above.
 2. **Ed25519 audit signing** (T1.5) and **versioned price lists** (T1.6) — unchanged, still deferred.
 3. **~25 legacy tables** still rely solely on the Rust-level `assert_scope_populated` check — unchanged.
 4. **`login_v3`/`login_pin_v3` have no rate-limiting** — flagged, not fixed.
@@ -325,26 +381,40 @@ drift-group pages (customers, PO tab, delivery, printer.ts) — explicit next-se
 7. **Staff photo/CV upload and QR-code persistence are gone** (Batch 3b, stated scope reduction) —
    `staff` has no columns for them; dropped from the UI, not silently left non-functional.
 
-## Test evidence (this batch)
+## Test evidence (slice 1 + slice 2, this document's full scope)
 
-**34/34 Rust tests pass** (31 carried over + 3 new: `take_payment_v3_commits_order_payment_table_
-and_projection_atomically`, `kill_9_mid_payment_never_leaves_a_partial_payment`,
-`staff_crud_list_update_profile_and_toggle_active`). `cargo build` (full binary, debug profile)
-succeeds. `cargo check` clean. `cargo clippy --lib --tests -- -D warnings` clean.
-`npx tsc --noEmit` clean.
+**Slice 1** (payment atomicity + zombie sweep + staff CRUD): 34/34 Rust tests pass.
 
-**Hand-test confirmed by you** (2026-07-16): fresh db → create owner → enter app → restart → PIN
-pad → login → order persists. Green — this is what authorized 3b to start.
+**Slice 2** (guard-script fixes + menu/inventory/shifts): **37/37 Rust tests pass** (34 carried
+over + 3 new: `menu_crud_categories_and_items_round_trip`,
+`inventory_ingredient_crud_and_stock_adjustment_atomicity`,
+`shift_open_stats_and_close_round_trip`). `cargo build` (full binary, debug profile) succeeds.
+`cargo check` clean. `cargo clippy --lib --tests -- -D warnings` clean. `npx tsc --noEmit` clean.
+`check-no-sql-in-frontend.sh`: 121 real references (down from 132), correctly detected, not
+blocking. `check-no-country-in-core.sh`: fixed and proven with red/green fixtures (see above).
+Full RBAC matrix: 17 permissions × 6 roles, still exhaustive, still green.
+
+**Hand-test confirmed by you** (2026-07-16, before this slice started): fresh db → create owner →
+enter app → restart → PIN pad → login → order persists. Green — this is what authorized 3b to
+start. **Hand-test after this slice** (yours to run, per your instruction): create owner → add
+menu item → add staff → take order → pay → restart → confirm persistence.
 
 ## Next-session punch list (explicit, in priority order)
 
-1. Menu CRUD, inventory, shifts — the 3 remaining core POS-adjacent groups.
-2. Finance, debt, loyalty, settings, reports.
-3. The 4 drift-group pages' frontend rewire (customers, PO tab, delivery, printer.ts) — backend
+1. Finance, debt, loyalty, settings, reports.
+2. The 4 drift-group pages' frontend rewire (customers, PO tab, delivery, printer.ts) — backend
    commands already exist from Batch 3a, only the frontend call sites remain.
-4. `staff/page.tsx`'s shifts/attendance tabs.
-5. Once (1)-(4) bring `getDb()` call sites to zero: flip `check-no-sql-in-frontend.sh` to blocking,
+3. `combo_meals`/`combo_items`/`happy_hour_rules` (menu page's offers tab) — deferred this slice.
+4. `suppliers` CRUD, PO-receiving's stock bump, inventory movements/alerts tabs — deferred this slice.
+5. `staff/page.tsx`'s shifts/attendance tabs.
+6. Once (1)-(5) bring `getDb()` call sites to zero: flip `check-no-sql-in-frontend.sh` to blocking,
    remove `kysely` + `tauri_plugin_sql` from `package.json`, remove the plugin registration in
    `lib.rs`'s `tauri::Builder`.
-6. Full RBAC matrix re-verified at ~150 commands.
-7. T1.9 (the formal proof) starts only after all of the above.
+7. Full RBAC matrix re-verified at ~150 commands.
+8. **Not urgent, added this slice**: enforce PIN uniqueness per branch. Login is PIN-only now
+   (Batch 3a) — nothing currently stops two staff members on the same branch from having the same
+   PIN, which would make `login_pin_v3`'s scan-and-verify resolve to whichever one it iterates to
+   first (unpredictable, not a security hole exactly, but a real correctness gap now that PIN is
+   the ONLY credential). Needs a uniqueness check in `create_staff_v3`/`update_staff_profile_v3`
+   scoped to branch (or tenant, for Owner/Platform's branch-less rows) before hashing.
+9. T1.9 (the formal proof) starts only after all of the above.
