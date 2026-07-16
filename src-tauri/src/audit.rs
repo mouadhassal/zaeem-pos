@@ -69,6 +69,8 @@ pub enum Action {
     PaymentTaken,
     MenuItemChanged,
     InventoryAdjusted,
+    ShiftOpened,
+    ShiftClosed,
 }
 
 impl Action {
@@ -83,6 +85,8 @@ impl Action {
             Action::PaymentTaken => "PaymentTaken",
             Action::MenuItemChanged => "MenuItemChanged",
             Action::InventoryAdjusted => "InventoryAdjusted",
+            Action::ShiftOpened => "ShiftOpened",
+            Action::ShiftClosed => "ShiftClosed",
         }
     }
 }

@@ -73,6 +73,7 @@ export default function ShiftPage() {
   const fetchShiftData = useCallback(async () => {
     try {
       const db = await getDb();
+      const token = useAuthStore.getState().token;
 
       const cfg = await db
         .selectFrom("chain_config")
@@ -81,52 +82,20 @@ export default function ShiftPage() {
         .executeTakeFirst();
       if (cfg) setCurrency(cfg.currency);
 
-      const shift = await db
-        .selectFrom("shifts")
-        .selectAll()
-        .where("closed_at", "is", null)
-        .where("user_id", "=", user?.id ?? "")
-        .orderBy("opened_at", "desc")
-        .limit(1)
-        .executeTakeFirst();
+      const shift = await invoke<ActiveShift | null>("get_active_shift_v3", { sessionToken: token });
 
       setActiveShift(shift ?? null);
       setActiveShiftId(shift?.id ?? null);
 
       if (shift) {
-        const agg = await db
-          .selectFrom("orders")
-          .select([
-            db.fn.count<number>("id").as("count"),
-            db.fn.sum<number>("total_cents").as("total"),
-          ])
-          .where("status", "=", "PAID")
-          .where("shift_id", "=", shift.id)
-          .executeTakeFirst();
-
-        const payments = await db
-          .selectFrom("payments")
-          .innerJoin("orders", "orders.id", "payments.order_id")
-          .select([
-            "payments.method",
-            db.fn.sum<number>("payments.amount_cents").as("total"),
-          ])
-          .where("orders.status", "=", "PAID")
-          .where("orders.shift_id", "=", shift.id)
-          .groupBy("payments.method")
-          .execute();
-
-        let cashTotal = 0, cardTotal = 0;
-        for (const p of payments) {
-          if (p.method === "CASH") cashTotal = p.total ?? 0;
-          else if (p.method === "CARD") cardTotal = p.total ?? 0;
-        }
-
+        const stats = await invoke<{ order_count: number; total_sales: number; cash_total: number; card_total: number }>(
+          "get_shift_stats_v3", { sessionToken: token, shiftId: shift.id }
+        );
         setStats({
-          orderCount: agg?.count ?? 0,
-          totalSales: agg?.total ?? 0,
-          cashTotal,
-          cardTotal,
+          orderCount: stats.order_count,
+          totalSales: stats.total_sales,
+          cashTotal: stats.cash_total,
+          cardTotal: stats.card_total,
         });
 
         const orders = await db
@@ -164,23 +133,8 @@ export default function ShiftPage() {
     const cents = Math.round(parseFloat(startingCash || "0") * 100);
     setStartingShift(true);
     try {
-      const db = await getDb();
-      const id = crypto.randomUUID();
-      await db
-        .insertInto("shifts")
-        .values({
-          id,
-          user_id: user.id,
-          opened_at: new Date().toISOString(),
-          closed_at: null,
-          starting_cash_cents: cents,
-          ending_cash_cents: null,
-          difference_cents: null,
-          sync_version: 1,
-          last_modified: new Date().toISOString(),
-          sync_status: "pending",
-        })
-        .execute();
+      const token = useAuthStore.getState().token;
+      const id = await invoke<string>("open_shift_v3", { sessionToken: token, startingCashCents: cents });
       setActiveShiftId(id);
       showMsg("تم بدء الوردية بنجاح ✓");
       await fetchShiftData();
@@ -203,18 +157,11 @@ export default function ShiftPage() {
     setClosing(true);
 
     try {
-      const db = await getDb();
+      const token = useAuthStore.getState().token;
 
-      const cashPayments = await db
-        .selectFrom("payments")
-        .innerJoin("orders", "orders.id", "payments.order_id")
-        .select(db.fn.sum<number>("payments.amount_cents").as("total"))
-        .where("payments.method", "=", "CASH")
-        .where("orders.status", "=", "PAID")
-        .where("orders.shift_id", "=", activeShift.id)
-        .executeTakeFirst();
+      const shiftStats = await invoke<{ cash_total: number }>("get_shift_stats_v3", { sessionToken: token, shiftId: activeShift.id });
 
-      const expectedCashCents = (cashPayments?.total ?? 0) + activeShift.starting_cash_cents;
+      const expectedCashCents = shiftStats.cash_total + activeShift.starting_cash_cents;
       const actualCashCents = Math.round(parseFloat(actualCash || "0") * 100);
       const diffCents = actualCashCents - expectedCashCents;
       const absDiff = Math.abs(diffCents);
@@ -236,19 +183,7 @@ export default function ShiftPage() {
         }
       }
 
-      const now = new Date().toISOString();
-      await db
-        .updateTable("shifts")
-        .set({
-          closed_at: now,
-          ending_cash_cents: actualCashCents,
-          difference_cents: diffCents,
-          sync_version: 1,
-          last_modified: now,
-          sync_status: "pending",
-        })
-        .where("id", "=", activeShift.id)
-        .execute();
+      await invoke("close_shift_v3", { sessionToken: token, shiftId: activeShift.id, endingCashCents: actualCashCents, differenceCents: diffCents });
 
       setSummary({
         expectedCash: expectedCashCents,

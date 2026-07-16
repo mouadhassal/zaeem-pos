@@ -687,6 +687,54 @@ pub fn adjust_stock_v3(state: State<Db>, session_token: String, ingredient_id: S
     Ok(log_id)
 }
 
+// ---------------------------------------------------------------------------
+// Batch 3b, slice 2, group 3 -- shifts.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn get_active_shift_v3(state: State<Db>, session_token: String) -> Result<Option<crate::repo::ShiftRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).get_active_shift(&actor.id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_shift_stats_v3(state: State<Db>, session_token: String, shift_id: String) -> Result<crate::repo::ShiftStatsRow, String> {
+    authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).shift_stats(&shift_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn open_shift_v3(state: State<Db>, session_token: String, starting_cash_cents: i64) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageShift).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("opening a shift requires a Branch-scoped actor".to_string());
+    };
+    if starting_cash_cents < 0 {
+        return Err("negative starting cash is not valid".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let shift_id = Repo::new(&tx).open_shift(&tenant_id, &branch_id, &actor.id, starting_cash_cents).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::ShiftOpened, "shift", &shift_id, None, Some(&serde_json::json!({ "starting_cash_cents": starting_cash_cents }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(shift_id)
+}
+
+#[tauri::command]
+pub fn close_shift_v3(state: State<Db>, session_token: String, shift_id: String, ending_cash_cents: i64, difference_cents: i64) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageShift).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).close_shift(&shift_id, ending_cash_cents, difference_cents).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::ShiftClosed, "shift", &shift_id, None, Some(&serde_json::json!({ "ending_cash_cents": ending_cash_cents, "difference_cents": difference_cents }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// T1.6: two-layer menu price resolution (`override ?? default`), exposed
 /// read-only so a client can price an item before/while building an order.
 /// Gated on `CreateOrder` (the same permission that lets an actor build an
@@ -1639,6 +1687,52 @@ mod tests {
         assert_eq!(log_count, 2, "both adjustments must be preserved as separate append-only facts, not collapsed");
         assert_ne!(log1, log2);
         println!("[inventory] 2 inventory_logs rows preserved (append-only), each adjustment its own fact");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Batch 3b, slice 2, group 3: open a shift, take orders + payments
+    /// against it, confirm stats aggregate correctly (order count, CASH vs
+    /// CARD split), then close it.
+    #[test]
+    fn shift_open_stats_and_close_round_trip() {
+        let (db_path, tenant_id, branch_id, table_id) = seeded_db("shifts");
+        let conn = Connection::open(&db_path).unwrap();
+        let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Shift Cashier");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let repo = Repo::new(&conn);
+
+        assert!(repo.get_active_shift(&cashier_id).unwrap().is_none());
+        let shift_id = repo.open_shift(&tenant_id, &branch_id, &cashier_id, 10000).unwrap();
+        let active = repo.get_active_shift(&cashier_id).unwrap().unwrap();
+        assert_eq!(active.id, shift_id);
+        assert_eq!(active.starting_cash_cents, 10000);
+        println!("[shifts] shift opened with starting_cash_cents=10000, get_active_shift confirms it");
+
+        // Two orders paid against this shift, one CASH one CARD.
+        for (method, amount) in [("CASH", 2000i64), ("CARD", 3500i64)] {
+            let order_id = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
+                table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".into(),
+                subtotal_cents: amount, tax_cents: 0, total_cents: amount, discount_cents: 0,
+            }).unwrap();
+            conn.execute("UPDATE orders SET shift_id = ?1 WHERE id = ?2", params![shift_id, order_id]).unwrap();
+            repo.take_payment(&tenant_id, &branch_id, crate::repo::PaymentInput {
+                order_id, method: method.to_string(), amount_cents: amount, change_cents: 0, debtor_id: None, actor_id: cashier_id.clone(),
+            }).unwrap();
+        }
+
+        let stats = repo.shift_stats(&shift_id).unwrap();
+        assert_eq!(stats.order_count, 2);
+        assert_eq!(stats.total_sales, 5500);
+        assert_eq!(stats.cash_total, 2000);
+        assert_eq!(stats.card_total, 3500);
+        println!("[shifts] shift_stats: 2 orders, total_sales=5500, cash=2000, card=3500 -- matches the 2 payments taken");
+
+        repo.close_shift(&shift_id, 12000, 100).unwrap();
+        assert!(repo.get_active_shift(&cashier_id).unwrap().is_none());
+        let closed_at: Option<String> = conn.query_row("SELECT closed_at FROM shifts WHERE id = ?1", params![shift_id], |r| r.get(0)).unwrap();
+        assert!(closed_at.is_some());
+        println!("[shifts] shift closed, no longer reported as active");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }

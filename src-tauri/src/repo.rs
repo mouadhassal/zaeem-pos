@@ -99,6 +99,22 @@ pub struct PaymentInput {
 /// narrower than `SELECT *`: exactly the fields the frontend pages named in
 /// DRIFT_REPORT.md Findings #2/#5 actually read.
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct ShiftRow {
+    pub id: String,
+    pub opened_at: String,
+    pub starting_cash_cents: i64,
+    pub user_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ShiftStatsRow {
+    pub order_count: i64,
+    pub total_sales: i64,
+    pub cash_total: i64,
+    pub card_total: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct IngredientRow {
     pub id: String,
     pub name: String,
@@ -967,6 +983,69 @@ impl<'a> Repo<'a> {
             params![log_id, tenant_id, branch_id, ingredient_id, change_amount, reason, actor_id, now],
         )?;
         Ok(log_id)
+    }
+
+    // -----------------------------------------------------------------
+    // Batch 3b, slice 2, group 3 -- shifts. `shifts` is a
+    // `TENANT_BRANCH_TABLES` entry, `user_id` already repointed at
+    // `staff(id)` by Decision A's Migration C.
+    // -----------------------------------------------------------------
+
+    pub fn open_shift(&self, tenant_id: &str, branch_id: &str, user_id: &str, starting_cash_cents: i64) -> Result<String, RepoError> {
+        self.assert_scope_populated("shifts", true)?;
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO shifts (id, tenant_id, branch_id, user_id, opened_at, closed_at, starting_cash_cents, ending_cash_cents, difference_cents, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, NULL, NULL, ?5, 'pending')",
+            params![id, tenant_id, branch_id, user_id, now, starting_cash_cents],
+        )?;
+        Ok(id)
+    }
+
+    /// The one currently-open shift for this staff member, if any -- there
+    /// is at most one (the UI never opens a second shift while one is
+    /// active), but this is a plain query, not an enforced constraint.
+    pub fn get_active_shift(&self, user_id: &str) -> Result<Option<ShiftRow>, RepoError> {
+        self.conn
+            .query_row(
+                "SELECT id, opened_at, starting_cash_cents, user_id FROM shifts WHERE user_id = ?1 AND closed_at IS NULL ORDER BY opened_at DESC LIMIT 1",
+                params![user_id],
+                |r| Ok(ShiftRow { id: r.get(0)?, opened_at: r.get(1)?, starting_cash_cents: r.get(2)?, user_id: r.get(3)? }),
+            )
+            .optional()
+            .map_err(RepoError::from)
+    }
+
+    /// Order count/total plus a CASH/CARD payment breakdown for one shift --
+    /// exactly what `fetchShiftData` computed with 2 separate Kysely queries
+    /// (`orders` aggregate + `payments` grouped by method), now one method.
+    pub fn shift_stats(&self, shift_id: &str) -> Result<ShiftStatsRow, RepoError> {
+        let (order_count, total_sales): (i64, i64) = self.conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders WHERE status = 'PAID' AND shift_id = ?1",
+            params![shift_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let cash_total: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(payments.amount_cents), 0) FROM payments INNER JOIN orders ON orders.id = payments.order_id \
+             WHERE payments.method = 'CASH' AND orders.status = 'PAID' AND orders.shift_id = ?1",
+            params![shift_id], |r| r.get(0),
+        )?;
+        let card_total: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(payments.amount_cents), 0) FROM payments INNER JOIN orders ON orders.id = payments.order_id \
+             WHERE payments.method = 'CARD' AND orders.status = 'PAID' AND orders.shift_id = ?1",
+            params![shift_id], |r| r.get(0),
+        )?;
+        Ok(ShiftStatsRow { order_count, total_sales, cash_total, card_total })
+    }
+
+    pub fn close_shift(&self, shift_id: &str, ending_cash_cents: i64, difference_cents: i64) -> Result<(), RepoError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE shifts SET closed_at = ?1, ending_cash_cents = ?2, difference_cents = ?3, last_modified = ?1 WHERE id = ?4",
+            params![now, ending_cash_cents, difference_cents, shift_id],
+        )?;
+        Ok(())
     }
 }
 
