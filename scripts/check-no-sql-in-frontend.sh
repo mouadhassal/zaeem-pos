@@ -22,8 +22,11 @@ set -euo pipefail
 # genuinely zero -- doing it now would break every dev/CI run for reasons
 # that have nothing to do with a regression.
 
+# Overridable via env var so this script can be pointed at an isolated
+# fixture directory for a red/green self-test, without planting a real
+# violation inside the actual source tree.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SRC="$ROOT/src"
+SRC="${CHECK_FRONTEND_SRC:-$ROOT/src}"
 
 PATTERNS="(getDb\s*\(|from\s+['\"]kysely['\"]|@tauri-apps/plugin-sql)"
 
