@@ -1467,6 +1467,19 @@ pub fn list_printers_v3(state: State<Db>, session_token: String) -> Result<Vec<c
     Repo::new(&conn).list_printers(&actor.scope()).map_err(|e| e.to_string())
 }
 
+/// `printer.ts`'s read path (print receipt/kitchen ticket/open drawer) --
+/// Cashier+, distinct from `list_printers_v3` (Manager+, Settings' printer
+/// config tab, which also needs to see deactivated printers). Filters to
+/// `is_active = 1` server-side, matching the old frontend's own filter.
+#[tauri::command]
+pub fn list_active_printers_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::PrinterRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::UsePrinter).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Ok(Repo::new(&conn).list_printers(&actor.scope()).map_err(|e| e.to_string())?
+        .into_iter().filter(|p| p.is_active == 1).collect())
+}
+
 #[tauri::command]
 pub fn list_delivery_logs_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::DeliveryLogRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;

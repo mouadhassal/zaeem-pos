@@ -1,4 +1,9 @@
-import { getDb } from "../db";
+import { invoke } from "@tauri-apps/api/core";
+import { useAuthStore } from "../stores/authStore";
+
+function token() {
+  return useAuthStore.getState().token;
+}
 
 export interface ReceiptItem {
   name: string;
@@ -36,6 +41,29 @@ export interface KitchenTicketData {
   orderType: string;
   items: { name: string; quantity: number; notes?: string; modifiers?: string[] }[];
   scheduledAt?: string;
+}
+
+interface PrinterRowV3 {
+  id: string;
+  name: string;
+  printer_type: "RECEIPT" | "KITCHEN" | "LABEL";
+  interface: "USB" | "NETWORK" | "BLUETOOTH";
+  vendor_id: string | null;
+  product_id: string | null;
+  drawer_pulse_ms: number;
+  is_primary: number;
+  is_secondary: number;
+  is_active: number;
+  paper_width_mm: number;
+  ip_address: string | null;
+  port: number;
+  code_page: number;
+}
+
+interface ChainConfigV3 {
+  chain_name: string;
+  currency: string;
+  default_paper_width: number;
 }
 
 interface PrinterConfig {
@@ -377,23 +405,17 @@ export async function printToDevice(data: Uint8Array, printer: PrinterConfig): P
 }
 
 export async function printReceipt(data: ReceiptData): Promise<void> {
-  const db = await getDb();
-  const printers = await db
-    .selectFrom("printers")
-    .selectAll()
-    .where("printer_type", "=", "RECEIPT")
-    .where("is_active", "=", 1)
-    .orderBy("is_primary desc")
-    .orderBy("is_secondary desc")
-    .execute();
+  const allPrinters = await invoke<PrinterRowV3[]>("list_active_printers_v3", { sessionToken: token() });
+  const printers = allPrinters
+    .filter((p) => p.printer_type === "RECEIPT")
+    .sort((a, b) => (b.is_primary - a.is_primary) || (b.is_secondary - a.is_secondary));
 
-  const chain: any = await db
-    .selectFrom("chain_config")
-    .selectAll()
-    .where("id", "=", "default")
-    .executeTakeFirst();
+  const chain = await invoke<ChainConfigV3>("get_chain_config_v3", { sessionToken: token() });
 
-  const defaultCodePage = chain?.code_page ?? "CP864";
+  // chain_config has no code_page column in the real schema -- this
+  // fallback was already dead in practice (see PrinterRow's doc comment),
+  // preserved as-is, not "fixed".
+  const defaultCodePage = "CP864";
   const defaultPaperWidth = chain?.default_paper_width ?? 80;
 
   let lastError: string | null = null;
@@ -434,21 +456,12 @@ export async function printReceipt(data: ReceiptData): Promise<void> {
 }
 
 export async function printKitchenTicket(data: KitchenTicketData): Promise<void> {
-  const db = await getDb();
-  const printers = await db
-    .selectFrom("printers")
-    .selectAll()
-    .where("printer_type", "=", "KITCHEN")
-    .where("is_active", "=", 1)
-    .execute();
+  const allPrinters = await invoke<PrinterRowV3[]>("list_active_printers_v3", { sessionToken: token() });
+  const printers = allPrinters.filter((p) => p.printer_type === "KITCHEN");
 
-  const chainK: any = await db
-    .selectFrom("chain_config")
-    .selectAll()
-    .where("id", "=", "default")
-    .executeTakeFirst();
+  const chainK = await invoke<ChainConfigV3>("get_chain_config_v3", { sessionToken: token() });
 
-  const defaultCodePageK = chainK?.code_page ?? "CP864";
+  const defaultCodePageK = "CP864";
   const defaultPaperWidthK = chainK?.default_paper_width ?? 80;
 
   let anyPrinted = false;
@@ -497,14 +510,8 @@ export async function printKitchenTicket(data: KitchenTicketData): Promise<void>
 }
 
 export async function openCashDrawer(pulseMs: number = 200): Promise<void> {
-  const db = await getDb();
-  const printer = await db
-    .selectFrom("printers")
-    .selectAll()
-    .where("printer_type", "=", "RECEIPT")
-    .where("is_primary", "=", 1)
-    .where("is_active", "=", 1)
-    .executeTakeFirst();
+  const allPrinters = await invoke<PrinterRowV3[]>("list_active_printers_v3", { sessionToken: token() });
+  const printer = allPrinters.find((p) => p.printer_type === "RECEIPT" && p.is_primary === 1);
 
   if (!printer) return;
   const pr = printer as any;
@@ -574,12 +581,7 @@ export function generateOnScreenReceiptHTML(data: ReceiptData): string {
 }
 
 export async function testPrint(): Promise<void> {
-  const db = await getDb();
-  const cfg: any = await db
-    .selectFrom("chain_config")
-    .select(["chain_name", "currency"])
-    .where("id", "=", "default")
-    .executeTakeFirst();
+  const cfg = await invoke<ChainConfigV3>("get_chain_config_v3", { sessionToken: token() });
   await printReceipt({
     chainName: cfg?.chain_name ?? "مطعم التجربة",
     branchName: "الفرع الرئيسي",

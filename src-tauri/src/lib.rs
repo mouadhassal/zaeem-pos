@@ -1215,6 +1215,7 @@ pub fn run() {
             commands_v3::deactivate_driver_v3,
             commands_v3::create_printer_v3,
             commands_v3::list_printers_v3,
+            commands_v3::list_active_printers_v3,
             commands_v3::list_delivery_logs_v3,
             commands_v3::create_delivery_log_v3,
             commands_v3::assign_driver_to_delivery_v3,

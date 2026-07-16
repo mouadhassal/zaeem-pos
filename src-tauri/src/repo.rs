@@ -213,6 +213,9 @@ pub struct ChainConfigRow {
     pub currency: String,
     pub tax_mode: String,
     pub tax_rate_cents: i64,
+    /// Batch 3b, final slice, group 3 -- `printer.ts` needs the chain-wide
+    /// paper width fallback for printers that don't override it.
+    pub default_paper_width: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -456,6 +459,16 @@ pub struct PrinterRow {
     pub is_secondary: i64,
     pub is_active: i64,
     pub paper_width_mm: i64,
+    /// Batch 3b, final slice, group 3 -- `printer.ts` needs these to
+    /// actually talk to the device (NETWORK interface) and to feed
+    /// `generateEscPosReceipt`'s codepage table lookup, preserved exactly
+    /// as the old frontend read them (including its pre-existing quirk:
+    /// `code_page` is stored as an INTEGER, but `setCodePage` keys its table
+    /// by string name, so a numeric value always misses and falls through
+    /// to the CP864 default -- not "fixed" here, just carried forward).
+    pub ip_address: Option<String>,
+    pub port: i64,
+    pub code_page: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1324,8 +1337,8 @@ impl<'a> Repo<'a> {
     pub fn get_chain_config(&self) -> Result<ChainConfigRow, RepoError> {
         self.ensure_chain_config_row()?;
         self.conn.query_row(
-            "SELECT chain_name, currency, tax_mode, tax_rate_cents FROM chain_config WHERE id = 'default'",
-            [], |r| Ok(ChainConfigRow { chain_name: r.get(0)?, currency: r.get(1)?, tax_mode: r.get(2)?, tax_rate_cents: r.get(3)? }),
+            "SELECT chain_name, currency, tax_mode, tax_rate_cents, default_paper_width FROM chain_config WHERE id = 'default'",
+            [], |r| Ok(ChainConfigRow { chain_name: r.get(0)?, currency: r.get(1)?, tax_mode: r.get(2)?, tax_rate_cents: r.get(3)?, default_paper_width: r.get(4)? }),
         ).map_err(RepoError::from)
     }
 
@@ -1913,12 +1926,16 @@ impl<'a> Repo<'a> {
         self.assert_scope_populated("printers", true)?;
         let (predicate, args) = Self::scope_predicate(scope);
         let sql = format!(
-            "SELECT id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary, is_secondary, is_active, paper_width_mm FROM printers WHERE {predicate} ORDER BY name ASC"
+            "SELECT id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary, is_secondary, is_active, paper_width_mm, ip_address, port, code_page FROM printers WHERE {predicate} ORDER BY name ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(params_refs.as_slice(), |r| {
-            Ok(PrinterRow { id: r.get(0)?, name: r.get(1)?, printer_type: r.get(2)?, interface: r.get(3)?, vendor_id: r.get(4)?, product_id: r.get(5)?, drawer_pulse_ms: r.get(6)?, is_primary: r.get(7)?, is_secondary: r.get(8)?, is_active: r.get(9)?, paper_width_mm: r.get(10)? })
+            Ok(PrinterRow {
+                id: r.get(0)?, name: r.get(1)?, printer_type: r.get(2)?, interface: r.get(3)?, vendor_id: r.get(4)?, product_id: r.get(5)?,
+                drawer_pulse_ms: r.get(6)?, is_primary: r.get(7)?, is_secondary: r.get(8)?, is_active: r.get(9)?, paper_width_mm: r.get(10)?,
+                ip_address: r.get(11)?, port: r.get(12)?, code_page: r.get(13)?,
+            })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
