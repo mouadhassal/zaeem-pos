@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getDb } from "../../db";
 import { useAuthStore } from "../../stores/authStore";
 import { z } from "zod";
 
@@ -29,7 +28,6 @@ interface ComboMeal {
   id: string;
   name: string;
   bundle_price_cents: number;
-  is_active: number;
   items: { menu_item_id: string; name: string; quantity: number; price_cents: number }[];
 }
 
@@ -206,6 +204,7 @@ export default function MenuPage() {
   const [comboForm, setComboForm] = useState<ComboForm>(emptyComboForm);
   const [comboErrors, setComboErrors] = useState<Record<string, string>>({});
   const [savingCombo, setSavingCombo] = useState(false);
+  const [deleteComboId, setDeleteComboId] = useState<string | null>(null);
 
   // Happy Hour tab
   const [happyHourRules, setHappyHourRules] = useState<HappyHourRule[]>([]);
@@ -228,7 +227,6 @@ export default function MenuPage() {
     setLoading(true);
     setError(null);
     try {
-      const db = await getDb();
       const [cats, items] = await Promise.all([
         invoke<Category[]>("list_categories_v3", { sessionToken: token }),
         invoke<MenuItem[]>("list_menu_items_v3", { sessionToken: token }),
@@ -243,33 +241,13 @@ export default function MenuPage() {
       setCategoryItemCounts(counts);
 
       const [comboRows, comboItemRows, happyRows] = await Promise.all([
-        db.selectFrom("combo_meals").selectAll().orderBy("name", "asc").execute(),
-        db
-          .selectFrom("combo_items")
-          .innerJoin("menu_items", "menu_items.id", "combo_items.menu_item_id")
-          .select([
-            "combo_items.combo_id",
-            "combo_items.menu_item_id",
-            "combo_items.quantity",
-            "menu_items.name",
-            "menu_items.price_cents",
-          ])
-          .execute(),
-        db
-          .selectFrom("happy_hour_rules")
-          .innerJoin("menu_items", "menu_items.id", "happy_hour_rules.menu_item_id")
-          .select([
-            "happy_hour_rules.id",
-            "happy_hour_rules.menu_item_id",
-            "happy_hour_rules.discount_percent",
-            "happy_hour_rules.day_of_week",
-            "happy_hour_rules.start_time",
-            "happy_hour_rules.end_time",
-            "happy_hour_rules.is_active",
-            "menu_items.name as menu_item_name",
-          ])
-          .orderBy("happy_hour_rules.day_of_week", "asc")
-          .execute(),
+        invoke<{ id: string; name: string; bundle_price_cents: number }[]>("list_combo_meals_v3", { sessionToken: token }),
+        invoke<{ combo_id: string; menu_item_id: string; menu_item_name: string; quantity: number; price_cents: number }[]>(
+          "list_combo_meal_items_v3", { sessionToken: token }
+        ),
+        invoke<{ id: string; menu_item_id: string; menu_item_name: string; discount_percent: number; day_of_week: number; start_time: string; end_time: string; is_active: number }[]>(
+          "list_happy_hour_rules_v3", { sessionToken: token }
+        ),
       ]);
 
       const comboMap: Record<string, ComboMeal> = {};
@@ -280,7 +258,7 @@ export default function MenuPage() {
         if (comboMap[ci.combo_id]) {
           comboMap[ci.combo_id].items.push({
             menu_item_id: ci.menu_item_id,
-            name: ci.name,
+            name: ci.menu_item_name,
             quantity: ci.quantity,
             price_cents: ci.price_cents,
           });
@@ -483,39 +461,13 @@ export default function MenuPage() {
     }
     setSavingCombo(true);
     try {
-      const db = await getDb();
-      const comboId = editComboId || crypto.randomUUID();
       const bundleCents = toCents(comboForm.bundle_price_cents);
+      const items: [string, number][] = parsed.data.items.map((i) => [i.menu_item_id, i.quantity]);
 
       if (editComboId) {
-        await db
-          .updateTable("combo_meals")
-          .set({ name: parsed.data.name, bundle_price_cents: bundleCents })
-          .where("id", "=", editComboId)
-          .execute();
-        await db
-          .deleteFrom("combo_items")
-          .where("combo_id", "=", editComboId)
-          .execute();
+        await invoke("update_combo_meal_v3", { sessionToken: token, comboId: editComboId, name: parsed.data.name, bundlePriceCents: bundleCents, items });
       } else {
-        await db
-          .insertInto("combo_meals")
-          .values({ id: comboId, name: parsed.data.name, bundle_price_cents: bundleCents, is_active: 1 })
-          .execute();
-      }
-
-      for (const item of parsed.data.items) {
-        await db
-          .insertInto("combo_items")
-          .values({
-            id: crypto.randomUUID(),
-            combo_id: comboId,
-            menu_item_id: item.menu_item_id,
-            quantity: item.quantity,
-            sort_order: 0,
-            is_free: 0,
-          })
-          .execute();
+        await invoke("create_combo_meal_v3", { sessionToken: token, name: parsed.data.name, bundlePriceCents: bundleCents, items });
       }
 
       setShowComboModal(false);
@@ -527,17 +479,14 @@ export default function MenuPage() {
     }
   };
 
-  const toggleComboStatus = async (combo: ComboMeal) => {
+  const confirmDeleteCombo = async () => {
+    if (!deleteComboId) return;
     try {
-      const db = await getDb();
-      await db
-        .updateTable("combo_meals")
-        .set({ is_active: combo.is_active ? 0 : 1 })
-        .where("id", "=", combo.id)
-        .execute();
+      await invoke("delete_combo_meal_v3", { sessionToken: token, comboId: deleteComboId });
+      setDeleteComboId(null);
       await fetchAll();
     } catch {
-      setError("حدث خطأ في تحديث الحالة");
+      setError("حدث خطأ في الحذف");
     }
   };
 
@@ -598,26 +547,19 @@ export default function MenuPage() {
     }
     setSavingHappyHour(true);
     try {
-      const db = await getDb();
-      const data = {
-        menu_item_id: parsed.data.menu_item_id,
-        discount_percent: parseInt(happyHourForm.discount_percent, 10),
-        day_of_week: parseInt(happyHourForm.day_of_week, 10),
-        start_time: parsed.data.start_time,
-        end_time: parsed.data.end_time,
-        is_active: happyHourForm.is_active ? 1 : 0,
+      const args = {
+        sessionToken: token,
+        menuItemId: parsed.data.menu_item_id,
+        discountPercent: parseInt(happyHourForm.discount_percent, 10),
+        dayOfWeek: parseInt(happyHourForm.day_of_week, 10),
+        startTime: parsed.data.start_time,
+        endTime: parsed.data.end_time,
+        isActive: happyHourForm.is_active,
       };
       if (editHappyHourId) {
-        await db
-          .updateTable("happy_hour_rules")
-          .set(data)
-          .where("id", "=", editHappyHourId)
-          .execute();
+        await invoke("update_happy_hour_rule_v3", { ...args, ruleId: editHappyHourId });
       } else {
-        await db
-          .insertInto("happy_hour_rules")
-          .values({ id: crypto.randomUUID(), ...data })
-          .execute();
+        await invoke("create_happy_hour_rule_v3", args);
       }
       setShowHappyHourModal(false);
       await fetchAll();
@@ -630,11 +572,7 @@ export default function MenuPage() {
 
   const deleteHappyHour = async (id: string) => {
     try {
-      const db = await getDb();
-      await db
-        .deleteFrom("happy_hour_rules")
-        .where("id", "=", id)
-        .execute();
+      await invoke("delete_happy_hour_rule_v3", { sessionToken: token, ruleId: id });
       await fetchAll();
     } catch {
       setError("حدث خطأ في الحذف");
@@ -643,12 +581,7 @@ export default function MenuPage() {
 
   const toggleHappyHourStatus = async (rule: HappyHourRule) => {
     try {
-      const db = await getDb();
-      await db
-        .updateTable("happy_hour_rules")
-        .set({ is_active: rule.is_active ? 0 : 1 })
-        .where("id", "=", rule.id)
-        .execute();
+      await invoke("set_happy_hour_rule_active_v3", { sessionToken: token, ruleId: rule.id, isActive: !rule.is_active });
       await fetchAll();
     } catch {
       setError("حدث خطأ في تحديث الحالة");
@@ -923,18 +856,20 @@ export default function MenuPage() {
                   >
                     <div className="flex items-center justify-between">
                       <h3 className="font-arabic font-bold text-ink-900">{combo.name}</h3>
-                      <button
-                        onClick={() => toggleComboStatus(combo)}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                          combo.is_active ? "bg-saffron-600" : "bg-ink-300"
-                        }`}
-                      >
-                        <span
-                          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                            combo.is_active ? "translate-x-6" : "translate-x-1"
-                          }`}
-                        />
-                      </button>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => openEditCombo(combo)}
+                          className="px-3 py-1.5 rounded-lg bg-blue-100 text-blue-700 text-xs font-bold hover:bg-blue-200 transition-colors"
+                        >
+                          تعديل
+                        </button>
+                        <button
+                          onClick={() => setDeleteComboId(combo.id)}
+                          className="px-3 py-1.5 rounded-lg bg-red-100 text-red-700 text-xs font-bold hover:bg-red-200 transition-colors"
+                        >
+                          حذف
+                        </button>
+                      </div>
                     </div>
                     <div className="flex items-center justify-between text-sm">
                       <span className="text-ink-400 font-arabic">
@@ -1215,6 +1150,32 @@ export default function MenuPage() {
               </button>
               <button
                 onClick={confirmDeleteItem}
+                className="h-10 px-6 rounded-xl bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
+              >
+                حذف
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Combo Confirmation */}
+      {deleteComboId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
+            <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد الحذف</h2>
+            <p className="text-sm font-arabic text-ink-500">
+              هل أنت متأكد من حذف هذه الوجبة المجمعة؟
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setDeleteComboId(null)}
+                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
+              >
+                إلغاء
+              </button>
+              <button
+                onClick={confirmDeleteCombo}
                 className="h-10 px-6 rounded-xl bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
               >
                 حذف

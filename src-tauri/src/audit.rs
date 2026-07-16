@@ -89,6 +89,8 @@ pub enum Action {
     /// control (it authorizes voids/discounts); granting one must be
     /// logged, same as any other privileged action.
     ManagerOverrideGranted,
+    ComboMealChanged,
+    HappyHourRuleChanged,
 }
 
 impl Action {
@@ -119,6 +121,8 @@ impl Action {
             Action::DeliveryStatusChanged => "DeliveryStatusChanged",
             Action::DeliveryZoneChanged => "DeliveryZoneChanged",
             Action::ManagerOverrideGranted => "ManagerOverrideGranted",
+            Action::ComboMealChanged => "ComboMealChanged",
+            Action::HappyHourRuleChanged => "HappyHourRuleChanged",
         }
     }
 }

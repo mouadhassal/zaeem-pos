@@ -544,7 +544,7 @@ pub fn update_category_v3(state: State<Db>, session_token: String, category_id: 
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_category(&category_id, &name, color.as_deref(), sort_order, image_path.as_deref()).map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_category(&actor.tenant_id, &category_id, &name, color.as_deref(), sort_order, image_path.as_deref()).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "category", &category_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
@@ -556,7 +556,7 @@ pub fn delete_category_v3(state: State<Db>, session_token: String, category_id: 
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).delete_category(&category_id).map_err(|e| e.to_string())?;
+    Repo::new(&tx).delete_category(&actor.tenant_id, &category_id).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "category", &category_id, Some(&serde_json::json!({ "deleted": false })), Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
@@ -605,7 +605,7 @@ pub fn update_menu_item_v3(state: State<Db>, session_token: String, item_id: Str
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     Repo::new(&tx)
-        .update_menu_item(&item_id, &name, &category_id, price_cents, cost_cents, image_path.as_deref(), description.as_deref(), barcode.as_deref())
+        .update_menu_item(&actor.tenant_id, &item_id, &name, &category_id, price_cents, cost_cents, image_path.as_deref(), description.as_deref(), barcode.as_deref())
         .map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, None, Some(&serde_json::json!({ "name": name, "price_cents": price_cents }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -618,7 +618,7 @@ pub fn delete_menu_item_v3(state: State<Db>, session_token: String, item_id: Str
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).delete_menu_item(&item_id).map_err(|e| e.to_string())?;
+    Repo::new(&tx).delete_menu_item(&actor.tenant_id, &item_id).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, Some(&serde_json::json!({ "deleted": false })), Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
@@ -630,8 +630,115 @@ pub fn set_menu_item_active_v3(state: State<Db>, session_token: String, item_id:
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).set_menu_item_active(&item_id, is_active).map_err(|e| e.to_string())?;
+    Repo::new(&tx).set_menu_item_active(&actor.tenant_id, &item_id, is_active).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, None, Some(&serde_json::json!({ "is_active": is_active }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_combo_meals_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::ComboMealRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_combo_meals(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_combo_meal_items_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::ComboItemJoinRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_combo_meal_items(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_combo_meal_v3(state: State<Db>, session_token: String, name: String, bundle_price_cents: i64, items: Vec<(String, i64)>) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let combo_id = Repo::new(&tx).create_combo_meal(&actor.tenant_id, &name, bundle_price_cents, &items).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::ComboMealChanged, "combo_meal", &combo_id, None, Some(&serde_json::json!({ "name": name, "item_count": items.len() }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(combo_id)
+}
+
+#[tauri::command]
+pub fn update_combo_meal_v3(state: State<Db>, session_token: String, combo_id: String, name: String, bundle_price_cents: i64, items: Vec<(String, i64)>) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_combo_meal(&actor.tenant_id, &combo_id, &name, bundle_price_cents, &items).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::ComboMealChanged, "combo_meal", &combo_id, None, Some(&serde_json::json!({ "name": name, "item_count": items.len() }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_combo_meal_v3(state: State<Db>, session_token: String, combo_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).delete_combo_meal(&actor.tenant_id, &combo_id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::ComboMealChanged, "combo_meal", &combo_id, Some(&serde_json::json!({ "deleted": false })), Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_happy_hour_rules_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::HappyHourRuleRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_happy_hour_rules(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn create_happy_hour_rule_v3(state: State<Db>, session_token: String, menu_item_id: String, discount_percent: i64, day_of_week: i64, start_time: String, end_time: String, is_active: bool) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let rule_id = Repo::new(&tx).create_happy_hour_rule(&actor.tenant_id, &menu_item_id, discount_percent, day_of_week, &start_time, &end_time, is_active).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::HappyHourRuleChanged, "happy_hour_rule", &rule_id, None, Some(&serde_json::json!({ "menu_item_id": menu_item_id, "discount_percent": discount_percent }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(rule_id)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn update_happy_hour_rule_v3(state: State<Db>, session_token: String, rule_id: String, menu_item_id: String, discount_percent: i64, day_of_week: i64, start_time: String, end_time: String, is_active: bool) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_happy_hour_rule(&actor.tenant_id, &rule_id, &menu_item_id, discount_percent, day_of_week, &start_time, &end_time, is_active).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::HappyHourRuleChanged, "happy_hour_rule", &rule_id, None, Some(&serde_json::json!({ "menu_item_id": menu_item_id, "discount_percent": discount_percent }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_happy_hour_rule_v3(state: State<Db>, session_token: String, rule_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).delete_happy_hour_rule(&actor.tenant_id, &rule_id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::HappyHourRuleChanged, "happy_hour_rule", &rule_id, Some(&serde_json::json!({ "deleted": false })), Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_happy_hour_rule_active_v3(state: State<Db>, session_token: String, rule_id: String, is_active: bool) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).set_happy_hour_rule_active(&actor.tenant_id, &rule_id, is_active).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::HappyHourRuleChanged, "happy_hour_rule", &rule_id, None, Some(&serde_json::json!({ "is_active": is_active }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -2839,7 +2946,7 @@ mod tests {
         assert!(cats.iter().any(|c| c.id == cat_id && c.name == "مقبلات"));
         println!("[menu-crud] category created and listed");
 
-        repo.update_category(&cat_id, "مقبلات محدثة", Some("#00ff00"), 2, None).unwrap();
+        repo.update_category(&tenant_id, &cat_id, "مقبلات محدثة", Some("#00ff00"), 2, None).unwrap();
         let cats = repo.list_categories(&tenant_id).unwrap();
         let cat = cats.iter().find(|c| c.id == cat_id).unwrap();
         assert_eq!(cat.name, "مقبلات محدثة");
@@ -2853,26 +2960,61 @@ mod tests {
         assert_eq!(item.barcode.as_deref(), Some("BC-001"));
         println!("[menu-crud] menu item created and listed");
 
-        repo.update_menu_item(&item_id, "حمص بالطحينة", &cat_id, 600, 250, None, None, Some("BC-001")).unwrap();
+        repo.update_menu_item(&tenant_id, &item_id, "حمص بالطحينة", &cat_id, 600, 250, None, None, Some("BC-001")).unwrap();
         let items = repo.list_menu_items(&tenant_id).unwrap();
         let item = items.iter().find(|i| i.id == item_id).unwrap();
         assert_eq!(item.name, "حمص بالطحينة");
         assert_eq!(item.price_cents, 600);
         println!("[menu-crud] menu item updated");
 
-        repo.set_menu_item_active(&item_id, false).unwrap();
+        repo.set_menu_item_active(&tenant_id, &item_id, false).unwrap();
         let items = repo.list_menu_items(&tenant_id).unwrap();
         assert_eq!(items.iter().find(|i| i.id == item_id).unwrap().is_active, 0);
         println!("[menu-crud] menu item deactivated");
 
-        repo.delete_menu_item(&item_id).unwrap();
+        repo.delete_menu_item(&tenant_id, &item_id).unwrap();
         let items = repo.list_menu_items(&tenant_id).unwrap();
         assert!(!items.iter().any(|i| i.id == item_id));
 
-        repo.delete_category(&cat_id).unwrap();
+        repo.delete_category(&tenant_id, &cat_id).unwrap();
         let cats = repo.list_categories(&tenant_id).unwrap();
         assert!(!cats.iter().any(|c| c.id == cat_id));
         println!("[menu-crud] menu item and category deleted");
+
+        // Cross-tenant ownership: found missing entirely during Slice C
+        // verification (update_category/delete_category/update_menu_item/
+        // delete_menu_item/set_menu_item_active took no tenant_id and did no
+        // ownership check at all). A row belonging to another tenant must be
+        // rejected by id, not silently mutated.
+        let other_cat_id = "other-tenant-cat";
+        conn.execute("INSERT INTO categories (id, tenant_id, name) VALUES (?1, 'other-tenant', 'Other')", params![other_cat_id]).unwrap();
+        match repo.update_category(&tenant_id, other_cat_id, "hijacked", None, 0, None) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[menu-crud] update_category correctly rejected another tenant's category"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
+        match repo.delete_category(&tenant_id, other_cat_id) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[menu-crud] delete_category correctly rejected another tenant's category"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
+
+        let other_item_id = "other-tenant-item";
+        conn.execute("INSERT INTO categories (id, tenant_id, name) VALUES ('other-tenant-cat-2', 'other-tenant', 'Other 2')", []).unwrap();
+        conn.execute(
+            "INSERT INTO menu_items (id, tenant_id, name, price_cents, category_id) VALUES (?1, 'other-tenant', 'Hijack Target', 100, 'other-tenant-cat-2')",
+            params![other_item_id],
+        ).unwrap();
+        match repo.update_menu_item(&tenant_id, other_item_id, "hijacked", &cat_id, 1, 1, None, None, None) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[menu-crud] update_menu_item correctly rejected another tenant's menu item"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
+        match repo.set_menu_item_active(&tenant_id, other_item_id, false) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[menu-crud] set_menu_item_active correctly rejected another tenant's menu item"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
+        match repo.delete_menu_item(&tenant_id, other_item_id) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[menu-crud] delete_menu_item correctly rejected another tenant's menu item"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
@@ -3712,6 +3854,103 @@ mod tests {
         let locked_attempt = verify_manager_override_impl(&mut conn, &cashier_actor, "1234").unwrap();
         assert!(!locked_attempt, "even the CORRECT PIN must be rejected once locked out");
         println!("[override] locked out after {MANAGER_OVERRIDE_MAX_ATTEMPTS} failed attempts, correct PIN rejected while locked");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Slice C, group "menu combo/happy-hour": combo meal CRUD with line
+    /// items (atomic create/replace-on-update) and happy-hour rule CRUD,
+    /// both `TENANT_ONLY_TABLES`. Proves the same cross-tenant ownership
+    /// guard as the earlier menu-CRUD fix, from the start this time (no
+    /// broken window to catch here).
+    #[test]
+    fn combo_meals_and_happy_hour_rules_crud_and_cross_tenant_rejection() {
+        let (db_path, tenant_id, _branch_id, _table_id) = seeded_db("combo_happy_hour");
+        let conn = Connection::open(&db_path).unwrap();
+        let repo = Repo::new(&conn);
+
+        let cat_id = repo.create_category(&tenant_id, "أطباق", None, 0, None).unwrap();
+        let burger_id = repo.create_menu_item(&tenant_id, "برجر", &cat_id, 1500, 600, None, None, None).unwrap();
+        let fries_id = repo.create_menu_item(&tenant_id, "بطاطا", &cat_id, 500, 150, None, None, None).unwrap();
+        let drink_id = repo.create_menu_item(&tenant_id, "مشروب", &cat_id, 300, 100, None, None, None).unwrap();
+
+        // Combo create with items.
+        let combo_id = repo.create_combo_meal(&tenant_id, "وجبة برجر", 2000, &[(burger_id.clone(), 1), (fries_id.clone(), 1)]).unwrap();
+        let combos = repo.list_combo_meals(&tenant_id).unwrap();
+        assert_eq!(combos.len(), 1);
+        assert_eq!(combos[0].bundle_price_cents, 2000);
+        let items = repo.list_combo_meal_items(&tenant_id).unwrap();
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().any(|i| i.menu_item_id == burger_id));
+        assert!(items.iter().any(|i| i.menu_item_id == fries_id));
+        println!("[combo] created with 2 items, both listed via list_combo_meal_items");
+
+        // Update replaces the item set entirely (burger+fries -> burger+drink).
+        repo.update_combo_meal(&tenant_id, &combo_id, "وجبة برجر مع مشروب", 2200, &[(burger_id.clone(), 1), (drink_id.clone(), 1)]).unwrap();
+        let combos = repo.list_combo_meals(&tenant_id).unwrap();
+        assert_eq!(combos[0].name, "وجبة برجر مع مشروب");
+        assert_eq!(combos[0].bundle_price_cents, 2200);
+        let items = repo.list_combo_meal_items(&tenant_id).unwrap();
+        assert_eq!(items.len(), 2, "update must REPLACE the item set, not append to it");
+        assert!(!items.iter().any(|i| i.menu_item_id == fries_id), "fries must be gone after replacement");
+        assert!(items.iter().any(|i| i.menu_item_id == drink_id));
+        println!("[combo] update replaced the item set atomically (fries out, drink in), not appended");
+
+        // Happy hour rule CRUD.
+        let rule_id = repo.create_happy_hour_rule(&tenant_id, &drink_id, 50, 4, "16:00", "18:00", true).unwrap();
+        let rules = repo.list_happy_hour_rules(&tenant_id).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].discount_percent, 50);
+        assert_eq!(rules[0].menu_item_name, "مشروب");
+        println!("[happy-hour] rule created and listed with joined menu item name");
+
+        repo.update_happy_hour_rule(&tenant_id, &rule_id, &drink_id, 30, 5, "17:00", "19:00", true).unwrap();
+        let rules = repo.list_happy_hour_rules(&tenant_id).unwrap();
+        assert_eq!(rules[0].discount_percent, 30);
+        assert_eq!(rules[0].day_of_week, 5);
+
+        repo.set_happy_hour_rule_active(&tenant_id, &rule_id, false).unwrap();
+        let rules = repo.list_happy_hour_rules(&tenant_id).unwrap();
+        assert_eq!(rules[0].is_active, 0);
+        println!("[happy-hour] rule updated and deactivated");
+
+        repo.delete_happy_hour_rule(&tenant_id, &rule_id).unwrap();
+        assert!(repo.list_happy_hour_rules(&tenant_id).unwrap().is_empty());
+
+        repo.delete_combo_meal(&tenant_id, &combo_id).unwrap();
+        assert!(repo.list_combo_meals(&tenant_id).unwrap().is_empty());
+        assert!(repo.list_combo_meal_items(&tenant_id).unwrap().is_empty(), "deleting a combo must also delete its line items");
+        println!("[combo/happy-hour] both deleted, combo delete cascaded to its items");
+
+        // Cross-tenant ownership.
+        let other_combo_id = "other-tenant-combo";
+        conn.execute("INSERT INTO combo_meals (id, tenant_id, name, bundle_price_cents) VALUES (?1, 'other-tenant', 'Other Combo', 100)", params![other_combo_id]).unwrap();
+        match repo.update_combo_meal(&tenant_id, other_combo_id, "hijacked", 1, &[]) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[scope] update_combo_meal correctly rejected another tenant's combo"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
+        match repo.delete_combo_meal(&tenant_id, other_combo_id) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[scope] delete_combo_meal correctly rejected another tenant's combo"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
+
+        let other_rule_id = "other-tenant-rule";
+        conn.execute(
+            "INSERT INTO happy_hour_rules (id, tenant_id, menu_item_id, discount_percent, day_of_week, start_time, end_time) VALUES (?1, 'other-tenant', ?2, 10, 0, '00:00', '01:00')",
+            params![other_rule_id, drink_id],
+        ).unwrap();
+        match repo.update_happy_hour_rule(&tenant_id, other_rule_id, &drink_id, 99, 0, "00:00", "01:00", true) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[scope] update_happy_hour_rule correctly rejected another tenant's rule"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
+        match repo.set_happy_hour_rule_active(&tenant_id, other_rule_id, false) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[scope] set_happy_hour_rule_active correctly rejected another tenant's rule"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
+        match repo.delete_happy_hour_rule(&tenant_id, other_rule_id) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[scope] delete_happy_hour_rule correctly rejected another tenant's rule"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }

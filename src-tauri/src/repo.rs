@@ -26,6 +26,10 @@ pub enum RepoError {
     PurchaseOrderNotPending { po_id: String, status: String },
     OrderItemOutOfScope { item_id: String },
     TableOutOfScope { table_id: String },
+    /// Generic tenant-ownership guard for `TENANT_ONLY_TABLES` rows
+    /// (categories, menu_items, combo_meals, happy_hour_rules) referenced
+    /// by client-supplied id -- see `assert_tenant_owns_row`.
+    TenantOwnershipViolation { table: String, id: String },
 }
 
 impl fmt::Display for RepoError {
@@ -46,6 +50,7 @@ impl fmt::Display for RepoError {
             Self::PurchaseOrderNotPending { po_id, status } => write!(f, "purchase order {po_id} is {status}, not PENDING -- refusing to receive/cancel it"),
             Self::OrderItemOutOfScope { item_id } => write!(f, "order item {item_id} does not belong to the caller's tenant/branch"),
             Self::TableOutOfScope { table_id } => write!(f, "table {table_id} does not belong to the caller's tenant/branch"),
+            Self::TenantOwnershipViolation { table, id } => write!(f, "{table} row {id} does not belong to the caller's tenant"),
         }
     }
 }
@@ -287,6 +292,34 @@ pub struct ComboComponentRow {
     pub menu_item_id: String,
     pub menu_item_name: String,
     pub quantity: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ComboMealRow {
+    pub id: String,
+    pub name: String,
+    pub bundle_price_cents: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ComboItemJoinRow {
+    pub combo_id: String,
+    pub menu_item_id: String,
+    pub menu_item_name: String,
+    pub quantity: i64,
+    pub price_cents: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HappyHourRuleRow {
+    pub id: String,
+    pub menu_item_id: String,
+    pub menu_item_name: String,
+    pub discount_percent: i64,
+    pub day_of_week: i64,
+    pub start_time: String,
+    pub end_time: String,
+    pub is_active: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -2194,7 +2227,8 @@ impl<'a> Repo<'a> {
         Ok(id)
     }
 
-    pub fn update_category(&self, category_id: &str, name: &str, color: Option<&str>, sort_order: i64, image_path: Option<&str>) -> Result<(), RepoError> {
+    pub fn update_category(&self, tenant_id: &str, category_id: &str, name: &str, color: Option<&str>, sort_order: i64, image_path: Option<&str>) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("categories", category_id, tenant_id)?;
         self.conn.execute(
             "UPDATE categories SET name = ?1, color = ?2, sort_order = ?3, image_path = ?4, last_modified = datetime('now') WHERE id = ?5",
             params![name, color, sort_order, image_path, category_id],
@@ -2202,7 +2236,8 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
-    pub fn delete_category(&self, category_id: &str) -> Result<(), RepoError> {
+    pub fn delete_category(&self, tenant_id: &str, category_id: &str) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("categories", category_id, tenant_id)?;
         self.conn.execute("DELETE FROM categories WHERE id = ?1", params![category_id])?;
         Ok(())
     }
@@ -2253,7 +2288,8 @@ impl<'a> Repo<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn update_menu_item(&self, item_id: &str, name: &str, category_id: &str, price_cents: i64, cost_cents: i64, image_path: Option<&str>, description: Option<&str>, barcode: Option<&str>) -> Result<(), RepoError> {
+    pub fn update_menu_item(&self, tenant_id: &str, item_id: &str, name: &str, category_id: &str, price_cents: i64, cost_cents: i64, image_path: Option<&str>, description: Option<&str>, barcode: Option<&str>) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("menu_items", item_id, tenant_id)?;
         self.conn.execute(
             "UPDATE menu_items SET name = ?1, category_id = ?2, price_cents = ?3, cost_cents = ?4, image_path = ?5, description = ?6, barcode = ?7, last_modified = datetime('now') WHERE id = ?8",
             params![name, category_id, price_cents, cost_cents, image_path, description, barcode, item_id],
@@ -2261,15 +2297,151 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
-    pub fn delete_menu_item(&self, item_id: &str) -> Result<(), RepoError> {
+    pub fn delete_menu_item(&self, tenant_id: &str, item_id: &str) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("menu_items", item_id, tenant_id)?;
         self.conn.execute("DELETE FROM menu_items WHERE id = ?1", params![item_id])?;
         Ok(())
     }
 
-    pub fn set_menu_item_active(&self, item_id: &str, is_active: bool) -> Result<(), RepoError> {
+    pub fn set_menu_item_active(&self, tenant_id: &str, item_id: &str, is_active: bool) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("menu_items", item_id, tenant_id)?;
         self.conn.execute(
             "UPDATE menu_items SET is_active = ?1, last_modified = datetime('now') WHERE id = ?2",
             params![is_active as i64, item_id],
+        )?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Batch 3b, Slice C -- combo meals + happy hour rules. Both
+    // `TENANT_ONLY_TABLES` (no branch_id), same pattern as categories/
+    // menu_items. `combo_meals` has NO `is_active` column in the real
+    // schema (0001_init.sql) -- the old frontend's create/toggle both
+    // referenced it, meaning creating a combo has hard-failed on every
+    // real install since inception (INSERT into a nonexistent column).
+    // Dropped from the model here, not carried forward; the toggle-status
+    // UI control is removed too (nothing to toggle). `combo_items` has no
+    // `is_free` column either (dropped, same DRIFT class).
+    // -----------------------------------------------------------------
+
+    pub fn list_combo_meals(&self, tenant_id: &str) -> Result<Vec<ComboMealRow>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, bundle_price_cents FROM combo_meals WHERE tenant_id = ?1 ORDER BY name ASC",
+        )?;
+        let rows = stmt.query_map(params![tenant_id], |r| {
+            Ok(ComboMealRow { id: r.get(0)?, name: r.get(1)?, bundle_price_cents: r.get(2)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// Every combo's line items in one query (the frontend groups by
+    /// `combo_id` itself, same as it always has) -- avoids an N+1 query
+    /// per combo.
+    pub fn list_combo_meal_items(&self, tenant_id: &str) -> Result<Vec<ComboItemJoinRow>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT combo_items.combo_id, combo_items.menu_item_id, menu_items.name, combo_items.quantity, menu_items.price_cents \
+             FROM combo_items INNER JOIN menu_items ON menu_items.id = combo_items.menu_item_id \
+             WHERE combo_items.tenant_id = ?1 ORDER BY combo_items.sort_order ASC",
+        )?;
+        let rows = stmt.query_map(params![tenant_id], |r| {
+            Ok(ComboItemJoinRow { combo_id: r.get(0)?, menu_item_id: r.get(1)?, menu_item_name: r.get(2)?, quantity: r.get(3)?, price_cents: r.get(4)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// Combo meal + its line items, one atomic write (the caller wraps this
+    /// in a transaction). `items` is `(menu_item_id, quantity)` pairs.
+    pub fn create_combo_meal(&self, tenant_id: &str, name: &str, bundle_price_cents: i64, items: &[(String, i64)]) -> Result<String, RepoError> {
+        let combo_id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO combo_meals (id, tenant_id, name, bundle_price_cents, last_modified, sync_status) VALUES (?1, ?2, ?3, ?4, datetime('now'), 'pending')",
+            params![combo_id, tenant_id, name, bundle_price_cents],
+        )?;
+        for (idx, (menu_item_id, quantity)) in items.iter().enumerate() {
+            self.conn.execute(
+                "INSERT INTO combo_items (id, tenant_id, combo_id, menu_item_id, quantity, sort_order, last_modified, sync_status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), 'pending')",
+                params![uuid::Uuid::now_v7().to_string(), tenant_id, combo_id, menu_item_id, quantity, idx as i64],
+            )?;
+        }
+        Ok(combo_id)
+    }
+
+    /// Update the combo meal row and replace its full line-item set
+    /// (delete + re-insert, same net effect as the old frontend's
+    /// delete-then-insert, now atomic with the meal update).
+    pub fn update_combo_meal(&self, tenant_id: &str, combo_id: &str, name: &str, bundle_price_cents: i64, items: &[(String, i64)]) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("combo_meals", combo_id, tenant_id)?;
+        self.conn.execute(
+            "UPDATE combo_meals SET name = ?1, bundle_price_cents = ?2, last_modified = datetime('now') WHERE id = ?3",
+            params![name, bundle_price_cents, combo_id],
+        )?;
+        self.conn.execute("DELETE FROM combo_items WHERE combo_id = ?1", params![combo_id])?;
+        for (idx, (menu_item_id, quantity)) in items.iter().enumerate() {
+            self.conn.execute(
+                "INSERT INTO combo_items (id, tenant_id, combo_id, menu_item_id, quantity, sort_order, last_modified, sync_status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), 'pending')",
+                params![uuid::Uuid::now_v7().to_string(), tenant_id, combo_id, menu_item_id, quantity, idx as i64],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn delete_combo_meal(&self, tenant_id: &str, combo_id: &str) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("combo_meals", combo_id, tenant_id)?;
+        self.conn.execute("DELETE FROM combo_items WHERE combo_id = ?1", params![combo_id])?;
+        self.conn.execute("DELETE FROM combo_meals WHERE id = ?1", params![combo_id])?;
+        Ok(())
+    }
+
+    pub fn list_happy_hour_rules(&self, tenant_id: &str) -> Result<Vec<HappyHourRuleRow>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT happy_hour_rules.id, happy_hour_rules.menu_item_id, menu_items.name, happy_hour_rules.discount_percent, \
+                    happy_hour_rules.day_of_week, happy_hour_rules.start_time, happy_hour_rules.end_time, happy_hour_rules.is_active \
+             FROM happy_hour_rules INNER JOIN menu_items ON menu_items.id = happy_hour_rules.menu_item_id \
+             WHERE happy_hour_rules.tenant_id = ?1 ORDER BY happy_hour_rules.day_of_week ASC",
+        )?;
+        let rows = stmt.query_map(params![tenant_id], |r| {
+            Ok(HappyHourRuleRow {
+                id: r.get(0)?, menu_item_id: r.get(1)?, menu_item_name: r.get(2)?, discount_percent: r.get(3)?,
+                day_of_week: r.get(4)?, start_time: r.get(5)?, end_time: r.get(6)?, is_active: r.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_happy_hour_rule(&self, tenant_id: &str, menu_item_id: &str, discount_percent: i64, day_of_week: i64, start_time: &str, end_time: &str, is_active: bool) -> Result<String, RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO happy_hour_rules (id, tenant_id, menu_item_id, discount_percent, day_of_week, start_time, end_time, is_active, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), 'pending')",
+            params![id, tenant_id, menu_item_id, discount_percent, day_of_week, start_time, end_time, is_active as i64],
+        )?;
+        Ok(id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_happy_hour_rule(&self, tenant_id: &str, rule_id: &str, menu_item_id: &str, discount_percent: i64, day_of_week: i64, start_time: &str, end_time: &str, is_active: bool) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("happy_hour_rules", rule_id, tenant_id)?;
+        self.conn.execute(
+            "UPDATE happy_hour_rules SET menu_item_id = ?1, discount_percent = ?2, day_of_week = ?3, start_time = ?4, end_time = ?5, is_active = ?6, last_modified = datetime('now') WHERE id = ?7",
+            params![menu_item_id, discount_percent, day_of_week, start_time, end_time, is_active as i64, rule_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_happy_hour_rule(&self, tenant_id: &str, rule_id: &str) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("happy_hour_rules", rule_id, tenant_id)?;
+        self.conn.execute("DELETE FROM happy_hour_rules WHERE id = ?1", params![rule_id])?;
+        Ok(())
+    }
+
+    pub fn set_happy_hour_rule_active(&self, tenant_id: &str, rule_id: &str, is_active: bool) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("happy_hour_rules", rule_id, tenant_id)?;
+        self.conn.execute(
+            "UPDATE happy_hour_rules SET is_active = ?1, last_modified = datetime('now') WHERE id = ?2",
+            params![is_active as i64, rule_id],
         )?;
         Ok(())
     }
@@ -2682,6 +2854,22 @@ impl<'a> Repo<'a> {
         self.conn.query_row(&sql, full_args.as_slice(), |r| r.get::<_, i64>(0))
             .optional()?
             .ok_or_else(|| RepoError::OrderItemOutOfScope { item_id: item_id.to_string() })?;
+        Ok(())
+    }
+
+    /// Generic ownership guard for `TENANT_ONLY_TABLES` rows referenced by
+    /// client-supplied id (categories, menu_items, combo_meals,
+    /// happy_hour_rules) -- found missing entirely on `update_category`/
+    /// `delete_category`/`update_menu_item`/`delete_menu_item`/
+    /// `set_menu_item_active` during Slice C verification (any authenticated
+    /// staff member, any tenant, could mutate any row in these tables by id).
+    /// Fixed here and applied to those five plus every new combo/happy-hour
+    /// method.
+    fn assert_tenant_owns_row(&self, table: &str, id: &str, tenant_id: &str) -> Result<(), RepoError> {
+        let sql = format!("SELECT 1 FROM {table} WHERE id = ?1 AND tenant_id = ?2");
+        self.conn.query_row(&sql, params![id, tenant_id], |r| r.get::<_, i64>(0))
+            .optional()?
+            .ok_or_else(|| RepoError::TenantOwnershipViolation { table: table.to_string(), id: id.to_string() })?;
         Ok(())
     }
 
