@@ -121,6 +121,9 @@ pub enum Permission {
     /// Batch 3b, slice 3 -- Cashier+ (every floor role looks up/edits
     /// customers and issues loyalty cards at the register).
     ManageLoyalty,
+    /// Batch 3b, slice 3, group 2 -- بيع بالدين. Cashier+ (recording a debt
+    /// payment at the register is routine floor work).
+    ManageDebt,
 }
 
 impl Permission {
@@ -137,6 +140,7 @@ impl Permission {
             Permission::AdjustStock => Role::Cashier.rank(),
             Permission::ManageShift => Role::Cashier.rank(),
             Permission::ManageLoyalty => Role::Cashier.rank(),
+            Permission::ManageDebt => Role::Cashier.rank(),
         }
     }
 }
@@ -318,6 +322,7 @@ pub fn authorize(actor: &Actor, perm: Permission) -> Result<(), SecurityError> {
                 Permission::AdjustStock => "AdjustStock",
                 Permission::ManageShift => "ManageShift",
                 Permission::ManageLoyalty => "ManageLoyalty",
+                Permission::ManageDebt => "ManageDebt",
             },
             reason: format!("role {:?} (rank {}) is below the minimum rank {} for this permission", actor.role, actor.role.rank(), perm.minimum_rank()),
         })
@@ -354,12 +359,13 @@ mod tests {
     use super::*;
 
     const ALL_ROLES: [Role; 6] = [Role::Platform, Role::Owner, Role::Manager, Role::Cashier, Role::Kitchen, Role::Server];
-    const ALL_PERMS: [Permission; 18] = [
+    const ALL_PERMS: [Permission; 19] = [
         Permission::CreateBranch, Permission::CreateStaff, Permission::UpdateStaff,
         Permission::ViewOrders, Permission::CreateOrder, Permission::UpdateOrderStatus, Permission::ChangeOwnPassword,
         Permission::ManageCustomers, Permission::ManagePurchaseOrders, Permission::ManageDrivers,
         Permission::ManagePrinters, Permission::ManageDelivery, Permission::TakePayment, Permission::ManageMenu,
         Permission::ManageIngredients, Permission::AdjustStock, Permission::ManageShift, Permission::ManageLoyalty,
+        Permission::ManageDebt,
     ];
 
     fn actor_for(role: Role, tenant: &str, branch: Option<&str>) -> Actor {

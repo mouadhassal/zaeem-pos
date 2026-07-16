@@ -73,6 +73,7 @@ pub enum Action {
     ShiftClosed,
     CustomerChanged,
     LoyaltyCardIssued,
+    DebtRecorded,
 }
 
 impl Action {
@@ -91,6 +92,7 @@ impl Action {
             Action::ShiftClosed => "ShiftClosed",
             Action::CustomerChanged => "CustomerChanged",
             Action::LoyaltyCardIssued => "LoyaltyCardIssued",
+            Action::DebtRecorded => "DebtRecorded",
         }
     }
 }

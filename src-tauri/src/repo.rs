@@ -204,6 +204,33 @@ pub struct LoyaltyCardRow {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct DebtorRow {
+    pub id: String,
+    pub name: String,
+    pub phone: String,
+    pub email: Option<String>,
+    pub address: Option<String>,
+    pub notes: Option<String>,
+    pub total_debt_cents: i64,
+    pub total_paid_cents: i64,
+    pub balance_cents: i64,
+    pub last_transaction_at: Option<String>,
+    pub is_active: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DebtEntryRow {
+    pub id: String,
+    pub debtor_id: String,
+    pub order_id: Option<String>,
+    pub amount_cents: i64,
+    pub entry_type: String,
+    pub notes: Option<String>,
+    pub created_by: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct LoyaltyTxRow {
     pub id: String,
     pub card_id: String,
@@ -838,6 +865,86 @@ impl<'a> Repo<'a> {
             Ok(LoyaltyTxRow { id: r.get(0)?, card_id: r.get(1)?, points: r.get(2)?, tx_type: r.get(3)?, reference_type: r.get(4)?, reference_id: r.get(5)?, created_at: r.get(6)? })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    // -----------------------------------------------------------------
+    // Batch 3b, slice 3, group 2 -- debt (بيع بالدين). `debtors` +
+    // `debt_entries` are both `TENANT_BRANCH_TABLES`. DEBT-type entries are
+    // already created by `take_payment_v3` (Batch 3b, slice 1) when a
+    // payment carries a `debtor_id` -- this group only adds PAYMENT-type
+    // entries (paying down an existing balance) and debtor CRUD.
+    // -----------------------------------------------------------------
+
+    pub fn list_debtors(&self, scope: &Scope) -> Result<Vec<DebtorRow>, RepoError> {
+        self.assert_scope_populated("debtors", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let sql = format!(
+            "SELECT id, name, phone, email, address, notes, total_debt_cents, total_paid_cents, balance_cents, last_transaction_at, is_active \
+             FROM debtors WHERE {predicate} AND is_active = 1 ORDER BY name ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+            Ok(DebtorRow {
+                id: r.get(0)?, name: r.get(1)?, phone: r.get(2)?, email: r.get(3)?, address: r.get(4)?, notes: r.get(5)?,
+                total_debt_cents: r.get(6)?, total_paid_cents: r.get(7)?, balance_cents: r.get(8)?, last_transaction_at: r.get(9)?, is_active: r.get(10)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_debtor(&self, tenant_id: &str, branch_id: &str, name: &str, phone: &str, email: Option<&str>, address: Option<&str>, notes: Option<&str>) -> Result<String, RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO debtors (id, tenant_id, branch_id, name, phone, email, address, notes, total_debt_cents, total_paid_cents, balance_cents, is_active, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 0, 0, 1, datetime('now'), 'pending')",
+            params![id, tenant_id, branch_id, name, phone, email, address, notes],
+        )?;
+        Ok(id)
+    }
+
+    pub fn update_debtor(&self, debtor_id: &str, name: &str, phone: &str, email: Option<&str>, address: Option<&str>, notes: Option<&str>) -> Result<(), RepoError> {
+        self.conn.execute(
+            "UPDATE debtors SET name = ?1, phone = ?2, email = ?3, address = ?4, notes = ?5, last_modified = datetime('now') WHERE id = ?6",
+            params![name, phone, email, address, notes, debtor_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn deactivate_debtor(&self, debtor_id: &str) -> Result<(), RepoError> {
+        self.conn.execute(
+            "UPDATE debtors SET is_active = 0, last_modified = datetime('now') WHERE id = ?1",
+            params![debtor_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_debt_entries(&self, debtor_id: &str) -> Result<Vec<DebtEntryRow>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, debtor_id, order_id, amount_cents, type, notes, created_by, created_at FROM debt_entries WHERE debtor_id = ?1 ORDER BY created_at DESC LIMIT 50",
+        )?;
+        let rows = stmt.query_map(params![debtor_id], |r| {
+            Ok(DebtEntryRow { id: r.get(0)?, debtor_id: r.get(1)?, order_id: r.get(2)?, amount_cents: r.get(3)?, entry_type: r.get(4)?, notes: r.get(5)?, created_by: r.get(6)?, created_at: r.get(7)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// One transaction: the PAYMENT fact + the running-balance update on
+    /// `debtors` -- same atomicity principle as `take_payment`/`adjust_stock`.
+    pub fn record_debt_payment(&self, tenant_id: &str, branch_id: &str, debtor_id: &str, amount_cents: i64, notes: Option<&str>, actor_id: &str) -> Result<String, RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO debt_entries (id, tenant_id, branch_id, debtor_id, order_id, amount_cents, type, notes, created_by, created_at, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5, 'PAYMENT', ?6, ?7, ?8, ?8, 'pending')",
+            params![id, tenant_id, branch_id, debtor_id, amount_cents, notes, actor_id, now],
+        )?;
+        self.conn.execute(
+            "UPDATE debtors SET total_paid_cents = total_paid_cents + ?1, balance_cents = balance_cents - ?1, last_transaction_at = ?2, last_modified = ?2 WHERE id = ?3",
+            params![amount_cents, now, debtor_id],
+        )?;
+        Ok(id)
     }
 
     #[allow(clippy::too_many_arguments)]

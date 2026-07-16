@@ -1,8 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
-import { getDb } from "../../db";
+import { invoke } from "@tauri-apps/api/core";
 import { useCurrency } from "../../hooks/useCurrency";
 import { z } from "zod";
-import { sql } from "kysely";
 import { useAuthStore } from "../../stores/authStore";
 
 interface DebtorRow {
@@ -24,7 +23,7 @@ interface DebtEntryRow {
   debtor_id: string;
   order_id: string | null;
   amount_cents: number;
-  type: "DEBT" | "PAYMENT";
+  entry_type: "DEBT" | "PAYMENT";
   notes: string | null;
   created_by: string;
   created_at: string;
@@ -54,7 +53,7 @@ function fmtDateTime(iso: string | null): string {
 
 export default function DebtPage() {
   const { fmt } = useCurrency();
-  const user = useAuthStore((s) => s.user);
+  const token = useAuthStore((s) => s.token);
   const [debtors, setDebtors] = useState<DebtorRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -85,15 +84,14 @@ export default function DebtPage() {
     setLoading(true);
     setError(null);
     try {
-      const db = await getDb();
-      const rows = await db.selectFrom("debtors").selectAll().where("is_active", "=", 1).orderBy("name", "asc").execute();
+      const rows = await invoke<DebtorRow[]>("list_debtors_v3", { sessionToken: token });
       setDebtors(rows);
     } catch {
       setError("حدث خطأ في تحميل الديون");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [token]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -116,12 +114,15 @@ export default function DebtPage() {
     }
     setSaving(true);
     try {
-      const db = await getDb();
-      const data = { name: parsed.data.name, phone: parsed.data.phone, email: parsed.data.email || null, address: parsed.data.address || null, notes: parsed.data.notes || null };
+      const args = {
+        sessionToken: token,
+        name: parsed.data.name, phone: parsed.data.phone,
+        email: parsed.data.email || null, address: parsed.data.address || null, notes: parsed.data.notes || null,
+      };
       if (editId) {
-        await db.updateTable("debtors").set({ ...data, last_modified: new Date().toISOString() }).where("id", "=", editId).execute();
+        await invoke("update_debtor_v3", { ...args, debtorId: editId });
       } else {
-        await db.insertInto("debtors").values({ id: crypto.randomUUID(), ...data, total_debt_cents: 0, total_paid_cents: 0, balance_cents: 0, is_active: 1, sync_version: 1, last_modified: new Date().toISOString(), sync_status: "pending" }).execute();
+        await invoke("create_debtor_v3", args);
       }
       setShowModal(false);
       await fetchAll();
@@ -133,8 +134,7 @@ export default function DebtPage() {
   const confirmDelete = async () => {
     if (!deleteId) return;
     try {
-      const db = await getDb();
-      await db.updateTable("debtors").set({ is_active: 0, last_modified: new Date().toISOString() }).where("id", "=", deleteId).execute();
+      await invoke("deactivate_debtor_v3", { sessionToken: token, debtorId: deleteId });
       setDeleteId(null);
       await fetchAll();
     } catch { setError("حدث خطأ في الحذف"); }
@@ -142,8 +142,7 @@ export default function DebtPage() {
 
   const openDetail = async (debtor: DebtorRow) => {
     try {
-      const db = await getDb();
-      const entries = await db.selectFrom("debt_entries").selectAll().where("debtor_id", "=", debtor.id).orderBy("created_at", "desc").limit(50).execute();
+      const entries = await invoke<DebtEntryRow[]>("list_debt_entries_v3", { sessionToken: token, debtorId: debtor.id });
       setDetail({ debtor, entries });
       setDetailOpen(true);
     } catch { setError("حدث خطأ في تحميل التفاصيل"); }
@@ -154,11 +153,7 @@ export default function DebtPage() {
     const cents = Math.round(parseFloat(payAmount || "0") * 100);
     if (cents <= 0) return;
     try {
-      const db = await getDb();
-      const id = crypto.randomUUID();
-      const now = new Date().toISOString();
-      await db.insertInto("debt_entries").values({ id, debtor_id: payModal.id, order_id: null, amount_cents: cents, type: "PAYMENT", notes: payNotes || null, created_by: user?.id ?? "unknown", created_at: now, sync_version: 1, last_modified: now, sync_status: "pending" }).execute();
-      await db.updateTable("debtors").set({ total_paid_cents: sql`total_paid_cents + ${cents}`, balance_cents: sql`balance_cents - ${cents}`, last_transaction_at: now, last_modified: now }).where("id", "=", payModal.id).execute();
+      await invoke("record_debt_payment_v3", { sessionToken: token, debtorId: payModal.id, amountCents: cents, notes: payNotes || null });
       setPayModal(null);
       setPayAmount("");
       setPayNotes("");
@@ -324,12 +319,12 @@ export default function DebtPage() {
                     {detail.entries.map((e) => (
                       <div key={e.id} className="flex justify-between items-center text-xs py-1.5 border-b border-ink-200 last:border-0">
                         <div className="flex items-center gap-2">
-                          <span className={`inline-block w-2 h-2 rounded-full ${e.type === "DEBT" ? "bg-red-400" : "bg-saffron-400"}`} />
-                          <span className="font-arabic text-ink-400">{e.type === "DEBT" ? "دين" : "دفعة"}</span>
+                          <span className={`inline-block w-2 h-2 rounded-full ${e.entry_type === "DEBT" ? "bg-red-400" : "bg-saffron-400"}`} />
+                          <span className="font-arabic text-ink-400">{e.entry_type === "DEBT" ? "دين" : "دفعة"}</span>
                           <span className="font-arabic text-ink-500">{fmtDateTime(e.created_at)}</span>
                         </div>
-                        <span className={`font-mono font-bold ${e.type === "DEBT" ? "text-red-500" : "text-saffron-600"}`}>
-                          {e.type === "DEBT" ? "+" : "-"}{fmt(e.amount_cents)}
+                        <span className={`font-mono font-bold ${e.entry_type === "DEBT" ? "text-red-500" : "text-saffron-600"}`}>
+                          {e.entry_type === "DEBT" ? "+" : "-"}{fmt(e.amount_cents)}
                         </span>
                       </div>
                     ))}

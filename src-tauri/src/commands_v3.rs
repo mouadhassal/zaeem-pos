@@ -735,6 +735,87 @@ pub fn close_shift_v3(state: State<Db>, session_token: String, shift_id: String,
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Batch 3b, slice 3, group 2 -- debt (بيع بالدين). DEBT-type entries are
+// already created by `take_payment_v3`; this group is debtor CRUD + payments.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_debtors_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::DebtorRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_debtors(&actor.scope()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_debtor_v3(state: State<Db>, session_token: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("creating a debtor requires a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let debtor_id = Repo::new(&tx).create_debtor(&tenant_id, &branch_id, &name, &phone, email.as_deref(), address.as_deref(), notes.as_deref()).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "name": name, "created": true }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(debtor_id)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn update_debtor_v3(state: State<Db>, session_token: String, debtor_id: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_debtor(&debtor_id, &name, &phone, email.as_deref(), address.as_deref(), notes.as_deref()).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn deactivate_debtor_v3(state: State<Db>, session_token: String, debtor_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).deactivate_debtor(&debtor_id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, Some(&serde_json::json!({ "is_active": true })), Some(&serde_json::json!({ "is_active": false }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_debt_entries_v3(state: State<Db>, session_token: String, debtor_id: String) -> Result<Vec<crate::repo::DebtEntryRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_debt_entries(&debtor_id).map_err(|e| e.to_string())
+}
+
+/// One transaction: the PAYMENT fact + the debtor's running-balance update +
+/// the audit entry, same atomicity principle as `take_payment_v3`.
+#[tauri::command]
+pub fn record_debt_payment_v3(state: State<Db>, session_token: String, debtor_id: String, amount_cents: i64, notes: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("recording a debt payment requires a Branch-scoped actor".to_string());
+    };
+    if amount_cents <= 0 {
+        return Err("payment amount must be positive".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let entry_id = Repo::new(&tx).record_debt_payment(&tenant_id, &branch_id, &debtor_id, amount_cents, notes.as_deref(), &actor.id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "entry_id": entry_id, "amount_cents": amount_cents, "type": "PAYMENT" }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(entry_id)
+}
+
 /// T1.6: two-layer menu price resolution (`override ?? default`), exposed
 /// read-only so a client can price an item before/while building an order.
 /// Gated on `CreateOrder` (the same permission that lets an actor build an
@@ -1886,6 +1967,61 @@ mod tests {
 
         let txs = repo.list_loyalty_transactions(&scope, None).unwrap();
         assert_eq!(txs.len(), 0, "no transactions exist yet -- issuing a card is not itself a points transaction");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Batch 3b, slice 3, group 2: debtor CRUD + debt payment atomicity
+    /// (PAYMENT fact + balance update together), and confirms
+    /// `take_payment_v3`'s existing DEBT-entry creation (slice 1) still
+    /// shows up correctly in `list_debt_entries`.
+    #[test]
+    fn debt_debtor_crud_and_payment_atomicity() {
+        let (db_path, tenant_id, branch_id, table_id) = seeded_db("debt");
+        let conn = Connection::open(&db_path).unwrap();
+        let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Debt Cashier");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let repo = Repo::new(&conn);
+
+        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "بقالة الحي", "0955443322", None, None, None).unwrap();
+        let list = repo.list_debtors(&scope).unwrap();
+        assert!(list.iter().any(|d| d.id == debtor_id && d.balance_cents == 0));
+        println!("[debt] debtor created with balance_cents=0");
+
+        // A DEBT entry via take_payment_v3's existing path (slice 1).
+        let order_id = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
+            table_id, user_id: cashier_id.clone(), order_type: "DINE_IN".into(),
+            subtotal_cents: 5000, tax_cents: 0, total_cents: 5000, discount_cents: 0,
+        }).unwrap();
+        repo.take_payment(&tenant_id, &branch_id, crate::repo::PaymentInput {
+            order_id, method: "CREDIT".into(), amount_cents: 5000, change_cents: 0, debtor_id: Some(debtor_id.clone()), actor_id: cashier_id.clone(),
+        }).unwrap();
+        let list = repo.list_debtors(&scope).unwrap();
+        let d = list.iter().find(|d| d.id == debtor_id).unwrap();
+        assert_eq!(d.total_debt_cents, 5000);
+        assert_eq!(d.balance_cents, 5000);
+        println!("[debt] take_payment_v3's DEBT entry raised balance_cents to 5000");
+
+        // Now pay part of it down -- one transaction, both writes together.
+        let entry_id = repo.record_debt_payment(&tenant_id, &branch_id, &debtor_id, 2000, Some("دفعة جزئية"), &cashier_id).unwrap();
+        let list = repo.list_debtors(&scope).unwrap();
+        let d = list.iter().find(|d| d.id == debtor_id).unwrap();
+        assert_eq!(d.total_paid_cents, 2000);
+        assert_eq!(d.balance_cents, 3000, "5000 debt - 2000 paid = 3000 remaining");
+        println!("[debt] payment recorded: balance_cents now 3000 (5000 - 2000)");
+
+        let entries = repo.list_debt_entries(&debtor_id).unwrap();
+        assert_eq!(entries.len(), 2, "one DEBT entry (from take_payment) + one PAYMENT entry, both preserved as separate append-only facts");
+        assert!(entries.iter().any(|e| e.id == entry_id && e.entry_type == "PAYMENT" && e.amount_cents == 2000));
+        assert!(entries.iter().any(|e| e.entry_type == "DEBT" && e.amount_cents == 5000));
+        println!("[debt] list_debt_entries shows both facts: DEBT(5000) and PAYMENT(2000)");
+
+        repo.update_debtor(&debtor_id, "بقالة الحي الجديدة", "0955443322", Some("shop@x.com"), None, None).unwrap();
+        assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == debtor_id).unwrap().name, "بقالة الحي الجديدة");
+
+        repo.deactivate_debtor(&debtor_id).unwrap();
+        assert!(!repo.list_debtors(&scope).unwrap().iter().any(|d| d.id == debtor_id), "deactivated debtors must not appear in the active list");
+        println!("[debt] debtor updated then deactivated -- no longer in the active list");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
