@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useAuthStore } from "../../stores/authStore";
 
 interface Props {
   itemName: string;
@@ -29,7 +30,10 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
       try {
         // Same as ManagerPinModal: verified in Rust against `staff`, never
         // the dropped `users` table, and the hash never reaches this renderer.
-        const valid = await invoke<boolean>("verify_manager_override", { passwordOrPin: pin }).catch(() => false);
+        // Scoped to the requesting actor's own tenant/branch and audited on
+        // grant (verify_manager_override_v3).
+        const token = useAuthStore.getState().token;
+        const valid = await invoke<boolean>("verify_manager_override_v3", { sessionToken: token, passwordOrPin: pin }).catch(() => false);
         if (!valid) {
           setPinError("كلمة مرور المدير غير صحيحة");
           return;

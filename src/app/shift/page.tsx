@@ -1,6 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getDb } from "../../db";
 import { useAuthStore } from "../../stores/authStore";
 import { useShiftStore } from "../../stores/shiftStore";
 
@@ -72,14 +71,9 @@ export default function ShiftPage() {
 
   const fetchShiftData = useCallback(async () => {
     try {
-      const db = await getDb();
       const token = useAuthStore.getState().token;
 
-      const cfg = await db
-        .selectFrom("chain_config")
-        .select("currency")
-        .where("id", "=", "default")
-        .executeTakeFirst();
+      const cfg = await invoke<{ currency: string }>("get_chain_config_v3", { sessionToken: token });
       if (cfg) setCurrency(cfg.currency);
 
       const shift = await invoke<ActiveShift | null>("get_active_shift_v3", { sessionToken: token });
@@ -98,13 +92,9 @@ export default function ShiftPage() {
           cardTotal: stats.card_total,
         });
 
-        const orders = await db
-          .selectFrom("orders")
-          .select(["id", "total_cents", "created_at", "status"])
-          .where("shift_id", "=", shift.id)
-          .orderBy("created_at", "desc")
-          .limit(10)
-          .execute();
+        const orders = await invoke<{ id: string; total_cents: number; created_at: string; status: string }[]>(
+          "list_shift_orders_v3", { sessionToken: token, shiftId: shift.id }
+        );
         setRecentOrders(orders);
       }
     } catch {
@@ -173,7 +163,8 @@ export default function ShiftPage() {
       }
 
       if (needsAuth) {
-        const valid = await invoke<boolean>("verify_manager_override", {
+        const valid = await invoke<boolean>("verify_manager_override_v3", {
+          sessionToken: token,
           passwordOrPin: managerPassword,
         }).catch(() => false);
         if (!valid) {

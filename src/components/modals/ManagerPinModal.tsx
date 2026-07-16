@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { IconBackspace, IconX } from "@tabler/icons-react";
 import { invoke } from "@tauri-apps/api/core";
-import { getDb } from "../../db";
+import { useAuthStore } from "../../stores/authStore";
 
 interface Props {
   title: string;
@@ -9,11 +9,6 @@ interface Props {
   onSuccess: () => void;
   onCancel: () => void;
 }
-
-const MAX_ATTEMPTS = 5;
-const LOCKOUT_SECONDS = 5 * 60;
-const FAILURES_KEY = "manager_pin_failures";
-const LOCKED_UNTIL_KEY = "manager_pin_locked_until";
 
 export default function ManagerPinModal({
   title,
@@ -24,75 +19,26 @@ export default function ManagerPinModal({
   const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [lockedUntil, setLockedUntil] = useState<number | null>(null);
-
-  const remainingLockSeconds = lockedUntil ? Math.max(0, Math.ceil((lockedUntil - Date.now()) / 1000)) : 0;
 
   const handleVerify = async () => {
     setLoading(true);
     setError(null);
 
     try {
-      const db = await getDb();
-
-      const lockRow = await db
-        .selectFrom("app_settings")
-        .select("value")
-        .where("key", "=", LOCKED_UNTIL_KEY)
-        .executeTakeFirst();
-      const lockedUntilMs = lockRow ? parseInt(lockRow.value, 10) : 0;
-      if (lockedUntilMs && Date.now() < lockedUntilMs) {
-        setLockedUntil(lockedUntilMs);
-        setError("تم قفل إدخال كلمة المرور بسبب كثرة المحاولات الخاطئة");
-        setLoading(false);
-        return;
-      }
-      if (lockedUntilMs && Date.now() >= lockedUntilMs) {
-        await db.deleteFrom("app_settings").where("key", "=", LOCKED_UNTIL_KEY).execute();
-        await db.deleteFrom("app_settings").where("key", "=", FAILURES_KEY).execute();
-        setLockedUntil(null);
-      }
-
-      // `verify_manager_override` runs the comparison in Rust against
+      // `verify_manager_override_v3` runs the comparison in Rust against
       // `staff` (never `users`, which Decision A dropped) -- the
-      // password/PIN hash never reaches this renderer at all.
-      const valid = await invoke<boolean>("verify_manager_override", { passwordOrPin: pin }).catch(() => false);
+      // password/PIN hash never reaches this renderer at all. It also now
+      // owns the failure-count/lockout bookkeeping server-side (previously
+      // a client-side `app_settings` read via `getDb()`, trivially
+      // bypassable by clearing local state) and audits a successful grant.
+      const token = useAuthStore.getState().token;
+      const valid = await invoke<boolean>("verify_manager_override_v3", { sessionToken: token, passwordOrPin: pin }).catch(() => false);
       if (!valid) {
-        const failuresRow = await db
-          .selectFrom("app_settings")
-          .select("value")
-          .where("key", "=", FAILURES_KEY)
-          .executeTakeFirst();
-        const failures = (failuresRow ? parseInt(failuresRow.value, 10) : 0) + 1;
-
-        if (failures >= MAX_ATTEMPTS) {
-          const until = Date.now() + LOCKOUT_SECONDS * 1000;
-          await db
-            .insertInto("app_settings")
-            .values({ key: LOCKED_UNTIL_KEY, value: String(until) })
-            .onConflict((oc) => oc.column("key").doUpdateSet({ value: String(until) }))
-            .execute();
-          await db
-            .insertInto("app_settings")
-            .values({ key: FAILURES_KEY, value: "0" })
-            .onConflict((oc) => oc.column("key").doUpdateSet({ value: "0" }))
-            .execute();
-          setLockedUntil(until);
-          setError("تم قفل إدخال كلمة المرور بسبب كثرة المحاولات الخاطئة");
-        } else {
-          await db
-            .insertInto("app_settings")
-            .values({ key: FAILURES_KEY, value: String(failures) })
-            .onConflict((oc) => oc.column("key").doUpdateSet({ value: String(failures) }))
-            .execute();
-          setError(`كلمة المرور غير صحيحة (محاولة ${failures} من ${MAX_ATTEMPTS})`);
-        }
+        setError("كلمة المرور غير صحيحة، أو تم قفل الإدخال بسبب كثرة المحاولات الخاطئة");
         setLoading(false);
         return;
       }
 
-      await db.deleteFrom("app_settings").where("key", "=", FAILURES_KEY).execute();
-      await db.deleteFrom("app_settings").where("key", "=", LOCKED_UNTIL_KEY).execute();
       onSuccess();
     } catch {
       setError("حدث خطأ");
@@ -174,12 +120,10 @@ export default function ManagerPinModal({
           </button>
           <button
             onClick={handleVerify}
-            disabled={loading || pin.length < 4 || remainingLockSeconds > 0}
+            disabled={loading || pin.length < 4}
             className="flex-1 h-12 rounded-xl bg-accent text-white font-arabic font-bold hover:bg-accent-text shadow-sh-3 disabled:opacity-50 transition-all"
           >
-            {remainingLockSeconds > 0
-              ? `مقفل (${Math.ceil(remainingLockSeconds / 60)} د)`
-              : loading ? "جاري..." : "تأكيد"}
+            {loading ? "جاري..." : "تأكيد"}
           </button>
         </div>
       </div>

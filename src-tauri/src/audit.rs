@@ -85,6 +85,10 @@ pub enum Action {
     DeliveryAssigned,
     DeliveryStatusChanged,
     DeliveryZoneChanged,
+    /// Slice B -- the manager PIN/password override is an anti-theft
+    /// control (it authorizes voids/discounts); granting one must be
+    /// logged, same as any other privileged action.
+    ManagerOverrideGranted,
 }
 
 impl Action {
@@ -114,6 +118,7 @@ impl Action {
             Action::DeliveryAssigned => "DeliveryAssigned",
             Action::DeliveryStatusChanged => "DeliveryStatusChanged",
             Action::DeliveryZoneChanged => "DeliveryZoneChanged",
+            Action::ManagerOverrideGranted => "ManagerOverrideGranted",
         }
     }
 }

@@ -12,7 +12,7 @@ use crate::repo::{NewOrder, OrderRow, Repo, FullOrderInput, SplitBillInput, Tabl
 use crate::security::{self, authorize, authorize_scope, Actor, Permission, Role, Scope};
 use crate::Db;
 use bcrypt::{hash, verify, DEFAULT_COST};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 use tauri::State;
 
@@ -703,6 +703,13 @@ pub fn get_shift_stats_v3(state: State<Db>, session_token: String, shift_id: Str
     authenticate_actor(&state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).shift_stats(&shift_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_shift_orders_v3(state: State<Db>, session_token: String, shift_id: String) -> Result<Vec<crate::repo::ShiftOrderRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_shift_orders(&shift_id, &actor.scope()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1697,6 +1704,117 @@ pub fn change_own_password_v3(state: State<Db>, session_token: String, old_passw
     Ok(())
 }
 
+const MANAGER_OVERRIDE_MAX_ATTEMPTS: i64 = 5;
+const MANAGER_OVERRIDE_LOCKOUT_SECONDS: i64 = 5 * 60;
+const MANAGER_OVERRIDE_FAILURES_KEY: &str = "manager_pin_failures";
+const MANAGER_OVERRIDE_LOCKED_UNTIL_KEY: &str = "manager_pin_locked_until";
+
+/// Replaces the old, unscoped, unaudited `verify_manager_override` command
+/// (Batch 3b, Slice B verification finding): that command took no session,
+/// no scope, picked an arbitrary `LIMIT 1` manager row from the ENTIRE
+/// `staff` table with no tenant/branch filter at all, and never logged a
+/// successful override anywhere -- for a control that authorizes voids and
+/// discounts (the textbook anti-theft gate), that's a real gap, not a
+/// cosmetic one.
+///
+/// This version: authenticates the REQUESTING actor's session first (so the
+/// override is scoped to their own tenant/branch, not the whole database),
+/// scans every active MANAGER/OWNER/PLATFORM staff member in that scope
+/// (there may be more than one manager on a branch; the cashier doesn't
+/// know which one's PIN is being entered, so all are tried), and -- on a
+/// match -- writes a same-transaction audit entry naming BOTH the
+/// requesting actor and the manager whose credential authorized the
+/// override. The lockout/failure-count bookkeeping (previously a
+/// client-side `app_settings` read via `getDb()`, trivially bypassable by
+/// clearing local state) now lives here too, enforced server-side.
+#[tauri::command]
+pub fn verify_manager_override_v3(state: State<Db>, session_token: String, password_or_pin: String) -> Result<bool, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    verify_manager_override_impl(&mut conn, &actor, &password_or_pin)
+}
+
+/// Extracted from `verify_manager_override_v3` so the test module (which
+/// exercises real `rusqlite::Connection`s directly, not a live `tauri::App`
+/// -- see the test module's own doc comment) can call it without needing
+/// `State<Db>`.
+fn verify_manager_override_impl(conn: &mut rusqlite::Connection, actor: &Actor, password_or_pin: &str) -> Result<bool, String> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    let locked_until_ms: i64 = conn
+        .query_row("SELECT value FROM app_settings WHERE key = ?1", params![MANAGER_OVERRIDE_LOCKED_UNTIL_KEY], |r| r.get::<_, String>(0))
+        .optional().map_err(|e| e.to_string())?
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if locked_until_ms > 0 && now_ms < locked_until_ms {
+        return Ok(false);
+    }
+    if locked_until_ms > 0 && now_ms >= locked_until_ms {
+        conn.execute("DELETE FROM app_settings WHERE key IN (?1, ?2)", params![MANAGER_OVERRIDE_FAILURES_KEY, MANAGER_OVERRIDE_LOCKED_UNTIL_KEY])
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Every active manager-rank-or-above staff member in the requesting
+    // actor's own tenant (and, for a Branch-scoped actor, that same branch
+    // -- Owner/Platform staff are branch-less and can override anywhere in
+    // their tenant).
+    let mut stmt = conn.prepare(
+        "SELECT id, password_hash, pin_hash FROM staff \
+         WHERE tenant_id = ?1 AND (branch_id = ?2 OR branch_id IS NULL OR role IN ('OWNER', 'PLATFORM')) \
+         AND role IN ('MANAGER', 'OWNER', 'PLATFORM') AND is_active = 1",
+    ).map_err(|e| e.to_string())?;
+    let candidates: Vec<(String, Option<String>, Option<String>)> = stmt
+        .query_map(params![actor.tenant_id, actor.branch_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    drop(stmt);
+
+    let matched = candidates.into_iter().find(|(_, password_hash, pin_hash)| {
+        pin_hash.clone().or_else(|| password_hash.clone())
+            .map(|h| verify(password_or_pin, &h).unwrap_or(false))
+            .unwrap_or(false)
+    });
+
+    match matched {
+        Some((manager_id, _, _)) => {
+            conn.execute("DELETE FROM app_settings WHERE key IN (?1, ?2)", params![MANAGER_OVERRIDE_FAILURES_KEY, MANAGER_OVERRIDE_LOCKED_UNTIL_KEY])
+                .map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            audit::append(
+                &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
+                audit::Action::ManagerOverrideGranted, "staff", &manager_id,
+                None, Some(&serde_json::json!({ "requested_by": actor.id, "authorized_by": manager_id })),
+            ).map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(true)
+        }
+        None => {
+            let failures: i64 = conn
+                .query_row("SELECT value FROM app_settings WHERE key = ?1", params![MANAGER_OVERRIDE_FAILURES_KEY], |r| r.get::<_, String>(0))
+                .optional().map_err(|e| e.to_string())?
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0) + 1;
+            if failures >= MANAGER_OVERRIDE_MAX_ATTEMPTS {
+                let until = now_ms + MANAGER_OVERRIDE_LOCKOUT_SECONDS * 1000;
+                conn.execute(
+                    "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+                    params![MANAGER_OVERRIDE_LOCKED_UNTIL_KEY, until.to_string()],
+                ).map_err(|e| e.to_string())?;
+                conn.execute(
+                    "INSERT INTO app_settings (key, value) VALUES (?1, '0') ON CONFLICT(key) DO UPDATE SET value = '0'",
+                    params![MANAGER_OVERRIDE_FAILURES_KEY],
+                ).map_err(|e| e.to_string())?;
+            } else {
+                conn.execute(
+                    "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+                    params![MANAGER_OVERRIDE_FAILURES_KEY, failures.to_string()],
+                ).map_err(|e| e.to_string())?;
+            }
+            Ok(false)
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Slice A -- POS flow commands. These replace the frontend's `orderService.ts`
 // and `pos/page.tsx` getDb() calls with Rust-backed, auth-checked commands.
@@ -2078,6 +2196,7 @@ mod tests {
     use crate::migrate;
     use crate::migrate_v3;
     use crate::repo::{NewOrder, Repo, RepoError, FullOrderInput, SplitBillInput};
+    use super::{verify_manager_override_impl, MANAGER_OVERRIDE_MAX_ATTEMPTS};
     use crate::security::{self, authorize, Permission, Role};
     use rusqlite::{params, Connection};
     use std::fs;
@@ -3528,6 +3647,64 @@ mod tests {
         assert_eq!(txs[0].tx_type, "EARN");
         assert_eq!(txs[0].reference_id.as_deref(), Some("order-123"));
         println!("[loyalty] earn_loyalty_points wrote a scoped loyalty_transactions row (tenant_id/branch_id populated), visible via list_loyalty_transactions");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Slice B: `verify_manager_override_v3` replaces the old unscoped,
+    /// unaudited `verify_manager_override`. Proves: (1) it's scoped -- a
+    /// manager's PIN from another branch does NOT authorize an override
+    /// here; (2) a successful grant writes an audit entry naming both the
+    /// requesting actor and the authorizing manager; (3) failures lock out
+    /// after `MANAGER_OVERRIDE_MAX_ATTEMPTS`, server-side (not the old
+    /// client-side `app_settings`-via-`getDb()` bookkeeping, which was
+    /// trivially bypassable by clearing local state).
+    #[test]
+    fn manager_override_is_scoped_audited_and_locks_out_after_max_attempts() {
+        let (db_path, tenant_id, branch_a, _table_id) = seeded_db("manager_override");
+        let mut conn = Connection::open(&db_path).unwrap();
+        let repo = Repo::new(&conn);
+        let branch_b = repo.create_branch(&tenant_id, "Branch B", "USD").unwrap();
+
+        let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_a), Role::Cashier, "Cashier A");
+        let pin_hash_a = bcrypt::hash("1234", bcrypt::DEFAULT_COST).unwrap();
+        let pin_hash_b = bcrypt::hash("9999", bcrypt::DEFAULT_COST).unwrap();
+        let manager_a_id = {
+            let repo = Repo::new(&conn);
+            repo.create_staff(&tenant_id, Some(&branch_a), Some(&branch_a), "MANAGER", Role::Manager.rank(), "Manager A", Some(&pin_hash_a), None).unwrap()
+        };
+        let _manager_b_id = {
+            let repo = Repo::new(&conn);
+            repo.create_staff(&tenant_id, Some(&branch_b), Some(&branch_b), "MANAGER", Role::Manager.rank(), "Manager B", Some(&pin_hash_b), None).unwrap()
+        };
+
+        let cashier_actor = security::authenticate(&conn, &security::create_session(&conn, &cashier_id, "pos-device").unwrap()).unwrap();
+
+        // Branch B's manager PIN must NOT authorize an override requested from Branch A.
+        let cross_branch = verify_manager_override_impl(&mut conn, &cashier_actor, "9999").unwrap();
+        assert!(!cross_branch, "a manager PIN from a different branch must not authorize an override");
+        println!("[override] cross-branch manager PIN correctly rejected");
+
+        // Branch A's own manager PIN succeeds and is audited.
+        let granted = verify_manager_override_impl(&mut conn, &cashier_actor, "1234").unwrap();
+        assert!(granted);
+        let (action, entity_id): (String, String) = conn.query_row(
+            "SELECT action, entity_id FROM audit_log WHERE action = 'ManagerOverrideGranted' ORDER BY ts DESC LIMIT 1",
+            [], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(action, "ManagerOverrideGranted");
+        assert_eq!(entity_id, manager_a_id, "the audit entry must name the manager whose credential authorized the override");
+        println!("[override] same-branch manager PIN succeeded and wrote an audit entry naming the authorizing manager");
+
+        // Lockout: MANAGER_OVERRIDE_MAX_ATTEMPTS wrong PINs in a row must lock out further attempts,
+        // even a subsequently-correct one.
+        for i in 0..MANAGER_OVERRIDE_MAX_ATTEMPTS {
+            let ok = verify_manager_override_impl(&mut conn, &cashier_actor, "0000").unwrap();
+            assert!(!ok, "wrong PIN attempt {i} must fail");
+        }
+        let locked_attempt = verify_manager_override_impl(&mut conn, &cashier_actor, "1234").unwrap();
+        assert!(!locked_attempt, "even the CORRECT PIN must be rejected once locked out");
+        println!("[override] locked out after {MANAGER_OVERRIDE_MAX_ATTEMPTS} failed attempts, correct PIN rejected while locked");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }

@@ -1,9 +1,16 @@
 import { useState, useEffect, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { IconX, IconCash, IconCreditCard, IconWallet, IconCircleCheck } from "@tabler/icons-react";
 import { useCartStore } from "../stores/cartStore";
 import { openCashDrawer } from "../lib/printer";
-import { getDb } from "../db";
+import { useAuthStore } from "../stores/authStore";
 import { useCurrency } from "../hooks/useCurrency";
+
+interface DebtorRow {
+  id: string;
+  name: string;
+  phone: string;
+}
 
 type PaymentMethod = "CASH" | "CARD" | "WALLET" | "CREDIT";
 
@@ -68,12 +75,12 @@ export default function PaymentModal({ onClose, onSuccess }: Props) {
 
   useEffect(() => {
     if (method === "CREDIT" && debtorPhone.trim().length >= 8) {
-      getDb().then((db) => {
-        db.selectFrom("debtors").selectAll().where("phone", "=", debtorPhone.trim()).executeTakeFirst().then((d) => {
-          if (d) { setDebtorName(d.name); setDebtorId(d.id); setError(null); }
-          else { setDebtorName(null); setDebtorId(null); setError("رقم الهاتف غير موجود"); }
-        }).catch(() => {});
-      });
+      const token = useAuthStore.getState().token;
+      invoke<DebtorRow[]>("list_debtors_v3", { sessionToken: token }).then((debtors) => {
+        const d = debtors.find((row) => row.phone === debtorPhone.trim());
+        if (d) { setDebtorName(d.name); setDebtorId(d.id); setError(null); }
+        else { setDebtorName(null); setDebtorId(null); setError("رقم الهاتف غير موجود"); }
+      }).catch(() => {});
     } else if (method === "CREDIT") {
       setDebtorName(null); setDebtorId(null); setError(null);
     }
@@ -275,17 +282,13 @@ export default function PaymentModal({ onClose, onSuccess }: Props) {
                     onClick={async () => {
                       if (!newDebtorName.trim()) return;
                       try {
-                        const db = await getDb();
-                        const id = crypto.randomUUID();
-                        const now = new Date().toISOString();
-                        await db.insertInto("debtors").values({
-                          id,
+                        const token = useAuthStore.getState().token;
+                        const id = await invoke<string>("create_debtor_v3", {
+                          sessionToken: token,
                           name: newDebtorName.trim(),
                           phone: debtorPhone.trim(),
                           email: null, address: null, notes: null,
-                          total_debt_cents: 0, total_paid_cents: 0, balance_cents: 0,
-                          is_active: 1, sync_version: 1, last_modified: now, sync_status: "pending",
-                        }).execute();
+                        });
                         setDebtorName(newDebtorName.trim());
                         setDebtorId(id);
                         setError(null);

@@ -225,6 +225,14 @@ pub struct ShiftStatsRow {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct ShiftOrderRow {
+    pub id: String,
+    pub total_cents: i64,
+    pub created_at: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct IngredientRow {
     pub id: String,
     pub name: String,
@@ -2318,6 +2326,26 @@ impl<'a> Repo<'a> {
             params![shift_id], |r| r.get(0),
         )?;
         Ok(ShiftStatsRow { order_count, total_sales, cash_total, card_total })
+    }
+
+    /// `shift/page.tsx`'s "recent orders" list -- last 10 orders opened
+    /// against this shift, most recent first, scope-qualified so a
+    /// Branch-scoped actor can't be handed another branch's shift's orders
+    /// by guessing a shift id.
+    pub fn list_shift_orders(&self, shift_id: &str, scope: &Scope) -> Result<Vec<ShiftOrderRow>, RepoError> {
+        let (predicate, args) = Self::scope_predicate(scope);
+        let id_placeholder = format!("?{}", args.len() + 1);
+        let sql = format!(
+            "SELECT id, total_cents, created_at, status FROM orders \
+             WHERE {predicate} AND shift_id = {id_placeholder} ORDER BY created_at DESC LIMIT 10"
+        );
+        let mut full_args: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        full_args.push(&shift_id);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(full_args.as_slice(), |r| {
+            Ok(ShiftOrderRow { id: r.get(0)?, total_cents: r.get(1)?, created_at: r.get(2)?, status: r.get(3)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
 
     pub fn close_shift(&self, shift_id: &str, ending_cash_cents: i64, difference_cents: i64) -> Result<(), RepoError> {

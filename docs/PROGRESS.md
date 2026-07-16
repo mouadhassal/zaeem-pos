@@ -1,7 +1,41 @@
 # PROGRESS.md — SPRINT_01_multitenant_trust_boundary_v3.md
 
-**Last updated:** 2026-07-16, after Slice A (core POS flow: orderService.ts + pos/page.tsx).
-**Closeout NOT done -- see Slice A below for real getDb() count.**
+**Last updated:** 2026-07-16, after Slice B (PaymentModal, ManagerPinModal, VoidItemModal, and
+shift/page.tsx's remaining ref). **Closeout NOT done -- 39 real getDb() references remain.**
+
+## Slice B: PaymentModal (2) + ManagerPinModal (1) + manager-override rework
+
+Converted `PaymentModal.tsx`'s debtor lookup/create (بيع بالدين at checkout) to `list_debtors_v3`/
+`create_debtor_v3`, both already existing. Converted `ManagerPinModal.tsx` fully off `getDb()`.
+
+**The manager PIN/password override was a real gap, not just a `getDb()` reference.** The old
+`verify_manager_override` Tauri command (pre-v3, still registered) took no session token, no scope,
+and picked an arbitrary `LIMIT 1` manager row from the ENTIRE `staff` table with no tenant/branch
+filter -- for a control that authorizes voids and discounts, that's the actual anti-theft gate, and
+it was checking a random manager's credential against nobody's session, from nowhere, logging
+nothing. Replaced with `verify_manager_override_v3`: authenticates the requesting actor's session
+first, scans every active MANAGER/OWNER/PLATFORM staff member scoped to that actor's own
+tenant/branch, and -- on a match -- writes a same-transaction audit entry (`ManagerOverrideGranted`)
+naming both the requesting actor and the manager whose credential authorized it. The failure-count/
+lockout bookkeeping (previously client-side `app_settings` via `getDb()`, trivially bypassable by
+clearing local state) now lives server-side in the same command. All three frontend call sites
+(`ManagerPinModal.tsx`, `VoidItemModal.tsx`, `shift/page.tsx`'s over-threshold-cash-difference path)
+updated to the new command. Old `verify_manager_override` deleted, not deprecated-in-place.
+
+Also fixed `shift/page.tsx`'s actual remaining `getDb()` reference, found while touching this file:
+a "recent orders in this shift" query that the earlier slice's per-file count had missed (it was a
+second use of the same `db` variable further down the function, not a separate `getDb()` call --
+the grep-based count only sees the call site, not every use of what it returns). New
+`list_shift_orders_v3` command, scope-qualified.
+
+Test: `manager_override_is_scoped_audited_and_locks_out_after_max_attempts` -- proves a manager PIN
+from a different branch does NOT authorize an override, a same-branch manager's PIN succeeds and
+is audited with the correct authorizing manager id, and `MANAGER_OVERRIDE_MAX_ATTEMPTS` wrong PINs
+lock out even a subsequently-correct one. 48/48 `cargo test` pass, clippy clean, tsc clean.
+
+**getDb() count, exact via check-no-sql-in-frontend.sh: 39** (down from 42 after Slice A
+verification -- PaymentModal's 2, ManagerPinModal's 1, minus shift/page.tsx's newly-found extra
+reference net zero since it was already counted in the 42).
 
 ## Slice A: Core POS flow converted (orderService.ts + pos/page.tsx)
 

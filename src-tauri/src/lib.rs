@@ -13,7 +13,7 @@ mod audit;
 mod commands_v3;
 mod ai;
 
-use bcrypt::{hash, verify, DEFAULT_COST};
+use bcrypt::{hash, DEFAULT_COST};
 
 struct Db(Mutex<Connection>);
 
@@ -1052,34 +1052,12 @@ fn diagnose_db(_state: State<Db>) -> Result<String, String> {
     Err("diagnose_db is not available in release builds".to_string())
 }
 
-// Interim fix: stop password_hash/manager_pin_hash from ever reaching the renderer.
-// This is deliberately minimal -- a straight server-side comparison, matching the
-// exact fallback logic (manager_pin_hash, else password_hash) that shift/page.tsx
-// used to do client-side. It is NOT the elevation-token system (that's T1.4); no
-// rate limiting, no session binding here yet.
-#[tauri::command]
-fn verify_manager_override(state: State<Db>, password_or_pin: String) -> Result<bool, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    // `staff`, not `users` (Decision A) -- `ADMIN` no longer exists as a role
-    // (Migration C folded it into `MANAGER`); `PLATFORM` added since it's a
-    // real staff role now and should be able to override same as OWNER.
-    let manager: Option<(Option<String>, Option<String>)> = conn
-        .query_row(
-            "SELECT password_hash, pin_hash FROM staff \
-             WHERE role IN ('MANAGER', 'OWNER', 'PLATFORM') AND is_active = 1 LIMIT 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .ok();
-
-    let Some((password_hash, pin_hash)) = manager else {
-        return Ok(false);
-    };
-    let Some(hash) = pin_hash.or(password_hash) else {
-        return Ok(false);
-    };
-    Ok(verify(&password_or_pin, &hash).unwrap_or(false))
-}
+// `verify_manager_override` (unscoped, unaudited, arbitrary-LIMIT-1-row)
+// removed -- replaced by `commands_v3::verify_manager_override_v3`
+// (Batch 3b, Slice B verification), which is session-scoped to the
+// requesting actor's own tenant/branch, tries every manager-rank candidate
+// in that scope, and writes an audit entry on a successful grant. See that
+// function's doc comment for the full rationale.
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -1129,7 +1107,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             diagnose_db,
-            verify_manager_override,
+            commands_v3::verify_manager_override_v3,
             commands_v3::login_v3,
             commands_v3::login_pin_v3,
             commands_v3::setup_owner_v3,
@@ -1161,6 +1139,7 @@ pub fn run() {
             commands_v3::adjust_stock_v3,
             commands_v3::get_active_shift_v3,
             commands_v3::get_shift_stats_v3,
+            commands_v3::list_shift_orders_v3,
             commands_v3::open_shift_v3,
             commands_v3::close_shift_v3,
             commands_v3::resolve_menu_price_v3,
