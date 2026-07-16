@@ -381,6 +381,66 @@ pub struct DriverRow {
     pub status: String,
     pub current_lat: Option<f64>,
     pub current_lng: Option<f64>,
+    /// Batch 3b, final slice, group 2 -- widened for `DriversView`'s card
+    /// (photo/rating/delivery count) and the management tab's need to see
+    /// deactivated drivers (`is_active`).
+    pub photo_path: Option<String>,
+    pub total_deliveries: i64,
+    pub rating: Option<f64>,
+    pub is_active: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ActiveDeliveryRow {
+    pub log_id: String,
+    pub delivery_status: String,
+    pub assigned_at: Option<String>,
+    pub picked_up_at: Option<String>,
+    pub order_id: String,
+    pub customer_name: Option<String>,
+    pub customer_phone: Option<String>,
+    pub delivery_address: Option<String>,
+    pub total_cents: i64,
+    pub driver_id: String,
+    pub driver_name: String,
+    pub driver_phone: Option<String>,
+    pub vehicle_type: String,
+    pub vehicle_plate: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DeliveryHistoryRow {
+    pub log_id: String,
+    pub delivery_status: String,
+    pub assigned_at: Option<String>,
+    pub delivered_at: Option<String>,
+    pub failure_reason: Option<String>,
+    pub order_id: String,
+    pub customer_name: Option<String>,
+    pub total_cents: i64,
+    pub driver_name: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DriverDeliveryRow {
+    pub log_id: String,
+    pub status: String,
+    pub assigned_at: Option<String>,
+    pub delivered_at: Option<String>,
+    pub customer_name: Option<String>,
+    pub delivery_address: Option<String>,
+    pub total_cents: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DeliveryZoneRow {
+    pub id: String,
+    pub name: String,
+    pub boundaries: String,
+    pub fee_cents: i64,
+    pub min_order_cents: i64,
+    pub estimated_minutes: i64,
+    pub is_active: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1594,18 +1654,240 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
+    const DRIVER_COLUMNS: &'static str = "id, name, phone, vehicle_type, vehicle_plate, license_number, status, current_lat, current_lng, photo_path, total_deliveries, rating, is_active";
+
+    fn driver_row_from(r: &rusqlite::Row) -> rusqlite::Result<DriverRow> {
+        Ok(DriverRow {
+            id: r.get(0)?, name: r.get(1)?, phone: r.get(2)?, vehicle_type: r.get(3)?, vehicle_plate: r.get(4)?,
+            license_number: r.get(5)?, status: r.get(6)?, current_lat: r.get(7)?, current_lng: r.get(8)?,
+            photo_path: r.get(9)?, total_deliveries: r.get(10)?, rating: r.get(11)?, is_active: r.get(12)?,
+        })
+    }
+
     pub fn list_drivers(&self, scope: &Scope) -> Result<Vec<DriverRow>, RepoError> {
         self.assert_scope_populated("drivers", true)?;
         let (predicate, args) = Self::scope_predicate(scope);
+        let sql = format!("SELECT {} FROM drivers WHERE {predicate} AND is_active = 1 ORDER BY name ASC", Self::DRIVER_COLUMNS);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), Self::driver_row_from)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// `DriversView`'s management tab -- unlike `list_drivers`, includes
+    /// deactivated drivers so a manager can see (and eventually reactivate)
+    /// them, same reasoning as `list_printers`' widening.
+    pub fn list_all_drivers(&self, scope: &Scope) -> Result<Vec<DriverRow>, RepoError> {
+        self.assert_scope_populated("drivers", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let sql = format!("SELECT {} FROM drivers WHERE {predicate} ORDER BY name ASC", Self::DRIVER_COLUMNS);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), Self::driver_row_from)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// `DriverSelectModal`'s pick-a-driver list -- only drivers free to take
+    /// a new delivery right now.
+    pub fn list_available_drivers(&self, scope: &Scope) -> Result<Vec<DriverRow>, RepoError> {
+        self.assert_scope_populated("drivers", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let sql = format!("SELECT {} FROM drivers WHERE {predicate} AND is_active = 1 AND status = 'AVAILABLE' ORDER BY name ASC", Self::DRIVER_COLUMNS);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), Self::driver_row_from)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_driver(&self, driver_id: &str, name: &str, phone: Option<&str>, vehicle_type: &str, vehicle_plate: Option<&str>, license_number: Option<&str>) -> Result<(), RepoError> {
+        self.conn.execute(
+            "UPDATE drivers SET name = ?1, phone = ?2, vehicle_type = ?3, vehicle_plate = ?4, license_number = ?5, last_modified = datetime('now') WHERE id = ?6",
+            params![name, phone, vehicle_type, vehicle_plate, license_number, driver_id],
+        )?;
+        Ok(())
+    }
+
+    /// Soft delete, matching the old frontend's `deleteDriver` -- a driver
+    /// with delivery history can't be hard-deleted without orphaning
+    /// `delivery_logs.driver_id` (`NOT NULL REFERENCES drivers`).
+    pub fn deactivate_driver(&self, driver_id: &str) -> Result<(), RepoError> {
+        self.conn.execute(
+            "UPDATE drivers SET is_active = 0, status = 'INACTIVE', last_modified = datetime('now') WHERE id = ?1",
+            params![driver_id],
+        )?;
+        Ok(())
+    }
+
+    /// The assignment atomicity pair: the new `delivery_logs` row (the fact)
+    /// and the driver flipping to BUSY (the derived state) commit together.
+    /// Deliberately does NOT touch `orders.driver_id` -- that column does
+    /// not exist in the real schema (DRIFT_REPORT.md Finding #1).
+    pub fn assign_driver_to_delivery(&self, tenant_id: &str, branch_id: &str, order_id: &str, driver_id: &str) -> Result<String, RepoError> {
+        let log_id = self.create_delivery_log(tenant_id, branch_id, order_id, driver_id)?;
+        self.conn.execute(
+            "UPDATE drivers SET status = 'BUSY', last_modified = datetime('now') WHERE id = ?1",
+            params![driver_id],
+        )?;
+        Ok(log_id)
+    }
+
+    /// The receiving-end atomicity pair for a delivery reaching a terminal
+    /// status: the `delivery_logs` transition and the driver freeing back up
+    /// (+ `total_deliveries` bump on an actual DELIVERED) commit together --
+    /// same principle as `assign_driver_to_delivery`, just the reverse edge.
+    /// `failure_reason` is a real column (0001_init.sql); the old frontend's
+    /// `notes` field on this same call is NOT (dropped, DRIFT).
+    pub fn update_delivery_status_and_driver(&self, delivery_log_id: &str, new_status: &str, failure_reason: Option<&str>) -> Result<(), RepoError> {
+        self.assert_scope_populated("delivery_logs", true)?;
+        let driver_id: String = self.conn.query_row(
+            "SELECT driver_id FROM delivery_logs WHERE id = ?1", params![delivery_log_id], |r| r.get(0),
+        )?;
+        let ts_column = match new_status {
+            "PICKED_UP" => Some("picked_up_at"),
+            "DELIVERED" => Some("delivered_at"),
+            "FAILED" => Some("failed_at"),
+            _ => None,
+        };
+        match ts_column {
+            Some(col) => {
+                self.conn.execute(
+                    &format!("UPDATE delivery_logs SET status = ?1, failure_reason = ?2, {col} = datetime('now'), last_modified = datetime('now') WHERE id = ?3"),
+                    params![new_status, failure_reason, delivery_log_id],
+                )?;
+            }
+            None => {
+                self.conn.execute(
+                    "UPDATE delivery_logs SET status = ?1, failure_reason = ?2, last_modified = datetime('now') WHERE id = ?3",
+                    params![new_status, failure_reason, delivery_log_id],
+                )?;
+            }
+        }
+        if matches!(new_status, "DELIVERED" | "FAILED" | "CANCELLED") {
+            let bump: i64 = if new_status == "DELIVERED" { 1 } else { 0 };
+            self.conn.execute(
+                "UPDATE drivers SET status = 'AVAILABLE', total_deliveries = total_deliveries + ?1, last_modified = datetime('now') WHERE id = ?2",
+                params![bump, driver_id],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn list_active_deliveries(&self, scope: &Scope) -> Result<Vec<ActiveDeliveryRow>, RepoError> {
+        self.assert_scope_populated("delivery_logs", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let predicate = predicate.replace("tenant_id", "delivery_logs.tenant_id").replace("branch_id", "delivery_logs.branch_id");
         let sql = format!(
-            "SELECT id, name, phone, vehicle_type, vehicle_plate, license_number, status, current_lat, current_lng FROM drivers WHERE {predicate} AND is_active = 1 ORDER BY name ASC"
+            "SELECT delivery_logs.id, delivery_logs.status, delivery_logs.assigned_at, delivery_logs.picked_up_at, \
+                    orders.id, orders.customer_name, orders.customer_phone, orders.delivery_address, orders.total_cents, \
+                    drivers.id, drivers.name, drivers.phone, drivers.vehicle_type, drivers.vehicle_plate \
+             FROM delivery_logs \
+             INNER JOIN orders ON orders.id = delivery_logs.order_id \
+             INNER JOIN drivers ON drivers.id = delivery_logs.driver_id \
+             WHERE {predicate} AND delivery_logs.status IN ('ASSIGNED', 'PICKED_UP', 'IN_TRANSIT') \
+             ORDER BY delivery_logs.assigned_at DESC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(params_refs.as_slice(), |r| {
-            Ok(DriverRow { id: r.get(0)?, name: r.get(1)?, phone: r.get(2)?, vehicle_type: r.get(3)?, vehicle_plate: r.get(4)?, license_number: r.get(5)?, status: r.get(6)?, current_lat: r.get(7)?, current_lng: r.get(8)? })
+            Ok(ActiveDeliveryRow {
+                log_id: r.get(0)?, delivery_status: r.get(1)?, assigned_at: r.get(2)?, picked_up_at: r.get(3)?,
+                order_id: r.get(4)?, customer_name: r.get(5)?, customer_phone: r.get(6)?, delivery_address: r.get(7)?, total_cents: r.get(8)?,
+                driver_id: r.get(9)?, driver_name: r.get(10)?, driver_phone: r.get(11)?, vehicle_type: r.get(12)?, vehicle_plate: r.get(13)?,
+            })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    pub fn list_delivery_history(&self, scope: &Scope, limit: i64, offset: i64) -> Result<Vec<DeliveryHistoryRow>, RepoError> {
+        self.assert_scope_populated("delivery_logs", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let predicate = predicate.replace("tenant_id", "delivery_logs.tenant_id").replace("branch_id", "delivery_logs.branch_id");
+        let sql = format!(
+            "SELECT delivery_logs.id, delivery_logs.status, delivery_logs.assigned_at, delivery_logs.delivered_at, delivery_logs.failure_reason, \
+                    orders.id, orders.customer_name, orders.total_cents, drivers.name \
+             FROM delivery_logs \
+             INNER JOIN orders ON orders.id = delivery_logs.order_id \
+             INNER JOIN drivers ON drivers.id = delivery_logs.driver_id \
+             WHERE {predicate} AND delivery_logs.status IN ('DELIVERED', 'FAILED', 'CANCELLED') \
+             ORDER BY delivery_logs.assigned_at DESC LIMIT ? OFFSET ?"
+        );
+        let mut full_args: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        full_args.push(&limit);
+        full_args.push(&offset);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(full_args.as_slice(), |r| {
+            Ok(DeliveryHistoryRow {
+                log_id: r.get(0)?, delivery_status: r.get(1)?, assigned_at: r.get(2)?, delivered_at: r.get(3)?, failure_reason: r.get(4)?,
+                order_id: r.get(5)?, customer_name: r.get(6)?, total_cents: r.get(7)?, driver_name: r.get(8)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    pub fn list_driver_deliveries(&self, driver_id: &str) -> Result<Vec<DriverDeliveryRow>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT delivery_logs.id, delivery_logs.status, delivery_logs.assigned_at, delivery_logs.delivered_at, \
+                    orders.customer_name, orders.delivery_address, orders.total_cents \
+             FROM delivery_logs INNER JOIN orders ON orders.id = delivery_logs.order_id \
+             WHERE delivery_logs.driver_id = ?1 ORDER BY delivery_logs.assigned_at DESC LIMIT 20",
+        )?;
+        let rows = stmt.query_map(params![driver_id], |r| {
+            Ok(DriverDeliveryRow {
+                log_id: r.get(0)?, status: r.get(1)?, assigned_at: r.get(2)?, delivered_at: r.get(3)?,
+                customer_name: r.get(4)?, delivery_address: r.get(5)?, total_cents: r.get(6)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    // -----------------------------------------------------------------
+    // Batch 3b, final slice, group 2 -- delivery zones. `delivery_zones` is
+    // `TENANT_BRANCH_TABLES`; every column the old `deliveryService.ts`
+    // referenced (name/boundaries/fee_cents/min_order_cents/
+    // estimated_minutes/is_active) is real (0001_init.sql), no DRIFT here.
+    // -----------------------------------------------------------------
+
+    pub fn list_delivery_zones(&self, scope: &Scope) -> Result<Vec<DeliveryZoneRow>, RepoError> {
+        self.assert_scope_populated("delivery_zones", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let sql = format!(
+            "SELECT id, name, boundaries, fee_cents, min_order_cents, estimated_minutes, is_active FROM delivery_zones WHERE {predicate} AND is_active = 1 ORDER BY name ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+            Ok(DeliveryZoneRow { id: r.get(0)?, name: r.get(1)?, boundaries: r.get(2)?, fee_cents: r.get(3)?, min_order_cents: r.get(4)?, estimated_minutes: r.get(5)?, is_active: r.get(6)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_delivery_zone(&self, tenant_id: &str, branch_id: &str, name: &str, boundaries: &str, fee_cents: i64, min_order_cents: i64, estimated_minutes: i64) -> Result<String, RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO delivery_zones (id, tenant_id, branch_id, name, boundaries, fee_cents, min_order_cents, estimated_minutes, is_active, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, datetime('now'), 'pending')",
+            params![id, tenant_id, branch_id, name, boundaries, fee_cents, min_order_cents, estimated_minutes],
+        )?;
+        Ok(id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_delivery_zone(&self, zone_id: &str, name: &str, fee_cents: i64, min_order_cents: i64, estimated_minutes: i64) -> Result<(), RepoError> {
+        self.conn.execute(
+            "UPDATE delivery_zones SET name = ?1, fee_cents = ?2, min_order_cents = ?3, estimated_minutes = ?4, last_modified = datetime('now') WHERE id = ?5",
+            params![name, fee_cents, min_order_cents, estimated_minutes, zone_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn deactivate_delivery_zone(&self, zone_id: &str) -> Result<(), RepoError> {
+        self.conn.execute(
+            "UPDATE delivery_zones SET is_active = 0, last_modified = datetime('now') WHERE id = ?1",
+            params![zone_id],
+        )?;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]

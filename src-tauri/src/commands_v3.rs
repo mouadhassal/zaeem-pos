@@ -1356,7 +1356,7 @@ pub fn create_driver_v3(state: State<Db>, session_token: String, name: String, p
         .map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::StaffCreated, "driver", &driver_id,
+        audit::Action::DriverChanged, "driver", &driver_id,
         None, Some(&serde_json::json!({ "name": name, "vehicle_type": vehicle_type })),
     ).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -1377,6 +1377,64 @@ pub fn list_drivers_v3(state: State<Db>, session_token: String) -> Result<Vec<cr
     authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_drivers(&actor.scope()).map_err(|e| e.to_string())
+}
+
+/// `DriversView`'s management tab -- includes deactivated drivers.
+#[tauri::command]
+pub fn list_all_drivers_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::DriverRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_all_drivers(&actor.scope()).map_err(|e| e.to_string())
+}
+
+/// `DriverSelectModal`'s pick-a-driver list -- Cashier+ (assigning a driver
+/// at order time is register-floor work, same rank as `ManageDelivery`).
+#[tauri::command]
+pub fn list_available_drivers_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::DriverRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_available_drivers(&actor.scope()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn update_driver_v3(state: State<Db>, session_token: String, driver_id: String, name: String, phone: Option<String>, vehicle_type: String, vehicle_plate: Option<String>, license_number: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("driver updates require a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_driver(&driver_id, &name, phone.as_deref(), &vehicle_type, vehicle_plate.as_deref(), license_number.as_deref()).map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::DriverChanged, "driver", &driver_id,
+        None, Some(&serde_json::json!({ "name": name })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn deactivate_driver_v3(state: State<Db>, session_token: String, driver_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("driver deactivation requires a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).deactivate_driver(&driver_id).map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::DriverChanged, "driver", &driver_id,
+        None, Some(&serde_json::json!({ "is_active": false })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1431,7 +1489,29 @@ pub fn create_delivery_log_v3(state: State<Db>, session_token: String, order_id:
         .map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::OrderStatusChanged, "delivery_log", &log_id,
+        audit::Action::DeliveryAssigned, "delivery_log", &log_id,
+        None, Some(&serde_json::json!({ "order_id": order_id, "driver_id": driver_id, "status": "ASSIGNED" })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(log_id)
+}
+
+/// The atomicity target for assignment -- see `Repo::assign_driver_to_delivery`.
+#[tauri::command]
+pub fn assign_driver_to_delivery_v3(state: State<Db>, session_token: String, order_id: String, driver_id: String) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("delivery assignment requires a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let log_id = Repo::new(&tx)
+        .assign_driver_to_delivery(&tenant_id, &branch_id, &order_id, &driver_id)
+        .map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::DeliveryAssigned, "delivery_log", &log_id,
         None, Some(&serde_json::json!({ "order_id": order_id, "driver_id": driver_id, "status": "ASSIGNED" })),
     ).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -1450,8 +1530,123 @@ pub fn update_delivery_status_v3(state: State<Db>, session_token: String, delive
     Repo::new(&tx).update_delivery_status(&delivery_log_id, &new_status).map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::OrderStatusChanged, "delivery_log", &delivery_log_id,
+        audit::Action::DeliveryStatusChanged, "delivery_log", &delivery_log_id,
         None, Some(&serde_json::json!({ "status": new_status })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The atomicity target for a delivery reaching a terminal status -- see
+/// `Repo::update_delivery_status_and_driver`. `failure_reason` is real
+/// (0001_init.sql); the old frontend's `notes` field on this same call is
+/// NOT a real `delivery_logs` column and is dropped, not carried forward.
+#[tauri::command]
+pub fn update_delivery_status_and_driver_v3(state: State<Db>, session_token: String, delivery_log_id: String, new_status: String, failure_reason: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("delivery status updates require a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_delivery_status_and_driver(&delivery_log_id, &new_status, failure_reason.as_deref()).map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::DeliveryStatusChanged, "delivery_log", &delivery_log_id,
+        None, Some(&serde_json::json!({ "status": new_status })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_active_deliveries_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::ActiveDeliveryRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_active_deliveries(&actor.scope()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_delivery_history_v3(state: State<Db>, session_token: String, limit: i64, offset: i64) -> Result<Vec<crate::repo::DeliveryHistoryRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_delivery_history(&actor.scope(), limit, offset).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_driver_deliveries_v3(state: State<Db>, session_token: String, driver_id: String) -> Result<Vec<crate::repo::DriverDeliveryRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_driver_deliveries(&driver_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_delivery_zones_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::DeliveryZoneRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_delivery_zones(&actor.scope()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn create_delivery_zone_v3(state: State<Db>, session_token: String, name: String, boundaries: Option<String>, fee_cents: i64, min_order_cents: i64, estimated_minutes: i64) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("delivery zone creation requires a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let zone_id = Repo::new(&tx)
+        .create_delivery_zone(&tenant_id, &branch_id, &name, boundaries.as_deref().unwrap_or("[]"), fee_cents, min_order_cents, estimated_minutes)
+        .map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::DeliveryZoneChanged, "delivery_zone", &zone_id,
+        None, Some(&serde_json::json!({ "name": name })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(zone_id)
+}
+
+#[tauri::command]
+pub fn update_delivery_zone_v3(state: State<Db>, session_token: String, zone_id: String, name: String, fee_cents: i64, min_order_cents: i64, estimated_minutes: i64) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("delivery zone updates require a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_delivery_zone(&zone_id, &name, fee_cents, min_order_cents, estimated_minutes).map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::DeliveryZoneChanged, "delivery_zone", &zone_id,
+        None, Some(&serde_json::json!({ "name": name })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn deactivate_delivery_zone_v3(state: State<Db>, session_token: String, zone_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("delivery zone deactivation requires a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).deactivate_delivery_zone(&zone_id).map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::DeliveryZoneChanged, "delivery_zone", &zone_id,
+        None, None,
     ).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
@@ -2645,6 +2840,96 @@ mod tests {
         assert_eq!(log_count, 0, "no inventory_logs row must have persisted");
         println!("[kill-9] confirmed: after an uncommitted receive is dropped, current_stock=0, quantity_received=0, PO status=PENDING, 0 inventory_logs rows -- no partial receive is ever visible");
         let _ = supplier_id;
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Batch 3b, final slice, group 2: driver CRUD (soft delete), zones,
+    /// and the two atomicity pairs -- assignment (delivery_log + driver
+    /// BUSY) and terminal status (delivery_log transition + driver
+    /// AVAILABLE + total_deliveries bump on DELIVERED only).
+    #[test]
+    fn delivery_lifecycle_drivers_zones_assignment_and_status_atomicity() {
+        let (db_path, tenant_id, branch_id, table_id) = seeded_db("delivery_lifecycle");
+        let conn = Connection::open(&db_path).unwrap();
+        let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Delivery Manager");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let repo = Repo::new(&conn);
+
+        // Driver CRUD.
+        let driver_id = repo.create_driver(&tenant_id, &branch_id, "سائق أحمد", Some("0999111222"), "MOTORCYCLE", None, None).unwrap();
+        assert_eq!(repo.list_drivers(&scope).unwrap().len(), 1);
+        repo.update_driver(&driver_id, "سائق أحمد المعدل", Some("0999111222"), "CAR", Some("PLATE-1"), Some("LIC-1")).unwrap();
+        let all = repo.list_all_drivers(&scope).unwrap();
+        assert_eq!(all[0].name, "سائق أحمد المعدل");
+        assert_eq!(all[0].vehicle_type, "CAR");
+        println!("[delivery] driver created and updated");
+
+        assert_eq!(repo.list_available_drivers(&scope).unwrap().len(), 1, "a fresh driver starts AVAILABLE and must show up in the pick-a-driver list");
+
+        // Zones.
+        let zone_id = repo.create_delivery_zone(&tenant_id, &branch_id, "حي النزهة", "[]", 500, 2000, 30).unwrap();
+        assert_eq!(repo.list_delivery_zones(&scope).unwrap().len(), 1);
+        repo.update_delivery_zone(&zone_id, "حي النزهة المحدث", 700, 2500, 25).unwrap();
+        let zones = repo.list_delivery_zones(&scope).unwrap();
+        assert_eq!(zones[0].name, "حي النزهة المحدث");
+        assert_eq!(zones[0].fee_cents, 700);
+        repo.deactivate_delivery_zone(&zone_id).unwrap();
+        assert_eq!(repo.list_delivery_zones(&scope).unwrap().len(), 0, "deactivated zones must not appear in the active list");
+        println!("[delivery] zone created, updated, deactivated");
+
+        // Assignment atomicity: a DELIVERY order, then assign the driver.
+        let order_id = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
+            table_id, user_id: manager_id.clone(), order_type: "DELIVERY".into(),
+            subtotal_cents: 5000, tax_cents: 0, total_cents: 5000, discount_cents: 0,
+        }).unwrap();
+        let log_id = repo.assign_driver_to_delivery(&tenant_id, &branch_id, &order_id, &driver_id).unwrap();
+        assert_eq!(repo.list_all_drivers(&scope).unwrap()[0].status, "BUSY", "assignment must flip the driver to BUSY in the same call");
+        assert_eq!(repo.list_available_drivers(&scope).unwrap().len(), 0, "a BUSY driver must not show up as available");
+        let active = repo.list_active_deliveries(&scope).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].driver_name, "سائق أحمد المعدل");
+        assert_eq!(active[0].total_cents, 5000);
+        println!("[delivery] assign_driver_to_delivery: delivery_log created ASSIGNED, driver flipped to BUSY, both visible via list_active_deliveries");
+
+        // Terminal-status atomicity: DELIVERED bumps total_deliveries and frees the driver.
+        repo.update_delivery_status_and_driver(&log_id, "PICKED_UP", None).unwrap();
+        assert_eq!(repo.list_all_drivers(&scope).unwrap()[0].status, "BUSY", "still BUSY mid-delivery, not a terminal status");
+        repo.update_delivery_status_and_driver(&log_id, "DELIVERED", None).unwrap();
+        let driver_after = repo.list_all_drivers(&scope).unwrap().into_iter().find(|d| d.id == driver_id).unwrap();
+        assert_eq!(driver_after.status, "AVAILABLE", "DELIVERED must free the driver back to AVAILABLE in the same call");
+        assert_eq!(driver_after.total_deliveries, 1, "DELIVERED must bump total_deliveries");
+        assert_eq!(repo.list_active_deliveries(&scope).unwrap().len(), 0, "a DELIVERED log must drop out of the active list");
+        let history = repo.list_delivery_history(&scope, 10, 0).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].delivery_status, "DELIVERED");
+        println!("[delivery] terminal status DELIVERED: driver freed to AVAILABLE + total_deliveries bumped to 1, log moved from active to history");
+
+        // A second delivery that FAILS must free the driver WITHOUT bumping total_deliveries.
+        let order_id_2 = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
+            table_id: "tbl-1".to_string(), user_id: manager_id.clone(), order_type: "DELIVERY".into(),
+            subtotal_cents: 3000, tax_cents: 0, total_cents: 3000, discount_cents: 0,
+        }).unwrap();
+        let log_id_2 = repo.assign_driver_to_delivery(&tenant_id, &branch_id, &order_id_2, &driver_id).unwrap();
+        repo.update_delivery_status_and_driver(&log_id_2, "FAILED", Some("العميل غير متواجد")).unwrap();
+        let driver_after_fail = repo.list_all_drivers(&scope).unwrap().into_iter().find(|d| d.id == driver_id).unwrap();
+        assert_eq!(driver_after_fail.status, "AVAILABLE", "FAILED must also free the driver");
+        assert_eq!(driver_after_fail.total_deliveries, 1, "FAILED must NOT bump total_deliveries -- only an actual DELIVERED counts");
+        let history_2 = repo.list_delivery_history(&scope, 10, 0).unwrap();
+        assert_eq!(history_2.len(), 2);
+        let failed_entry = history_2.iter().find(|h| h.log_id == log_id_2).unwrap();
+        assert_eq!(failed_entry.failure_reason.as_deref(), Some("العميل غير متواجد"));
+        println!("[delivery] FAILED: driver freed but total_deliveries NOT bumped (only DELIVERED counts), failure_reason persisted");
+
+        let driver_deliveries = repo.list_driver_deliveries(&driver_id).unwrap();
+        assert_eq!(driver_deliveries.len(), 2, "list_driver_deliveries must show both this driver's deliveries");
+
+        // Soft delete.
+        repo.deactivate_driver(&driver_id).unwrap();
+        assert_eq!(repo.list_drivers(&scope).unwrap().len(), 0, "list_drivers (active-only) must exclude a deactivated driver");
+        assert_eq!(repo.list_all_drivers(&scope).unwrap().len(), 1, "list_all_drivers must still show it (soft delete, not gone)");
+        assert_eq!(repo.list_all_drivers(&scope).unwrap()[0].is_active, 0);
+        println!("[delivery] driver deactivated: excluded from list_drivers, still visible via list_all_drivers with is_active=0");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }

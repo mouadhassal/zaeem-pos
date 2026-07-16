@@ -81,6 +81,10 @@ pub enum Action {
     SupplierChanged,
     PurchaseOrderChanged,
     PurchaseOrderReceived,
+    DriverChanged,
+    DeliveryAssigned,
+    DeliveryStatusChanged,
+    DeliveryZoneChanged,
 }
 
 impl Action {
@@ -106,6 +110,10 @@ impl Action {
             Action::SupplierChanged => "SupplierChanged",
             Action::PurchaseOrderChanged => "PurchaseOrderChanged",
             Action::PurchaseOrderReceived => "PurchaseOrderReceived",
+            Action::DriverChanged => "DriverChanged",
+            Action::DeliveryAssigned => "DeliveryAssigned",
+            Action::DeliveryStatusChanged => "DeliveryStatusChanged",
+            Action::DeliveryZoneChanged => "DeliveryZoneChanged",
         }
     }
 }
