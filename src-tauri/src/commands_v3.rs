@@ -513,6 +513,122 @@ pub fn take_payment_v3(
     Ok(payment_id)
 }
 
+// ---------------------------------------------------------------------------
+// Batch 3b, slice 2 -- menu CRUD (`categories` + `menu_items`, tenant-only).
+// Deliberately NOT `combo_meals`/`combo_items`/`happy_hour_rules` -- stated
+// scope reduction, `menu/page.tsx` still reads/writes those 3 via `getDb()`.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_categories_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::CategoryRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_categories(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_category_v3(state: State<Db>, session_token: String, name: String, color: Option<String>, sort_order: i64, image_path: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let category_id = Repo::new(&tx).create_category(&actor.tenant_id, &name, color.as_deref(), sort_order, image_path.as_deref()).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "category", &category_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(category_id)
+}
+
+#[tauri::command]
+pub fn update_category_v3(state: State<Db>, session_token: String, category_id: String, name: String, color: Option<String>, sort_order: i64, image_path: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_category(&category_id, &name, color.as_deref(), sort_order, image_path.as_deref()).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "category", &category_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_category_v3(state: State<Db>, session_token: String, category_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).delete_category(&category_id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "category", &category_id, Some(&serde_json::json!({ "deleted": false })), Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_menu_items_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::MenuItemRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_menu_items(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn create_menu_item_v3(state: State<Db>, session_token: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, image_path: Option<String>, description: Option<String>, barcode: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    if price_cents < 0 || cost_cents < 0 {
+        return Err("negative amounts are not valid".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let item_id = Repo::new(&tx)
+        .create_menu_item(&actor.tenant_id, &name, &category_id, price_cents, cost_cents, image_path.as_deref(), description.as_deref(), barcode.as_deref())
+        .map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, None, Some(&serde_json::json!({ "name": name, "price_cents": price_cents }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(item_id)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn update_menu_item_v3(state: State<Db>, session_token: String, item_id: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, image_path: Option<String>, description: Option<String>, barcode: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    if price_cents < 0 || cost_cents < 0 {
+        return Err("negative amounts are not valid".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx)
+        .update_menu_item(&item_id, &name, &category_id, price_cents, cost_cents, image_path.as_deref(), description.as_deref(), barcode.as_deref())
+        .map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, None, Some(&serde_json::json!({ "name": name, "price_cents": price_cents }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_menu_item_v3(state: State<Db>, session_token: String, item_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).delete_menu_item(&item_id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, Some(&serde_json::json!({ "deleted": false })), Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_menu_item_active_v3(state: State<Db>, session_token: String, item_id: String, is_active: bool) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).set_menu_item_active(&item_id, is_active).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, None, Some(&serde_json::json!({ "is_active": is_active }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// T1.6: two-layer menu price resolution (`override ?? default`), exposed
 /// read-only so a client can price an item before/while building an order.
 /// Gated on `CreateOrder` (the same permission that lets an actor build an
@@ -1372,6 +1488,57 @@ mod tests {
         let cashier_row = listed_after.iter().find(|s| s.id == cashier_id).unwrap();
         assert_eq!(cashier_row.is_active, 0);
         println!("[staff-crud] set_staff_active_v3's logic deactivated the cashier; list_staff_v3 reflects it");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Batch 3b, slice 2: menu CRUD -- category create/update/delete,
+    /// menu item create/update/delete/active-toggle, all tenant-scoped.
+    #[test]
+    fn menu_crud_categories_and_items_round_trip() {
+        let (db_path, tenant_id, _branch_id, _table_id) = seeded_db("menucrud");
+        let conn = Connection::open(&db_path).unwrap();
+        let repo = Repo::new(&conn);
+
+        let cat_id = repo.create_category(&tenant_id, "مقبلات", Some("#ff0000"), 1, None).unwrap();
+        let cats = repo.list_categories(&tenant_id).unwrap();
+        assert!(cats.iter().any(|c| c.id == cat_id && c.name == "مقبلات"));
+        println!("[menu-crud] category created and listed");
+
+        repo.update_category(&cat_id, "مقبلات محدثة", Some("#00ff00"), 2, None).unwrap();
+        let cats = repo.list_categories(&tenant_id).unwrap();
+        let cat = cats.iter().find(|c| c.id == cat_id).unwrap();
+        assert_eq!(cat.name, "مقبلات محدثة");
+        assert_eq!(cat.sort_order, 2);
+        println!("[menu-crud] category updated");
+
+        let item_id = repo.create_menu_item(&tenant_id, "حمص", &cat_id, 500, 200, None, Some("لذيذ"), Some("BC-001")).unwrap();
+        let items = repo.list_menu_items(&tenant_id).unwrap();
+        let item = items.iter().find(|i| i.id == item_id).unwrap();
+        assert_eq!(item.price_cents, 500);
+        assert_eq!(item.barcode.as_deref(), Some("BC-001"));
+        println!("[menu-crud] menu item created and listed");
+
+        repo.update_menu_item(&item_id, "حمص بالطحينة", &cat_id, 600, 250, None, None, Some("BC-001")).unwrap();
+        let items = repo.list_menu_items(&tenant_id).unwrap();
+        let item = items.iter().find(|i| i.id == item_id).unwrap();
+        assert_eq!(item.name, "حمص بالطحينة");
+        assert_eq!(item.price_cents, 600);
+        println!("[menu-crud] menu item updated");
+
+        repo.set_menu_item_active(&item_id, false).unwrap();
+        let items = repo.list_menu_items(&tenant_id).unwrap();
+        assert_eq!(items.iter().find(|i| i.id == item_id).unwrap().is_active, 0);
+        println!("[menu-crud] menu item deactivated");
+
+        repo.delete_menu_item(&item_id).unwrap();
+        let items = repo.list_menu_items(&tenant_id).unwrap();
+        assert!(!items.iter().any(|i| i.id == item_id));
+
+        repo.delete_category(&cat_id).unwrap();
+        let cats = repo.list_categories(&tenant_id).unwrap();
+        assert!(!cats.iter().any(|c| c.id == cat_id));
+        println!("[menu-crud] menu item and category deleted");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }

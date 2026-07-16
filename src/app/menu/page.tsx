@@ -1,5 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../../db";
+import { useAuthStore } from "../../stores/authStore";
 import { z } from "zod";
 
 interface Category {
@@ -170,6 +172,7 @@ function marginBadge(margin: number) {
 }
 
 export default function MenuPage() {
+  const token = useAuthStore((s) => s.token);
   const [tab, setTab] = useState<Tab>("items");
   const [offerSubTab, setOfferSubTab] = useState<OfferSubTab>("combos");
   const [loading, setLoading] = useState(true);
@@ -227,28 +230,15 @@ export default function MenuPage() {
     try {
       const db = await getDb();
       const [cats, items] = await Promise.all([
-        db
-          .selectFrom("categories")
-          .selectAll()
-          .orderBy("sort_order", "asc")
-          .execute(),
-        db
-          .selectFrom("menu_items")
-          .selectAll()
-          .orderBy("name", "asc")
-          .execute(),
+        invoke<Category[]>("list_categories_v3", { sessionToken: token }),
+        invoke<MenuItem[]>("list_menu_items_v3", { sessionToken: token }),
       ]);
       setCategories(cats);
       setMenuItems(items);
 
       const counts: Record<string, number> = {};
       for (const cat of cats) {
-        const c = await db
-          .selectFrom("menu_items")
-          .select(db.fn.count<number>("id").as("count"))
-          .where("category_id", "=", cat.id)
-          .executeTakeFirst();
-        counts[cat.id] = c?.count ?? 0;
+        counts[cat.id] = items.filter((i) => i.category_id === cat.id).length;
       }
       setCategoryItemCounts(counts);
 
@@ -345,32 +335,25 @@ export default function MenuPage() {
     }
     setSavingItem(true);
     try {
-      const db = await getDb();
-      const data = {
+      const args = {
+        sessionToken: token,
         name: parsed.data.name,
-        category_id: parsed.data.category_id,
-        price_cents: toCents(itemForm.price_cents),
-        cost_cents: toCents(itemForm.cost_cents),
-        image_path: parsed.data.image_path || null,
+        categoryId: parsed.data.category_id,
+        priceCents: toCents(itemForm.price_cents),
+        costCents: toCents(itemForm.cost_cents),
+        imagePath: parsed.data.image_path || null,
         description: parsed.data.description || null,
         barcode: parsed.data.barcode || null,
       };
       if (editItemId) {
-        await db
-          .updateTable("menu_items")
-          .set(data)
-          .where("id", "=", editItemId)
-          .execute();
+        await invoke("update_menu_item_v3", { ...args, itemId: editItemId });
       } else {
-        await db
-          .insertInto("menu_items")
-          .values({ id: crypto.randomUUID(), ...data, is_active: 1, recipe_id: null, is_combo: 0 })
-          .execute();
+        await invoke("create_menu_item_v3", args);
       }
       setShowItemModal(false);
       await fetchAll();
     } catch (err: any) {
-      if (err?.message?.includes("UNIQUE")) {
+      if (typeof err === "string" && err.includes("UNIQUE")) {
         setItemErrors({ barcode: "الباركود موجود مسبقاً" });
       } else {
         setItemErrors({ _form: "حدث خطأ في الحفظ" });
@@ -383,11 +366,7 @@ export default function MenuPage() {
   const confirmDeleteItem = async () => {
     if (!deleteItemId) return;
     try {
-      const db = await getDb();
-      await db
-        .deleteFrom("menu_items")
-        .where("id", "=", deleteItemId)
-        .execute();
+      await invoke("delete_menu_item_v3", { sessionToken: token, itemId: deleteItemId });
       setDeleteItemId(null);
       await fetchAll();
     } catch {
@@ -397,12 +376,7 @@ export default function MenuPage() {
 
   const toggleItemStatus = async (item: MenuItem) => {
     try {
-      const db = await getDb();
-      await db
-        .updateTable("menu_items")
-        .set({ is_active: item.is_active ? 0 : 1 })
-        .where("id", "=", item.id)
-        .execute();
+      await invoke("set_menu_item_active_v3", { sessionToken: token, itemId: item.id, isActive: !item.is_active });
       await fetchAll();
     } catch {
       setError("حدث خطأ في تحديث الحالة");
@@ -442,24 +416,17 @@ export default function MenuPage() {
     }
     setSavingCategory(true);
     try {
-      const db = await getDb();
-      const data = {
+      const args = {
+        sessionToken: token,
         name: parsed.data.name,
         color: parsed.data.color,
-        sort_order: parseInt(categoryForm.sort_order, 10),
-        image_path: parsed.data.image_path || null,
+        sortOrder: parseInt(categoryForm.sort_order, 10),
+        imagePath: parsed.data.image_path || null,
       };
       if (editCategoryId) {
-        await db
-          .updateTable("categories")
-          .set(data)
-          .where("id", "=", editCategoryId)
-          .execute();
+        await invoke("update_category_v3", { ...args, categoryId: editCategoryId });
       } else {
-        await db
-          .insertInto("categories")
-          .values({ id: crypto.randomUUID(), ...data, is_active: 1 })
-          .execute();
+        await invoke("create_category_v3", args);
       }
       setShowCategoryModal(false);
       await fetchAll();
@@ -473,11 +440,7 @@ export default function MenuPage() {
   const confirmDeleteCategory = async () => {
     if (!deleteCategoryId) return;
     try {
-      const db = await getDb();
-      await db
-        .deleteFrom("categories")
-        .where("id", "=", deleteCategoryId)
-        .execute();
+      await invoke("delete_category_v3", { sessionToken: token, categoryId: deleteCategoryId });
       setDeleteCategoryId(null);
       await fetchAll();
     } catch {

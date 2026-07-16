@@ -99,6 +99,29 @@ pub struct PaymentInput {
 /// narrower than `SELECT *`: exactly the fields the frontend pages named in
 /// DRIFT_REPORT.md Findings #2/#5 actually read.
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct CategoryRow {
+    pub id: String,
+    pub name: String,
+    pub color: Option<String>,
+    pub sort_order: i64,
+    pub image_path: Option<String>,
+    pub is_active: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MenuItemRow {
+    pub id: String,
+    pub name: String,
+    pub price_cents: i64,
+    pub cost_cents: i64,
+    pub category_id: String,
+    pub image_path: Option<String>,
+    pub description: Option<String>,
+    pub barcode: Option<String>,
+    pub is_active: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct StaffRow {
     pub id: String,
     pub name: String,
@@ -778,6 +801,96 @@ impl<'a> Repo<'a> {
                 )?;
             }
         }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Batch 3b, slice 2 -- menu CRUD (`categories` + `menu_items`, both
+    // tenant-only per SCHEMA_V3.md §9). `combo_meals`/`combo_items`/
+    // `happy_hour_rules` are explicitly OUT of scope for this slice --
+    // stated, not hidden: `menu/page.tsx` still reads/writes those 3
+    // directly via `getDb()`. Note also: this operates on the REAL,
+    // populated `categories`/`menu_items` tables, not T1.6's
+    // `menu_item_default`/`menu_item_override` -- those two-layer tables
+    // have zero real data on any actual install; nothing has ever migrated
+    // `menu_items` into them. Reconciling that duality is out of scope here.
+    // -----------------------------------------------------------------
+
+    pub fn list_categories(&self, tenant_id: &str) -> Result<Vec<CategoryRow>, RepoError> {
+        self.assert_scope_populated("categories", false)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, color, sort_order, image_path, is_active FROM categories WHERE tenant_id = ?1 ORDER BY sort_order ASC",
+        )?;
+        let rows = stmt.query_map(params![tenant_id], |r| {
+            Ok(CategoryRow { id: r.get(0)?, name: r.get(1)?, color: r.get(2)?, sort_order: r.get(3)?, image_path: r.get(4)?, is_active: r.get(5)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    pub fn create_category(&self, tenant_id: &str, name: &str, color: Option<&str>, sort_order: i64, image_path: Option<&str>) -> Result<String, RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO categories (id, tenant_id, name, color, sort_order, image_path, is_active, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, datetime('now'), 'pending')",
+            params![id, tenant_id, name, color, sort_order, image_path],
+        )?;
+        Ok(id)
+    }
+
+    pub fn update_category(&self, category_id: &str, name: &str, color: Option<&str>, sort_order: i64, image_path: Option<&str>) -> Result<(), RepoError> {
+        self.conn.execute(
+            "UPDATE categories SET name = ?1, color = ?2, sort_order = ?3, image_path = ?4, last_modified = datetime('now') WHERE id = ?5",
+            params![name, color, sort_order, image_path, category_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_category(&self, category_id: &str) -> Result<(), RepoError> {
+        self.conn.execute("DELETE FROM categories WHERE id = ?1", params![category_id])?;
+        Ok(())
+    }
+
+    pub fn list_menu_items(&self, tenant_id: &str) -> Result<Vec<MenuItemRow>, RepoError> {
+        self.assert_scope_populated("menu_items", false)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, price_cents, cost_cents, category_id, image_path, description, barcode, is_active FROM menu_items WHERE tenant_id = ?1 ORDER BY name ASC",
+        )?;
+        let rows = stmt.query_map(params![tenant_id], |r| {
+            Ok(MenuItemRow { id: r.get(0)?, name: r.get(1)?, price_cents: r.get(2)?, cost_cents: r.get(3)?, category_id: r.get(4)?, image_path: r.get(5)?, description: r.get(6)?, barcode: r.get(7)?, is_active: r.get(8)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_menu_item(&self, tenant_id: &str, name: &str, category_id: &str, price_cents: i64, cost_cents: i64, image_path: Option<&str>, description: Option<&str>, barcode: Option<&str>) -> Result<String, RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO menu_items (id, tenant_id, name, price_cents, cost_cents, category_id, image_path, description, barcode, is_active, recipe_id, is_combo, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, NULL, 0, datetime('now'), 'pending')",
+            params![id, tenant_id, name, price_cents, cost_cents, category_id, image_path, description, barcode],
+        )?;
+        Ok(id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_menu_item(&self, item_id: &str, name: &str, category_id: &str, price_cents: i64, cost_cents: i64, image_path: Option<&str>, description: Option<&str>, barcode: Option<&str>) -> Result<(), RepoError> {
+        self.conn.execute(
+            "UPDATE menu_items SET name = ?1, category_id = ?2, price_cents = ?3, cost_cents = ?4, image_path = ?5, description = ?6, barcode = ?7, last_modified = datetime('now') WHERE id = ?8",
+            params![name, category_id, price_cents, cost_cents, image_path, description, barcode, item_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_menu_item(&self, item_id: &str) -> Result<(), RepoError> {
+        self.conn.execute("DELETE FROM menu_items WHERE id = ?1", params![item_id])?;
+        Ok(())
+    }
+
+    pub fn set_menu_item_active(&self, item_id: &str, is_active: bool) -> Result<(), RepoError> {
+        self.conn.execute(
+            "UPDATE menu_items SET is_active = ?1, last_modified = datetime('now') WHERE id = ?2",
+            params![is_active as i64, item_id],
+        )?;
         Ok(())
     }
 }

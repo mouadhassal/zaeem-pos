@@ -67,6 +67,7 @@ pub enum Action {
     PasswordChanged,
     /// Batch 3b.
     PaymentTaken,
+    MenuItemChanged,
 }
 
 impl Action {
@@ -79,6 +80,7 @@ impl Action {
             Action::OrderStatusChanged => "OrderStatusChanged",
             Action::PasswordChanged => "PasswordChanged",
             Action::PaymentTaken => "PaymentTaken",
+            Action::MenuItemChanged => "MenuItemChanged",
         }
     }
 }

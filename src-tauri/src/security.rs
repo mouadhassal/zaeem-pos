@@ -107,6 +107,9 @@ pub enum Permission {
     /// Batch 3b, T1.9's critical acceptance criterion -- the same rank as
     /// `CreateOrder` (a Cashier who can build an order can also close it out).
     TakePayment,
+    /// Batch 3b, slice 2 -- menu CRUD is Manager+ (pricing/catalog changes,
+    /// not a Cashier-facing action).
+    ManageMenu,
 }
 
 impl Permission {
@@ -118,6 +121,7 @@ impl Permission {
             Permission::ChangeOwnPassword => Role::Cashier.rank(),
             Permission::ManageCustomers | Permission::ManageDelivery => Role::Cashier.rank(),
             Permission::ManagePurchaseOrders | Permission::ManageDrivers | Permission::ManagePrinters => Role::Manager.rank(),
+            Permission::ManageMenu => Role::Manager.rank(),
         }
     }
 }
@@ -294,6 +298,7 @@ pub fn authorize(actor: &Actor, perm: Permission) -> Result<(), SecurityError> {
                 Permission::ManagePrinters => "ManagePrinters",
                 Permission::ManageDelivery => "ManageDelivery",
                 Permission::TakePayment => "TakePayment",
+                Permission::ManageMenu => "ManageMenu",
             },
             reason: format!("role {:?} (rank {}) is below the minimum rank {} for this permission", actor.role, actor.role.rank(), perm.minimum_rank()),
         })
@@ -330,11 +335,11 @@ mod tests {
     use super::*;
 
     const ALL_ROLES: [Role; 6] = [Role::Platform, Role::Owner, Role::Manager, Role::Cashier, Role::Kitchen, Role::Server];
-    const ALL_PERMS: [Permission; 13] = [
+    const ALL_PERMS: [Permission; 14] = [
         Permission::CreateBranch, Permission::CreateStaff, Permission::UpdateStaff,
         Permission::ViewOrders, Permission::CreateOrder, Permission::UpdateOrderStatus, Permission::ChangeOwnPassword,
         Permission::ManageCustomers, Permission::ManagePurchaseOrders, Permission::ManageDrivers,
-        Permission::ManagePrinters, Permission::ManageDelivery, Permission::TakePayment,
+        Permission::ManagePrinters, Permission::ManageDelivery, Permission::TakePayment, Permission::ManageMenu,
     ];
 
     fn actor_for(role: Role, tenant: &str, branch: Option<&str>) -> Actor {
