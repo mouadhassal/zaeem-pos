@@ -264,6 +264,29 @@ pub struct MenuItemRow {
     pub description: Option<String>,
     pub barcode: Option<String>,
     pub is_active: i64,
+    /// Batch 3b, Slice C -- `menuStore.ts` (the POS's own menu render path,
+    /// distinct from `menu/page.tsx`'s admin CRUD tabs) needs these to
+    /// display combo items.
+    pub is_combo: i64,
+    pub combo_original_price_cents: Option<i64>,
+    pub combo_description: Option<String>,
+}
+
+/// `menuStore.ts`'s combo-component lookup. NOTE: this mirrors an existing
+/// data-model mismatch, not a fix -- `combo_items.combo_id` really
+/// references `combo_meals(id)` (its real FK), but the old frontend queried
+/// it by a `menu_items.id` instead (`is_combo=1` items don't have a row in
+/// `combo_meals` at all in the current model). That WHERE clause can only
+/// ever match by coincidence, so this has always returned empty in
+/// practice on a real install -- preserved exactly as-is here, not
+/// silently repointed to `combo_meals`. Flagged on the punch list as an
+/// explicit reconciliation decision (which table is authoritative for
+/// "this menu item is a combo"), not resolved in this slice.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ComboComponentRow {
+    pub menu_item_id: String,
+    pub menu_item_name: String,
+    pub quantity: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -330,6 +353,10 @@ pub struct ChainConfigRow {
     /// Batch 3b, final slice, group 3 -- `printer.ts` needs the chain-wide
     /// paper width fallback for printers that don't override it.
     pub default_paper_width: i64,
+    /// Batch 3b, Slice C -- `taxCalculator.ts`'s default tax config. Both
+    /// real columns, backfilled by Finding #4's identity migration.
+    pub secondary_tax_rate_cents: i64,
+    pub service_charge_rate_cents: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1450,9 +1477,23 @@ impl<'a> Repo<'a> {
 
     pub fn get_chain_config(&self) -> Result<ChainConfigRow, RepoError> {
         self.ensure_chain_config_row()?;
+        // `secondary_tax_rate_cents`/`service_charge_rate_cents` were added
+        // via a bare `ALTER TABLE ADD COLUMN` with no SQL `DEFAULT`
+        // (migrate_v3.rs's v6_identity) and only backfilled for a
+        // `chain_config` row that already existed at migration time -- on a
+        // fresh install, `ensure_chain_config_row`'s `INSERT OR IGNORE`
+        // creates the row LATER, so these two columns are genuinely NULL,
+        // not just conceptually zero. `COALESCE` here, not a migration
+        // change, matching the same "self-healing read" pattern already
+        // used for the whole row's existence.
         self.conn.query_row(
-            "SELECT chain_name, currency, tax_mode, tax_rate_cents, default_paper_width FROM chain_config WHERE id = 'default'",
-            [], |r| Ok(ChainConfigRow { chain_name: r.get(0)?, currency: r.get(1)?, tax_mode: r.get(2)?, tax_rate_cents: r.get(3)?, default_paper_width: r.get(4)? }),
+            "SELECT chain_name, currency, tax_mode, tax_rate_cents, default_paper_width, \
+                    COALESCE(secondary_tax_rate_cents, 0), COALESCE(service_charge_rate_cents, 0) \
+             FROM chain_config WHERE id = 'default'",
+            [], |r| Ok(ChainConfigRow {
+                chain_name: r.get(0)?, currency: r.get(1)?, tax_mode: r.get(2)?, tax_rate_cents: r.get(3)?,
+                default_paper_width: r.get(4)?, secondary_tax_rate_cents: r.get(5)?, service_charge_rate_cents: r.get(6)?,
+            }),
         ).map_err(RepoError::from)
     }
 
@@ -2169,10 +2210,33 @@ impl<'a> Repo<'a> {
     pub fn list_menu_items(&self, tenant_id: &str) -> Result<Vec<MenuItemRow>, RepoError> {
         self.assert_scope_populated("menu_items", false)?;
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, price_cents, cost_cents, category_id, image_path, description, barcode, is_active FROM menu_items WHERE tenant_id = ?1 ORDER BY name ASC",
+            "SELECT id, name, price_cents, cost_cents, category_id, image_path, description, barcode, is_active, \
+                    is_combo, combo_original_price_cents, combo_description \
+             FROM menu_items WHERE tenant_id = ?1 ORDER BY name ASC",
         )?;
         let rows = stmt.query_map(params![tenant_id], |r| {
-            Ok(MenuItemRow { id: r.get(0)?, name: r.get(1)?, price_cents: r.get(2)?, cost_cents: r.get(3)?, category_id: r.get(4)?, image_path: r.get(5)?, description: r.get(6)?, barcode: r.get(7)?, is_active: r.get(8)? })
+            Ok(MenuItemRow {
+                id: r.get(0)?, name: r.get(1)?, price_cents: r.get(2)?, cost_cents: r.get(3)?, category_id: r.get(4)?,
+                image_path: r.get(5)?, description: r.get(6)?, barcode: r.get(7)?, is_active: r.get(8)?,
+                is_combo: r.get(9)?, combo_original_price_cents: r.get(10)?, combo_description: r.get(11)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// See `ComboComponentRow`'s doc comment: mirrors the old frontend's
+    /// existing `combo_items.combo_id = <menu_items.id>` query exactly,
+    /// including its practical always-empty result on a real install. Not a
+    /// fix -- a faithful getDb()-to-Rust port pending the punch-listed
+    /// reconciliation decision.
+    pub fn list_combo_components(&self, tenant_id: &str, menu_item_id: &str) -> Result<Vec<ComboComponentRow>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT combo_items.menu_item_id, menu_items.name, combo_items.quantity \
+             FROM combo_items INNER JOIN menu_items ON menu_items.id = combo_items.menu_item_id \
+             WHERE combo_items.tenant_id = ?1 AND combo_items.combo_id = ?2 ORDER BY combo_items.sort_order ASC",
+        )?;
+        let rows = stmt.query_map(params![tenant_id, menu_item_id], |r| {
+            Ok(ComboComponentRow { menu_item_id: r.get(0)?, menu_item_name: r.get(1)?, quantity: r.get(2)? })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }

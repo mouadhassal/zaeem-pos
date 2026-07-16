@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getDb } from "../../db";
 import { useAuthStore } from "../../stores/authStore";
 import type { TaxMode } from "../../db/types";
 
@@ -131,13 +130,9 @@ export default function FinancePage() {
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const db = await getDb();
-
-      const config = await db
-        .selectFrom("chain_config")
-        .select(["currency", "tax_mode", "tax_rate_cents"])
-        .where("id", "=", "default")
-        .executeTakeFirst();
+      const config = await invoke<{ currency: string; tax_mode: TaxMode; tax_rate_cents: number }>(
+        "get_chain_config_v3", { sessionToken: token }
+      );
       if (config) {
         setCurrency(config.currency);
         setTaxInfo({ tax_mode: config.tax_mode, tax_rate_cents: config.tax_rate_cents });

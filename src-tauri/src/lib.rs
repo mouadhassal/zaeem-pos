@@ -1129,6 +1129,7 @@ pub fn run() {
             commands_v3::update_category_v3,
             commands_v3::delete_category_v3,
             commands_v3::list_menu_items_v3,
+            commands_v3::list_combo_components_v3,
             commands_v3::create_menu_item_v3,
             commands_v3::update_menu_item_v3,
             commands_v3::delete_menu_item_v3,

@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { getDb } from "../db";
+import { invoke } from "@tauri-apps/api/core";
+import { useAuthStore } from "../stores/authStore";
 
 export const CURRENCY_SYMBOLS: Record<string, string> = {
   SAR: "ر.س",
@@ -23,14 +24,8 @@ export function useCurrency() {
   const [currency, setCurrency] = useState(DEFAULT_CURRENCY);
 
   useEffect(() => {
-    getDb()
-      .then((db) =>
-        db
-          .selectFrom("chain_config")
-          .select("currency")
-          .where("id", "=", "default")
-          .executeTakeFirst()
-      )
+    const token = useAuthStore.getState().token;
+    invoke<{ currency: string }>("get_chain_config_v3", { sessionToken: token })
       .then((row) => {
         if (row?.currency) setCurrency(row.currency);
       })

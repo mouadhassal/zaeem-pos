@@ -570,6 +570,13 @@ pub fn list_menu_items_v3(state: State<Db>, session_token: String) -> Result<Vec
 }
 
 #[tauri::command]
+pub fn list_combo_components_v3(state: State<Db>, session_token: String, menu_item_id: String) -> Result<Vec<crate::repo::ComboComponentRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_combo_components(&actor.tenant_id, &menu_item_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn create_menu_item_v3(state: State<Db>, session_token: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, image_path: Option<String>, description: Option<String>, barcode: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;

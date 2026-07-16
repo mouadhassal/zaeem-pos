@@ -60,14 +60,13 @@ export function calculateComboSavings(
 }
 
 export async function getDefaultTaxConfig(): Promise<TaxConfig> {
-  const { getDb } = await import("../db");
   try {
-    const db = await getDb();
-    const config = await db
-      .selectFrom("chain_config")
-      .selectAll()
-      .where("id", "=", "default")
-      .executeTakeFirst();
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { useAuthStore } = await import("../stores/authStore");
+    const token = useAuthStore.getState().token;
+    const config = await invoke<{ tax_mode: string; tax_rate_cents: number; secondary_tax_rate_cents: number; service_charge_rate_cents: number }>(
+      "get_chain_config_v3", { sessionToken: token }
+    );
 
     if (config) {
       return {
