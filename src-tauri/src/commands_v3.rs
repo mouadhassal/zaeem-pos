@@ -1143,8 +1143,55 @@ pub fn create_purchase_order_v3(state: State<Db>, session_token: String, supplie
         .map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::StaffCreated, "purchase_order", &po_id,
+        audit::Action::PurchaseOrderChanged, "purchase_order", &po_id,
         None, Some(&serde_json::json!({ "supplier_id": supplier_id })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(po_id)
+}
+
+/// `NewOrderModal`'s quick-create path -- bare PO + `total_orders` bump.
+#[tauri::command]
+pub fn create_purchase_order_and_bump_supplier_v3(state: State<Db>, session_token: String, supplier_id: String, notes: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("purchase order creation requires a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let po_id = Repo::new(&tx)
+        .create_purchase_order_and_bump_supplier(&tenant_id, &branch_id, &supplier_id, &actor.id, notes.as_deref())
+        .map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::PurchaseOrderChanged, "purchase_order", &po_id,
+        None, Some(&serde_json::json!({ "supplier_id": supplier_id })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(po_id)
+}
+
+/// `CreatePOModal`'s full line-item flow. `items` is `(ingredient_id,
+/// quantity_ordered, unit_cost_cents)` triples -- the same shape
+/// `create_purchase_order_with_items` expects, so no reshaping needed
+/// between the Tauri boundary and the repo call.
+#[tauri::command]
+pub fn create_purchase_order_with_items_v3(state: State<Db>, session_token: String, supplier_id: String, notes: Option<String>, items: Vec<(String, f64, i64)>) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("purchase order creation requires a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let po_id = Repo::new(&tx)
+        .create_purchase_order_with_items(&tenant_id, &branch_id, &supplier_id, &actor.id, notes.as_deref(), &items)
+        .map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::PurchaseOrderChanged, "purchase_order", &po_id,
+        None, Some(&serde_json::json!({ "supplier_id": supplier_id, "item_count": items.len() })),
     ).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(po_id)
@@ -1156,6 +1203,142 @@ pub fn list_purchase_orders_v3(state: State<Db>, session_token: String) -> Resul
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_purchase_orders(&actor.scope()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn cancel_purchase_order_v3(state: State<Db>, session_token: String, po_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
+    let scope = actor.scope();
+    let Scope::Branch { tenant_id, branch_id } = &scope else {
+        return Err("purchase order cancellation requires a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).cancel_purchase_order(&po_id, &scope).map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, tenant_id, Some(branch_id), &actor.id,
+        audit::Action::PurchaseOrderChanged, "purchase_order", &po_id,
+        None, Some(&serde_json::json!({ "status": "CANCELLED" })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_purchase_order_items_v3(state: State<Db>, session_token: String, po_id: String) -> Result<Vec<crate::repo::PurchaseOrderItemRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_purchase_order_items(&po_id, &actor.scope()).map_err(|e| e.to_string())
+}
+
+/// The atomicity target for this group -- see `Repo::receive_purchase_order`.
+/// `items` is `(purchase_order_item_id, ingredient_id, quantity_received)`
+/// triples for however many line items the PO has.
+#[tauri::command]
+pub fn receive_purchase_order_v3(state: State<Db>, session_token: String, po_id: String, items: Vec<(String, String, f64)>) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
+    let scope = actor.scope();
+    let Scope::Branch { tenant_id, branch_id } = &scope else {
+        return Err("purchase order receiving requires a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx)
+        .receive_purchase_order(tenant_id, branch_id, &po_id, &actor.id, &scope, &items)
+        .map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, tenant_id, Some(branch_id), &actor.id,
+        audit::Action::PurchaseOrderReceived, "purchase_order", &po_id,
+        None, Some(&serde_json::json!({ "item_count": items.len() })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_suppliers_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::SupplierRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_suppliers(&actor.scope()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_supplier_v3(state: State<Db>, session_token: String, name: String, phone: Option<String>, email: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("supplier creation requires a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let supplier_id = Repo::new(&tx)
+        .create_supplier(&tenant_id, &branch_id, &name, phone.as_deref(), email.as_deref())
+        .map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::SupplierChanged, "supplier", &supplier_id,
+        None, Some(&serde_json::json!({ "name": name })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(supplier_id)
+}
+
+#[tauri::command]
+pub fn update_supplier_v3(state: State<Db>, session_token: String, supplier_id: String, name: String, phone: Option<String>, email: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("supplier updates require a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_supplier(&supplier_id, &name, phone.as_deref(), email.as_deref()).map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::SupplierChanged, "supplier", &supplier_id,
+        None, Some(&serde_json::json!({ "name": name })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_supplier_v3(state: State<Db>, session_token: String, supplier_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("supplier deletion requires a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).delete_supplier(&supplier_id).map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::SupplierChanged, "supplier", &supplier_id,
+        None, None,
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_inventory_logs_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::InventoryLogRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_inventory_logs(&actor.scope()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_low_stock_ingredients_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::IngredientRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_low_stock_ingredients(&actor.scope()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2301,6 +2484,167 @@ mod tests {
         let printers = repo.list_printers(&scope).unwrap();
         assert_eq!(printers.iter().find(|p| p.id == printer_id).unwrap().paper_width_mm, 58);
         println!("[settings] printer deactivated (still listed) and paper width updated");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Batch 3b, final slice, group 1: supplier CRUD, both PO-creation paths
+    /// (bare + bump, vs the full line-item flow with its own bump), cancel,
+    /// and the RECEIVING atomicity target -- per-item `quantity_received` +
+    /// `ingredients.current_stock` + an `inventory_logs` row, then the PO
+    /// itself flips to RECEIVED, all inside one transaction.
+    #[test]
+    fn purchase_order_lifecycle_suppliers_items_and_receiving_atomicity() {
+        let (db_path, tenant_id, branch_id, _table_id) = seeded_db("po_lifecycle");
+        let conn = Connection::open(&db_path).unwrap();
+        let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "PO Manager");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let repo = Repo::new(&conn);
+
+        // Suppliers -- explicitly NO address/notes (DRIFT columns that don't
+        // exist in the real `suppliers` table).
+        let supplier_id = repo.create_supplier(&tenant_id, &branch_id, "مورد الخضار", Some("011-222"), None).unwrap();
+        let suppliers = repo.list_suppliers(&scope).unwrap();
+        assert_eq!(suppliers.len(), 1);
+        assert_eq!(suppliers[0].total_orders, 0);
+        println!("[po] supplier created, total_orders starts at 0");
+
+        repo.update_supplier(&supplier_id, "مورد الخضار والفواكه", Some("011-222"), Some("veg@example.com")).unwrap();
+        assert_eq!(repo.list_suppliers(&scope).unwrap()[0].name, "مورد الخضار والفواكه");
+
+        // Bare create + bump path (NewOrderModal quick-create).
+        let po1 = repo.create_purchase_order_and_bump_supplier(&tenant_id, &branch_id, &supplier_id, &manager_id, None).unwrap();
+        assert_eq!(repo.list_suppliers(&scope).unwrap()[0].total_orders, 1, "quick-create must bump total_orders");
+
+        // Bare create WITHOUT bump (AlertsTab auto-order) -- deliberately
+        // preserves the old inconsistency, not "fixed".
+        let _po_auto = repo.create_purchase_order(&tenant_id, &branch_id, &supplier_id, &manager_id, Some("طلبية تلقائية")).unwrap();
+        assert_eq!(repo.list_suppliers(&scope).unwrap()[0].total_orders, 1, "auto-order must NOT bump total_orders, matching the old frontend's existing behavior");
+        println!("[po] quick-create bumps total_orders, auto-order does not -- both preserved as-is");
+
+        // Cancel po1.
+        repo.cancel_purchase_order(&po1, &scope).unwrap();
+        let pos = repo.list_purchase_orders(&scope).unwrap();
+        assert_eq!(pos.iter().find(|p| p.id == po1).unwrap().status, "CANCELLED");
+        // Cancelling a non-PENDING PO is a hard error.
+        match repo.cancel_purchase_order(&po1, &scope) {
+            Err(crate::repo::RepoError::PurchaseOrderNotPending { .. }) => println!("[po] cancelling an already-CANCELLED PO correctly hard-errors"),
+            other => panic!("expected PurchaseOrderNotPending, got {other:?}"),
+        }
+
+        // Full line-item flow (CreatePOModal).
+        let ing1 = repo.create_ingredient(&tenant_id, &branch_id, "بندورة", "kg", 100, 5.0).unwrap();
+        let ing2 = repo.create_ingredient(&tenant_id, &branch_id, "بصل", "kg", 80, 10.0).unwrap();
+        let items = vec![(ing1.clone(), 10.0, 100i64), (ing2.clone(), 20.0, 80i64)];
+        let po2 = repo.create_purchase_order_with_items(&tenant_id, &branch_id, &supplier_id, &manager_id, Some("طلبية أسبوعية"), &items).unwrap();
+        let po2_row = repo.list_purchase_orders(&scope).unwrap().into_iter().find(|p| p.id == po2).unwrap();
+        assert_eq!(po2_row.total_cents, 10 * 100 + 20 * 80, "total_cents must be computed server-side from the items, not trusted from the client");
+        assert_eq!(po2_row.supplier_name, "مورد الخضار والفواكه", "list_purchase_orders must join supplier name");
+        assert_eq!(po2_row.creator_name, "PO Manager", "list_purchase_orders must join creator name");
+        assert_eq!(repo.list_suppliers(&scope).unwrap()[0].total_orders, 2, "the line-item flow must also bump total_orders");
+        println!("[po] line-item PO created: total_cents={} (server-computed), supplier/creator names joined", po2_row.total_cents);
+
+        let po2_items = repo.list_purchase_order_items(&po2, &scope).unwrap();
+        assert_eq!(po2_items.len(), 2);
+        let item1 = po2_items.iter().find(|i| i.ingredient_id == ing1).unwrap();
+        assert_eq!(item1.quantity_ordered, 10.0);
+        assert_eq!(item1.quantity_received, 0.0);
+        assert_eq!(item1.ingredient_name, "بندورة");
+
+        // Receiving -- the atomicity target. Stock starts at 0 for both.
+        assert_eq!(repo.list_ingredients(&scope).unwrap().iter().find(|i| i.id == ing1).unwrap().current_stock, 0.0);
+        let receive_items: Vec<(String, String, f64)> = po2_items.iter().map(|i| (i.id.clone(), i.ingredient_id.clone(), i.quantity_ordered)).collect();
+        repo.receive_purchase_order(&tenant_id, &branch_id, &po2, &manager_id, &scope, &receive_items).unwrap();
+
+        let ings = repo.list_ingredients(&scope).unwrap();
+        assert_eq!(ings.iter().find(|i| i.id == ing1).unwrap().current_stock, 10.0, "receiving must bump current_stock by quantity_received");
+        assert_eq!(ings.iter().find(|i| i.id == ing2).unwrap().current_stock, 20.0);
+        let received_items = repo.list_purchase_order_items(&po2, &scope).unwrap();
+        assert!(received_items.iter().all(|i| i.quantity_received == i.quantity_ordered), "quantity_received must be persisted on the item rows");
+        let po2_after = repo.list_purchase_orders(&scope).unwrap().into_iter().find(|p| p.id == po2).unwrap();
+        assert_eq!(po2_after.status, "RECEIVED");
+        assert!(po2_after.received_at.is_some());
+        let log_count: i64 = conn.query_row("SELECT COUNT(*) FROM inventory_logs WHERE reason = 'استلام طلبية شراء'", [], |r| r.get(0)).unwrap();
+        assert_eq!(log_count, 2, "one inventory_logs row per received item");
+        println!("[po] receiving atomically bumped stock for both items, wrote 2 inventory_logs rows, and flipped the PO to RECEIVED with a received_at timestamp");
+
+        // Receiving an already-RECEIVED PO is a hard error.
+        match repo.receive_purchase_order(&tenant_id, &branch_id, &po2, &manager_id, &scope, &receive_items) {
+            Err(crate::repo::RepoError::PurchaseOrderNotPending { .. }) => println!("[po] re-receiving an already-RECEIVED PO correctly hard-errors"),
+            other => panic!("expected PurchaseOrderNotPending, got {other:?}"),
+        }
+
+        // Movements + low-stock listing.
+        let movements = repo.list_inventory_logs(&scope).unwrap();
+        assert_eq!(movements.len(), 2);
+        assert!(movements.iter().all(|m| m.user_name == "PO Manager"));
+        println!("[po] list_inventory_logs joins ingredient/staff names correctly");
+
+        let low_stock = repo.list_low_stock_ingredients(&scope).unwrap();
+        assert!(low_stock.is_empty(), "both ingredients are now well above min_stock (10>=5, 20>=10)");
+        repo.adjust_stock(&tenant_id, &branch_id, &ing1, -8.0, "هالك", &manager_id).unwrap();
+        let low_stock = repo.list_low_stock_ingredients(&scope).unwrap();
+        assert_eq!(low_stock.len(), 1, "ing1 dropped to 2.0, below its min_stock of 5.0");
+        assert_eq!(low_stock[0].id, ing1);
+        println!("[po] list_low_stock_ingredients correctly reflects a stock drop below min_stock");
+
+        // Deleting a supplier still referenced by purchase_orders must hit
+        // the FK constraint, same failure mode as the old frontend.
+        let fk_result = repo.delete_supplier(&supplier_id);
+        assert!(fk_result.is_err(), "deleting a supplier with existing purchase_orders rows must fail the FK constraint, not silently orphan them");
+        println!("[po] deleting a supplier with existing POs correctly fails FK (matches old frontend's failure mode, not silently fixed)");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Kill-9 simulation for `receive_purchase_order`: perform all the
+    /// atomic writes inside a transaction, drop it WITHOUT committing
+    /// (simulating a crashed process), reopen a fresh connection, and
+    /// confirm NONE of the writes persisted -- not the item's
+    /// quantity_received, not the ingredient's stock bump, not the
+    /// inventory_logs row, not the PO's RECEIVED status.
+    #[test]
+    fn kill_9_mid_receive_never_leaves_a_partial_stock_bump() {
+        let (db_path, tenant_id, branch_id, _table_id) = seeded_db("po_kill9");
+        let manager_id = {
+            let conn = Connection::open(&db_path).unwrap();
+            seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Kill9 Manager")
+        };
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+
+        let (supplier_id, ing_id, po_id, item_id) = {
+            let conn = Connection::open(&db_path).unwrap();
+            let repo = Repo::new(&conn);
+            let supplier_id = repo.create_supplier(&tenant_id, &branch_id, "مورد", None, None).unwrap();
+            let ing_id = repo.create_ingredient(&tenant_id, &branch_id, "سكر", "kg", 50, 5.0).unwrap();
+            let po_id = repo.create_purchase_order_with_items(&tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), 15.0, 50)]).unwrap();
+            let item_id = repo.list_purchase_order_items(&po_id, &scope).unwrap()[0].id.clone();
+            (supplier_id, ing_id, po_id, item_id)
+        };
+
+        {
+            let mut conn = Connection::open(&db_path).unwrap();
+            let tx = conn.transaction().unwrap();
+            Repo::new(&tx)
+                .receive_purchase_order(&tenant_id, &branch_id, &po_id, &manager_id, &scope, &[(item_id.clone(), ing_id.clone(), 15.0)])
+                .unwrap();
+            // Deliberately drop `tx` here WITHOUT `.commit()` -- simulates a
+            // crash mid-receive. `rusqlite::Transaction::drop` rolls back.
+            println!("[kill-9] receive_purchase_order writes applied inside an uncommitted transaction, now dropping it");
+        }
+
+        let conn = Connection::open(&db_path).unwrap();
+        let repo = Repo::new(&conn);
+        let ing = repo.list_ingredients(&scope).unwrap().into_iter().find(|i| i.id == ing_id).unwrap();
+        assert_eq!(ing.current_stock, 0.0, "stock bump must NOT have persisted");
+        let item = repo.list_purchase_order_items(&po_id, &scope).unwrap().into_iter().find(|i| i.id == item_id).unwrap();
+        assert_eq!(item.quantity_received, 0.0, "quantity_received must NOT have persisted");
+        let po = repo.list_purchase_orders(&scope).unwrap().into_iter().find(|p| p.id == po_id).unwrap();
+        assert_eq!(po.status, "PENDING", "PO status must NOT have flipped to RECEIVED");
+        let log_count: i64 = conn.query_row("SELECT COUNT(*) FROM inventory_logs WHERE ingredient_id = ?1", params![ing_id], |r| r.get(0)).unwrap();
+        assert_eq!(log_count, 0, "no inventory_logs row must have persisted");
+        println!("[kill-9] confirmed: after an uncommitted receive is dropped, current_stock=0, quantity_received=0, PO status=PENDING, 0 inventory_logs rows -- no partial receive is ever visible");
+        let _ = supplier_id;
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }

@@ -77,6 +77,10 @@ pub enum Action {
     OperationalCostRecorded,
     InvoiceChanged,
     SettingsChanged,
+    /// Batch 3b, final slice.
+    SupplierChanged,
+    PurchaseOrderChanged,
+    PurchaseOrderReceived,
 }
 
 impl Action {
@@ -99,6 +103,9 @@ impl Action {
             Action::OperationalCostRecorded => "OperationalCostRecorded",
             Action::InvoiceChanged => "InvoiceChanged",
             Action::SettingsChanged => "SettingsChanged",
+            Action::SupplierChanged => "SupplierChanged",
+            Action::PurchaseOrderChanged => "PurchaseOrderChanged",
+            Action::PurchaseOrderReceived => "PurchaseOrderReceived",
         }
     }
 }

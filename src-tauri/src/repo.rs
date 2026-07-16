@@ -22,6 +22,8 @@ pub enum RepoError {
     ItemUnavailable { item_id: String, branch_id: String, reason: String },
     OrderOutOfScope { order_id: String },
     OrderAlreadyPaid { order_id: String },
+    PurchaseOrderOutOfScope { po_id: String },
+    PurchaseOrderNotPending { po_id: String, status: String },
 }
 
 impl fmt::Display for RepoError {
@@ -38,6 +40,8 @@ impl fmt::Display for RepoError {
             ),
             Self::OrderOutOfScope { order_id } => write!(f, "order {order_id} does not belong to the caller's tenant/branch"),
             Self::OrderAlreadyPaid { order_id } => write!(f, "order {order_id} is already PAID -- refusing to take a second payment"),
+            Self::PurchaseOrderOutOfScope { po_id } => write!(f, "purchase order {po_id} does not belong to the caller's tenant/branch"),
+            Self::PurchaseOrderNotPending { po_id, status } => write!(f, "purchase order {po_id} is {status}, not PENDING -- refusing to receive/cancel it"),
         }
     }
 }
@@ -318,6 +322,52 @@ pub struct PurchaseOrderRow {
     pub created_by: String,
     pub notes: Option<String>,
     pub created_at: String,
+    /// Batch 3b, final slice -- widened for `PurchasesTab`'s list view,
+    /// which joins `suppliers`/`staff` for display names and needs
+    /// `received_at` for the RECEIVED-status detail line.
+    pub received_at: Option<String>,
+    pub supplier_name: String,
+    pub creator_name: String,
+}
+
+/// `suppliers` has NO `address`/`notes` columns in the real schema
+/// (0001_init.sql) -- the old frontend's `SupplierModal` referenced both,
+/// meaning supplier creation/update with an address or notes has silently
+/// no-opped on every fresh install since inception. Same DRIFT class as
+/// Finding #1 (`driver_id`)/Finding #5 (`operational_costs.description`,
+/// `invoices.notes`, `loyalty_cards.is_active`). Dropped here, not carried
+/// forward.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SupplierRow {
+    pub id: String,
+    pub name: String,
+    pub phone: Option<String>,
+    pub email: Option<String>,
+    pub total_orders: i64,
+    pub total_purchases_cents: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PurchaseOrderItemRow {
+    pub id: String,
+    pub purchase_order_id: String,
+    pub ingredient_id: String,
+    pub quantity_ordered: f64,
+    pub quantity_received: f64,
+    pub unit_cost_cents: i64,
+    pub ingredient_name: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InventoryLogRow {
+    pub id: String,
+    pub ingredient_id: String,
+    pub change_amount: f64,
+    pub reason: String,
+    pub user_id: String,
+    pub created_at: String,
+    pub ingredient_name: String,
+    pub user_name: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1276,16 +1326,249 @@ impl<'a> Repo<'a> {
         Ok(id)
     }
 
+    /// `NewOrderModal`'s quick-create path -- a bare PO plus a
+    /// `suppliers.total_orders + 1` bump, one transaction. Deliberately a
+    /// SEPARATE method from `create_purchase_order` (which `AlertsTab`'s
+    /// auto-order calls WITHOUT the bump) -- that's an existing behavior
+    /// quirk in the old frontend (auto-order never bumped total_orders),
+    /// preserved as-is per instruction, not "fixed" into consistency.
+    pub fn create_purchase_order_and_bump_supplier(&self, tenant_id: &str, branch_id: &str, supplier_id: &str, created_by: &str, notes: Option<&str>) -> Result<String, RepoError> {
+        let id = self.create_purchase_order(tenant_id, branch_id, supplier_id, created_by, notes)?;
+        self.conn.execute(
+            "UPDATE suppliers SET total_orders = total_orders + 1, last_modified = datetime('now') WHERE id = ?1",
+            params![supplier_id],
+        )?;
+        Ok(id)
+    }
+
+    /// `CreatePOModal`'s full line-item flow: PO row + N
+    /// `purchase_order_items` rows + the same `total_orders` bump, all in
+    /// one transaction (the caller wraps this whole call in a `tx`). Total
+    /// is computed server-side from the items, never trusted from the
+    /// client.
+    pub fn create_purchase_order_with_items(&self, tenant_id: &str, branch_id: &str, supplier_id: &str, created_by: &str, notes: Option<&str>, items: &[(String, f64, i64)]) -> Result<String, RepoError> {
+        self.assert_scope_populated("purchase_orders", true)?;
+        self.assert_scope_populated("purchase_order_items", true)?;
+        let total_cents: i64 = items.iter().map(|(_, qty, unit_cost)| (*qty * *unit_cost as f64).round() as i64).sum();
+        let po_id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO purchase_orders (id, tenant_id, branch_id, supplier_id, status, total_cents, created_by, notes, created_at, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, 'PENDING', ?5, ?6, ?7, datetime('now'), datetime('now'), 'pending')",
+            params![po_id, tenant_id, branch_id, supplier_id, total_cents, created_by, notes],
+        )?;
+        for (ingredient_id, quantity_ordered, unit_cost_cents) in items {
+            let item_id = uuid::Uuid::now_v7().to_string();
+            self.conn.execute(
+                "INSERT INTO purchase_order_items (id, tenant_id, branch_id, purchase_order_id, ingredient_id, quantity_ordered, quantity_received, unit_cost_cents, last_modified, sync_status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, datetime('now'), 'pending')",
+                params![item_id, tenant_id, branch_id, po_id, ingredient_id, quantity_ordered, unit_cost_cents],
+            )?;
+        }
+        self.conn.execute(
+            "UPDATE suppliers SET total_orders = total_orders + 1, last_modified = datetime('now') WHERE id = ?1",
+            params![supplier_id],
+        )?;
+        Ok(po_id)
+    }
+
+    /// Widened for `PurchasesTab`'s list view -- joins `suppliers`/`staff`
+    /// for display names, same join-ambiguity fix as `finance_revenue_summary`
+    /// (qualify the scope predicate's bare `tenant_id`/`branch_id` with the
+    /// `purchase_orders.` table prefix, since `suppliers`/`staff` carry those
+    /// columns too post-Migration-A).
     pub fn list_purchase_orders(&self, scope: &Scope) -> Result<Vec<PurchaseOrderRow>, RepoError> {
         self.assert_scope_populated("purchase_orders", true)?;
         let (predicate, args) = Self::scope_predicate(scope);
+        let predicate = predicate.replace("tenant_id", "purchase_orders.tenant_id").replace("branch_id", "purchase_orders.branch_id");
         let sql = format!(
-            "SELECT id, supplier_id, status, total_cents, created_by, notes, created_at FROM purchase_orders WHERE {predicate} ORDER BY created_at DESC"
+            "SELECT purchase_orders.id, purchase_orders.supplier_id, purchase_orders.status, purchase_orders.total_cents, \
+                    purchase_orders.created_by, purchase_orders.notes, purchase_orders.created_at, purchase_orders.received_at, \
+                    suppliers.name, staff.name \
+             FROM purchase_orders \
+             INNER JOIN suppliers ON suppliers.id = purchase_orders.supplier_id \
+             INNER JOIN staff ON staff.id = purchase_orders.created_by \
+             WHERE {predicate} ORDER BY purchase_orders.created_at DESC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(params_refs.as_slice(), |r| {
-            Ok(PurchaseOrderRow { id: r.get(0)?, supplier_id: r.get(1)?, status: r.get(2)?, total_cents: r.get(3)?, created_by: r.get(4)?, notes: r.get(5)?, created_at: r.get(6)? })
+            Ok(PurchaseOrderRow {
+                id: r.get(0)?, supplier_id: r.get(1)?, status: r.get(2)?, total_cents: r.get(3)?,
+                created_by: r.get(4)?, notes: r.get(5)?, created_at: r.get(6)?, received_at: r.get(7)?,
+                supplier_name: r.get(8)?, creator_name: r.get(9)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// Scope check shared by cancel/receive/items-list -- a PO id alone is
+    /// client-supplied and unverified; this confirms it belongs to the
+    /// caller's tenant/branch before any mutation, mirroring `take_payment`'s
+    /// `OrderOutOfScope` guard for orders.
+    fn assert_purchase_order_in_scope(&self, po_id: &str, scope: &Scope) -> Result<String, RepoError> {
+        let (predicate, args) = Self::scope_predicate(scope);
+        // `predicate` is pre-numbered `?1`/`?2` by `scope_predicate` -- the
+        // po_id placeholder must come AFTER those, not before, or its number
+        // collides with the predicate's own (e.g. both using `?1`).
+        let id_placeholder = format!("?{}", args.len() + 1);
+        let sql = format!("SELECT status FROM purchase_orders WHERE {predicate} AND id = {id_placeholder}");
+        let mut full_args: Vec<String> = args;
+        full_args.push(po_id.to_string());
+        let params_refs: Vec<&dyn rusqlite::ToSql> = full_args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        self.conn.query_row(&sql, params_refs.as_slice(), |r| r.get::<_, String>(0))
+            .optional()?
+            .ok_or_else(|| RepoError::PurchaseOrderOutOfScope { po_id: po_id.to_string() })
+    }
+
+    pub fn cancel_purchase_order(&self, po_id: &str, scope: &Scope) -> Result<(), RepoError> {
+        let status = self.assert_purchase_order_in_scope(po_id, scope)?;
+        if status != "PENDING" {
+            return Err(RepoError::PurchaseOrderNotPending { po_id: po_id.to_string(), status });
+        }
+        self.conn.execute(
+            "UPDATE purchase_orders SET status = 'CANCELLED', last_modified = datetime('now') WHERE id = ?1",
+            params![po_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_purchase_order_items(&self, po_id: &str, scope: &Scope) -> Result<Vec<PurchaseOrderItemRow>, RepoError> {
+        self.assert_purchase_order_in_scope(po_id, scope)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT purchase_order_items.id, purchase_order_items.purchase_order_id, purchase_order_items.ingredient_id, \
+                    purchase_order_items.quantity_ordered, purchase_order_items.quantity_received, purchase_order_items.unit_cost_cents, \
+                    ingredients.name \
+             FROM purchase_order_items INNER JOIN ingredients ON ingredients.id = purchase_order_items.ingredient_id \
+             WHERE purchase_order_items.purchase_order_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![po_id], |r| {
+            Ok(PurchaseOrderItemRow {
+                id: r.get(0)?, purchase_order_id: r.get(1)?, ingredient_id: r.get(2)?,
+                quantity_ordered: r.get(3)?, quantity_received: r.get(4)?, unit_cost_cents: r.get(5)?, ingredient_name: r.get(6)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// The atomicity centerpiece of this group: per received item, the fact
+    /// (`purchase_order_items.quantity_received` + a new `inventory_logs`
+    /// row) and the derived total (`ingredients.current_stock`) update
+    /// together; then, once every item is applied, the PO itself flips to
+    /// RECEIVED. All of it -- however many items -- is one `self.conn`
+    /// sequence inside the ONE transaction the caller wraps this call in,
+    /// same principle as `take_payment`/`adjust_stock`, just N items instead
+    /// of one row.
+    pub fn receive_purchase_order(&self, tenant_id: &str, branch_id: &str, po_id: &str, actor_id: &str, scope: &Scope, items: &[(String, String, f64)]) -> Result<(), RepoError> {
+        let status = self.assert_purchase_order_in_scope(po_id, scope)?;
+        if status != "PENDING" {
+            return Err(RepoError::PurchaseOrderNotPending { po_id: po_id.to_string(), status });
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        for (item_id, ingredient_id, quantity_received) in items {
+            self.conn.execute(
+                "UPDATE purchase_order_items SET quantity_received = ?1, last_modified = ?2 WHERE id = ?3 AND purchase_order_id = ?4",
+                params![quantity_received, now, item_id, po_id],
+            )?;
+            self.conn.execute(
+                "UPDATE ingredients SET current_stock = current_stock + ?1, last_modified = ?2 WHERE id = ?3",
+                params![quantity_received, now, ingredient_id],
+            )?;
+            let log_id = uuid::Uuid::now_v7().to_string();
+            self.conn.execute(
+                "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'استلام طلبية شراء', ?6, ?7, ?7, 'pending')",
+                params![log_id, tenant_id, branch_id, ingredient_id, quantity_received, actor_id, now],
+            )?;
+        }
+        self.conn.execute(
+            "UPDATE purchase_orders SET status = 'RECEIVED', received_at = ?1, last_modified = ?1 WHERE id = ?2",
+            params![now, po_id],
+        )?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Batch 3b, final slice -- suppliers, inventory movements, low-stock
+    // alerts. `suppliers` is `TENANT_BRANCH_TABLES`; `address`/`notes` are
+    // dropped (see `SupplierRow` doc comment -- they don't exist in the
+    // real schema).
+    // -----------------------------------------------------------------
+
+    pub fn list_suppliers(&self, scope: &Scope) -> Result<Vec<SupplierRow>, RepoError> {
+        self.assert_scope_populated("suppliers", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let sql = format!(
+            "SELECT id, name, phone, email, total_orders, total_purchases_cents FROM suppliers WHERE {predicate} ORDER BY name ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+            Ok(SupplierRow { id: r.get(0)?, name: r.get(1)?, phone: r.get(2)?, email: r.get(3)?, total_orders: r.get(4)?, total_purchases_cents: r.get(5)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    pub fn create_supplier(&self, tenant_id: &str, branch_id: &str, name: &str, phone: Option<&str>, email: Option<&str>) -> Result<String, RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO suppliers (id, tenant_id, branch_id, name, phone, email, total_orders, total_purchases_cents, is_active, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, 1, datetime('now'), 'pending')",
+            params![id, tenant_id, branch_id, name, phone, email],
+        )?;
+        Ok(id)
+    }
+
+    pub fn update_supplier(&self, supplier_id: &str, name: &str, phone: Option<&str>, email: Option<&str>) -> Result<(), RepoError> {
+        self.conn.execute(
+            "UPDATE suppliers SET name = ?1, phone = ?2, email = ?3, last_modified = datetime('now') WHERE id = ?4",
+            params![name, phone, email, supplier_id],
+        )?;
+        Ok(())
+    }
+
+    /// Hard delete, matching the old frontend's `deleteFrom("suppliers")` --
+    /// if a `purchase_orders` row still references this supplier, SQLite's
+    /// own FK constraint (`PRAGMA foreign_keys=ON`) rejects it, same failure
+    /// mode as before. Not "fixed" into a soft delete.
+    pub fn delete_supplier(&self, supplier_id: &str) -> Result<(), RepoError> {
+        self.conn.execute("DELETE FROM suppliers WHERE id = ?1", params![supplier_id])?;
+        Ok(())
+    }
+
+    pub fn list_inventory_logs(&self, scope: &Scope) -> Result<Vec<InventoryLogRow>, RepoError> {
+        self.assert_scope_populated("inventory_logs", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let predicate = predicate.replace("tenant_id", "inventory_logs.tenant_id").replace("branch_id", "inventory_logs.branch_id");
+        let sql = format!(
+            "SELECT inventory_logs.id, inventory_logs.ingredient_id, inventory_logs.change_amount, inventory_logs.reason, \
+                    inventory_logs.user_id, inventory_logs.created_at, ingredients.name, staff.name \
+             FROM inventory_logs \
+             INNER JOIN ingredients ON ingredients.id = inventory_logs.ingredient_id \
+             INNER JOIN staff ON staff.id = inventory_logs.user_id \
+             WHERE {predicate} ORDER BY inventory_logs.created_at DESC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+            Ok(InventoryLogRow {
+                id: r.get(0)?, ingredient_id: r.get(1)?, change_amount: r.get(2)?, reason: r.get(3)?,
+                user_id: r.get(4)?, created_at: r.get(5)?, ingredient_name: r.get(6)?, user_name: r.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    pub fn list_low_stock_ingredients(&self, scope: &Scope) -> Result<Vec<IngredientRow>, RepoError> {
+        self.assert_scope_populated("ingredients", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let sql = format!(
+            "SELECT id, name, unit, cost_cents_per_unit, current_stock, min_stock, is_active FROM ingredients \
+             WHERE {predicate} AND is_active = 1 AND current_stock < min_stock ORDER BY current_stock ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+            Ok(IngredientRow { id: r.get(0)?, name: r.get(1)?, unit: r.get(2)?, cost_cents_per_unit: r.get(3)?, current_stock: r.get(4)?, min_stock: r.get(5)?, is_active: r.get(6)? })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }

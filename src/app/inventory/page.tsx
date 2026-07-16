@@ -1,7 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getDb } from "../../db";
-import { sql } from "kysely";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import { Package, Search, Edit3, ChevronDown, ChevronUp } from "lucide-react";
@@ -18,8 +16,6 @@ const supplierSchema = z.object({
   name: z.string().min(1, "الاسم مطلوب"),
   phone: z.string().optional(),
   email: z.string().email("بريد غير صالح").optional().or(z.literal("")),
-  address: z.string().optional(),
-  notes: z.string().optional(),
 });
 
 interface Ingredient {
@@ -40,8 +36,6 @@ interface Supplier {
   name: string;
   phone: string | null;
   email: string | null;
-  address: string | null;
-  notes: string | null;
   total_orders: number;
   total_purchases_cents: number;
 }
@@ -148,7 +142,6 @@ function Modal({
 interface PurchaseOrder {
   id: string;
   supplier_id: string;
-  branch_id: string | null;
   status: string;
   total_cents: number;
   notes: string | null;
@@ -786,6 +779,7 @@ function EditIngredientModal({
 /* ============= TAB 2: الموردون ============= */
 
 function SuppliersTab() {
+  const token = useAuthStore((s) => s.token);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(true);
   const [editTarget, setEditTarget] = useState<Supplier | null>(null);
@@ -795,19 +789,14 @@ function SuppliersTab() {
   const fetch = useCallback(async () => {
     setLoading(true);
     try {
-      const db = await getDb();
-      const rows = await db
-        .selectFrom("suppliers")
-        .selectAll()
-        .orderBy("name", "asc")
-        .execute();
+      const rows = await invoke<Supplier[]>("list_suppliers_v3", { sessionToken: token });
       setSuppliers(rows);
     } catch {
       // handled
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [token]);
 
   useEffect(() => {
     fetch();
@@ -815,8 +804,7 @@ function SuppliersTab() {
 
   const handleDelete = async (id: string) => {
     try {
-      const db = await getDb();
-      await db.deleteFrom("suppliers").where("id", "=", id).execute();
+      await invoke("delete_supplier_v3", { sessionToken: token, supplierId: id });
       await fetch();
     } catch {
       // handled
@@ -936,12 +924,11 @@ function SupplierModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const token = useAuthStore((s) => s.token);
   const isEdit = !!target;
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
-  const [address, setAddress] = useState("");
-  const [notes, setNotes] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -950,14 +937,10 @@ function SupplierModal({
         setName(target.name);
         setPhone(target.phone ?? "");
         setEmail(target.email ?? "");
-        setAddress(target.address ?? "");
-        setNotes(target.notes ?? "");
       } else {
         setName("");
         setPhone("");
         setEmail("");
-        setAddress("");
-        setNotes("");
       }
       setErrors({});
     }
@@ -968,8 +951,6 @@ function SupplierModal({
       name: name.trim(),
       phone: phone.trim() || undefined,
       email: email.trim() || undefined,
-      address: address.trim() || undefined,
-      notes: notes.trim() || undefined,
     });
     if (!parsed.success) {
       const fieldErrors: Record<string, string> = {};
@@ -981,33 +962,21 @@ function SupplierModal({
       return;
     }
     try {
-      const db = await getDb();
       if (isEdit) {
-        await db
-          .updateTable("suppliers")
-          .set({
-            name: parsed.data.name,
-            phone: parsed.data.phone ?? null,
-            email: parsed.data.email ?? null,
-            address: parsed.data.address ?? null,
-            notes: parsed.data.notes ?? null,
-          })
-          .where("id", "=", target.id)
-          .execute();
+        await invoke("update_supplier_v3", {
+          sessionToken: token,
+          supplierId: target.id,
+          name: parsed.data.name,
+          phone: parsed.data.phone ?? null,
+          email: parsed.data.email ?? null,
+        });
       } else {
-        await db
-          .insertInto("suppliers")
-          .values({
-            id: crypto.randomUUID(),
-            name: parsed.data.name,
-            phone: parsed.data.phone ?? null,
-            email: parsed.data.email ?? null,
-            address: parsed.data.address ?? null,
-            notes: parsed.data.notes ?? null,
-            total_orders: 0,
-            total_purchases_cents: 0,
-          })
-          .execute();
+        await invoke("create_supplier_v3", {
+          sessionToken: token,
+          name: parsed.data.name,
+          phone: parsed.data.phone ?? null,
+          email: parsed.data.email ?? null,
+        });
       }
       onSaved();
       onClose();
@@ -1046,20 +1015,6 @@ function SupplierModal({
           />
           {errors.email && <p className="text-red-500 text-xs mt-1">{errors.email}</p>}
         </div>
-        <input
-          type="text"
-          value={address}
-          onChange={(e) => setAddress(e.target.value)}
-          placeholder="العنوان"
-          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
-        />
-        <input
-          type="text"
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          placeholder="ملاحظات"
-          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
-        />
         <div className="flex gap-2 pt-2">
           <button
             onClick={handleSubmit}
@@ -1088,31 +1043,17 @@ function NewOrderModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const user = useAuthStore((s) => s.user);
+  const token = useAuthStore((s) => s.token);
 
   if (!supplier) return null;
 
   const handleCreate = async () => {
     try {
-      const db = await getDb();
-      await db
-        .insertInto("purchase_orders")
-        .values({
-          id: crypto.randomUUID(),
-          supplier_id: supplier.id,
-          status: "PENDING",
-          total_cents: 0,
-          created_by: user?.id ?? "unknown",
-          created_at: new Date().toISOString(),
-        })
-        .execute();
-      await db
-        .updateTable("suppliers")
-        .set({
-          total_orders: supplier.total_orders + 1,
-        })
-        .where("id", "=", supplier.id)
-        .execute();
+      await invoke("create_purchase_order_and_bump_supplier_v3", {
+        sessionToken: token,
+        supplierId: supplier.id,
+        notes: null,
+      });
       onSaved();
       onClose();
     } catch {
@@ -1149,6 +1090,7 @@ function NewOrderModal({
 /* ============= TAB 5: طلبيات الشراء ============= */
 
 function PurchasesTab() {
+  const token = useAuthStore((s) => s.token);
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -1159,40 +1101,20 @@ function PurchasesTab() {
   const fetch = useCallback(async () => {
     setLoading(true);
     try {
-      const db = await getDb();
-      const rows = await db
-        .selectFrom("purchase_orders")
-        .innerJoin("suppliers", "suppliers.id", "purchase_orders.supplier_id")
-        .innerJoin("staff", "staff.id", "purchase_orders.created_by")
-        .select([
-          "purchase_orders.id",
-          "purchase_orders.supplier_id",
-          "purchase_orders.branch_id",
-          "purchase_orders.status",
-          "purchase_orders.total_cents",
-          "purchase_orders.notes",
-          "purchase_orders.created_by",
-          "purchase_orders.created_at",
-          "purchase_orders.received_at",
-          "suppliers.name as supplier_name",
-          "staff.name as creator_name",
-        ])
-        .orderBy("purchase_orders.created_at", "desc")
-        .execute();
+      const rows = await invoke<PurchaseOrder[]>("list_purchase_orders_v3", { sessionToken: token });
       setOrders(rows);
     } catch {
       // handled
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [token]);
 
   useEffect(() => { fetch(); }, [fetch]);
 
   const handleCancel = async (id: string) => {
     try {
-      const db = await getDb();
-      await db.updateTable("purchase_orders").set({ status: "CANCELLED" }).where("id", "=", id).execute();
+      await invoke("cancel_purchase_order_v3", { sessionToken: token, poId: id });
       setCancelTarget(null);
       await fetch();
     } catch { /* handled */ }
@@ -1291,7 +1213,7 @@ function PurchasesTab() {
 
 /* Create PO Modal */
 function CreatePOModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const user = useAuthStore((s) => s.user);
+  const token = useAuthStore((s) => s.token);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [selectedSupplier, setSelectedSupplier] = useState("");
@@ -1300,13 +1222,12 @@ function CreatePOModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
 
   useEffect(() => {
     (async () => {
-      const db = await getDb();
-      const s = await db.selectFrom("suppliers").selectAll().execute();
+      const s = await invoke<Supplier[]>("list_suppliers_v3", { sessionToken: token });
       setSuppliers(s);
-      const i = await db.selectFrom("ingredients").selectAll().where("is_active", "=", 1).execute();
+      const i = await invoke<Ingredient[]>("list_ingredients_v3", { sessionToken: token });
       setIngredients(i);
     })();
-  }, []);
+  }, [token]);
 
   const addItem = () => {
     setItems((prev) => [...prev, { ingredient_id: "", quantity_ordered: 0, unit_cost_cents: 0 }]);
@@ -1323,29 +1244,12 @@ function CreatePOModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
   const handleCreate = async () => {
     if (!selectedSupplier || items.length === 0) return;
     try {
-      const db = await getDb();
-      const poId = crypto.randomUUID();
-      const now = new Date().toISOString();
-      await db.insertInto("purchase_orders").values({
-        id: poId,
-        supplier_id: selectedSupplier,
-        status: "PENDING",
-        total_cents: total,
+      await invoke("create_purchase_order_with_items_v3", {
+        sessionToken: token,
+        supplierId: selectedSupplier,
         notes: notes || null,
-        created_by: user?.id ?? "unknown",
-        created_at: now,
-      }).execute();
-      for (const item of items) {
-        await db.insertInto("purchase_order_items").values({
-          id: crypto.randomUUID(),
-          purchase_order_id: poId,
-          ingredient_id: item.ingredient_id,
-          quantity_ordered: item.quantity_ordered,
-          quantity_received: 0,
-          unit_cost_cents: item.unit_cost_cents,
-        }).execute();
-      }
-      await db.updateTable("suppliers").set({ total_orders: sql`total_orders + 1` }).where("id", "=", selectedSupplier).execute();
+        items: items.map((item) => [item.ingredient_id, item.quantity_ordered, item.unit_cost_cents]),
+      });
       onSaved();
     } catch { /* handled */ }
   };
@@ -1402,32 +1306,19 @@ function CreatePOModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
 
 /* Receive PO Modal */
 function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: () => void; onSaved: () => void }) {
+  const token = useAuthStore((s) => s.token);
   const [items, setItems] = useState<PurchaseOrderItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       try {
-        const db = await getDb();
-        const rows = await db
-          .selectFrom("purchase_order_items")
-          .innerJoin("ingredients", "ingredients.id", "purchase_order_items.ingredient_id")
-          .select([
-            "purchase_order_items.id",
-            "purchase_order_items.purchase_order_id",
-            "purchase_order_items.ingredient_id",
-            "purchase_order_items.quantity_ordered",
-            "purchase_order_items.quantity_received",
-            "purchase_order_items.unit_cost_cents",
-            "ingredients.name as ingredient_name",
-          ])
-          .where("purchase_order_items.purchase_order_id", "=", po.id)
-          .execute();
+        const rows = await invoke<PurchaseOrderItem[]>("list_purchase_order_items_v3", { sessionToken: token, poId: po.id });
         setItems(rows);
       } catch { /* handled */ }
       finally { setLoading(false); }
     })();
-  }, [po.id]);
+  }, [po.id, token]);
 
   const updateReceived = (idx: number, val: number) => {
     setItems((prev) => prev.map((item, i) => (i === idx ? { ...item, quantity_received: val } : item)));
@@ -1435,25 +1326,11 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
 
   const handleReceive = async () => {
     try {
-      const db = await getDb();
-      const now = new Date().toISOString();
-      for (const item of items) {
-        await db.updateTable("purchase_order_items").set({ quantity_received: item.quantity_received }).where("id", "=", item.id).execute();
-        const ing = await db.selectFrom("ingredients").select("current_stock").where("id", "=", item.ingredient_id).executeTakeFirst();
-        if (ing) {
-          const newStock = ing.current_stock + item.quantity_received;
-          await db.updateTable("ingredients").set({ current_stock: newStock }).where("id", "=", item.ingredient_id).execute();
-          await db.insertInto("inventory_logs").values({
-            id: crypto.randomUUID(),
-            ingredient_id: item.ingredient_id,
-            change_amount: item.quantity_received,
-            reason: "استلام طلبية شراء",
-            user_id: po.created_by,
-            created_at: now,
-          }).execute();
-        }
-      }
-      await db.updateTable("purchase_orders").set({ status: "RECEIVED", received_at: now }).where("id", "=", po.id).execute();
+      await invoke("receive_purchase_order_v3", {
+        sessionToken: token,
+        poId: po.id,
+        items: items.map((item) => [item.id, item.ingredient_id, item.quantity_received]),
+      });
       onSaved();
     } catch { /* handled */ }
   };
@@ -1495,32 +1372,19 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
 
 /* PO Detail Modal */
 function PODetailModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void }) {
+  const token = useAuthStore((s) => s.token);
   const [items, setItems] = useState<PurchaseOrderItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       try {
-        const db = await getDb();
-        const rows = await db
-          .selectFrom("purchase_order_items")
-          .innerJoin("ingredients", "ingredients.id", "purchase_order_items.ingredient_id")
-          .select([
-            "purchase_order_items.id",
-            "purchase_order_items.purchase_order_id",
-            "purchase_order_items.ingredient_id",
-            "purchase_order_items.quantity_ordered",
-            "purchase_order_items.quantity_received",
-            "purchase_order_items.unit_cost_cents",
-            "ingredients.name as ingredient_name",
-          ])
-          .where("purchase_order_items.purchase_order_id", "=", po.id)
-          .execute();
+        const rows = await invoke<PurchaseOrderItem[]>("list_purchase_order_items_v3", { sessionToken: token, poId: po.id });
         setItems(rows);
       } catch { /* handled */ }
       finally { setLoading(false); }
     })();
-  }, [po.id]);
+  }, [po.id, token]);
 
   const statusLabel = (s: string) => {
     if (s === "PENDING") return "قيد الانتظار";
@@ -1589,6 +1453,7 @@ function PODetailModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void
 /* ============= TAB 3: حركات المخزون ============= */
 
 function MovementsTab() {
+  const token = useAuthStore((s) => s.token);
   const [logs, setLogs] = useState<InventoryLog[]>([]);
   const [filteredLogs, setFilteredLogs] = useState<InventoryLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1602,37 +1467,17 @@ function MovementsTab() {
   const fetch = useCallback(async () => {
     setLoading(true);
     try {
-      const db = await getDb();
-      const rows = await db
-        .selectFrom("inventory_logs")
-        .innerJoin("ingredients", "ingredients.id", "inventory_logs.ingredient_id")
-        .innerJoin("staff", "staff.id", "inventory_logs.user_id")
-        .select([
-          "inventory_logs.id",
-          "inventory_logs.ingredient_id",
-          "inventory_logs.change_amount",
-          "inventory_logs.reason",
-          "inventory_logs.user_id",
-          "inventory_logs.created_at",
-          "ingredients.name as ingredient_name",
-          "staff.name as user_name",
-        ])
-        .orderBy("inventory_logs.created_at", "desc")
-        .execute();
+      const rows = await invoke<InventoryLog[]>("list_inventory_logs_v3", { sessionToken: token });
       setLogs(rows);
 
-      const ingRows = await db
-        .selectFrom("ingredients")
-        .select(["id", "name"])
-        .orderBy("name", "asc")
-        .execute();
-      setIngredients(ingRows);
+      const ingRows = await invoke<Ingredient[]>("list_ingredients_v3", { sessionToken: token });
+      setIngredients(ingRows.map((i) => ({ id: i.id, name: i.name })));
     } catch {
       // handled
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [token]);
 
   useEffect(() => {
     fetch();
@@ -1785,7 +1630,7 @@ function MovementsTab() {
 /* ============= TAB 4: تنبيهات ============= */
 
 function AlertsTab() {
-  const user = useAuthStore((s) => s.user);
+  const token = useAuthStore((s) => s.token);
   const [lowStock, setLowStock] = useState<Ingredient[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1794,51 +1639,36 @@ function AlertsTab() {
   const fetch = useCallback(async () => {
     setLoading(true);
     try {
-      const db = await getDb();
-      const ing = await db
-        .selectFrom("ingredients")
-        .selectAll()
-        .where("is_active", "=", 1)
-        .where("current_stock", "<", db.dynamic.ref("min_stock") as any)
-        .orderBy("current_stock", "asc")
-        .execute();
+      const ing = await invoke<Ingredient[]>("list_low_stock_ingredients_v3", { sessionToken: token });
       setLowStock(ing);
 
-      const sup = await db
-        .selectFrom("suppliers")
-        .selectAll()
-        .orderBy("name", "asc")
-        .execute();
+      const sup = await invoke<Supplier[]>("list_suppliers_v3", { sessionToken: token });
       setSuppliers(sup);
     } catch {
       // handled
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [token]);
 
   useEffect(() => {
     fetch();
   }, [fetch]);
 
+  // Deliberately calls create_purchase_order_v3 (no total_orders bump) --
+  // the old AlertsTab never bumped it on auto-order, an inconsistency
+  // versus NewOrderModal/CreatePOModal's manual create paths, preserved
+  // as-is here, not "fixed" into consistency.
   const handleAutoOrder = async (ingredient: Ingredient) => {
     if (suppliers.length === 0) return;
     setCreating(ingredient.id);
     try {
-      const db = await getDb();
       const preferred = suppliers[0];
-      await db
-        .insertInto("purchase_orders")
-        .values({
-          id: crypto.randomUUID(),
-          supplier_id: preferred.id,
-          status: "PENDING",
-          total_cents: 0,
-          notes: `طلبية تلقائية للمادة: ${ingredient.name}`,
-          created_by: user?.id ?? "unknown",
-          created_at: new Date().toISOString(),
-        })
-        .execute();
+      await invoke("create_purchase_order_v3", {
+        sessionToken: token,
+        supplierId: preferred.id,
+        notes: `طلبية تلقائية للمادة: ${ingredient.name}`,
+      });
       await fetch();
     } catch {
       // handled
