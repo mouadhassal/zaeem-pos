@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../../db";
 import { sql } from "kysely";
 import { z } from "zod";
@@ -248,7 +249,6 @@ function TabBar({
 /* ============= TAB 1: المخزون ============= */
 
 function StockTab({ refreshKey }: { refreshKey: number }) {
-  const user = useAuthStore((s) => s.user);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [filtered, setFiltered] = useState<Ingredient[]>([]);
   const [search, setSearch] = useState("");
@@ -261,33 +261,10 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
   const fetch = useCallback(async () => {
     setLoading(true);
     try {
-      const db = await getDb();
-      const rows = await db
-        .selectFrom("ingredients")
-        .selectAll()
-        .where("is_active", "=", 1)
-        .orderBy("name", "asc")
-        .execute();
-
-      const withUpdates = await Promise.all(
-        rows.map(async (r) => {
-          const log = await db
-            .selectFrom("inventory_logs")
-            .select("created_at")
-            .where("ingredient_id", "=", r.id)
-            .orderBy("created_at", "desc")
-            .limit(1)
-            .executeTakeFirst();
-          return {
-            ...r,
-            cost_cents_per_unit: r.cost_cents_per_unit,
-            last_updated: log?.created_at ?? r.last_modified,
-          };
-        })
-      );
-
-      setIngredients(withUpdates);
-      setFiltered(withUpdates);
+      const token = useAuthStore.getState().token;
+      const rows = await invoke<Ingredient[]>("list_ingredients_v3", { sessionToken: token });
+      setIngredients(rows);
+      setFiltered(rows);
     } catch {
       // handled
     } finally {
@@ -316,24 +293,8 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
     reason: string
   ) => {
     try {
-      const db = await getDb();
-      const newStock = ingredient.current_stock + change;
-      await db
-        .updateTable("ingredients")
-        .set({ current_stock: newStock })
-        .where("id", "=", ingredient.id)
-        .execute();
-      await db
-        .insertInto("inventory_logs")
-        .values({
-          id: crypto.randomUUID(),
-          ingredient_id: ingredient.id,
-          change_amount: change,
-          reason,
-          user_id: user?.id ?? "unknown",
-          created_at: new Date().toISOString(),
-        })
-        .execute();
+      const token = useAuthStore.getState().token;
+      await invoke("adjust_stock_v3", { sessionToken: token, ingredientId: ingredient.id, changeAmount: change, reason });
       await fetch();
     } catch {
       // handled
@@ -648,19 +609,14 @@ function AddIngredientModal({
     }
     setSaving(true);
     try {
-      const db = await getDb();
-      await db.insertInto("ingredients").values({
-        id: crypto.randomUUID(),
+      const token = useAuthStore.getState().token;
+      await invoke("create_ingredient_v3", {
+        sessionToken: token,
         name: parsed.data.name,
         unit: parsed.data.unit,
-        cost_cents_per_unit: parsed.data.cost_cents_per_unit,
-        current_stock: 0,
-        min_stock: parsed.data.min_stock,
-        is_active: 1,
-        sync_version: 1,
-        last_modified: new Date().toISOString(),
-        sync_status: "pending",
-      }).execute();
+        costCentsPerUnit: parsed.data.cost_cents_per_unit,
+        minStock: parsed.data.min_stock,
+      });
       onSaved();
     } catch { setErrors({ _form: "حدث خطأ في الحفظ" }); }
     finally { setSaving(false); }
@@ -739,17 +695,15 @@ function EditIngredientModal({
       return;
     }
     try {
-      const db = await getDb();
-      await db
-        .updateTable("ingredients")
-        .set({
-          name: parsed.data.name,
-          unit: parsed.data.unit,
-          cost_cents_per_unit: parsed.data.cost_cents_per_unit,
-          min_stock: parsed.data.min_stock,
-        })
-        .where("id", "=", target.id)
-        .execute();
+      const token = useAuthStore.getState().token;
+      await invoke("update_ingredient_v3", {
+        sessionToken: token,
+        ingredientId: target.id,
+        name: parsed.data.name,
+        unit: parsed.data.unit,
+        costCentsPerUnit: parsed.data.cost_cents_per_unit,
+        minStock: parsed.data.min_stock,
+      });
       onSaved();
       onClose();
     } catch {

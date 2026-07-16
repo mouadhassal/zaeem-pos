@@ -629,6 +629,64 @@ pub fn set_menu_item_active_v3(state: State<Db>, session_token: String, item_id:
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Batch 3b, slice 2, group 2 -- inventory: `ingredients` CRUD + stock
+// adjustment. Deliberately OUT of scope, stated not hidden: `suppliers`
+// CRUD, PO-receiving's stock bump, movements/alerts read tabs.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_ingredients_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::IngredientRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_ingredients(&actor.scope()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_ingredient_v3(state: State<Db>, session_token: String, name: String, unit: String, cost_cents_per_unit: i64, min_stock: f64) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageIngredients).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("ingredient creation requires a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let ingredient_id = Repo::new(&tx).create_ingredient(&tenant_id, &branch_id, &name, &unit, cost_cents_per_unit, min_stock).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "name": name, "created": true }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(ingredient_id)
+}
+
+#[tauri::command]
+pub fn update_ingredient_v3(state: State<Db>, session_token: String, ingredient_id: String, name: String, unit: String, cost_cents_per_unit: i64, min_stock: f64) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageIngredients).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_ingredient(&ingredient_id, &name, &unit, cost_cents_per_unit, min_stock).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// One transaction: `ingredients.current_stock` update + the new
+/// `inventory_logs` fact + the audit entry, same atomicity principle as
+/// `take_payment_v3`.
+#[tauri::command]
+pub fn adjust_stock_v3(state: State<Db>, session_token: String, ingredient_id: String, change_amount: f64, reason: String) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::AdjustStock).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("stock adjustment requires a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let log_id = Repo::new(&tx).adjust_stock(&tenant_id, &branch_id, &ingredient_id, change_amount, &reason, &actor.id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "change_amount": change_amount, "reason": reason, "log_id": log_id }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(log_id)
+}
+
 /// T1.6: two-layer menu price resolution (`override ?? default`), exposed
 /// read-only so a client can price an item before/while building an order.
 /// Gated on `CreateOrder` (the same permission that lets an actor build an
@@ -1539,6 +1597,48 @@ mod tests {
         let cats = repo.list_categories(&tenant_id).unwrap();
         assert!(!cats.iter().any(|c| c.id == cat_id));
         println!("[menu-crud] menu item and category deleted");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Batch 3b, slice 2, group 2: ingredient CRUD + stock adjustment. Proves
+    /// the atomicity pair (current_stock update + inventory_logs fact) both
+    /// land together, and that repeated adjustments accumulate correctly.
+    #[test]
+    fn inventory_ingredient_crud_and_stock_adjustment_atomicity() {
+        let (db_path, tenant_id, branch_id, _table_id) = seeded_db("inventory");
+        let conn = Connection::open(&db_path).unwrap();
+        let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Inventory Manager");
+        let repo = Repo::new(&conn);
+
+        let ing_id = repo.create_ingredient(&tenant_id, &branch_id, "طماطم", "kg", 150, 5.0).unwrap();
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let list = repo.list_ingredients(&scope).unwrap();
+        let ing = list.iter().find(|i| i.id == ing_id).unwrap();
+        assert_eq!(ing.name, "طماطم");
+        assert_eq!(ing.current_stock, 0.0);
+        println!("[inventory] ingredient created with current_stock=0");
+
+        repo.update_ingredient(&ing_id, "طماطم طازجة", "kg", 175, 8.0).unwrap();
+        let list = repo.list_ingredients(&scope).unwrap();
+        let ing = list.iter().find(|i| i.id == ing_id).unwrap();
+        assert_eq!(ing.name, "طماطم طازجة");
+        assert_eq!(ing.min_stock, 8.0);
+        println!("[inventory] ingredient updated");
+
+        let log1 = repo.adjust_stock(&tenant_id, &branch_id, &ing_id, 20.0, "توريد", &manager_id).unwrap();
+        let list = repo.list_ingredients(&scope).unwrap();
+        assert_eq!(list.iter().find(|i| i.id == ing_id).unwrap().current_stock, 20.0);
+
+        let log2 = repo.adjust_stock(&tenant_id, &branch_id, &ing_id, -3.5, "استهلاك", &manager_id).unwrap();
+        let list = repo.list_ingredients(&scope).unwrap();
+        assert_eq!(list.iter().find(|i| i.id == ing_id).unwrap().current_stock, 16.5);
+        println!("[inventory] stock adjustments accumulated correctly: +20 then -3.5 = 16.5");
+
+        let log_count: i64 = conn.query_row("SELECT COUNT(*) FROM inventory_logs WHERE ingredient_id = ?1", params![ing_id], |r| r.get(0)).unwrap();
+        assert_eq!(log_count, 2, "both adjustments must be preserved as separate append-only facts, not collapsed");
+        assert_ne!(log1, log2);
+        println!("[inventory] 2 inventory_logs rows preserved (append-only), each adjustment its own fact");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }

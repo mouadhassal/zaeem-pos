@@ -99,6 +99,17 @@ pub struct PaymentInput {
 /// narrower than `SELECT *`: exactly the fields the frontend pages named in
 /// DRIFT_REPORT.md Findings #2/#5 actually read.
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct IngredientRow {
+    pub id: String,
+    pub name: String,
+    pub unit: String,
+    pub cost_cents_per_unit: i64,
+    pub current_stock: f64,
+    pub min_stock: f64,
+    pub is_active: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CategoryRow {
     pub id: String,
     pub name: String,
@@ -892,6 +903,70 @@ impl<'a> Repo<'a> {
             params![is_active as i64, item_id],
         )?;
         Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Batch 3b, slice 2, group 2 -- inventory: `ingredients` CRUD + stock
+    // adjustment (`inventory_logs`, append-only in spirit -- every stock
+    // change is a new log row, `ingredients.current_stock` is a derived
+    // running total updated alongside it, never the sole record of a
+    // change). Both tables are `TENANT_BRANCH_TABLES`. Deliberately OUT of
+    // scope this slice, stated not hidden: `suppliers` CRUD, PO-receiving's
+    // stock bump (`ReceivePOModal`), the movements/alerts read tabs -- all
+    // still `getDb()`.
+    // -----------------------------------------------------------------
+
+    pub fn list_ingredients(&self, scope: &Scope) -> Result<Vec<IngredientRow>, RepoError> {
+        self.assert_scope_populated("ingredients", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let sql = format!(
+            "SELECT id, name, unit, cost_cents_per_unit, current_stock, min_stock, is_active FROM ingredients WHERE {predicate} AND is_active = 1 ORDER BY name ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+            Ok(IngredientRow { id: r.get(0)?, name: r.get(1)?, unit: r.get(2)?, cost_cents_per_unit: r.get(3)?, current_stock: r.get(4)?, min_stock: r.get(5)?, is_active: r.get(6)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    pub fn create_ingredient(&self, tenant_id: &str, branch_id: &str, name: &str, unit: &str, cost_cents_per_unit: i64, min_stock: f64) -> Result<String, RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO ingredients (id, tenant_id, branch_id, name, unit, cost_cents_per_unit, current_stock, min_stock, is_active, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, 1, datetime('now'), 'pending')",
+            params![id, tenant_id, branch_id, name, unit, cost_cents_per_unit, min_stock],
+        )?;
+        Ok(id)
+    }
+
+    pub fn update_ingredient(&self, ingredient_id: &str, name: &str, unit: &str, cost_cents_per_unit: i64, min_stock: f64) -> Result<(), RepoError> {
+        self.conn.execute(
+            "UPDATE ingredients SET name = ?1, unit = ?2, cost_cents_per_unit = ?3, min_stock = ?4, last_modified = datetime('now') WHERE id = ?5",
+            params![name, unit, cost_cents_per_unit, min_stock, ingredient_id],
+        )?;
+        Ok(())
+    }
+
+    /// The stock-adjustment atomicity pair: `ingredients.current_stock`
+    /// (the derived running total) and the new `inventory_logs` row (the
+    /// append-only fact that justifies it) update together -- same
+    /// principle as `take_payment`, just smaller. Never one without the
+    /// other in the same transaction.
+    pub fn adjust_stock(&self, tenant_id: &str, branch_id: &str, ingredient_id: &str, change_amount: f64, reason: &str, actor_id: &str) -> Result<String, RepoError> {
+        self.assert_scope_populated("ingredients", true)?;
+        let log_id = uuid::Uuid::now_v7().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE ingredients SET current_stock = current_stock + ?1, last_modified = ?2 WHERE id = ?3",
+            params![change_amount, now, ingredient_id],
+        )?;
+        self.conn.execute(
+            "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, 'pending')",
+            params![log_id, tenant_id, branch_id, ingredient_id, change_amount, reason, actor_id, now],
+        )?;
+        Ok(log_id)
     }
 }
 

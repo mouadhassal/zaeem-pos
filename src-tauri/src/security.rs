@@ -110,6 +110,11 @@ pub enum Permission {
     /// Batch 3b, slice 2 -- menu CRUD is Manager+ (pricing/catalog changes,
     /// not a Cashier-facing action).
     ManageMenu,
+    /// Batch 3b, slice 2, group 2 -- ingredient CRUD is Manager+; stock
+    /// adjustment is Cashier+ (receiving deliveries, correcting counts
+    /// during a shift is routine floor work, not a manager-only action).
+    ManageIngredients,
+    AdjustStock,
 }
 
 impl Permission {
@@ -122,6 +127,8 @@ impl Permission {
             Permission::ManageCustomers | Permission::ManageDelivery => Role::Cashier.rank(),
             Permission::ManagePurchaseOrders | Permission::ManageDrivers | Permission::ManagePrinters => Role::Manager.rank(),
             Permission::ManageMenu => Role::Manager.rank(),
+            Permission::ManageIngredients => Role::Manager.rank(),
+            Permission::AdjustStock => Role::Cashier.rank(),
         }
     }
 }
@@ -299,6 +306,8 @@ pub fn authorize(actor: &Actor, perm: Permission) -> Result<(), SecurityError> {
                 Permission::ManageDelivery => "ManageDelivery",
                 Permission::TakePayment => "TakePayment",
                 Permission::ManageMenu => "ManageMenu",
+                Permission::ManageIngredients => "ManageIngredients",
+                Permission::AdjustStock => "AdjustStock",
             },
             reason: format!("role {:?} (rank {}) is below the minimum rank {} for this permission", actor.role, actor.role.rank(), perm.minimum_rank()),
         })
@@ -335,11 +344,12 @@ mod tests {
     use super::*;
 
     const ALL_ROLES: [Role; 6] = [Role::Platform, Role::Owner, Role::Manager, Role::Cashier, Role::Kitchen, Role::Server];
-    const ALL_PERMS: [Permission; 14] = [
+    const ALL_PERMS: [Permission; 16] = [
         Permission::CreateBranch, Permission::CreateStaff, Permission::UpdateStaff,
         Permission::ViewOrders, Permission::CreateOrder, Permission::UpdateOrderStatus, Permission::ChangeOwnPassword,
         Permission::ManageCustomers, Permission::ManagePurchaseOrders, Permission::ManageDrivers,
         Permission::ManagePrinters, Permission::ManageDelivery, Permission::TakePayment, Permission::ManageMenu,
+        Permission::ManageIngredients, Permission::AdjustStock,
     ];
 
     fn actor_for(role: Role, tenant: &str, branch: Option<&str>) -> Actor {
