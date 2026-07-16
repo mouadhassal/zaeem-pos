@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
-import { getDb } from "../../db";
+import { invoke } from "@tauri-apps/api/core";
+import { useAuthStore } from "../../stores/authStore";
 import { z } from "zod";
 
 interface Branch {
@@ -18,8 +19,11 @@ interface Branch {
 interface Terminal {
   id: string;
   name: string;
-  last_sync: string | null;
-  version: string;
+  // Real column is `last_seen`, not `last_sync` -- the old frontend's
+  // `.selectAll()` would have returned `last_seen` at runtime regardless of
+  // what this interface claimed; the field is renamed here to match.
+  last_seen: string | null;
+  version: string | null;
   status: string;
 }
 
@@ -95,6 +99,7 @@ function formatDate(dateStr: string | null): string {
 }
 
 export default function BranchesPage() {
+  const token = useAuthStore((s) => s.token);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [stats, setStats] = useState<Record<string, BranchStats>>({});
   const [loading, setLoading] = useState(true);
@@ -116,53 +121,24 @@ export default function BranchesPage() {
     setLoading(true);
     setError(null);
     try {
-      const db = await getDb();
-      const rows = await db
-        .selectFrom("branches")
-        .selectAll()
-        .orderBy("name", "asc")
-        .execute();
+      const rows = await invoke<Branch[]>("list_branches_full_v3", { sessionToken: token });
 
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      const todayStr = todayStart.toISOString();
-
-      const todayData = await db
-        .selectFrom("orders")
-        .select([
-          db.fn.count<number>("id").as("count"),
-          db.fn.sum<number>("total_cents").as("total"),
-        ])
-        .where("created_at", ">=", todayStr)
-        .where("status", "!=", "CANCELLED")
-        .where("status", "!=", "VOIDED")
-        .executeTakeFirst();
-
-      const terminalCounts = await db
-        .selectFrom("terminals")
-        .select(["branch_id", db.fn.count<number>("id").as("count")])
-        .groupBy("branch_id")
-        .execute();
-
+      const todayData = await invoke<{ order_count: number; revenue_cents: number; staff_count: number }>(
+        "get_tenant_today_stats_v3", { sessionToken: token }
+      );
+      const terminalCounts = await invoke<[string, number][]>("get_terminal_counts_by_branch_v3", { sessionToken: token });
       const terminalMap: Record<string, number> = {};
-      for (const t of terminalCounts) {
-        terminalMap[t.branch_id] = t.count ?? 0;
+      for (const [branchId, count] of terminalCounts) {
+        terminalMap[branchId] = count;
       }
-
-      const userCount = (
-        await db
-          .selectFrom("staff")
-          .select(db.fn.count<number>("id").as("count"))
-          .executeTakeFirst()
-      )?.count ?? 0;
 
       const statsMap: Record<string, BranchStats> = {};
       for (const b of rows) {
         statsMap[b.id] = {
-          todayOrders: todayData?.count ?? 0,
-          todayRevenue: (todayData?.total ?? 0) / 100,
+          todayOrders: todayData.order_count,
+          todayRevenue: todayData.revenue_cents / 100,
           terminalCount: terminalMap[b.id] ?? 0,
-          staffCount: userCount,
+          staffCount: todayData.staff_count,
         };
       }
 
@@ -173,7 +149,7 @@ export default function BranchesPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [token]);
 
   useEffect(() => {
     fetchAll();
@@ -215,28 +191,21 @@ export default function BranchesPage() {
     }
     setSaving(true);
     try {
-      const db = await getDb();
-      const data = {
+      const args = {
+        sessionToken: token,
         name: parsed.data.name,
         address: parsed.data.address || null,
         city: parsed.data.city || null,
         phone: parsed.data.phone || null,
         timezone: parsed.data.timezone,
         currency: parsed.data.currency.toUpperCase(),
-        tax_rate_cents: parsed.data.tax_rate_cents,
-        max_tables: parsed.data.max_tables,
+        taxRateCents: parsed.data.tax_rate_cents,
+        maxTables: parsed.data.max_tables,
       };
       if (editId) {
-        await db
-          .updateTable("branches")
-          .set(data)
-          .where("id", "=", editId)
-          .execute();
+        await invoke("update_branch_full_v3", { ...args, branchId: editId });
       } else {
-        await db
-          .insertInto("branches")
-          .values({ id: crypto.randomUUID(), ...data, is_active: 1 })
-          .execute();
+        await invoke("create_branch_full_v3", args);
       }
       setShowModal(false);
       await fetchAll();
@@ -249,12 +218,7 @@ export default function BranchesPage() {
 
   const toggleStatus = async (branch: Branch) => {
     try {
-      const db = await getDb();
-      await db
-        .updateTable("branches")
-        .set({ is_active: branch.is_active ? 0 : 1 })
-        .where("id", "=", branch.id)
-        .execute();
+      await invoke("set_branch_full_active_v3", { sessionToken: token, branchId: branch.id, isActive: !branch.is_active });
       await fetchAll();
     } catch {
       setError("حدث خطأ في تحديث الحالة");
@@ -263,31 +227,15 @@ export default function BranchesPage() {
 
   const openDetail = async (branch: Branch) => {
     try {
-      const db = await getDb();
-      const [terminals, userCount, todayData] = await Promise.all([
-        db
-          .selectFrom("terminals")
-          .selectAll()
-          .where("branch_id", "=", branch.id)
-          .orderBy("name", "asc")
-          .execute(),
-        db
-          .selectFrom("staff")
-          .select(db.fn.count<number>("id").as("count"))
-          .executeTakeFirst(),
-        db
-          .selectFrom("orders")
-          .select(db.fn.sum<number>("total_cents").as("total"))
-          .where("created_at", ">=", new Date().toISOString().slice(0, 10) + "T00:00:00.000Z")
-          .where("status", "!=", "CANCELLED")
-          .where("status", "!=", "VOIDED")
-          .executeTakeFirst(),
+      const [terminals, todayData] = await Promise.all([
+        invoke<Terminal[]>("list_terminals_v3", { sessionToken: token, branchId: branch.id }),
+        invoke<{ order_count: number; revenue_cents: number; staff_count: number }>("get_tenant_today_stats_v3", { sessionToken: token }),
       ]);
 
       setDetailBranch(branch);
       setDetailTerminals(terminals);
-      setDetailStaffCount(userCount?.count ?? 0);
-      setDetailTodaySales((todayData?.total ?? 0) / 100);
+      setDetailStaffCount(todayData.staff_count);
+      setDetailTodaySales(todayData.revenue_cents / 100);
       setDetailOpen(true);
     } catch {
       setError("حدث خطأ في تحميل التفاصيل");
@@ -303,12 +251,7 @@ export default function BranchesPage() {
   const updateDetailField = async (field: string, value: string) => {
     if (!detailBranch) return;
     try {
-      const db = await getDb();
-      await db
-        .updateTable("branches")
-        .set({ [field]: value || null })
-        .where("id", "=", detailBranch.id)
-        .execute();
+      await invoke("update_branch_detail_field_v3", { sessionToken: token, branchId: detailBranch.id, field, value: value || null });
       setDetailBranch({ ...detailBranch, [field]: value });
     } catch {
       setError("حدث خطأ في التحديث");
@@ -647,7 +590,7 @@ export default function BranchesPage() {
                         <div className="space-y-0.5">
                           <p className="text-sm font-arabic text-ink-900">{t.name}</p>
                           <p className="text-[10px] text-ink-500 font-mono">
-                            v{t.version} · آخر مزامنة: {formatDate(t.last_sync)}
+                            v{t.version ?? "?"} · آخر مزامنة: {formatDate(t.last_seen)}
                           </p>
                         </div>
                         <span

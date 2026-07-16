@@ -91,6 +91,7 @@ pub enum Action {
     ManagerOverrideGranted,
     ComboMealChanged,
     HappyHourRuleChanged,
+    BranchChanged,
 }
 
 impl Action {
@@ -123,6 +124,7 @@ impl Action {
             Action::ManagerOverrideGranted => "ManagerOverrideGranted",
             Action::ComboMealChanged => "ComboMealChanged",
             Action::HappyHourRuleChanged => "HappyHourRuleChanged",
+            Action::BranchChanged => "BranchChanged",
         }
     }
 }

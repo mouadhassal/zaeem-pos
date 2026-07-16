@@ -136,6 +136,14 @@ pub enum Permission {
     /// distinct from `ManagePrinters` (Manager+, adding/configuring
     /// hardware in Settings).
     UsePrinter,
+    /// Slice C -- `branches/page.tsx`'s multi-branch admin CRUD operates on
+    /// the LEGACY `branches` table (plural, tenant-only; distinct from
+    /// T1.1's new `branch` table that `CreateBranch`/`create_branch_v3`
+    /// operate on -- see the punch-listed table-duality note). Owner+, not
+    /// Platform-only: an Owner managing their own tenant's physical branch
+    /// locations is routine back-office work, not the cross-tenant
+    /// provisioning `CreateBranch` guards.
+    ManageBranches,
 }
 
 impl Permission {
@@ -156,6 +164,7 @@ impl Permission {
             Permission::ManageFinance | Permission::ViewReports => Role::Manager.rank(),
             Permission::ManageSettings => Role::Manager.rank(),
             Permission::UsePrinter => Role::Cashier.rank(),
+            Permission::ManageBranches => Role::Owner.rank(),
         }
     }
 }
@@ -342,6 +351,7 @@ pub fn authorize(actor: &Actor, perm: Permission) -> Result<(), SecurityError> {
                 Permission::ViewReports => "ViewReports",
                 Permission::ManageSettings => "ManageSettings",
                 Permission::UsePrinter => "UsePrinter",
+                Permission::ManageBranches => "ManageBranches",
             },
             reason: format!("role {:?} (rank {}) is below the minimum rank {} for this permission", actor.role, actor.role.rank(), perm.minimum_rank()),
         })
@@ -378,14 +388,14 @@ mod tests {
     use super::*;
 
     const ALL_ROLES: [Role; 6] = [Role::Platform, Role::Owner, Role::Manager, Role::Cashier, Role::Kitchen, Role::Server];
-    const ALL_PERMS: [Permission; 23] = [
+    const ALL_PERMS: [Permission; 24] = [
         Permission::CreateBranch, Permission::CreateStaff, Permission::UpdateStaff,
         Permission::ViewOrders, Permission::CreateOrder, Permission::UpdateOrderStatus, Permission::ChangeOwnPassword,
         Permission::ManageCustomers, Permission::ManagePurchaseOrders, Permission::ManageDrivers,
         Permission::ManagePrinters, Permission::ManageDelivery, Permission::TakePayment, Permission::ManageMenu,
         Permission::ManageIngredients, Permission::AdjustStock, Permission::ManageShift, Permission::ManageLoyalty,
         Permission::ManageDebt, Permission::ManageFinance, Permission::ViewReports, Permission::ManageSettings,
-        Permission::UsePrinter,
+        Permission::UsePrinter, Permission::ManageBranches,
     ];
 
     fn actor_for(role: Role, tenant: &str, branch: Option<&str>) -> Actor {

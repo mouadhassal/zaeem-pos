@@ -425,6 +425,29 @@ pub struct LegacyBranchRow {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct LegacyBranchFullRow {
+    pub id: String,
+    pub name: String,
+    pub address: Option<String>,
+    pub city: Option<String>,
+    pub phone: Option<String>,
+    pub timezone: String,
+    pub currency: String,
+    pub tax_rate_cents: i64,
+    pub max_tables: i64,
+    pub is_active: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TerminalRow {
+    pub id: String,
+    pub name: String,
+    pub version: Option<String>,
+    pub status: String,
+    pub last_seen: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct RevenueSummaryRow {
     pub order_count: i64,
     pub total: i64,
@@ -1596,6 +1619,118 @@ impl<'a> Repo<'a> {
                 Ok(id)
             }
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Slice C -- `branches/page.tsx`'s multi-branch admin CRUD. Operates
+    // on the LEGACY `branches` table (same table `get_legacy_branch`/
+    // `upsert_legacy_branch` above use for the single-branch settings
+    // view) -- NOT T1.1's new `branch` table that `create_branch` further
+    // below operates on. Both are live, both are used by real pages; this
+    // is the punch-listed table duality, not reconciled here.
+    // -----------------------------------------------------------------
+
+    pub fn list_branches_full(&self, tenant_id: &str) -> Result<Vec<LegacyBranchFullRow>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, address, city, phone, timezone, currency, tax_rate_cents, max_tables, is_active \
+             FROM branches WHERE tenant_id = ?1 ORDER BY name ASC",
+        )?;
+        let rows = stmt.query_map(params![tenant_id], |r| {
+            Ok(LegacyBranchFullRow {
+                id: r.get(0)?, name: r.get(1)?, address: r.get(2)?, city: r.get(3)?, phone: r.get(4)?,
+                timezone: r.get(5)?, currency: r.get(6)?, tax_rate_cents: r.get(7)?, max_tables: r.get(8)?, is_active: r.get(9)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_branch_full(&self, tenant_id: &str, name: &str, address: Option<&str>, city: Option<&str>, phone: Option<&str>, timezone: &str, currency: &str, tax_rate_cents: i64, max_tables: i64) -> Result<String, RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO branches (id, tenant_id, name, address, city, phone, timezone, currency, tax_rate_cents, max_tables, is_active, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, datetime('now'), 'pending')",
+            params![id, tenant_id, name, address, city, phone, timezone, currency, tax_rate_cents, max_tables],
+        )?;
+        Ok(id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_branch_full(&self, tenant_id: &str, branch_id: &str, name: &str, address: Option<&str>, city: Option<&str>, phone: Option<&str>, timezone: &str, currency: &str, tax_rate_cents: i64, max_tables: i64) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("branches", branch_id, tenant_id)?;
+        self.conn.execute(
+            "UPDATE branches SET name = ?1, address = ?2, city = ?3, phone = ?4, timezone = ?5, currency = ?6, tax_rate_cents = ?7, max_tables = ?8, last_modified = datetime('now') WHERE id = ?9",
+            params![name, address, city, phone, timezone, currency, tax_rate_cents, max_tables, branch_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_branch_full_active(&self, tenant_id: &str, branch_id: &str, is_active: bool) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("branches", branch_id, tenant_id)?;
+        self.conn.execute(
+            "UPDATE branches SET is_active = ?1, last_modified = datetime('now') WHERE id = ?2",
+            params![is_active as i64, branch_id],
+        )?;
+        Ok(())
+    }
+
+    /// The branch detail panel's inline single-field edits -- `field` is
+    /// matched against a fixed allow-list, never interpolated into SQL, so
+    /// there's no column-name injection surface even though the caller
+    /// passes a bare string.
+    pub fn update_branch_detail_field(&self, tenant_id: &str, branch_id: &str, field: &str, value: Option<&str>) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("branches", branch_id, tenant_id)?;
+        let column = match field {
+            "name" => "name",
+            "address" => "address",
+            "city" => "city",
+            "phone" => "phone",
+            _ => return Err(RepoError::TenantOwnershipViolation { table: "branches".to_string(), id: format!("invalid field: {field}") }),
+        };
+        self.conn.execute(
+            &format!("UPDATE branches SET {column} = ?1, last_modified = datetime('now') WHERE id = ?2"),
+            params![value, branch_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_terminals(&self, tenant_id: &str, branch_id: &str) -> Result<Vec<TerminalRow>, RepoError> {
+        self.assert_tenant_owns_row("branches", branch_id, tenant_id)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, version, status, last_seen FROM terminals WHERE tenant_id = ?1 AND branch_id = ?2 ORDER BY name ASC",
+        )?;
+        let rows = stmt.query_map(params![tenant_id, branch_id], |r| {
+            Ok(TerminalRow { id: r.get(0)?, name: r.get(1)?, version: r.get(2)?, status: r.get(3)?, last_seen: r.get(4)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// Tenant-wide today's order count/revenue and staff count -- matches
+    /// the old frontend's own aggregation exactly, including its existing
+    /// quirk: these are tenant-wide totals applied identically to every
+    /// branch card, not actually per-branch (the old code computed one
+    /// `todayData` query outside its per-branch loop and reused it for
+    /// every branch). Not "fixed" into real per-branch stats here.
+    pub fn tenant_today_stats(&self, tenant_id: &str) -> Result<(i64, i64, i64), RepoError> {
+        let (order_count, revenue_cents): (i64, i64) = self.conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders \
+             WHERE tenant_id = ?1 AND created_at >= ?2 AND status NOT IN ('CANCELLED', 'VOIDED')",
+            params![tenant_id, chrono::Utc::now().format("%Y-%m-%dT00:00:00").to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let staff_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM staff WHERE tenant_id = ?1", params![tenant_id], |r| r.get(0),
+        )?;
+        Ok((order_count, revenue_cents, staff_count))
+    }
+
+    /// Terminal count per branch, for the branch list's summary cards.
+    pub fn terminal_counts_by_branch(&self, tenant_id: &str) -> Result<Vec<(String, i64)>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT branch_id, COUNT(*) FROM terminals WHERE tenant_id = ?1 AND branch_id IS NOT NULL GROUP BY branch_id",
+        )?;
+        let rows = stmt.query_map(params![tenant_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
 
     #[allow(clippy::too_many_arguments)]

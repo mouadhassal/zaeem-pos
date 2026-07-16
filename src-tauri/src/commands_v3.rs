@@ -744,6 +744,102 @@ pub fn set_happy_hour_rule_active_v3(state: State<Db>, session_token: String, ru
 }
 
 // ---------------------------------------------------------------------------
+// Slice C -- `branches/page.tsx`'s multi-branch admin CRUD, on the LEGACY
+// `branches` table (see `Repo`'s doc comment on this group -- punch-listed
+// table duality vs T1.1's `branch`, not reconciled here).
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_branches_full_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::LegacyBranchFullRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_branches_full(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn create_branch_full_v3(state: State<Db>, session_token: String, name: String, address: Option<String>, city: Option<String>, phone: Option<String>, timezone: String, currency: String, tax_rate_cents: i64, max_tables: i64) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let branch_id = Repo::new(&tx).create_branch_full(&actor.tenant_id, &name, address.as_deref(), city.as_deref(), phone.as_deref(), &timezone, &currency, tax_rate_cents, max_tables).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::BranchChanged, "branch", &branch_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(branch_id)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn update_branch_full_v3(state: State<Db>, session_token: String, branch_id: String, name: String, address: Option<String>, city: Option<String>, phone: Option<String>, timezone: String, currency: String, tax_rate_cents: i64, max_tables: i64) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_branch_full(&actor.tenant_id, &branch_id, &name, address.as_deref(), city.as_deref(), phone.as_deref(), &timezone, &currency, tax_rate_cents, max_tables).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::BranchChanged, "branch", &branch_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_branch_full_active_v3(state: State<Db>, session_token: String, branch_id: String, is_active: bool) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).set_branch_full_active(&actor.tenant_id, &branch_id, is_active).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::BranchChanged, "branch", &branch_id, None, Some(&serde_json::json!({ "is_active": is_active }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_branch_detail_field_v3(state: State<Db>, session_token: String, branch_id: String, field: String, value: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_branch_detail_field(&actor.tenant_id, &branch_id, &field, value.as_deref()).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::BranchChanged, "branch", &branch_id, None, Some(&serde_json::json!({ "field": field }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_terminals_v3(state: State<Db>, session_token: String, branch_id: String) -> Result<Vec<crate::repo::TerminalRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_terminals(&actor.tenant_id, &branch_id).map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+pub struct TenantTodayStats {
+    pub order_count: i64,
+    pub revenue_cents: i64,
+    pub staff_count: i64,
+}
+
+#[tauri::command]
+pub fn get_tenant_today_stats_v3(state: State<Db>, session_token: String) -> Result<TenantTodayStats, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let (order_count, revenue_cents, staff_count) = Repo::new(&conn).tenant_today_stats(&actor.tenant_id).map_err(|e| e.to_string())?;
+    Ok(TenantTodayStats { order_count, revenue_cents, staff_count })
+}
+
+#[tauri::command]
+pub fn get_terminal_counts_by_branch_v3(state: State<Db>, session_token: String) -> Result<Vec<(String, i64)>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).terminal_counts_by_branch(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Batch 3b, slice 2, group 2 -- inventory: `ingredients` CRUD + stock
 // adjustment. Deliberately OUT of scope, stated not hidden: `suppliers`
 // CRUD, PO-receiving's stock bump, movements/alerts read tabs.
@@ -4076,6 +4172,82 @@ mod tests {
         repo.clock_in(&scope_b, &tenant_id, &branch_b, &cashier_b).unwrap();
         assert_eq!(repo.list_attendance(&scope_b, None, None, None).unwrap().len(), 1, "Branch B's clock_in must succeed for its own staff and not be visible from Branch A's scope");
         assert_eq!(repo.list_attendance(&scope_a, None, None, None).unwrap().len(), 1, "Branch A's attendance list must still show only its own row");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Slice C, `branches/page.tsx`'s multi-branch admin CRUD (the LEGACY
+    /// `branches` table, distinct from T1.1's `branch`). Full CRUD +
+    /// terminal listing + tenant-wide today stats, plus cross-tenant
+    /// rejection for update/toggle/detail-field-edit/terminal-listing.
+    #[test]
+    fn branches_full_crud_terminals_stats_and_cross_tenant_rejection() {
+        let (db_path, tenant_id, _branch_id, _table_id) = seeded_db("branches_full");
+        let conn = Connection::open(&db_path).unwrap();
+        let repo = Repo::new(&conn);
+
+        let branch_id = repo.create_branch_full(&tenant_id, "الفرع الشمالي", Some("شارع الثورة"), Some("دمشق"), Some("011-123"), "Asia/Damascus", "SYP", 500, 15).unwrap();
+        let branches = repo.list_branches_full(&tenant_id).unwrap();
+        assert_eq!(branches.len(), 1);
+        assert_eq!(branches[0].name, "الفرع الشمالي");
+        assert_eq!(branches[0].max_tables, 15);
+        assert_eq!(branches[0].is_active, 1);
+        println!("[branches] created and listed");
+
+        repo.update_branch_full(&tenant_id, &branch_id, "الفرع الشمالي المحدث", Some("شارع الثورة"), Some("دمشق"), Some("011-999"), "Asia/Damascus", "SYP", 750, 20).unwrap();
+        let branches = repo.list_branches_full(&tenant_id).unwrap();
+        assert_eq!(branches[0].name, "الفرع الشمالي المحدث");
+        assert_eq!(branches[0].max_tables, 20);
+        assert_eq!(branches[0].tax_rate_cents, 750);
+        println!("[branches] updated");
+
+        repo.update_branch_detail_field(&tenant_id, &branch_id, "phone", Some("011-555")).unwrap();
+        let branches = repo.list_branches_full(&tenant_id).unwrap();
+        assert_eq!(branches[0].phone.as_deref(), Some("011-555"));
+        println!("[branches] detail-field edit updated phone only");
+
+        match repo.update_branch_detail_field(&tenant_id, &branch_id, "tax_rate_cents", Some("0")) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[branches] update_branch_detail_field correctly rejected a field not on the allow-list"),
+            other => panic!("expected rejection for a non-allow-listed field, got {other:?}"),
+        }
+
+        repo.set_branch_full_active(&tenant_id, &branch_id, false).unwrap();
+        assert_eq!(repo.list_branches_full(&tenant_id).unwrap()[0].is_active, 0);
+        println!("[branches] deactivated");
+
+        // Terminals + stats.
+        conn.execute("INSERT INTO terminals (id, tenant_id, branch_id, name, status) VALUES ('term-1', ?1, ?2, 'Cashier 1', 'ACTIVE')", params![tenant_id, branch_id]).unwrap();
+        let terminals = repo.list_terminals(&tenant_id, &branch_id).unwrap();
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0].name, "Cashier 1");
+        let counts = repo.terminal_counts_by_branch(&tenant_id).unwrap();
+        assert_eq!(counts, vec![(branch_id.clone(), 1)]);
+        println!("[branches] terminal listed and counted");
+
+        let (order_count, _revenue, staff_count) = repo.tenant_today_stats(&tenant_id).unwrap();
+        assert_eq!(order_count, 0);
+        assert_eq!(staff_count, 0, "no staff seeded via seed_staff in this test");
+        println!("[branches] tenant_today_stats returns tenant-wide totals (0 orders, 0 staff, matches the fixture)");
+
+        // Cross-tenant ownership.
+        let other_branch_id = "other-tenant-branch";
+        conn.execute("INSERT INTO branches (id, tenant_id, name, timezone, currency) VALUES (?1, 'other-tenant', 'Other Branch', 'UTC', 'USD')", params![other_branch_id]).unwrap();
+        match repo.update_branch_full(&tenant_id, other_branch_id, "hijacked", None, None, None, "UTC", "USD", 0, 1) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[scope] update_branch_full correctly rejected another tenant's branch"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
+        match repo.set_branch_full_active(&tenant_id, other_branch_id, false) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[scope] set_branch_full_active correctly rejected another tenant's branch"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
+        match repo.update_branch_detail_field(&tenant_id, other_branch_id, "name", Some("hijacked")) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[scope] update_branch_detail_field correctly rejected another tenant's branch"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
+        match repo.list_terminals(&tenant_id, other_branch_id) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[scope] list_terminals correctly rejected another tenant's branch"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
