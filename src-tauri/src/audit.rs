@@ -74,6 +74,8 @@ pub enum Action {
     CustomerChanged,
     LoyaltyCardIssued,
     DebtRecorded,
+    OperationalCostRecorded,
+    InvoiceChanged,
 }
 
 impl Action {
@@ -93,6 +95,8 @@ impl Action {
             Action::CustomerChanged => "CustomerChanged",
             Action::LoyaltyCardIssued => "LoyaltyCardIssued",
             Action::DebtRecorded => "DebtRecorded",
+            Action::OperationalCostRecorded => "OperationalCostRecorded",
+            Action::InvoiceChanged => "InvoiceChanged",
         }
     }
 }

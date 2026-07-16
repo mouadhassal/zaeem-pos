@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../../db";
 import { useAuthStore } from "../../stores/authStore";
 import type { TaxMode } from "../../db/types";
@@ -31,7 +32,6 @@ interface Invoice {
   status: string;
   due_date: string;
   paid_at: string | null;
-  notes: string | null;
 }
 
 interface TaxInfo {
@@ -90,7 +90,7 @@ function csvEscape(v: string): string {
 const CATEGORY_OPTIONS = ["إيجار", "رواتب", "كهرباء", "مياه", "إنترنت", "صيانة", "مستلزمات", "تسويق", "أخرى"];
 
 export default function FinancePage() {
-  const user = useAuthStore((s) => s.user);
+  const token = useAuthStore((s) => s.token);
   const [tab, setTab] = useState<Tab>("revenue");
   const [dateRange, setDateRange] = useState<DateRange>("today");
   const [customStart, setCustomStart] = useState("");
@@ -121,7 +121,6 @@ export default function FinancePage() {
   const [invoiceDueDate, setInvoiceDueDate] = useState(() => {
     const d = new Date(); d.setMonth(d.getMonth() + 1); return d.toISOString().slice(0, 10);
   });
-  const [invoiceNotes, setInvoiceNotes] = useState("");
 
   const [taxInfo, setTaxInfo] = useState<TaxInfo | null>(null);
   const [taxCollectedToday, setTaxCollectedToday] = useState(0);
@@ -149,84 +148,39 @@ export default function FinancePage() {
       const s = startDate.toISOString();
       const e = endDate.toISOString();
 
-      const [paidOrders, payments] = await Promise.all([
-        db
-          .selectFrom("orders")
-          .select([
-            "created_at",
-            db.fn.count<number>("id").as("count"),
-            db.fn.sum<number>("total_cents").as("total"),
-          ])
-          .where("status", "=", "PAID")
-          .where("created_at", ">=", s)
-          .where("created_at", "<=", e)
-          .executeTakeFirst(),
-        db
-          .selectFrom("payments")
-          .innerJoin("orders", "orders.id", "payments.order_id")
-          .select([
-            "payments.method",
-            db.fn.sum<number>("payments.amount_cents").as("total"),
-          ])
-          .where("orders.status", "=", "PAID")
-          .where("payments.created_at", ">=", s)
-          .where("payments.created_at", "<=", e)
-          .groupBy("payments.method")
-          .execute(),
-      ]);
+      const revenue = await invoke<{ order_count: number; total: number; cash: number; card: number; wallet: number }>(
+        "get_finance_revenue_v3", { sessionToken: token, startIso: s, endIso: e }
+      );
 
-      const count = paidOrders?.count ?? 0;
-      const total = (paidOrders?.total ?? 0);
-      setTotalRevenue(total);
-      setTotalOrders(count);
-      setAvgOrder(count > 0 ? total / count : 0);
-
-      let cashTotal = 0, cardTotal = 0, walletTotal = 0;
-      for (const p of payments) {
-        if (p.method === "CASH") cashTotal = p.total ?? 0;
-        else if (p.method === "CARD") cardTotal = p.total ?? 0;
-        else if (p.method === "WALLET") walletTotal = p.total ?? 0;
-      }
+      setTotalRevenue(revenue.total);
+      setTotalOrders(revenue.order_count);
+      setAvgOrder(revenue.order_count > 0 ? revenue.total / revenue.order_count : 0);
       setRevenueData([{
         date: startDate.toISOString().slice(0, 10),
-        orderCount: count,
-        cash: cashTotal,
-        card: cardTotal,
-        wallet: walletTotal,
-        total,
+        orderCount: revenue.order_count,
+        cash: revenue.cash,
+        card: revenue.card,
+        wallet: revenue.wallet,
+        total: revenue.total,
       }]);
 
-      const costRows = await db
-        .selectFrom("operational_costs")
-        .selectAll()
-        .orderBy("date", "desc")
-        .limit(100)
-        .execute();
+      const costRows = await invoke<CostRecord[]>("list_operational_costs_v3", { sessionToken: token });
       setCosts(costRows);
       setTotalCosts(costRows.reduce((acc, c) => acc + c.amount_cents, 0));
 
-      const invoiceRows = await db
-        .selectFrom("invoices")
-        .selectAll()
-        .orderBy("due_date", "desc")
-        .execute();
+      const invoiceRows = await invoke<Invoice[]>("list_invoices_v3", { sessionToken: token });
       setInvoices(invoiceRows);
 
       const todayS = new Date();
       todayS.setHours(0, 0, 0, 0);
-      const taxAgg = await db
-        .selectFrom("orders")
-        .select(db.fn.sum<number>("tax_cents").as("total_tax"))
-        .where("status", "=", "PAID")
-        .where("closed_at", ">=", todayS.toISOString())
-        .executeTakeFirst();
-      setTaxCollectedToday(taxAgg?.total_tax ?? 0);
+      const totalTax = await invoke<number>("get_tax_collected_v3", { sessionToken: token, sinceIso: todayS.toISOString() });
+      setTaxCollectedToday(totalTax);
     } catch {
       setMessage("حدث خطأ في تحميل البيانات");
     } finally {
       setLoading(false);
     }
-  }, [dateRange, customStart, customEnd]);
+  }, [dateRange, customStart, customEnd, token]);
 
   useEffect(() => {
     fetchAll();
@@ -272,22 +226,7 @@ export default function FinancePage() {
       return;
     }
     try {
-      const db = await getDb();
-      await db
-        .insertInto("operational_costs")
-        .values({
-          id: crypto.randomUUID(),
-          category: costCategory,
-          amount_cents: amount,
-          date: costDate,
-          notes: costNotes || null,
-          description: costNotes || null,
-          user_id: user?.id ?? "",
-          sync_version: 1,
-          last_modified: new Date().toISOString(),
-          sync_status: "pending",
-        })
-        .execute();
+      await invoke("create_operational_cost_v3", { sessionToken: token, category: costCategory, amountCents: amount, date: costDate, notes: costNotes || null });
       setShowAddCost(false);
       setCostAmount("");
       setCostNotes("");
@@ -302,23 +241,9 @@ export default function FinancePage() {
     const amount = Math.round(parseFloat(invoiceAmount || "0") * 100);
     if (amount <= 0) { setMessage("يرجى إدخال مبلغ صحيح"); return; }
     try {
-      const db = await getDb();
-      await db.insertInto("invoices").values({
-        id: crypto.randomUUID(),
-        chain_id: "default",
-        period_start: invoicePeriodStart,
-        period_end: invoicePeriodEnd,
-        amount_cents: amount,
-        status: "PENDING",
-        due_date: invoiceDueDate,
-        notes: invoiceNotes || null,
-        sync_version: 1,
-        last_modified: new Date().toISOString(),
-        sync_status: "pending",
-      }).execute();
+      await invoke("create_invoice_v3", { sessionToken: token, periodStart: invoicePeriodStart, periodEnd: invoicePeriodEnd, amountCents: amount, dueDate: invoiceDueDate });
       setShowAddInvoice(false);
       setInvoiceAmount("");
-      setInvoiceNotes("");
       setMessage("تم إنشاء الفاتورة بنجاح");
       fetchAll();
     } catch {
@@ -328,18 +253,7 @@ export default function FinancePage() {
 
   const handlePayInvoice = async (inv: Invoice) => {
     try {
-      const db = await getDb();
-      await db
-        .updateTable("invoices")
-        .set({
-          status: "PAID",
-          paid_at: new Date().toISOString(),
-          sync_version: 1,
-          last_modified: new Date().toISOString(),
-          sync_status: "pending",
-        })
-        .where("id", "=", inv.id)
-        .execute();
+      await invoke("mark_invoice_paid_v3", { sessionToken: token, invoiceId: inv.id });
       setMessage("تم دفع الفاتورة بنجاح");
       fetchAll();
     } catch {
@@ -657,10 +571,6 @@ export default function FinancePage() {
                 <label className="block text-sm font-arabic text-ink-900 mb-1">تاريخ الاستحقاق</label>
                 <input type="date" value={invoiceDueDate} onChange={(e) => setInvoiceDueDate(e.target.value)} className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500" />
               </div>
-              <div>
-                <label className="block text-sm font-arabic text-ink-900 mb-1">ملاحظات</label>
-                <textarea value={invoiceNotes} onChange={(e) => setInvoiceNotes(e.target.value)} rows={3} className="w-full px-4 py-2 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500 resize-none" />
-              </div>
             </div>
             <div className="flex gap-3 justify-end pt-2">
               <button onClick={() => setShowAddInvoice(false)} className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors">إلغاء</button>
@@ -688,7 +598,6 @@ export default function FinancePage() {
               <p className="text-sm text-ink-400 font-arabic">المبلغ</p>
               <p className="text-3xl font-bold text-saffron-600 font-mono">{fmtCurrency(showInvoiceDetail.amount_cents, currency)}</p>
             </div>
-            {showInvoiceDetail.notes && <p className="text-sm text-ink-600 font-arabic">ملاحظات: {showInvoiceDetail.notes}</p>}
             <div className="flex gap-2 pt-2">
               {showInvoiceDetail.status === "PENDING" && (
                 <button onClick={() => { handlePayInvoice(showInvoiceDetail); setShowInvoiceDetail(null); }} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">💳 دفع الفاتورة</button>

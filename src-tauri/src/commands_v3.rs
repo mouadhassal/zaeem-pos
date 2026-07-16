@@ -816,6 +816,98 @@ pub fn record_debt_payment_v3(state: State<Db>, session_token: String, debtor_id
     Ok(entry_id)
 }
 
+// ---------------------------------------------------------------------------
+// Batch 3b, slice 3, group 3 -- finance + reports.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn get_finance_revenue_v3(state: State<Db>, session_token: String, start_iso: String, end_iso: String) -> Result<crate::repo::RevenueSummaryRow, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).finance_revenue_summary(&actor.scope(), &start_iso, &end_iso).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_tax_collected_v3(state: State<Db>, session_token: String, since_iso: String) -> Result<i64, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).tax_collected_since(&actor.scope(), &since_iso).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_operational_costs_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::OperationalCostRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_operational_costs(&actor.scope()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_operational_cost_v3(state: State<Db>, session_token: String, category: String, amount_cents: i64, date: String, notes: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("recording a cost requires a Branch-scoped actor".to_string());
+    };
+    if amount_cents <= 0 {
+        return Err("cost amount must be positive".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let cost_id = Repo::new(&tx).create_operational_cost(&tenant_id, &branch_id, &category, amount_cents, &date, notes.as_deref(), &actor.id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::OperationalCostRecorded, "operational_cost", &cost_id, None, Some(&serde_json::json!({ "category": category, "amount_cents": amount_cents }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(cost_id)
+}
+
+#[tauri::command]
+pub fn list_invoices_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::InvoiceRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_invoices(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_invoice_v3(state: State<Db>, session_token: String, period_start: String, period_end: String, amount_cents: i64, due_date: String) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("creating an invoice requires a Branch-scoped actor".to_string());
+    };
+    if amount_cents <= 0 {
+        return Err("invoice amount must be positive".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let invoice_id = Repo::new(&tx).create_invoice(&tenant_id, &branch_id, &period_start, &period_end, amount_cents, &due_date).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InvoiceChanged, "invoice", &invoice_id, None, Some(&serde_json::json!({ "amount_cents": amount_cents, "created": true }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(invoice_id)
+}
+
+#[tauri::command]
+pub fn mark_invoice_paid_v3(state: State<Db>, session_token: String, invoice_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).mark_invoice_paid(&invoice_id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::InvoiceChanged, "invoice", &invoice_id, Some(&serde_json::json!({ "status": "PENDING" })), Some(&serde_json::json!({ "status": "PAID" }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_sales_report_v3(state: State<Db>, session_token: String, today_start_iso: String) -> Result<crate::repo::SalesReportRow, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).sales_report(&actor.scope(), &today_start_iso).map_err(|e| e.to_string())
+}
+
 /// T1.6: two-layer menu price resolution (`override ?? default`), exposed
 /// read-only so a client can price an item before/while building an order.
 /// Gated on `CreateOrder` (the same permission that lets an actor build an
@@ -2022,6 +2114,61 @@ mod tests {
         repo.deactivate_debtor(&debtor_id).unwrap();
         assert!(!repo.list_debtors(&scope).unwrap().iter().any(|d| d.id == debtor_id), "deactivated debtors must not appear in the active list");
         println!("[debt] debtor updated then deactivated -- no longer in the active list");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Batch 3b, slice 3, group 3: finance revenue summary (order count +
+    /// cash/card split) matches actual `take_payment_v3` payments, plus
+    /// operational_costs and invoice CRUD, plus the sales report aggregation.
+    #[test]
+    fn finance_revenue_costs_invoices_and_sales_report() {
+        let (db_path, tenant_id, branch_id, table_id) = seeded_db("finance");
+        let conn = Connection::open(&db_path).unwrap();
+        let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Finance Manager");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let repo = Repo::new(&conn);
+
+        for (method, amount) in [("CASH", 1000i64), ("CARD", 2500i64)] {
+            let order_id = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
+                table_id: table_id.clone(), user_id: manager_id.clone(), order_type: "DINE_IN".into(),
+                subtotal_cents: amount, tax_cents: 0, total_cents: amount, discount_cents: 0,
+            }).unwrap();
+            repo.take_payment(&tenant_id, &branch_id, crate::repo::PaymentInput {
+                order_id, method: method.to_string(), amount_cents: amount, change_cents: 0, debtor_id: None, actor_id: manager_id.clone(),
+            }).unwrap();
+        }
+
+        let far_past = "2000-01-01T00:00:00Z";
+        let far_future = "2100-01-01T00:00:00Z";
+        let revenue = repo.finance_revenue_summary(&scope, far_past, far_future).unwrap();
+        assert_eq!(revenue.order_count, 2);
+        assert_eq!(revenue.total, 3500);
+        assert_eq!(revenue.cash, 1000);
+        assert_eq!(revenue.card, 2500);
+        println!("[finance] revenue summary: 2 orders, total=3500, cash=1000, card=2500 -- matches actual payments");
+
+        let cost_id = repo.create_operational_cost(&tenant_id, &branch_id, "إيجار", 50000, "2026-07-01", Some("شهري"), &manager_id).unwrap();
+        let costs = repo.list_operational_costs(&scope).unwrap();
+        assert!(costs.iter().any(|c| c.id == cost_id && c.amount_cents == 50000));
+        println!("[finance] operational cost recorded and listed");
+
+        let invoice_id = repo.create_invoice(&tenant_id, &branch_id, "2026-07-01", "2026-07-31", 100000, "2026-08-15").unwrap();
+        let invoices = repo.list_invoices(&tenant_id).unwrap();
+        let inv = invoices.iter().find(|i| i.id == invoice_id).unwrap();
+        assert_eq!(inv.status, "PENDING");
+        repo.mark_invoice_paid(&invoice_id).unwrap();
+        let invoices = repo.list_invoices(&tenant_id).unwrap();
+        let inv = invoices.iter().find(|i| i.id == invoice_id).unwrap();
+        assert_eq!(inv.status, "PAID");
+        assert!(inv.paid_at.is_some());
+        println!("[finance] invoice created PENDING, then marked PAID with paid_at set");
+
+        let report = repo.sales_report(&scope, far_past).unwrap();
+        assert_eq!(report.order_count, 2);
+        assert_eq!(report.total_sales, 3500);
+        assert!(report.staff_performance.iter().any(|s| s.name == "Finance Manager" && s.order_count == 2));
+        println!("[reports] sales_report: order_count=2, total_sales=3500, staff_performance shows the manager with 2 orders");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }

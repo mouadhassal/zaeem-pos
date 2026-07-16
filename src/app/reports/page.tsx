@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
-import { getDb } from "../../db";
+import { invoke } from "@tauri-apps/api/core";
+import { useAuthStore } from "../../stores/authStore";
 import { useCurrency } from "../../hooks/useCurrency";
 import jsPDF from "jspdf";
 import "jspdf-autotable";
@@ -15,84 +16,41 @@ interface SalesSummary {
 
 export default function ReportsPage() {
   const { fmt } = useCurrency();
+  const token = useAuthStore((s) => s.token);
   const [summary, setSummary] = useState<SalesSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
   const fetchReports = useCallback(async () => {
     setLoading(true);
     try {
-      const db = await getDb();
-
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
 
-      const todayOrders = await db
-        .selectFrom("orders")
-        .select([
-          db.fn.sum<number>("total_cents").as("total"),
-          db.fn.count<number>("id").as("count"),
-        ])
-        .where("status", "=", "PAID")
-        .where("closed_at", ">=", todayStart.toISOString())
-        .executeTakeFirst();
+      const report = await invoke<{
+        total_sales: number; order_count: number;
+        top_items: { name: string; quantity: number }[];
+        staff_performance: { name: string; order_count: number }[];
+        inventory_status: { name: string; current_stock: number; min_stock: number }[];
+      }>("get_sales_report_v3", { sessionToken: token, todayStartIso: todayStart.toISOString() });
 
-      const totalSales = (todayOrders?.total ?? 0) / 100;
-      const orderCount = todayOrders?.count ?? 0;
+      const totalSales = report.total_sales / 100;
+      const orderCount = report.order_count;
       const avgTicket = orderCount > 0 ? totalSales / orderCount : 0;
-
-      const items = await db
-        .selectFrom("order_items")
-        .innerJoin("menu_items", "menu_items.id", "order_items.menu_item_id")
-        .select([
-          "menu_items.name",
-          db.fn.sum<number>("order_items.quantity").as("quantity"),
-        ])
-        .groupBy("menu_items.name")
-        .orderBy("quantity", "desc")
-        .limit(5)
-        .execute();
-
-      const staff = await db
-        .selectFrom("orders")
-        .innerJoin("staff", "staff.id", "orders.user_id")
-        .select([
-          "staff.name",
-          db.fn.count<number>("orders.id").as("orderCount"),
-        ])
-        .where("orders.status", "=", "PAID")
-        .where("orders.closed_at", ">=", todayStart.toISOString())
-        .groupBy("staff.name")
-        .execute();
-
-      const inventory = await db
-        .selectFrom("ingredients")
-        .select(["name", "current_stock", "min_stock"])
-        .execute();
 
       setSummary({
         totalSales,
         orderCount,
         avgTicket,
-        topItems: items.map((i) => ({
-          name: i.name,
-          quantity: i.quantity ?? 0,
-        })),
-        staffPerformance: staff.map((s) => ({
-          name: s.name,
-          orderCount: s.orderCount ?? 0,
-        })),
-        inventoryStatus: inventory.map((i) => ({
-          name: i.name,
-          currentStock: i.current_stock,
-          minStock: i.min_stock,
-        })),
+        topItems: report.top_items.map((i) => ({ name: i.name, quantity: i.quantity ?? 0 })),
+        staffPerformance: report.staff_performance.map((s) => ({ name: s.name, orderCount: s.order_count ?? 0 })),
+        inventoryStatus: report.inventory_status.map((i) => ({ name: i.name, currentStock: i.current_stock, minStock: i.min_stock })),
       });
     } catch (e) {
       console.error("Reports error:", e);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [token]);
 
   useEffect(() => {
     fetchReports();

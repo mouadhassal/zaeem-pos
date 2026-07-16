@@ -204,6 +204,57 @@ pub struct LoyaltyCardRow {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct RevenueSummaryRow {
+    pub order_count: i64,
+    pub total: i64,
+    pub cash: i64,
+    pub card: i64,
+    pub wallet: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OperationalCostRow {
+    pub id: String,
+    pub category: String,
+    pub amount_cents: i64,
+    pub notes: Option<String>,
+    pub date: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InvoiceRow {
+    pub id: String,
+    pub period_start: Option<String>,
+    pub period_end: Option<String>,
+    pub amount_cents: i64,
+    pub status: String,
+    pub due_date: Option<String>,
+    pub paid_at: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StaffPerformanceRow {
+    pub name: String,
+    pub order_count: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InventoryStatusRow {
+    pub name: String,
+    pub current_stock: f64,
+    pub min_stock: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SalesReportRow {
+    pub total_sales: i64,
+    pub order_count: i64,
+    pub top_items: Vec<FavoriteItemRow>,
+    pub staff_performance: Vec<StaffPerformanceRow>,
+    pub inventory_status: Vec<InventoryStatusRow>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DebtorRow {
     pub id: String,
     pub name: String,
@@ -945,6 +996,165 @@ impl<'a> Repo<'a> {
             params![amount_cents, now, debtor_id],
         )?;
         Ok(id)
+    }
+
+    // -----------------------------------------------------------------
+    // Batch 3b, slice 3, group 3 -- finance + reports (owner back-office
+    // reads + operational_costs/invoices writes). `operational_costs.
+    // description` and `invoices.notes` are deliberately never referenced --
+    // DRIFT_REPORT.md Finding #5 flagged both as absent from the real
+    // schema (only the aspirational `SCHEMA_SQL` declares them); the old
+    // frontend was silently duplicating `notes` into a nonexistent
+    // `description` column and would have hard-errored the moment `SCHEMA_
+    // SQL`'s lazy path stopped winning that race. `operational_costs.user_id`
+    // is already repointed at `staff(id)` by Decision A's Migration C.
+    // -----------------------------------------------------------------
+
+    pub fn finance_revenue_summary(&self, scope: &Scope, start_iso: &str, end_iso: &str) -> Result<RevenueSummaryRow, RepoError> {
+        let (predicate, args) = Self::scope_predicate(scope);
+        let sql = format!(
+            "SELECT COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders WHERE {predicate} AND status = 'PAID' AND created_at >= ?{a} AND created_at <= ?{b}",
+            a = args.len() + 1, b = args.len() + 2,
+        );
+        let mut all_args = args.clone();
+        all_args.push(start_iso.to_string());
+        all_args.push(end_iso.to_string());
+        let params_refs: Vec<&dyn rusqlite::ToSql> = all_args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let (order_count, total): (i64, i64) = self.conn.query_row(&sql, params_refs.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))?;
+
+        // `payments` and `orders` both carry tenant_id/branch_id after
+        // Migration A -- qualify the generic predicate with `orders.` so
+        // the join isn't ambiguous about which table's columns it means.
+        let (pred2, args2) = Self::scope_predicate(scope);
+        let pred2 = pred2.replace("tenant_id", "orders.tenant_id").replace("branch_id", "orders.branch_id");
+        let sql2 = format!(
+            "SELECT payments.method, COALESCE(SUM(payments.amount_cents), 0) FROM payments \
+             INNER JOIN orders ON orders.id = payments.order_id \
+             WHERE {pred2} AND orders.status = 'PAID' AND payments.created_at >= ?{a} AND payments.created_at <= ?{b} \
+             GROUP BY payments.method",
+            a = args2.len() + 1, b = args2.len() + 2,
+        );
+        let mut all_args2 = args2.clone();
+        all_args2.push(start_iso.to_string());
+        all_args2.push(end_iso.to_string());
+        let params_refs2: Vec<&dyn rusqlite::ToSql> = all_args2.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let mut stmt = self.conn.prepare(&sql2)?;
+        let method_totals: Vec<(String, i64)> = stmt.query_map(params_refs2.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+
+        let mut cash = 0i64;
+        let mut card = 0i64;
+        let mut wallet = 0i64;
+        for (method, amount) in method_totals {
+            match method.as_str() {
+                "CASH" => cash = amount,
+                "CARD" => card = amount,
+                "WALLET" => wallet = amount,
+                _ => {}
+            }
+        }
+        Ok(RevenueSummaryRow { order_count, total, cash, card, wallet })
+    }
+
+    pub fn tax_collected_since(&self, scope: &Scope, since_iso: &str) -> Result<i64, RepoError> {
+        let (predicate, args) = Self::scope_predicate(scope);
+        let sql = format!("SELECT COALESCE(SUM(tax_cents), 0) FROM orders WHERE {predicate} AND status = 'PAID' AND closed_at >= ?{a}", a = args.len() + 1);
+        let mut all_args = args.clone();
+        all_args.push(since_iso.to_string());
+        let params_refs: Vec<&dyn rusqlite::ToSql> = all_args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        self.conn.query_row(&sql, params_refs.as_slice(), |r| r.get(0)).map_err(RepoError::from)
+    }
+
+    pub fn list_operational_costs(&self, scope: &Scope) -> Result<Vec<OperationalCostRow>, RepoError> {
+        let (predicate, args) = Self::scope_predicate(scope);
+        let sql = format!("SELECT id, category, amount_cents, notes, date FROM operational_costs WHERE {predicate} ORDER BY date DESC LIMIT 100");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| Ok(OperationalCostRow { id: r.get(0)?, category: r.get(1)?, amount_cents: r.get(2)?, notes: r.get(3)?, date: r.get(4)? }))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_operational_cost(&self, tenant_id: &str, branch_id: &str, category: &str, amount_cents: i64, date: &str, notes: Option<&str>, actor_id: &str) -> Result<String, RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO operational_costs (id, tenant_id, branch_id, category, amount_cents, date, notes, user_id, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), 'pending')",
+            params![id, tenant_id, branch_id, category, amount_cents, date, notes, actor_id],
+        )?;
+        Ok(id)
+    }
+
+    pub fn list_invoices(&self, tenant_id: &str) -> Result<Vec<InvoiceRow>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, period_start, period_end, amount_cents, status, due_date, paid_at FROM invoices WHERE tenant_id = ?1 ORDER BY due_date DESC",
+        )?;
+        let rows = stmt.query_map(params![tenant_id], |r| {
+            Ok(InvoiceRow { id: r.get(0)?, period_start: r.get(1)?, period_end: r.get(2)?, amount_cents: r.get(3)?, status: r.get(4)?, due_date: r.get(5)?, paid_at: r.get(6)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_invoice(&self, tenant_id: &str, branch_id: &str, period_start: &str, period_end: &str, amount_cents: i64, due_date: &str) -> Result<String, RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO invoices (id, tenant_id, branch_id, chain_id, period_start, period_end, amount_cents, status, due_date, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, 'default', ?4, ?5, ?6, 'PENDING', ?7, datetime('now'), 'pending')",
+            params![id, tenant_id, branch_id, period_start, period_end, amount_cents, due_date],
+        )?;
+        Ok(id)
+    }
+
+    pub fn mark_invoice_paid(&self, invoice_id: &str) -> Result<(), RepoError> {
+        self.conn.execute(
+            "UPDATE invoices SET status = 'PAID', paid_at = datetime('now'), last_modified = datetime('now') WHERE id = ?1",
+            params![invoice_id],
+        )?;
+        Ok(())
+    }
+
+    /// One command backing `reports/page.tsx`'s whole summary -- today's
+    /// sales, all-time top-5 items (matching the old query's own scope,
+    /// which never filtered items by date either), today's staff
+    /// performance, and current inventory status.
+    pub fn sales_report(&self, scope: &Scope, today_start_iso: &str) -> Result<SalesReportRow, RepoError> {
+        let (pred, args) = Self::scope_predicate(scope);
+        let sql = format!("SELECT COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders WHERE {pred} AND status = 'PAID' AND closed_at >= ?{a}", a = args.len() + 1);
+        let mut all_args = args.clone();
+        all_args.push(today_start_iso.to_string());
+        let params_refs: Vec<&dyn rusqlite::ToSql> = all_args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let (order_count, total_sales): (i64, i64) = self.conn.query_row(&sql, params_refs.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT menu_items.name, SUM(order_items.quantity) FROM order_items \
+             INNER JOIN menu_items ON menu_items.id = order_items.menu_item_id \
+             GROUP BY menu_items.name ORDER BY 2 DESC LIMIT 5",
+        )?;
+        let top_items: Vec<FavoriteItemRow> = stmt.query_map([], |r| Ok(FavoriteItemRow { name: r.get(0)?, quantity: r.get(1)? }))?.collect::<Result<Vec<_>, _>>()?;
+
+        // Same ambiguity concern as above -- `staff` also carries tenant_id/
+        // branch_id, so qualify with `orders.` (the report is scoped to the
+        // orders, not to which staff exist).
+        let (pred3, args3) = Self::scope_predicate(scope);
+        let pred3 = pred3.replace("tenant_id", "orders.tenant_id").replace("branch_id", "orders.branch_id");
+        let sql3 = format!(
+            "SELECT staff.name, COUNT(orders.id) FROM orders INNER JOIN staff ON staff.id = orders.user_id \
+             WHERE {pred3} AND orders.status = 'PAID' AND orders.closed_at >= ?{a} GROUP BY staff.name",
+            a = args3.len() + 1,
+        );
+        let mut all_args3 = args3.clone();
+        all_args3.push(today_start_iso.to_string());
+        let params_refs3: Vec<&dyn rusqlite::ToSql> = all_args3.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let mut stmt3 = self.conn.prepare(&sql3)?;
+        let staff_performance: Vec<StaffPerformanceRow> = stmt3.query_map(params_refs3.as_slice(), |r| Ok(StaffPerformanceRow { name: r.get(0)?, order_count: r.get(1)? }))?.collect::<Result<Vec<_>, _>>()?;
+
+        let (pred4, args4) = Self::scope_predicate(scope);
+        let sql4 = format!("SELECT name, current_stock, min_stock FROM ingredients WHERE {pred4}");
+        let params_refs4: Vec<&dyn rusqlite::ToSql> = args4.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let mut stmt4 = self.conn.prepare(&sql4)?;
+        let inventory_status: Vec<InventoryStatusRow> = stmt4.query_map(params_refs4.as_slice(), |r| Ok(InventoryStatusRow { name: r.get(0)?, current_stock: r.get(1)?, min_stock: r.get(2)? }))?.collect::<Result<Vec<_>, _>>()?;
+
+        Ok(SalesReportRow { total_sales, order_count, top_items, staff_performance, inventory_status })
     }
 
     #[allow(clippy::too_many_arguments)]
