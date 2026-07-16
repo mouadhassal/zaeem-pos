@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { IconChefHat, IconNote } from "@tabler/icons-react";
-import { getDb } from "../../db";
+import { invoke } from "@tauri-apps/api/core";
+import { useAuthStore } from "../../stores/authStore";
 
 interface KDSItem {
   name: string;
@@ -63,6 +64,7 @@ function elapsed(iso: string): string {
 }
 
 export default function KDSPage() {
+  const token = useAuthStore((s) => s.token);
   const [orders, setOrders] = useState<KDSOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -80,42 +82,7 @@ export default function KDSPage() {
 
   const fetchOrders = useCallback(async () => {
     try {
-      const db = await getDb();
-      const rows = await db
-        .selectFrom("orders")
-        .leftJoin("tables", "tables.id", "orders.table_id")
-        .select([
-          "orders.id",
-          "tables.name as table_name",
-          "orders.status",
-          "orders.order_type",
-          "orders.created_at",
-          "orders.discount_reason as notes",
-        ])
-        .where("orders.status", "in", ["PENDING", "PREPARING", "READY"])
-        .orderBy("orders.created_at", "asc")
-        .execute();
-
-      const kdsOrders: KDSOrder[] = [];
-
-      for (const row of rows) {
-        const items = await db
-          .selectFrom("order_items")
-          .innerJoin("menu_items", "menu_items.id", "order_items.menu_item_id")
-          .select(["menu_items.name", "order_items.quantity", "order_items.notes"])
-          .where("order_items.order_id", "=", row.id)
-          .where("order_items.voided", "=", 0)
-          .execute();
-        kdsOrders.push({
-          id: row.id,
-          table_name: row.table_name,
-          order_type: row.order_type,
-          status: row.status,
-          items: items.map((i) => ({ name: i.name, quantity: i.quantity, notes: i.notes })),
-          created_at: row.created_at,
-          notes: row.notes,
-        });
-      }
+      const kdsOrders = await invoke<KDSOrder[]>("list_kitchen_orders_v3", { sessionToken: token });
 
       setOrders((prev) => {
         const currCount = kdsOrders.filter((o) => o.status === "PENDING").length;
@@ -128,7 +95,7 @@ export default function KDSPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [token]);
 
   useEffect(() => {
     fetchOrders();
@@ -149,12 +116,7 @@ export default function KDSPage() {
     const nextStatus = STATUS_FLOW[currentStatus] as "PREPARING" | "READY" | "SERVED" | undefined;
     if (!nextStatus) return;
     try {
-      const db = await getDb();
-      await db
-        .updateTable("orders")
-        .set({ status: nextStatus, last_modified: new Date().toISOString() })
-        .where("id", "=", orderId)
-        .execute();
+      await invoke("update_order_status_v3", { sessionToken: token, orderId, newStatus: nextStatus });
       await fetchOrders();
     } catch {
       setError("حدث خطأ في تحديث الحالة");

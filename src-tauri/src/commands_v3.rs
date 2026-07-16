@@ -378,6 +378,15 @@ pub fn list_orders_v3(state: State<Db>, session_token: String) -> Result<Vec<Ord
     Repo::new(&conn).list_orders(&scope).map_err(|e| e.to_string())
 }
 
+/// `kds/page.tsx`'s kitchen display feed.
+#[tauri::command]
+pub fn list_kitchen_orders_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::KdsOrderRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewOrders).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_kitchen_orders(&actor.scope()).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn create_order_v3(
@@ -4248,6 +4257,78 @@ mod tests {
             Err(RepoError::TenantOwnershipViolation { .. }) => println!("[scope] list_terminals correctly rejected another tenant's branch"),
             other => panic!("expected TenantOwnershipViolation, got {other:?}"),
         }
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Slice C, `kds/page.tsx`'s kitchen display feed: only PENDING/
+    /// PREPARING/READY orders, oldest first, each with its non-voided
+    /// items (a voided item must not show up on the kitchen ticket), and
+    /// branch-scope isolation (a kitchen screen in Branch A must never see
+    /// Branch B's orders).
+    #[test]
+    fn kitchen_orders_feed_filters_status_excludes_voided_items_and_is_branch_scoped() {
+        let (db_path, tenant_id, branch_a, table_a) = seeded_db("kds_feed");
+        let conn = Connection::open(&db_path).unwrap();
+        let repo = Repo::new(&conn);
+        let branch_b = repo.create_branch(&tenant_id, "Branch B", "USD").unwrap();
+        let table_b = "tbl-b".to_string();
+        conn.execute("INSERT INTO tables (id, tenant_id, branch_id, name) VALUES (?1, ?2, ?3, 'Table B')", params![table_b, tenant_id, branch_b]).unwrap();
+
+        let cashier_a = seed_staff(&conn, &tenant_id, Some(&branch_a), Role::Cashier, "Cashier A");
+        let cashier_b = seed_staff(&conn, &tenant_id, Some(&branch_b), Role::Cashier, "Cashier B");
+        let scope_a = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_a.clone() };
+        let scope_b = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_b.clone() };
+
+        let cat_id = repo.create_category(&tenant_id, "Cat", None, 0, None).unwrap();
+        let burger_id = repo.create_menu_item(&tenant_id, "Burger", &cat_id, 1000, 400, None, None, None).unwrap();
+        let fries_id = repo.create_menu_item(&tenant_id, "Fries", &cat_id, 500, 150, None, None, None).unwrap();
+
+        // Branch A: a PENDING order with one normal item and one voided item.
+        let order_a = repo.create_full_order(&scope_a, &tenant_id, &branch_a, FullOrderInput {
+            table_id: table_a.clone(), user_id: cashier_a.clone(), order_type: "DINE_IN".into(),
+            subtotal_cents: 1500, tax_cents: 0, total_cents: 1500, discount_cents: 0,
+            discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
+            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            items: vec![
+                crate::repo::OrderItemInput { menu_item_id: burger_id.clone(), name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] },
+                crate::repo::OrderItemInput { menu_item_id: fries_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] },
+            ],
+        }).unwrap();
+        let fries_item_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1 AND menu_item_id = ?2", params![order_a, fries_id], |r| r.get(0)).unwrap();
+        repo.void_order_item(&scope_a, &fries_item_id, "نفذت الكمية").unwrap();
+
+        // Branch A: a PAID order that must NOT appear on the kitchen feed.
+        let order_a_paid = repo.create_full_order(&scope_a, &tenant_id, &branch_a, FullOrderInput {
+            table_id: table_a.clone(), user_id: cashier_a.clone(), order_type: "DINE_IN".into(),
+            subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0,
+            discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
+            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            items: vec![crate::repo::OrderItemInput { menu_item_id: burger_id.clone(), name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] }],
+        }).unwrap();
+        repo.finalize_order_with_payment(&tenant_id, &branch_a, &order_a_paid, "CASH", 1000, 0, None, &cashier_a).unwrap();
+
+        // Branch B: its own PENDING order.
+        repo.create_full_order(&scope_b, &tenant_id, &branch_b, FullOrderInput {
+            table_id: table_b, user_id: cashier_b, order_type: "DINE_IN".into(),
+            subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0,
+            discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
+            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            items: vec![crate::repo::OrderItemInput { menu_item_id: burger_id, name: None, quantity: 2, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] }],
+        }).unwrap();
+
+        let feed_a = repo.list_kitchen_orders(&scope_a).unwrap();
+        assert_eq!(feed_a.len(), 1, "the PAID order must not appear on the kitchen feed, only the still-PENDING one");
+        assert_eq!(feed_a[0].id, order_a);
+        assert_eq!(feed_a[0].items.len(), 1, "the voided fries item must be excluded");
+        assert_eq!(feed_a[0].items[0].name, "Burger");
+        println!("[kds] Branch A's feed shows only its own PENDING order, with the voided item excluded");
+
+        let feed_b = repo.list_kitchen_orders(&scope_b).unwrap();
+        assert_eq!(feed_b.len(), 1);
+        assert_eq!(feed_b[0].items[0].quantity, 2);
+        assert!(!feed_b.iter().any(|o| o.id == order_a), "Branch B's feed must never show Branch A's order");
+        println!("[kds] Branch B's feed shows only its own order -- branch isolation confirmed");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }

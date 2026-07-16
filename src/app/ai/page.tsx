@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useAuthStore } from "../../stores/authStore";
-import { getDb } from "../../db";
-import { sql } from "kysely";
 import { Bot, Send, User, Sparkles } from "lucide-react";
 
 interface Message {
@@ -31,6 +30,7 @@ function formatTime(iso: string | null): string {
 
 export default function AIPage() {
   const user = useAuthStore((s) => s.user);
+  const token = useAuthStore((s) => s.token);
   const [messages, setMessages] = useState<Message[]>([{
     id: "welcome",
     role: "assistant",
@@ -47,29 +47,21 @@ export default function AIPage() {
 
   const executeQuery = async (query: string): Promise<string> => {
     try {
-      const db = await getDb();
       const q = query.toLowerCase();
 
       if (q.includes("مبيعات") || q.includes("إيرادات") || q.includes("اليوم")) {
         const today = new Date().toISOString().slice(0, 10);
-        const orders = await db.selectFrom("orders")
-          .select([db.fn.count<number>("id").as("count"), db.fn.sum<number>("total_cents").as("total")])
-          .where("status", "=", "PAID")
-          .where("created_at", ">=", today)
-          .executeTakeFirst();
-        const total = orders?.total ?? 0;
-        const count = orders?.count ?? 0;
-        const avg = count > 0 ? total / count : 0;
-        return `📊 **ملخص مبيعات اليوم (${today})**\n\n• إجمالي المبيعات: ${formatCurrency(total)}\n• عدد الطلبات: ${count}\n• متوسط قيمة الطلب: ${formatCurrency(avg)}\n• الوقت: ${new Date().toLocaleTimeString("ar-SA")}`;
+        const revenue = await invoke<{ order_count: number; total: number }>(
+          "get_finance_revenue_v3", { sessionToken: token, startIso: `${today}T00:00:00`, endIso: `${today}T23:59:59` }
+        );
+        const avg = revenue.order_count > 0 ? revenue.total / revenue.order_count : 0;
+        return `📊 **ملخص مبيعات اليوم (${today})**\n\n• إجمالي المبيعات: ${formatCurrency(revenue.total)}\n• عدد الطلبات: ${revenue.order_count}\n• متوسط قيمة الطلب: ${formatCurrency(avg)}\n• الوقت: ${new Date().toLocaleTimeString("ar-SA")}`;
       }
 
       if (q.includes("مخزون") || q.includes("منخفض")) {
-        const items = await db.selectFrom("ingredients")
-          .selectAll()
-          .where("is_active", "=", 1)
-          .where("current_stock", "<", db.dynamic.ref("min_stock") as any)
-          .orderBy("current_stock", "asc")
-          .execute();
+        const items = await invoke<{ name: string; current_stock: number; min_stock: number; unit: string }[]>(
+          "list_low_stock_ingredients_v3", { sessionToken: token }
+        );
         if (items.length === 0) return "✅ جميع المواد ضمن الحد الآمن. المخزون بحالة ممتازة.";
         let resp = `⚠️ **المواد منخفضة المخزون (${items.length})**\n\n`;
         for (const item of items) {
@@ -80,11 +72,9 @@ export default function AIPage() {
 
       if (q.includes("حضور") || q.includes("موظف") || q.includes("الحاضر")) {
         const today = new Date().toISOString().slice(0, 10);
-        const att = await db.selectFrom("attendance")
-          .innerJoin("staff", "staff.id", "attendance.user_id")
-          .select(["staff.name", "attendance.clock_in", "attendance.status"])
-          .where("attendance.date", "=", today)
-          .execute();
+        const att = await invoke<{ user_name: string; clock_in: string | null; status: string }[]>(
+          "list_attendance_v3", { sessionToken: token, dateFrom: today, dateTo: today, userId: null }
+        );
         if (att.length === 0) return "👥 لم يسجل أي موظف حضور اليوم بعد.";
         const present = att.filter((a) => a.status === "PRESENT" || a.status === "LATE");
         const late = att.filter((a) => a.status === "LATE");
@@ -93,61 +83,48 @@ export default function AIPage() {
         resp += `• الحاضرون: ${present.length}\n`;
         if (late.length > 0) resp += `• المتأخرون: ${late.length}\n\n`;
         for (const a of present) {
-          resp += `• ${a.name}: ${formatTime(a.clock_in)}${a.status === "LATE" ? " ⚠️ متأخر" : ""}\n`;
+          resp += `• ${a.user_name}: ${formatTime(a.clock_in)}${a.status === "LATE" ? " ⚠️ متأخر" : ""}\n`;
         }
         return resp;
       }
 
       if (q.includes("طلب") || q.includes("نشط")) {
-        const orders = await db.selectFrom("orders")
-          .leftJoin("tables", "tables.id", "orders.table_id")
-          .select(["orders.id", "orders.status", "orders.order_type", "orders.total_cents", "orders.customer_name", "tables.name as table_name"])
-          .where("orders.status", "in", ["PENDING", "PREPARING", "READY"])
-          .orderBy("orders.created_at", "desc")
-          .limit(20)
-          .execute();
-        if (orders.length === 0) return "📋 لا توجد طلبات نشطة حالياً.";
-        let resp = `📋 **الطلبات النشطة (${orders.length})**\n\n`;
-        for (const o of orders) {
+        const orders = await invoke<{ id: string; status: string; order_type: string; total_cents: number }[]>(
+          "list_orders_v3", { sessionToken: token }
+        );
+        const active = orders.filter((o) => ["PENDING", "PREPARING", "READY"].includes(o.status)).slice(0, 20);
+        if (active.length === 0) return "📋 لا توجد طلبات نشطة حالياً.";
+        let resp = `📋 **الطلبات النشطة (${active.length})**\n\n`;
+        for (const o of active) {
           const typeLabel = o.order_type === "DINE_IN" ? "داخلي" : o.order_type === "TAKEAWAY" ? "طلبية خارجية" : "توصيل";
-          resp += `• #${o.id.slice(0, 6)} | ${o.table_name ?? o.customer_name ?? "—"} | ${typeLabel} | ${formatCurrency(o.total_cents)} | ${o.status === "PENDING" ? "قيد الانتظار" : o.status === "PREPARING" ? "قيد التحضير" : "جاهز"}\n`;
+          resp += `• #${o.id.slice(0, 6)} | ${typeLabel} | ${formatCurrency(o.total_cents)} | ${o.status === "PENDING" ? "قيد الانتظار" : o.status === "PREPARING" ? "قيد التحضير" : "جاهز"}\n`;
         }
         return resp;
       }
 
       if (q.includes("أفضل") || q.includes("مبيع") || q.includes("الأصناف")) {
-        const items = await db.selectFrom("order_items")
-          .innerJoin("menu_items", "menu_items.id", "order_items.menu_item_id")
-          .select([
-            "menu_items.name",
-            sql<number>`SUM(order_items.quantity)`.as("total_qty"),
-            sql<number>`SUM(order_items.quantity * order_items.unit_price_cents)`.as("total_revenue"),
-          ])
-          .groupBy("menu_items.name")
-          .orderBy("total_qty", "desc")
-          .limit(10)
-          .execute();
-        if (items.length === 0) return "🏆 لا توجد بيانات مبيعات كافية للتحليل.";
+        const today = new Date().toISOString().slice(0, 10);
+        const report = await invoke<{ top_items: { name: string; quantity: number }[] }>(
+          "get_sales_report_v3", { sessionToken: token, todayStartIso: `${today}T00:00:00` }
+        );
+        if (report.top_items.length === 0) return "🏆 لا توجد بيانات مبيعات كافية للتحليل.";
         let resp = `🏆 **أفضل الأصناف مبيعاً**\n\n`;
-        items.forEach((item, i) => {
-          resp += `${i + 1}. ${item.name}: ${item.total_qty} وحدة | ${formatCurrency(item.total_revenue ?? 0)}\n`;
+        report.top_items.forEach((item, i) => {
+          resp += `${i + 1}. ${item.name}: ${item.quantity} وحدة\n`;
         });
         return resp;
       }
 
       if (q.includes("ديون") || q.includes("مستحقات")) {
-        const debtors = await db.selectFrom("debtors")
-          .selectAll()
-          .where("is_active", "=", 1)
-          .where("balance_cents", ">", 0)
-          .orderBy("balance_cents", "desc")
-          .limit(10)
-          .execute();
-        if (debtors.length === 0) return "💳 لا توجد ديون مستحقة. جميع الحسابات مسددة.";
-        const total = debtors.reduce((a, d) => a + d.balance_cents, 0);
-        let resp = `💳 **الديون المستحقة (${debtors.length} عميل)**\n\n`;
+        const debtors = await invoke<{ name: string; is_active: number; balance_cents: number }[]>(
+          "list_debtors_v3", { sessionToken: token }
+        );
+        const owing = debtors.filter((d) => d.is_active && d.balance_cents > 0).sort((a, b) => b.balance_cents - a.balance_cents).slice(0, 10);
+        if (owing.length === 0) return "💳 لا توجد ديون مستحقة. جميع الحسابات مسددة.";
+        const total = owing.reduce((a, d) => a + d.balance_cents, 0);
+        let resp = `💳 **الديون المستحقة (${owing.length} عميل)**\n\n`;
         resp += `إجمالي الديون: ${formatCurrency(total)}\n\n`;
-        for (const d of debtors) {
+        for (const d of owing) {
           resp += `• ${d.name}: ${formatCurrency(d.balance_cents)}\n`;
         }
         return resp;

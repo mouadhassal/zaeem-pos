@@ -78,6 +78,24 @@ pub struct OrderRow {
     pub total_cents: i64,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct KdsOrderItemRow {
+    pub name: String,
+    pub quantity: i64,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct KdsOrderRow {
+    pub id: String,
+    pub table_name: Option<String>,
+    pub order_type: String,
+    pub status: String,
+    pub created_at: String,
+    pub notes: Option<String>,
+    pub items: Vec<KdsOrderItemRow>,
+}
+
 pub struct NewOrder {
     pub table_id: String,
     pub user_id: String,
@@ -767,6 +785,53 @@ impl<'a> Repo<'a> {
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// `kds/page.tsx`'s kitchen display feed: every PENDING/PREPARING/READY
+    /// order, oldest first, each with its non-voided items. Two queries
+    /// (orders, then items for those same orders) grouped in Rust, same
+    /// shape as the old frontend's own two-step read, avoiding only the
+    /// N+1-per-order pattern (one items query total, not one per order).
+    pub fn list_kitchen_orders(&self, scope: &Scope) -> Result<Vec<KdsOrderRow>, RepoError> {
+        self.assert_scope_populated("orders", true)?;
+        let (pred, binds) = Self::scope_predicate(scope);
+        let pred_orders = pred.replace("tenant_id", "orders.tenant_id").replace("branch_id", "orders.branch_id");
+        let sql = format!(
+            "SELECT orders.id, tables.name, orders.order_type, orders.status, orders.created_at, orders.discount_reason \
+             FROM orders LEFT JOIN tables ON tables.id = orders.table_id \
+             WHERE {pred_orders} AND orders.status IN ('PENDING', 'PREPARING', 'READY') \
+             ORDER BY orders.created_at ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let mut orders: Vec<KdsOrderRow> = stmt.query_map(bind_refs.as_slice(), |r| {
+            Ok(KdsOrderRow {
+                id: r.get(0)?, table_name: r.get(1)?, order_type: r.get(2)?, status: r.get(3)?,
+                created_at: r.get(4)?, notes: r.get(5)?, items: vec![],
+            })
+        })?.collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        let pred_items = pred.replace("tenant_id", "orders.tenant_id").replace("branch_id", "orders.branch_id");
+        let items_sql = format!(
+            "SELECT order_items.order_id, menu_items.name, order_items.quantity, order_items.notes \
+             FROM order_items \
+             INNER JOIN orders ON orders.id = order_items.order_id \
+             INNER JOIN menu_items ON menu_items.id = order_items.menu_item_id \
+             WHERE {pred_items} AND orders.status IN ('PENDING', 'PREPARING', 'READY') AND order_items.voided = 0"
+        );
+        let mut items_stmt = self.conn.prepare(&items_sql)?;
+        let item_bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let item_rows: Vec<(String, KdsOrderItemRow)> = items_stmt.query_map(item_bind_refs.as_slice(), |r| {
+            Ok((r.get::<_, String>(0)?, KdsOrderItemRow { name: r.get(1)?, quantity: r.get(2)?, notes: r.get(3)? }))
+        })?.collect::<Result<Vec<_>, _>>()?;
+
+        for (order_id, item) in item_rows {
+            if let Some(order) = orders.iter_mut().find(|o| o.id == order_id) {
+                order.items.push(item);
+            }
+        }
+        Ok(orders)
     }
 
     /// `scope` here is the CALLER's scope (used only for the populated-table
