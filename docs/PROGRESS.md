@@ -1,6 +1,83 @@
 # PROGRESS.md — SPRINT_01_multitenant_trust_boundary_v3.md
 
-**Last updated:** 2026-07-16, after Batch 3b slice 3 (customers + loyalty, debt, finance +
+**Last updated:** 2026-07-16, after Batch 3b slice 4 (PO tab, delivery, printer.ts -- each its own
+commit). **Closeout (flip lint to blocking, remove kysely/tauri_plugin_sql) explicitly NOT done --
+see "Batch 3b, slice 4" below for why the premise wasn't met.**
+
+## Batch 3b, slice 4: PO tab + delivery + printer.ts done -- closeout premise was WRONG, not performed
+
+You asked for the FINAL conversion slice (PO tab, delivery, printer.ts), then closeout once "the
+last getDb() is gone from src/". **All three groups are done, full quality, tested, each its own
+commit** (`git log` has the three commits). But the closeout premise was false: after finishing all
+three, I ran `check-no-sql-in-frontend.sh` for a real count instead of assuming zero, and it found
+**61 real frontend SQL references still in `src/`**, spread across files that were never on any
+punch list to date:
+
+| File | refs | Status |
+|---|---|---|
+| `src/lib/orderService.ts` | 12 | **Never tracked before.** The core order-creation/POS backend service. |
+| `src/app/pos/page.tsx` | 7 | **Never tracked before.** The main POS/order-taking screen itself. |
+| `src/app/menu/page.tsx` | 6 | Tracked -- combo/happy-hour tabs, deferred since slice 2. |
+| `src/app/staff/page.tsx` | 5 | Partially tracked -- shifts/attendance tabs were flagged; the other 5 refs weren't scoped out. |
+| `src/app/branches/page.tsx` | 5 | **Never tracked before.** |
+| `src/db/index.ts` | 4 | Expected -- this IS `getDb()`'s own definition + the Kysely instance. Goes away only when kysely is removed entirely. |
+| `src/kds/App.tsx` + `src/app/kds/page.tsx` | 4 | **Never tracked before.** Kitchen display system. |
+| `src/db/tauri-dialect.ts`, `src/db/audit.ts`, `src/db/migrations.ts`, `src/db/types.ts`, `src/db/corruption.ts` | 9 | Expected -- Kysely infra, not a "page", goes away with the dependency. |
+| `src/components/PaymentModal.tsx` | 2 | **Never tracked before.** Worth flagging specially: this is the checkout modal that calls `take_payment_v3` for the actual payment, but still uses `getDb()` for at least one other read in its flow -- not a payment-atomicity regression (that's inside `take_payment_v3`, unaffected), but an incomplete conversion. |
+| `src/app/ai/page.tsx` | 2 | **Never tracked before.** |
+| `src/components/modals/ManagerPinModal.tsx` | 1 | **Never tracked before.** Worth flagging specially: manager PIN verification currently reads via `getDb()`, not a scoped/audited v3 command. |
+| `src/stores/menuStore.ts`, `src/lib/taxCalculator.ts`, `src/hooks/useCurrency.ts` | 3 | **Never tracked before.** Shared utility modules multiple pages depend on. |
+| `src/app/shift/page.tsx` | 1 | Was reported "fully converted" in slice 2 -- 1 reference remains, needs a look. |
+| `src/app/finance/page.tsx` | 1 | Tracked -- the `chain_config` currency/tax-mode read, deliberately left as-is per slice 3's own note. |
+| `src/app/debug/page.tsx` | 1 | Dev-only, gated out of release builds already (pre-existing fix). |
+
+**Because the premise was false, I did NOT perform any of the three closeout steps** (flip
+`check-no-sql-in-frontend.sh` to blocking, remove `kysely`/`tauri_plugin_sql` from `package.json`,
+or touch the plugin registration in `lib.rs`). Doing so now would either break the build (removing
+a still-load-bearing dependency) or make CI red for reasons that have nothing to do with this
+slice's actual work. This is stated plainly rather than quietly declared done.
+
+**Commands converted to the v3 scoped shape: 102 registered `commands_v3::*` handlers in
+`lib.rs`** (up from 74 at the end of slice 3). New this slice: supplier CRUD, both PO-creation
+paths, PO cancel/receive/items, inventory movements, low-stock alerts (group 1, PO tab); driver
+CRUD, delivery zones CRUD, driver assignment + terminal-status atomicity (group 2, delivery);
+`list_active_printers_v3` (group 3, printer.ts). Every new command follows the established shape
+(authn → scope → authz → validate → repo → same-transaction audit → commit); every new atomic
+operation (PO receiving, driver assignment, terminal delivery status) has a dedicated test proving
+the fact+derived-total pair commits together, plus one genuine kill-9 simulation (PO receiving).
+
+**New DRIFT finding this slice:** `suppliers.address`/`suppliers.notes` -- the old `SupplierModal`
+referenced both in its create/update calls, but the real `suppliers` table (0001_init.sql) has
+neither column. Same failure class as Finding #1 (`driver_id`): supplier creation/update with an
+address or notes has silently no-opped on every fresh install since inception. Dropped from the new
+Rust model and the dead form fields removed from `SupplierModal`, not carried forward.
+`delivery_logs.notes` (referenced by the old `updateDeliveryStatus`) is the same story -- dropped,
+`failure_reason` (which IS real) kept.
+
+**Preserved-not-fixed quirks found this slice (stated, not silently corrected):**
+- `AlertsTab`'s auto-order never bumped `suppliers.total_orders`, unlike the two manual PO-create
+  paths. Kept as-is.
+- `printers.code_page` is stored as an INTEGER but the old `generateEscPosReceipt`'s `setCodePage`
+  keys its lookup table by string name (`"CP864"` etc.) -- a numeric value always misses that table
+  and silently falls through to the CP864 default regardless of what's actually stored. This was
+  already true before any Rust conversion; carried forward exactly, not corrected.
+- `chain_config` has no `code_page` column at all (only `default_paper_width`) -- the old
+  frontend's `chain?.code_page ?? "CP864"` fallback was already dead code in practice (only reached
+  if a printer's own `code_page` were `NULL`, which the schema's `NOT NULL DEFAULT 0` makes
+  impossible). Hardcoded to `"CP864"` directly in `printer.ts` now, same runtime effect.
+
+**Test evidence:** 44/44 `cargo test` pass (up from 41: `purchase_order_lifecycle_...`,
+`kill_9_mid_receive_never_leaves_a_partial_stock_bump`, `delivery_lifecycle_...`). `cargo clippy
+--all-targets -- -D warnings` clean. `npx tsc --noEmit` clean across the whole frontend. Full RBAC
+matrix: **23 permissions × 6 roles**, still exhaustive (grew from 22 with the new
+`Permission::UsePrinter`, Cashier+, distinct from `ManagePrinters` which stays Manager+).
+
+**Not hand-tested yet this slice** -- per your instruction, hand-test happens after this report,
+before T1.9 starts.
+
+---
+
+**Last updated (prior entry):** 2026-07-16, after Batch 3b slice 3 (customers + loyalty, debt, finance +
 reports, settings -- each its own commit; PO tab/delivery/printer.ts explicitly not reached).
 **Method:** percentages reflect what's implemented AND tested, not what's designed/planned.
 A phase at 100% means its own stated Definition of Done is met; a phase with sub-scope
@@ -455,29 +532,53 @@ start. No new hand-test requested for slice 3 yet.
 
 ## Next-session punch list (explicit, in priority order)
 
-1. **PO tab** (`inventory/page.tsx`'s Purchases tab + `CreatePOModal`/`ReceivePOModal`) — supplier
-   CRUD, PO creation with line items, and PO receiving (must be one atomic transaction: line-item
-   `quantity_received` update + `ingredients.current_stock` bump + `inventory_logs` fact + PO
-   status → RECEIVED, same principle as `take_payment_v3`/`adjust_stock_v3`).
-2. **Delivery** (`delivery/page.tsx`, `deliveryService.ts`) — driver assignment/status UI; backend
-   commands (`create_delivery_log_v3`, `update_delivery_status_v3`, `list_delivery_logs_v3`,
-   driver CRUD) already exist from Batch 3a, only the frontend call sites remain.
-3. **`printer.ts`** (the print-job service, distinct from `settings/page.tsx`'s printer config tab
-   which IS converted) — still `getDb()`.
-4. `combo_meals`/`combo_items`/`happy_hour_rules` (menu page's offers tab) — deferred slice 2.
-5. `staff/page.tsx`'s shifts/attendance tabs — deferred slice 1.
-6. Once (1)-(5) bring `getDb()` call sites to zero: flip `check-no-sql-in-frontend.sh` to blocking,
-   remove `kysely` + `tauri_plugin_sql` from `package.json`, remove the plugin registration in
-   `lib.rs`'s `tauri::Builder`.
-7. Full RBAC matrix re-verified at ~150 commands.
-8. **Not urgent**: enforce PIN uniqueness per branch. Login is PIN-only now (Batch 3a) — nothing
-   currently stops two staff members on the same branch from having the same PIN, which would make
-   `login_pin_v3`'s scan-and-verify resolve to whichever one it iterates to first (unpredictable,
-   not a security hole exactly, but a real correctness gap now that PIN is the ONLY credential).
-   Needs a uniqueness check in `create_staff_v3`/`update_staff_profile_v3` scoped to branch (or
-   tenant, for Owner/Platform's branch-less rows) before hashing.
-9. **Not urgent, added this slice**: reconcile (or explicitly decide not to reconcile) the two
-   table dualities -- `menu_items`/`categories` vs T1.6's `menu_item_default`/`menu_item_override`,
-   and legacy `branches` vs T1.1's `branch`. Both are currently two live schemas for the same
-   concept, one populated and used, one empty and unused.
-10. T1.9 (the formal proof) starts only after all of the above.
+**Superseded by slice 4's honest recount (61 real `getDb()` references remain, see table above).
+Items 1-3 below from the old list are DONE as of slice 4; items 4-5 remain; a large amount of
+newly-discovered scope (never previously tracked) is now added as items 6-10.**
+
+1. ~~PO tab~~ — **DONE, slice 4.**
+2. ~~Delivery~~ — **DONE, slice 4.**
+3. ~~`printer.ts`~~ — **DONE, slice 4.**
+4. `combo_meals`/`combo_items`/`happy_hour_rules` (menu page's offers tab, 6 refs) — deferred
+   slice 2, still deferred.
+5. `staff/page.tsx`'s shifts/attendance tabs — deferred slice 1. Note: `staff/page.tsx` has 5
+   `getDb()` refs total per slice 4's recount, not all of which may be shifts/attendance --
+   needs re-scoping when picked up.
+6. **`src/lib/orderService.ts` (12 refs) + `src/app/pos/page.tsx` (7 refs)** — newly discovered
+   this slice, never previously tracked. This is the core order-creation/POS backend and the main
+   POS screen itself -- almost certainly the single largest remaining conversion group, likely
+   bigger than any group done so far. Highest priority of the newly-found scope: it's the actual
+   order-taking path, not a back-office page.
+7. **`src/components/PaymentModal.tsx` (2 refs) + `src/components/modals/ManagerPinModal.tsx`
+   (1 ref)** — newly discovered. Security/correctness-adjacent: `PaymentModal` calls
+   `take_payment_v3` for the actual payment (atomicity unaffected) but still reads via `getDb()`
+   elsewhere in its flow; `ManagerPinModal` verifies the manager PIN via `getDb()`, not a scoped/
+   audited v3 command. Worth converting early given what they gate.
+8. **`src/app/staff/page.tsx` (5 refs), `src/app/branches/page.tsx` (5 refs), `src/app/kds/page.tsx`
+   + `src/kds/App.tsx` (4 refs), `src/app/ai/page.tsx` (2 refs)** — newly discovered, not
+   previously on any punch list. Branch/staff back-office management, the kitchen display system,
+   and the AI assistant page.
+9. **`src/stores/menuStore.ts`, `src/lib/taxCalculator.ts`, `src/hooks/useCurrency.ts`** (1 ref
+   each) — newly discovered shared utility modules multiple pages depend on; likely need to
+   convert before some of the pages above can fully drop `getDb()`.
+10. **`src/app/shift/page.tsx` (1 ref)** — was reported "fully converted" in slice 2; needs a look,
+    something was missed or added since.
+11. `src/app/finance/page.tsx`'s `chain_config` read (1 ref) — deliberately deferred, slice 3.
+12. `src/app/debug/page.tsx` (1 ref) — dev-only, already gated out of release builds.
+13. `src/db/*` (kysely infra itself: `index.ts`, `tauri-dialect.ts`, `audit.ts`, `migrations.ts`,
+    `types.ts`, `corruption.ts` — 17 refs total) — expected to remain until every consumer above
+    is converted; this is the dependency itself, not a page.
+14. Once (4)-(12) bring real (non-infra) `getDb()` call sites to zero: flip
+    `check-no-sql-in-frontend.sh` to blocking (prove red-on-plant first), remove `kysely` +
+    `tauri_plugin_sql` from `package.json` and delete `src/db/*`, remove the plugin registration
+    in `lib.rs`'s `tauri::Builder`, confirm the app still builds and runs.
+15. Full RBAC matrix re-verified once the command count stabilizes near ~150.
+16. **Not urgent**: enforce PIN uniqueness per branch (unchanged from slice 3's note).
+17. **Not urgent, explicit reconciliation task, do NOT do in passing**: the two live table
+    dualities -- (a) `menu_items`/`categories` (real, populated, what the UI uses) vs T1.6's
+    `menu_item_default`/`menu_item_override` (new scaffold, empty, unused); (b) legacy `branches`
+    (real, tenant-only, what the UI uses) vs T1.1's `branch` (new, what `create_branch_v3`
+    operates on). Both need an explicit decision (migrate data + drop the old one, or formally
+    retire the new one) — not a silent fix folded into an unrelated slice.
+18. T1.9 (the formal proof) starts only after (4)-(15) above — i.e. once `getDb()` is genuinely
+    gone from every real frontend consumer, not just the three groups this slice covered.
