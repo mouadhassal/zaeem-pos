@@ -71,6 +71,8 @@ pub enum Action {
     InventoryAdjusted,
     ShiftOpened,
     ShiftClosed,
+    CustomerChanged,
+    LoyaltyCardIssued,
 }
 
 impl Action {
@@ -87,6 +89,8 @@ impl Action {
             Action::InventoryAdjusted => "InventoryAdjusted",
             Action::ShiftOpened => "ShiftOpened",
             Action::ShiftClosed => "ShiftClosed",
+            Action::CustomerChanged => "CustomerChanged",
+            Action::LoyaltyCardIssued => "LoyaltyCardIssued",
         }
     }
 }

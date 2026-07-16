@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
-import { getDb } from "../../db";
+import { invoke } from "@tauri-apps/api/core";
+import { useAuthStore } from "../../stores/authStore";
 import { z } from "zod";
 
 interface Customer {
@@ -99,6 +100,7 @@ function formatDateTime(dateStr: string | null): string {
 }
 
 export default function CustomersPage() {
+  const token = useAuthStore((s) => s.token);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -124,19 +126,14 @@ export default function CustomersPage() {
     setLoading(true);
     setError(null);
     try {
-      const db = await getDb();
-      const rows = await db
-        .selectFrom("customers")
-        .selectAll()
-        .orderBy("name", "asc")
-        .execute();
+      const rows = await invoke<Customer[]>("list_customers_v3", { sessionToken: token });
       setCustomers(rows);
     } catch {
       setError("حدث خطأ في تحميل العملاء");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [token]);
 
   useEffect(() => {
     fetchAll();
@@ -176,8 +173,8 @@ export default function CustomersPage() {
     }
     setSaving(true);
     try {
-      const db = await getDb();
-      const data = {
+      const args = {
+        sessionToken: token,
         name: parsed.data.name,
         phone: parsed.data.phone,
         email: parsed.data.email || null,
@@ -186,28 +183,14 @@ export default function CustomersPage() {
         birthday: parsed.data.birthday || null,
       };
       if (editId) {
-        await db
-          .updateTable("customers")
-          .set(data)
-          .where("id", "=", editId)
-          .execute();
+        await invoke("update_customer_v3", { ...args, customerId: editId });
       } else {
-        await db
-          .insertInto("customers")
-          .values({
-            id: crypto.randomUUID(),
-            ...data,
-            total_orders: 0,
-            total_spent_cents: 0,
-            loyalty_points: 0,
-            last_order_at: null,
-          })
-          .execute();
+        await invoke("create_customer_v3", args);
       }
       setShowModal(false);
       await fetchAll();
     } catch (err: any) {
-      if (err?.message?.includes("UNIQUE")) {
+      if (typeof err === "string" && err.includes("UNIQUE")) {
         setFormErrors({ phone: "رقم الهاتف موجود مسبقاً" });
       } else {
         setFormErrors({ _form: "حدث خطأ في الحفظ" });
@@ -220,8 +203,7 @@ export default function CustomersPage() {
   const confirmDelete = async () => {
     if (!deleteId) return;
     try {
-      const db = await getDb();
-      await db.deleteFrom("customers").where("id", "=", deleteId).execute();
+      await invoke("delete_customer_v3", { sessionToken: token, customerId: deleteId });
       setDeleteId(null);
       await fetchAll();
     } catch {
@@ -231,29 +213,9 @@ export default function CustomersPage() {
 
   const openDetail = async (customer: Customer) => {
     try {
-      const db = await getDb();
-      const orders = await db
-        .selectFrom("orders")
-        .select(["id", "status", "total_cents", "created_at", "order_type"])
-        .where("customer_phone", "=", customer.phone)
-        .orderBy("created_at", "desc")
-        .limit(20)
-        .execute();
-
-      const items = await db
-        .selectFrom("order_items")
-        .innerJoin("menu_items", "menu_items.id", "order_items.menu_item_id")
-        .innerJoin("orders", "orders.id", "order_items.order_id")
-        .select([
-          "menu_items.name",
-          db.fn.sum<number>("order_items.quantity").as("quantity"),
-        ])
-        .where("orders.customer_phone", "=", customer.phone)
-        .where("order_items.voided", "=", 0)
-        .groupBy("menu_items.name")
-        .orderBy("quantity", "desc")
-        .limit(3)
-        .execute();
+      const detail = await invoke<{ orders: OrderRow[]; favorite_items: FavoriteItem[] }>(
+        "get_customer_detail_v3", { sessionToken: token, phone: customer.phone }
+      );
 
       const avgValue = customer.total_orders > 0
         ? customer.total_spent_cents / customer.total_orders
@@ -261,11 +223,8 @@ export default function CustomersPage() {
 
       setDetailCustomer({
         customer,
-        orders,
-        favoriteItems: items.map((i) => ({
-          name: i.name,
-          quantity: i.quantity ?? 0,
-        })),
+        orders: detail.orders,
+        favoriteItems: detail.favorite_items,
         avgOrderValue: avgValue,
       });
       setDetailOpen(true);
@@ -282,16 +241,18 @@ export default function CustomersPage() {
   const updateDetailField = async (field: string, value: string) => {
     if (!detailCustomer) return;
     try {
-      const db = await getDb();
-      await db
-        .updateTable("customers")
-        .set({ [field]: value || null })
-        .where("id", "=", detailCustomer.customer.id)
-        .execute();
-      setDetailCustomer({
-        ...detailCustomer,
-        customer: { ...detailCustomer.customer, [field]: value },
+      const updated = { ...detailCustomer.customer, [field]: value };
+      await invoke("update_customer_v3", {
+        sessionToken: token,
+        customerId: updated.id,
+        name: updated.name,
+        phone: updated.phone,
+        email: updated.email || null,
+        address: updated.address || null,
+        notes: updated.notes || null,
+        birthday: updated.birthday || null,
       });
+      setDetailCustomer({ ...detailCustomer, customer: updated });
     } catch {
       setError("حدث خطأ في التحديث");
     }

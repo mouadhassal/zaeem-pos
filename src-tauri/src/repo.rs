@@ -169,6 +169,49 @@ pub struct CustomerRow {
     pub notes: Option<String>,
     pub birthday: Option<String>,
     pub loyalty_points: i64,
+    pub total_orders: i64,
+    pub total_spent_cents: i64,
+    pub last_order_at: Option<String>,
+    pub last_modified: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CustomerOrderRow {
+    pub id: String,
+    pub status: String,
+    pub total_cents: i64,
+    pub created_at: String,
+    pub order_type: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FavoriteItemRow {
+    pub name: String,
+    pub quantity: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LoyaltyCardRow {
+    pub id: String,
+    pub customer_id: String,
+    pub card_number: String,
+    pub points: i64,
+    pub tier: String,
+    pub issued_at: String,
+    pub last_used_at: Option<String>,
+    pub customer_name: String,
+    pub customer_phone: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LoyaltyTxRow {
+    pub id: String,
+    pub card_id: String,
+    pub points: i64,
+    pub tx_type: String,
+    pub reference_type: Option<String>,
+    pub reference_id: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -680,10 +723,119 @@ impl<'a> Repo<'a> {
     pub fn list_customers(&self, tenant_id: &str) -> Result<Vec<CustomerRow>, RepoError> {
         self.assert_scope_populated("customers", false)?;
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, phone, email, address, notes, birthday, loyalty_points FROM customers WHERE tenant_id = ?1 ORDER BY name ASC",
+            "SELECT id, name, phone, email, address, notes, birthday, loyalty_points, total_orders, total_spent_cents, last_order_at, last_modified \
+             FROM customers WHERE tenant_id = ?1 ORDER BY name ASC",
         )?;
         let rows = stmt.query_map(params![tenant_id], |r| {
-            Ok(CustomerRow { id: r.get(0)?, name: r.get(1)?, phone: r.get(2)?, email: r.get(3)?, address: r.get(4)?, notes: r.get(5)?, birthday: r.get(6)?, loyalty_points: r.get(7)? })
+            Ok(CustomerRow {
+                id: r.get(0)?, name: r.get(1)?, phone: r.get(2)?, email: r.get(3)?, address: r.get(4)?, notes: r.get(5)?, birthday: r.get(6)?,
+                loyalty_points: r.get(7)?, total_orders: r.get(8)?, total_spent_cents: r.get(9)?, last_order_at: r.get(10)?, last_modified: r.get(11)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_customer(&self, customer_id: &str, name: &str, phone: &str, email: Option<&str>, address: Option<&str>, notes: Option<&str>, birthday: Option<&str>) -> Result<(), RepoError> {
+        self.conn.execute(
+            "UPDATE customers SET name = ?1, phone = ?2, email = ?3, address = ?4, notes = ?5, birthday = ?6, last_modified = datetime('now') WHERE id = ?7",
+            params![name, phone, email, address, notes, birthday, customer_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_customer(&self, customer_id: &str) -> Result<(), RepoError> {
+        self.conn.execute("DELETE FROM customers WHERE id = ?1", params![customer_id])?;
+        Ok(())
+    }
+
+    /// Order history + favorite items for one customer, matched by phone
+    /// (same join key the old Kysely code used -- `orders.customer_phone`,
+    /// not a foreign key to `customers.id`, since walk-in orders can carry a
+    /// phone with no `customers` row at all).
+    pub fn customer_order_history(&self, phone: &str) -> Result<Vec<CustomerOrderRow>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, status, total_cents, created_at, order_type FROM orders WHERE customer_phone = ?1 ORDER BY created_at DESC LIMIT 20",
+        )?;
+        let rows = stmt.query_map(params![phone], |r| {
+            Ok(CustomerOrderRow { id: r.get(0)?, status: r.get(1)?, total_cents: r.get(2)?, created_at: r.get(3)?, order_type: r.get(4)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    pub fn customer_favorite_items(&self, phone: &str) -> Result<Vec<FavoriteItemRow>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT menu_items.name, SUM(order_items.quantity) as qty \
+             FROM order_items \
+             INNER JOIN menu_items ON menu_items.id = order_items.menu_item_id \
+             INNER JOIN orders ON orders.id = order_items.order_id \
+             WHERE orders.customer_phone = ?1 AND order_items.voided = 0 \
+             GROUP BY menu_items.name ORDER BY qty DESC LIMIT 3",
+        )?;
+        let rows = stmt.query_map(params![phone], |r| {
+            Ok(FavoriteItemRow { name: r.get(0)?, quantity: r.get(1)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    // -----------------------------------------------------------------
+    // Batch 3b, slice 3, group 1b -- loyalty. `loyalty_cards` is tenant-only,
+    // `loyalty_transactions` is tenant+branch. Card issuance is UID
+    // keyboard-entry ONLY (a scanner is just a keyboard emitting the UID
+    // string -- same software path; no separate hardware-scan integration,
+    // per instruction, that's Phase 2).
+    // -----------------------------------------------------------------
+
+    /// `is_active` is deliberately not read/written -- DRIFT_REPORT.md
+    /// Finding #5 confirmed the real `loyalty_cards` table (0001_init.sql)
+    /// has no such column (only the aspirational `SCHEMA_SQL`/`schema.sql`
+    /// declares it), and no real code references it either. Modeling a
+    /// column that doesn't exist would just reproduce Finding #1's bug class.
+    pub fn list_loyalty_cards(&self, tenant_id: &str) -> Result<Vec<LoyaltyCardRow>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT loyalty_cards.id, loyalty_cards.customer_id, loyalty_cards.card_number, loyalty_cards.points, loyalty_cards.tier, \
+                    loyalty_cards.issued_at, loyalty_cards.last_used_at, customers.name, customers.phone \
+             FROM loyalty_cards INNER JOIN customers ON customers.id = loyalty_cards.customer_id \
+             WHERE loyalty_cards.tenant_id = ?1 ORDER BY loyalty_cards.points DESC",
+        )?;
+        let rows = stmt.query_map(params![tenant_id], |r| {
+            Ok(LoyaltyCardRow {
+                id: r.get(0)?, customer_id: r.get(1)?, card_number: r.get(2)?, points: r.get(3)?, tier: r.get(4)?,
+                issued_at: r.get(5)?, last_used_at: r.get(6)?, customer_name: r.get(7)?, customer_phone: r.get(8)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// `card_number` is the UID typed (or scanned -- a scanner is just a
+    /// keyboard) at issue time, not generated here. SQLite's own `UNIQUE`
+    /// constraint on `card_number` is the actual duplicate-UID guard; this
+    /// method doesn't pre-check, it just surfaces the constraint violation.
+    pub fn issue_loyalty_card(&self, tenant_id: &str, customer_id: &str, card_number: &str) -> Result<String, RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO loyalty_cards (id, tenant_id, customer_id, card_number, points, tier, issued_at, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, 0, 'BRONZE', datetime('now'), datetime('now'), 'pending')",
+            params![id, tenant_id, customer_id, card_number],
+        )?;
+        Ok(id)
+    }
+
+    pub fn list_loyalty_transactions(&self, scope: &Scope, card_id: Option<&str>) -> Result<Vec<LoyaltyTxRow>, RepoError> {
+        let (predicate, args) = Self::scope_predicate(scope);
+        let mut sql = format!(
+            "SELECT id, card_id, points, type, reference_type, reference_id, created_at FROM loyalty_transactions WHERE {predicate}"
+        );
+        let mut args = args;
+        if let Some(cid) = card_id {
+            sql.push_str(&format!(" AND card_id = ?{}", args.len() + 1));
+            args.push(cid.to_string());
+        }
+        sql.push_str(" ORDER BY created_at DESC LIMIT 100");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+            Ok(LoyaltyTxRow { id: r.get(0)?, card_id: r.get(1)?, points: r.get(2)?, tx_type: r.get(3)?, reference_type: r.get(4)?, reference_id: r.get(5)?, created_at: r.get(6)? })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }

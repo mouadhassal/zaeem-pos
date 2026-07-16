@@ -773,7 +773,7 @@ pub fn create_customer_v3(state: State<Db>, session_token: String, name: String,
         .map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
-        audit::Action::StaffCreated, "customer", &customer_id, // reuses the closest existing Action; a dedicated CustomerCreated variant is cosmetic, not deferred functionality
+        audit::Action::CustomerChanged, "customer", &customer_id,
         None, Some(&serde_json::json!({ "name": name, "phone": phone })),
     ).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -786,6 +786,92 @@ pub fn list_customers_v3(state: State<Db>, session_token: String) -> Result<Vec<
     authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_customers(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn update_customer_v3(state: State<Db>, session_token: String, customer_id: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>, birthday: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx)
+        .update_customer(&customer_id, &name, &phone, email.as_deref(), address.as_deref(), notes.as_deref(), birthday.as_deref())
+        .map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::CustomerChanged, "customer", &customer_id, None, Some(&serde_json::json!({ "name": name, "phone": phone }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_customer_v3(state: State<Db>, session_token: String, customer_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).delete_customer(&customer_id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::CustomerChanged, "customer", &customer_id, Some(&serde_json::json!({ "deleted": false })), Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+pub struct CustomerDetailV3 {
+    pub orders: Vec<crate::repo::CustomerOrderRow>,
+    pub favorite_items: Vec<crate::repo::FavoriteItemRow>,
+}
+
+#[tauri::command]
+pub fn get_customer_detail_v3(state: State<Db>, session_token: String, phone: String) -> Result<CustomerDetailV3, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let repo = Repo::new(&conn);
+    Ok(CustomerDetailV3 {
+        orders: repo.customer_order_history(&phone).map_err(|e| e.to_string())?,
+        favorite_items: repo.customer_favorite_items(&phone).map_err(|e| e.to_string())?,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Batch 3b, slice 3, group 1b -- loyalty. Card issuance is UID
+// keyboard-entry ONLY -- no hardware scan integration (Phase 2, out of scope).
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_loyalty_cards_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::LoyaltyCardRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_loyalty_cards(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
+/// `card_number` is whatever was typed or scanned into the UID field on the
+/// issue-card form -- a scanner is just a keyboard emitting the UID string,
+/// so there is no separate hardware code path here at all.
+#[tauri::command]
+pub fn issue_loyalty_card_v3(state: State<Db>, session_token: String, customer_id: String, card_number: String) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
+    if card_number.trim().is_empty() {
+        return Err("رقم البطاقة مطلوب".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let card_id = Repo::new(&tx)
+        .issue_loyalty_card(&actor.tenant_id, &customer_id, card_number.trim())
+        .map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::LoyaltyCardIssued, "loyalty_card", &card_id, None, Some(&serde_json::json!({ "customer_id": customer_id, "card_number": card_number }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(card_id)
+}
+
+#[tauri::command]
+pub fn list_loyalty_transactions_v3(state: State<Db>, session_token: String, card_id: Option<String>) -> Result<Vec<crate::repo::LoyaltyTxRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_loyalty_transactions(&actor.scope(), card_id.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1733,6 +1819,73 @@ mod tests {
         let closed_at: Option<String> = conn.query_row("SELECT closed_at FROM shifts WHERE id = ?1", params![shift_id], |r| r.get(0)).unwrap();
         assert!(closed_at.is_some());
         println!("[shifts] shift closed, no longer reported as active");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Batch 3b, slice 3, group 1: customer CRUD + order-history/favorites
+    /// lookup, and loyalty card issuance via UID keyboard-entry (never a
+    /// generated code) + transaction listing. Proves the duplicate-UID case
+    /// is a hard error (SQLite's own `UNIQUE` constraint on `card_number`),
+    /// not silently overwritten.
+    #[test]
+    fn customers_and_loyalty_crud_with_uid_keyboard_entry() {
+        let (db_path, tenant_id, branch_id, table_id) = seeded_db("custloyalty");
+        let conn = Connection::open(&db_path).unwrap();
+        let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Loyalty Cashier");
+        let repo = Repo::new(&conn);
+
+        let cust_id = repo.create_customer(&tenant_id, "أحمد", "0991112233", None, None, None, None).unwrap();
+        let list = repo.list_customers(&tenant_id).unwrap();
+        assert!(list.iter().any(|c| c.id == cust_id && c.total_orders == 0));
+        println!("[customers] customer created, total_orders defaults to 0");
+
+        repo.update_customer(&cust_id, "أحمد محمد", "0991112233", Some("a@x.com"), Some("دمشق"), None, None).unwrap();
+        let list = repo.list_customers(&tenant_id).unwrap();
+        let c = list.iter().find(|c| c.id == cust_id).unwrap();
+        assert_eq!(c.name, "أحمد محمد");
+        assert_eq!(c.address.as_deref(), Some("دمشق"));
+        println!("[customers] customer updated");
+
+        // Order history + favorite items, matched by phone (walk-in orders
+        // may have no customers.id at all, only a phone).
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let order_id = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
+            table_id, user_id: cashier_id.clone(), order_type: "DINE_IN".into(),
+            subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0,
+        }).unwrap();
+        conn.execute("UPDATE orders SET customer_phone = '0991112233' WHERE id = ?1", params![order_id]).unwrap();
+        let history = repo.customer_order_history("0991112233").unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, order_id);
+        println!("[customers] order history matched by phone: 1 order found");
+
+        repo.delete_customer(&cust_id).unwrap();
+        assert!(!repo.list_customers(&tenant_id).unwrap().iter().any(|c| c.id == cust_id));
+        println!("[customers] customer deleted");
+
+        // Loyalty: issue a card with a UID typed/scanned into card_number.
+        let cust2_id = repo.create_customer(&tenant_id, "سارة", "0997778899", None, None, None, None).unwrap();
+        let card_id = repo.issue_loyalty_card(&tenant_id, &cust2_id, "UID-AA11BB22").unwrap();
+        let cards = repo.list_loyalty_cards(&tenant_id).unwrap();
+        let card = cards.iter().find(|c| c.id == card_id).unwrap();
+        assert_eq!(card.card_number, "UID-AA11BB22");
+        assert_eq!(card.points, 0);
+        assert_eq!(card.tier, "BRONZE");
+        println!("[loyalty] card issued with UID-AA11BB22 as card_number (keyboard-entry, not generated)");
+
+        // The SAME UID again (e.g. a mis-scan re-registering the same physical
+        // card) must be a hard error, not silently create a duplicate or
+        // overwrite the first card.
+        let dup_result = repo.issue_loyalty_card(&tenant_id, &cust2_id, "UID-AA11BB22");
+        assert!(dup_result.is_err(), "issuing a second card with the same UID must fail (UNIQUE constraint)");
+        println!("[loyalty] duplicate UID correctly rejected: {:?}", dup_result.err().unwrap());
+
+        let cards = repo.list_loyalty_cards(&tenant_id).unwrap();
+        assert_eq!(cards.iter().filter(|c| c.card_number == "UID-AA11BB22").count(), 1, "still exactly one card with this UID");
+
+        let txs = repo.list_loyalty_transactions(&scope, None).unwrap();
+        assert_eq!(txs.len(), 0, "no transactions exist yet -- issuing a card is not itself a points transaction");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }

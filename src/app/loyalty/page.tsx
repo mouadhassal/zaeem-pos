@@ -1,10 +1,11 @@
 import { useEffect, useState, useCallback } from "react";
-import { getDb } from "../../db";
+import { invoke } from "@tauri-apps/api/core";
+import { useAuthStore } from "../../stores/authStore";
 import { CreditCard, Plus, Search } from "lucide-react";
 
 interface Customer { id: string; name: string; phone: string; loyalty_points: number; total_orders: number; total_spent_cents: number; }
-interface LoyaltyCard { id: string; customer_id: string; card_number: string; points: number; tier: string; issued_at: string; last_used_at: string | null; is_active: number; customer_name: string; customer_phone: string; }
-interface LoyaltyTx { id: string; card_id: string; points: number; type: string; reference_type: string | null; reference_id: string | null; description: string | null; created_at: string; }
+interface LoyaltyCard { id: string; customer_id: string; card_number: string; points: number; tier: string; issued_at: string; last_used_at: string | null; customer_name: string; customer_phone: string | null; }
+interface LoyaltyTx { id: string; card_id: string; points: number; tx_type: string; reference_type: string | null; reference_id: string | null; created_at: string; }
 
 function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString("ar-SA", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -20,6 +21,7 @@ const TIER_CONFIG: Record<string, { label: string; color: string; icon: string; 
 const TIERS = ["BRONZE", "SILVER", "GOLD", "PLATINUM"];
 
 export default function LoyaltyPage() {
+  const token = useAuthStore((s) => s.token);
   const [tab, setTab] = useState<"cards" | "transactions">("cards");
   const [cards, setCards] = useState<LoyaltyCard[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -32,76 +34,49 @@ export default function LoyaltyPage() {
 
   const fetchCards = useCallback(async () => {
     try {
-      const db = await getDb();
-      const rows = await db
-        .selectFrom("loyalty_cards")
-        .innerJoin("customers", "customers.id", "loyalty_cards.customer_id")
-        .select([
-          "loyalty_cards.id",
-          "loyalty_cards.customer_id",
-          "loyalty_cards.card_number",
-          "loyalty_cards.points",
-          "loyalty_cards.tier",
-          "loyalty_cards.issued_at",
-          "loyalty_cards.last_used_at",
-          "loyalty_cards.is_active",
-          "customers.name as customer_name",
-          "customers.phone as customer_phone",
-        ])
-        .orderBy("loyalty_cards.points", "desc")
-        .execute();
+      const rows = await invoke<LoyaltyCard[]>("list_loyalty_cards_v3", { sessionToken: token });
       setCards(rows);
     } catch { /* handled */ }
-  }, []);
+  }, [token]);
 
   const fetchCustomers = useCallback(async () => {
     try {
-      const db = await getDb();
-      const rows = await db.selectFrom("customers").selectAll().orderBy("name", "asc").execute();
+      const rows = await invoke<Customer[]>("list_customers_v3", { sessionToken: token });
       setCustomers(rows);
     } catch { /* handled */ }
-  }, []);
+  }, [token]);
 
   const fetchTransactions = useCallback(async () => {
     try {
-      const db = await getDb();
-      let query = db
-        .selectFrom("loyalty_transactions")
-        .selectAll()
-        .orderBy("created_at", "desc")
-        .limit(100);
-      if (txCardFilter) {
-        query = query.where("card_id", "=", txCardFilter);
-      }
-      const rows = await query.execute();
+      const rows = await invoke<LoyaltyTx[]>("list_loyalty_transactions_v3", { sessionToken: token, cardId: txCardFilter || null });
       setTransactions(rows);
     } catch { /* handled */ }
-  }, [txCardFilter]);
+  }, [token, txCardFilter]);
 
   useEffect(() => { setLoading(true); Promise.all([fetchCards(), fetchCustomers(), fetchTransactions()]).finally(() => setLoading(false)); }, [fetchCards, fetchCustomers, fetchTransactions]);
 
+  const [issueError, setIssueError] = useState<string | null>(null);
+
+  // UID keyboard-entry: a physical card scanner is just a keyboard that
+  // types the card's UID into this field -- no separate hardware scan path.
+  const [cardUid, setCardUid] = useState("");
+
   const handleIssueCard = async () => {
-    if (!selectedCustomer) return;
+    if (!selectedCustomer || !cardUid.trim()) return;
+    setIssueError(null);
     try {
-      const db = await getDb();
-      const cardNumber = "LOY-" + crypto.randomUUID().slice(0, 8).toUpperCase();
-      await db.insertInto("loyalty_cards").values({
-        id: crypto.randomUUID(),
-        customer_id: selectedCustomer,
-        card_number: cardNumber,
-        points: 0,
-        tier: "BRONZE",
-        issued_at: new Date().toISOString(),
-        is_active: 1,
-      }).execute();
+      await invoke("issue_loyalty_card_v3", { sessionToken: token, customerId: selectedCustomer, cardNumber: cardUid.trim() });
       setShowIssue(false);
       setSelectedCustomer("");
+      setCardUid("");
       await fetchCards();
-    } catch { /* handled */ }
+    } catch (err) {
+      setIssueError(typeof err === "string" && err.includes("UNIQUE") ? "رقم البطاقة (UID) مستخدم مسبقاً" : "حدث خطأ في إصدار البطاقة");
+    }
   };
 
   const filteredCards = cards.filter((c) =>
-    !search || c.customer_name.toLowerCase().includes(search.toLowerCase()) || c.card_number.toLowerCase().includes(search.toLowerCase()) || c.customer_phone.includes(search)
+    !search || c.customer_name.toLowerCase().includes(search.toLowerCase()) || c.card_number.toLowerCase().includes(search.toLowerCase()) || (c.customer_phone ?? "").includes(search)
   );
 
   const getTierInfo = (points: number) => {
@@ -229,13 +204,13 @@ export default function LoyaltyPage() {
                   <th className="text-right p-3 font-medium">التاريخ</th>
                   <th className="text-right p-3 font-medium">النوع</th>
                   <th className="text-right p-3 font-medium">النقاط</th>
-                  <th className="text-right p-3 font-medium">الوصف</th>
+                  <th className="text-right p-3 font-medium">المرجع</th>
                 </tr>
               </thead>
               <tbody>
                 {transactions.map((tx) => {
-                  const isEarn = tx.type === "EARN";
-                  const isRedeem = tx.type === "REDEEM";
+                  const isEarn = tx.tx_type === "EARN";
+                  const isRedeem = tx.tx_type === "REDEEM";
                   return (
                     <tr key={tx.id} className="border-b border-ink-200 hover:bg-white">
                       <td className="p-3 font-mono text-ink-500 text-xs">{formatDateTime(tx.created_at)}</td>
@@ -243,13 +218,13 @@ export default function LoyaltyPage() {
                         <span className={`inline-block px-3 py-1 rounded-full text-xs font-arabic font-medium ${
                           isEarn ? "bg-saffron-100 text-saffron-600" : isRedeem ? "bg-red-100 text-red-600" : "bg-amber-100 text-amber-700"
                         }`}>
-                          {isEarn ? "إضافة" : isRedeem ? "استبدال" : tx.type === "ADJUST" ? "تعديل" : "انتهاء صلاحية"}
+                          {isEarn ? "إضافة" : isRedeem ? "استبدال" : tx.tx_type === "ADJUST" ? "تعديل" : "انتهاء صلاحية"}
                         </span>
                       </td>
                       <td className={`p-3 font-mono font-bold ${isEarn ? "text-saffron-600" : "text-red-500"}`}>
                         {isEarn ? "+" : ""}{tx.points}
                       </td>
-                      <td className="p-3 text-ink-600">{tx.description || "—"}</td>
+                      <td className="p-3 text-ink-600">{tx.reference_type ?? "—"}</td>
                     </tr>
                   );
                 })}
@@ -275,9 +250,26 @@ export default function LoyaltyPage() {
                 ))}
               </select>
             </div>
+            <div>
+              <label className="block text-sm font-arabic text-ink-900 mb-1">رقم البطاقة (UID)</label>
+              <input
+                type="text"
+                autoFocus
+                value={cardUid}
+                onChange={(e) => setCardUid(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && selectedCustomer && cardUid.trim()) handleIssueCard(); }}
+                placeholder="امسح البطاقة أو أدخل الرقم يدوياً"
+                className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm font-mono outline-none focus:ring-2 focus:ring-saffron-500"
+                dir="ltr"
+              />
+              <p className="text-xs text-ink-400 mt-1 font-arabic">
+                الماسح يعمل كلوحة مفاتيح -- امسح البطاقة وسيُملأ الحقل تلقائياً، أو اكتب الرقم يدوياً
+              </p>
+              {issueError && <p className="text-xs text-red-500 mt-1 font-arabic">{issueError}</p>}
+            </div>
             <div className="flex gap-2 pt-2">
-              <button onClick={handleIssueCard} disabled={!selectedCustomer} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">إصدار البطاقة</button>
-              <button onClick={() => setShowIssue(false)} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
+              <button onClick={handleIssueCard} disabled={!selectedCustomer || !cardUid.trim()} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">إصدار البطاقة</button>
+              <button onClick={() => { setShowIssue(false); setCardUid(""); setIssueError(null); }} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
             </div>
           </div>
         </div>
