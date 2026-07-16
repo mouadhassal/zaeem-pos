@@ -76,6 +76,7 @@ pub enum Action {
     DebtRecorded,
     OperationalCostRecorded,
     InvoiceChanged,
+    SettingsChanged,
 }
 
 impl Action {
@@ -97,6 +98,7 @@ impl Action {
             Action::DebtRecorded => "DebtRecorded",
             Action::OperationalCostRecorded => "OperationalCostRecorded",
             Action::InvoiceChanged => "InvoiceChanged",
+            Action::SettingsChanged => "SettingsChanged",
         }
     }
 }

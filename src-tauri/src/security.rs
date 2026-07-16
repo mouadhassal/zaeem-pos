@@ -128,6 +128,9 @@ pub enum Permission {
     /// reports are Manager+ (owner back-office reads, not floor work).
     ManageFinance,
     ViewReports,
+    /// Batch 3b, slice 3, group 4 -- currency/tax/branch/printer config is
+    /// Manager+ (a Cashier should never be able to change the tax rate).
+    ManageSettings,
 }
 
 impl Permission {
@@ -146,6 +149,7 @@ impl Permission {
             Permission::ManageLoyalty => Role::Cashier.rank(),
             Permission::ManageDebt => Role::Cashier.rank(),
             Permission::ManageFinance | Permission::ViewReports => Role::Manager.rank(),
+            Permission::ManageSettings => Role::Manager.rank(),
         }
     }
 }
@@ -330,6 +334,7 @@ pub fn authorize(actor: &Actor, perm: Permission) -> Result<(), SecurityError> {
                 Permission::ManageDebt => "ManageDebt",
                 Permission::ManageFinance => "ManageFinance",
                 Permission::ViewReports => "ViewReports",
+                Permission::ManageSettings => "ManageSettings",
             },
             reason: format!("role {:?} (rank {}) is below the minimum rank {} for this permission", actor.role, actor.role.rank(), perm.minimum_rank()),
         })
@@ -366,13 +371,13 @@ mod tests {
     use super::*;
 
     const ALL_ROLES: [Role; 6] = [Role::Platform, Role::Owner, Role::Manager, Role::Cashier, Role::Kitchen, Role::Server];
-    const ALL_PERMS: [Permission; 21] = [
+    const ALL_PERMS: [Permission; 22] = [
         Permission::CreateBranch, Permission::CreateStaff, Permission::UpdateStaff,
         Permission::ViewOrders, Permission::CreateOrder, Permission::UpdateOrderStatus, Permission::ChangeOwnPassword,
         Permission::ManageCustomers, Permission::ManagePurchaseOrders, Permission::ManageDrivers,
         Permission::ManagePrinters, Permission::ManageDelivery, Permission::TakePayment, Permission::ManageMenu,
         Permission::ManageIngredients, Permission::AdjustStock, Permission::ManageShift, Permission::ManageLoyalty,
-        Permission::ManageDebt, Permission::ManageFinance, Permission::ViewReports,
+        Permission::ManageDebt, Permission::ManageFinance, Permission::ViewReports, Permission::ManageSettings,
     ];
 
     fn actor_for(role: Role, tenant: &str, branch: Option<&str>) -> Actor {

@@ -908,6 +908,88 @@ pub fn get_sales_report_v3(state: State<Db>, session_token: String, today_start_
     Repo::new(&conn).sales_report(&actor.scope(), &today_start_iso).map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Batch 3b, slice 3, group 4 -- settings (currency/tax/branch/printer).
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn get_chain_config_v3(state: State<Db>, session_token: String) -> Result<crate::repo::ChainConfigRow, String> {
+    authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).get_chain_config().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_chain_currency_v3(state: State<Db>, session_token: String, currency: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_chain_currency(&currency).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "chain_config", "default", None, Some(&serde_json::json!({ "currency": currency }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_chain_tax_v3(state: State<Db>, session_token: String, tax_rate_cents: i64, tax_mode: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
+    if tax_rate_cents < 0 {
+        return Err("negative tax rate is not valid".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_chain_tax(tax_rate_cents, &tax_mode).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "chain_config", "default", None, Some(&serde_json::json!({ "tax_rate_cents": tax_rate_cents, "tax_mode": tax_mode }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_legacy_branch_v3(state: State<Db>, session_token: String) -> Result<Option<crate::repo::LegacyBranchRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).get_legacy_branch(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn save_legacy_branch_v3(state: State<Db>, session_token: String, existing_id: Option<String>, name: String, address: Option<String>, phone: Option<String>, max_tables: i64, currency: String) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let branch_id = Repo::new(&tx).upsert_legacy_branch(&actor.tenant_id, existing_id.as_deref(), &name, address.as_deref(), phone.as_deref(), max_tables, &currency).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "branch", &branch_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(branch_id)
+}
+
+#[tauri::command]
+pub fn set_printer_active_v3(state: State<Db>, session_token: String, printer_id: String, is_active: bool) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).set_printer_active(&printer_id, is_active).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "printer", &printer_id, None, Some(&serde_json::json!({ "is_active": is_active }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_printer_paper_width_v3(state: State<Db>, session_token: String, printer_id: String, paper_width_mm: i64) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_printer_paper_width(&printer_id, paper_width_mm).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "printer", &printer_id, None, Some(&serde_json::json!({ "paper_width_mm": paper_width_mm }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// T1.6: two-layer menu price resolution (`override ?? default`), exposed
 /// read-only so a client can price an item before/while building an order.
 /// Gated on `CreateOrder` (the same permission that lets an actor build an
@@ -2169,6 +2251,56 @@ mod tests {
         assert_eq!(report.total_sales, 3500);
         assert!(report.staff_performance.iter().any(|s| s.name == "Finance Manager" && s.order_count == 2));
         println!("[reports] sales_report: order_count=2, total_sales=3500, staff_performance shows the manager with 2 orders");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Batch 3b, slice 3, group 4: chain_config currency/tax updates,
+    /// legacy `branches` upsert (create-then-update, distinct from T1.1's
+    /// `branch` table), and printer active-toggle/paper-width.
+    #[test]
+    fn settings_chain_config_legacy_branch_and_printers() {
+        let (db_path, tenant_id, branch_id, _table_id) = seeded_db("settings");
+        let conn = Connection::open(&db_path).unwrap();
+        let repo = Repo::new(&conn);
+
+        let cfg = repo.get_chain_config().unwrap();
+        assert_eq!(cfg.currency, "SYP", "default seeded currency");
+
+        repo.update_chain_currency("USD").unwrap();
+        assert_eq!(repo.get_chain_config().unwrap().currency, "USD");
+        repo.update_chain_tax(1500, "inclusive").unwrap();
+        let cfg = repo.get_chain_config().unwrap();
+        assert_eq!(cfg.tax_rate_cents, 1500);
+        assert_eq!(cfg.tax_mode, "inclusive");
+        println!("[settings] chain_config currency and tax updated");
+
+        // Legacy `branches` (distinct from T1.1's `branch`) starts empty --
+        // first save is a create, second is an update of the same row.
+        assert!(repo.get_legacy_branch(&tenant_id).unwrap().is_none());
+        let legacy_id = repo.upsert_legacy_branch(&tenant_id, None, "الفرع الرئيسي", Some("دمشق"), Some("011"), 20, "USD").unwrap();
+        let legacy = repo.get_legacy_branch(&tenant_id).unwrap().unwrap();
+        assert_eq!(legacy.id, legacy_id);
+        assert_eq!(legacy.name, "الفرع الرئيسي");
+        println!("[settings] legacy branch created");
+
+        let legacy_id_2 = repo.upsert_legacy_branch(&tenant_id, Some(&legacy_id), "الفرع المحدث", Some("دمشق"), Some("011"), 30, "USD").unwrap();
+        assert_eq!(legacy_id_2, legacy_id, "an update must reuse the same row, not create a second one");
+        let legacy = repo.get_legacy_branch(&tenant_id).unwrap().unwrap();
+        assert_eq!(legacy.name, "الفرع المحدث");
+        assert_eq!(legacy.max_tables, 30);
+        println!("[settings] legacy branch updated in place, same id");
+
+        let printer_id = repo.create_printer(&tenant_id, &branch_id, "طابعة الكاشير", "RECEIPT", "USB", None, None, 200, true).unwrap();
+        repo.set_printer_active(&printer_id, false).unwrap();
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let printers = repo.list_printers(&scope).unwrap();
+        let p = printers.iter().find(|p| p.id == printer_id).unwrap();
+        assert_eq!(p.is_active, 0, "list_printers must show inactive printers too, not filter them out");
+        repo.update_printer_paper_width(&printer_id, 58).unwrap();
+        let printers = repo.list_printers(&scope).unwrap();
+        assert_eq!(printers.iter().find(|p| p.id == printer_id).unwrap().paper_width_mm, 58);
+        println!("[settings] printer deactivated (still listed) and paper width updated");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }

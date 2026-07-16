@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { getDb } from "../../db";
+import { invoke } from "@tauri-apps/api/core";
 import { useAuthStore } from "../../stores/authStore";
 import type { TaxMode } from "../../db/types";
 
@@ -59,6 +59,7 @@ const FEATURES = [
 export default function SettingsPage() {
   const [tab, setTab] = useState<SettingsTab>("general");
   const user = useAuthStore((s) => s.user);
+  const token = useAuthStore((s) => s.token);
   const isOwner = user?.role === "OWNER";
 
   const [, setConfig] = useState<ChainConfig | null>(null);
@@ -93,32 +94,16 @@ export default function SettingsPage() {
 
   const fetchData = useCallback(async () => {
     try {
-      const db = await getDb();
+      const cfg = await invoke<{ chain_name: string; currency: string; tax_mode: TaxMode; tax_rate_cents: number }>("get_chain_config_v3", { sessionToken: token });
+      setConfig(cfg);
+      setCurrency(cfg.currency);
+      setTaxMode(cfg.tax_mode);
+      setTaxRate(String(cfg.tax_rate_cents / 100));
 
-      const cfg = await db
-        .selectFrom("chain_config")
-        .selectAll()
-        .where("id", "=", "default")
-        .executeTakeFirst();
-      if (cfg) {
-        setConfig(cfg);
-        setCurrency(cfg.currency);
-        setTaxMode(cfg.tax_mode);
-        setTaxRate(String(cfg.tax_rate_cents / 100));
-      }
-
-      const printerRows = await db
-        .selectFrom("printers")
-        .selectAll()
-        .orderBy("name", "asc")
-        .execute();
+      const printerRows = await invoke<Printer[]>("list_printers_v3", { sessionToken: token });
       setPrinters(printerRows);
 
-      const branchRow = await db
-        .selectFrom("branches")
-        .selectAll()
-        .limit(1)
-        .executeTakeFirst();
+      const branchRow = await invoke<Branch | null>("get_legacy_branch_v3", { sessionToken: token });
       if (branchRow) {
         setBranch(branchRow);
         setBranchName(branchRow.name);
@@ -129,7 +114,7 @@ export default function SettingsPage() {
     } catch {
       showMsg("حدث خطأ في تحميل الإعدادات");
     }
-  }, []);
+  }, [token]);
 
   useEffect(() => {
     fetchData();
@@ -138,12 +123,7 @@ export default function SettingsPage() {
   const saveCurrency = async () => {
     setSaving(true);
     try {
-      const db = await getDb();
-      await db
-        .updateTable("chain_config")
-        .set({ currency, sync_version: 1, last_modified: new Date().toISOString(), sync_status: "pending" })
-        .where("id", "=", "default")
-        .execute();
+      await invoke("update_chain_currency_v3", { sessionToken: token, currency });
       showMsg("تم حفظ العملة بنجاح");
       fetchData();
     } catch {
@@ -156,18 +136,7 @@ export default function SettingsPage() {
   const saveTax = async () => {
     setSaving(true);
     try {
-      const db = await getDb();
-      await db
-        .updateTable("chain_config")
-        .set({
-          tax_rate_cents: Math.round(parseFloat(taxRate || "0") * 100),
-          tax_mode: taxMode,
-          sync_version: 1,
-          last_modified: new Date().toISOString(),
-          sync_status: "pending",
-        })
-        .where("id", "=", "default")
-        .execute();
+      await invoke("update_chain_tax_v3", { sessionToken: token, taxRateCents: Math.round(parseFloat(taxRate || "0") * 100), taxMode });
       showMsg("تم حفظ إعدادات الضريبة بنجاح");
       fetchData();
     } catch {
@@ -180,40 +149,15 @@ export default function SettingsPage() {
   const saveBranch = async () => {
     setSaving(true);
     try {
-      const db = await getDb();
-      if (branch) {
-        await db
-          .updateTable("branches")
-          .set({
-            name: branchName,
-            address: branchAddress || null,
-            phone: branchPhone || null,
-            max_tables: parseInt(branchMaxTables, 10) || 20,
-            sync_version: 1,
-            last_modified: new Date().toISOString(),
-            sync_status: "pending",
-          })
-          .where("id", "=", branch.id)
-          .execute();
-      } else {
-        await db
-          .insertInto("branches")
-          .values({
-            id: crypto.randomUUID(),
-            name: branchName,
-            address: branchAddress || null,
-            phone: branchPhone || null,
-            max_tables: parseInt(branchMaxTables, 10) || 20,
-            timezone: "Asia/Riyadh",
-            currency: currency,
-            tax_rate_cents: 1500,
-            is_active: 1,
-            sync_version: 1,
-            last_modified: new Date().toISOString(),
-            sync_status: "pending",
-          })
-          .execute();
-      }
+      await invoke("save_legacy_branch_v3", {
+        sessionToken: token,
+        existingId: branch?.id ?? null,
+        name: branchName,
+        address: branchAddress || null,
+        phone: branchPhone || null,
+        maxTables: parseInt(branchMaxTables, 10) || 20,
+        currency,
+      });
       showMsg("تم حفظ بيانات الفرع بنجاح");
       fetchData();
     } catch {
@@ -239,17 +183,7 @@ export default function SettingsPage() {
 
   const togglePrinterActive = async (printer: Printer) => {
     try {
-      const db = await getDb();
-      await db
-        .updateTable("printers")
-        .set({
-          is_active: printer.is_active ? 0 : 1,
-          sync_version: 1,
-          last_modified: new Date().toISOString(),
-          sync_status: "pending",
-        })
-        .where("id", "=", printer.id)
-        .execute();
+      await invoke("set_printer_active_v3", { sessionToken: token, printerId: printer.id, isActive: !printer.is_active });
       fetchData();
     } catch {
       showMsg("حدث خطأ في تحديث حالة الطابعة");
@@ -258,17 +192,7 @@ export default function SettingsPage() {
 
   const updatePaperWidth = async (printer: Printer, width: number) => {
     try {
-      const db = await getDb();
-      await db
-        .updateTable("printers")
-        .set({
-          paper_width_mm: width,
-          sync_version: 1,
-          last_modified: new Date().toISOString(),
-          sync_status: "pending",
-        })
-        .where("id", "=", printer.id)
-        .execute();
+      await invoke("update_printer_paper_width_v3", { sessionToken: token, printerId: printer.id, paperWidthMm: width });
       fetchData();
     } catch {
       showMsg("حدث خطأ في تحديث عرض الورق");

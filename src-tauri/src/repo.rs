@@ -204,6 +204,23 @@ pub struct LoyaltyCardRow {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct ChainConfigRow {
+    pub chain_name: String,
+    pub currency: String,
+    pub tax_mode: String,
+    pub tax_rate_cents: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LegacyBranchRow {
+    pub id: String,
+    pub name: String,
+    pub address: Option<String>,
+    pub phone: Option<String>,
+    pub max_tables: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct RevenueSummaryRow {
     pub order_count: i64,
     pub total: i64,
@@ -327,6 +344,8 @@ pub struct PrinterRow {
     pub drawer_pulse_ms: i64,
     pub is_primary: i64,
     pub is_secondary: i64,
+    pub is_active: i64,
+    pub paper_width_mm: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1157,6 +1176,94 @@ impl<'a> Repo<'a> {
         Ok(SalesReportRow { total_sales, order_count, top_items, staff_performance, inventory_status })
     }
 
+    // -----------------------------------------------------------------
+    // Batch 3b, slice 3, group 4 -- settings (currency/tax/branch/printer
+    // config). Known, stated architectural gap: `chain_config` is a
+    // SINGLE global row (`id = 'default'`), not genuinely tenant-scoped --
+    // it predates the multi-tenant model entirely and nothing here
+    // reconciles that; every tenant on one install still shares one
+    // `chain_config` row, exactly as the pre-existing frontend code already
+    // assumed. Fixing that is a real schema change, out of scope for this
+    // slice, not silently papered over. Also note: `branches` (legacy,
+    // plural, tenant-only, THIS settings page's "branch" tab) and `branch`
+    // (T1.1's new multi-tenant table, what `create_branch_v3`/
+    // `list_branches_v3` operate on) are two DIFFERENT tables -- same
+    // duality as `menu_items` vs `menu_item_default`. This slice keeps
+    // editing the real, populated `branches` table (what the UI actually
+    // shows), not the empty new one.
+    // -----------------------------------------------------------------
+
+    /// Batch 3b, slice 3, group 4 -- found while building this method: NO
+    /// migration or seed anywhere ever inserts `chain_config`'s `id =
+    /// 'default'` row. On a genuinely fresh install the table has ZERO rows,
+    /// so the old frontend's `.executeTakeFirst()` reads silently returned
+    /// `undefined` (falling back to hardcoded UI defaults like "SAR") and
+    /// its `UPDATE ... WHERE id = 'default'` writes silently affected ZERO
+    /// rows -- a user could "save" currency/tax settings on a fresh install
+    /// and nothing would ever actually persist. Fixed at the repo layer
+    /// (not by reopening the closed, tested Migration A): every entry point
+    /// here self-heals via `INSERT OR IGNORE`, relying on the schema's own
+    /// column `DEFAULT`s (chain_name='Zaeem POS', currency='SYP',
+    /// tax_mode='exclusive', tax_rate_cents=0) for every column this doesn't
+    /// explicitly set.
+    fn ensure_chain_config_row(&self) -> Result<(), RepoError> {
+        self.conn.execute("INSERT OR IGNORE INTO chain_config (id) VALUES ('default')", [])?;
+        Ok(())
+    }
+
+    pub fn get_chain_config(&self) -> Result<ChainConfigRow, RepoError> {
+        self.ensure_chain_config_row()?;
+        self.conn.query_row(
+            "SELECT chain_name, currency, tax_mode, tax_rate_cents FROM chain_config WHERE id = 'default'",
+            [], |r| Ok(ChainConfigRow { chain_name: r.get(0)?, currency: r.get(1)?, tax_mode: r.get(2)?, tax_rate_cents: r.get(3)? }),
+        ).map_err(RepoError::from)
+    }
+
+    pub fn update_chain_currency(&self, currency: &str) -> Result<(), RepoError> {
+        self.ensure_chain_config_row()?;
+        self.conn.execute("UPDATE chain_config SET currency = ?1, last_modified = datetime('now') WHERE id = 'default'", params![currency])?;
+        Ok(())
+    }
+
+    pub fn update_chain_tax(&self, tax_rate_cents: i64, tax_mode: &str) -> Result<(), RepoError> {
+        self.ensure_chain_config_row()?;
+        self.conn.execute(
+            "UPDATE chain_config SET tax_rate_cents = ?1, tax_mode = ?2, last_modified = datetime('now') WHERE id = 'default'",
+            params![tax_rate_cents, tax_mode],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_legacy_branch(&self, tenant_id: &str) -> Result<Option<LegacyBranchRow>, RepoError> {
+        self.conn.query_row(
+            "SELECT id, name, address, phone, max_tables FROM branches WHERE tenant_id = ?1 LIMIT 1",
+            params![tenant_id],
+            |r| Ok(LegacyBranchRow { id: r.get(0)?, name: r.get(1)?, address: r.get(2)?, phone: r.get(3)?, max_tables: r.get(4)? }),
+        ).optional().map_err(RepoError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_legacy_branch(&self, tenant_id: &str, existing_id: Option<&str>, name: &str, address: Option<&str>, phone: Option<&str>, max_tables: i64, currency: &str) -> Result<String, RepoError> {
+        match existing_id {
+            Some(id) => {
+                self.conn.execute(
+                    "UPDATE branches SET name = ?1, address = ?2, phone = ?3, max_tables = ?4, last_modified = datetime('now') WHERE id = ?5",
+                    params![name, address, phone, max_tables, id],
+                )?;
+                Ok(id.to_string())
+            }
+            None => {
+                let id = uuid::Uuid::now_v7().to_string();
+                self.conn.execute(
+                    "INSERT INTO branches (id, tenant_id, name, address, phone, max_tables, timezone, currency, tax_rate_cents, is_active, last_modified, sync_status) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'Asia/Damascus', ?7, 0, 1, datetime('now'), 'pending')",
+                    params![id, tenant_id, name, address, phone, max_tables, currency],
+                )?;
+                Ok(id)
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn create_purchase_order(&self, tenant_id: &str, branch_id: &str, supplier_id: &str, created_by: &str, notes: Option<&str>) -> Result<String, RepoError> {
         self.assert_scope_populated("purchase_orders", true)?;
@@ -1230,18 +1337,35 @@ impl<'a> Repo<'a> {
         Ok(id)
     }
 
+    /// Batch 3b, slice 3, group 4: widened to include `is_active`/
+    /// `paper_width_mm` and to list ALL printers, not just active ones --
+    /// `settings/page.tsx` needs to see and re-enable a deactivated printer,
+    /// which an active-only filter would make impossible. Nothing else calls
+    /// this yet (`printer.ts` itself is still on `getDb()`, explicitly
+    /// deferred), so widening it here doesn't change any other caller's
+    /// behavior.
     pub fn list_printers(&self, scope: &Scope) -> Result<Vec<PrinterRow>, RepoError> {
         self.assert_scope_populated("printers", true)?;
         let (predicate, args) = Self::scope_predicate(scope);
         let sql = format!(
-            "SELECT id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary, is_secondary FROM printers WHERE {predicate} AND is_active = 1 ORDER BY name ASC"
+            "SELECT id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary, is_secondary, is_active, paper_width_mm FROM printers WHERE {predicate} ORDER BY name ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(params_refs.as_slice(), |r| {
-            Ok(PrinterRow { id: r.get(0)?, name: r.get(1)?, printer_type: r.get(2)?, interface: r.get(3)?, vendor_id: r.get(4)?, product_id: r.get(5)?, drawer_pulse_ms: r.get(6)?, is_primary: r.get(7)?, is_secondary: r.get(8)? })
+            Ok(PrinterRow { id: r.get(0)?, name: r.get(1)?, printer_type: r.get(2)?, interface: r.get(3)?, vendor_id: r.get(4)?, product_id: r.get(5)?, drawer_pulse_ms: r.get(6)?, is_primary: r.get(7)?, is_secondary: r.get(8)?, is_active: r.get(9)?, paper_width_mm: r.get(10)? })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    pub fn set_printer_active(&self, printer_id: &str, is_active: bool) -> Result<(), RepoError> {
+        self.conn.execute("UPDATE printers SET is_active = ?1, last_modified = datetime('now') WHERE id = ?2", params![is_active as i64, printer_id])?;
+        Ok(())
+    }
+
+    pub fn update_printer_paper_width(&self, printer_id: &str, paper_width_mm: i64) -> Result<(), RepoError> {
+        self.conn.execute("UPDATE printers SET paper_width_mm = ?1, last_modified = datetime('now') WHERE id = ?2", params![paper_width_mm, printer_id])?;
+        Ok(())
     }
 
     pub fn list_delivery_logs(&self, scope: &Scope) -> Result<Vec<DeliveryLogRow>, RepoError> {
