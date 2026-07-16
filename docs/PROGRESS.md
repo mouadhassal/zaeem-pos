@@ -1,7 +1,7 @@
 # PROGRESS.md — SPRINT_01_multitenant_trust_boundary_v3.md
 
-**Last updated:** 2026-07-16, after Batch 3b slice 2 (guard-script verification + menu CRUD +
-inventory + shifts, each its own commit).
+**Last updated:** 2026-07-16, after Batch 3b slice 3 (customers + loyalty, debt, finance +
+reports, settings -- each its own commit; PO tab/delivery/printer.ts explicitly not reached).
 **Method:** percentages reflect what's implemented AND tested, not what's designed/planned.
 A phase at 100% means its own stated Definition of Done is met; a phase with sub-scope
 (e.g. "N of ~150 commands") is intentionally not rounded up.
@@ -10,6 +10,55 @@ A phase at 100% means its own stated Definition of Done is met; a phase with sub
 that "no git repository exists in this tree" was wrong (I'd checked from the parent
 `zaeem-enterprise` directory and missed it). From `s1-slice1` onward, every group in this document
 is a real commit; check `git log` for the authoritative list, not just this file's prose.
+
+## Batch 3b, slice 3: real numbers, not 150/150
+
+You asked for 5 groups, highest user-facing value first: (1) customers + loyalty, (2) debt, (3)
+finance + reports, (4) settings, (5) the remaining drift pages (PO tab, delivery, printer.ts).
+**Done, full quality, tested, each its own commit: (1)-(4). NOT reached: (5).** Stated plainly, not
+hidden -- PO tab (supplier CRUD + PO line items + atomic receiving-into-stock) and delivery
+(driver assignment/status UI) are each comparable in size to a full group on their own, and
+attempting them at the tail of an already-large slice risked the exact kind of rushed, lower-quality
+work this sprint has repeatedly corrected course on. Top item for next session.
+
+**Commands converted to the v3 scoped shape: 74 / 150** (up from 47). New this slice (27):
+customers/loyalty -- `update_customer_v3`, `delete_customer_v3`, `get_customer_detail_v3`,
+`list_loyalty_cards_v3`, `issue_loyalty_card_v3`, `list_loyalty_transactions_v3`; debt --
+`list_debtors_v3`, `create_debtor_v3`, `update_debtor_v3`, `deactivate_debtor_v3`,
+`list_debt_entries_v3`, `record_debt_payment_v3`; finance/reports -- `get_finance_revenue_v3`,
+`get_tax_collected_v3`, `list_operational_costs_v3`, `create_operational_cost_v3`,
+`list_invoices_v3`, `create_invoice_v3`, `mark_invoice_paid_v3`, `get_sales_report_v3`; settings --
+`get_chain_config_v3`, `update_chain_currency_v3`, `update_chain_tax_v3`, `get_legacy_branch_v3`,
+`save_legacy_branch_v3`, `set_printer_active_v3`, `update_printer_paper_width_v3`.
+
+**`check-no-sql-in-frontend.sh`: 96 real references remain** (down from 121 at the start of this
+slice). Still NOT flipped to blocking -- `settings/page.tsx` is now the first fully-converted page
+(zero `getDb()` calls), but `getDb()` is still load-bearing across the rest of the app.
+
+## Real bugs found and fixed while converting (not the point of this slice, but honest to report)
+
+1. **`chain_config`'s `id = 'default'` row was never seeded by any migration.** On a genuinely
+   fresh install the table had zero rows -- the old frontend's reads silently fell back to
+   hardcoded UI defaults, and its writes (`UPDATE ... WHERE id = 'default'`) silently affected zero
+   rows. Currency/tax settings could never actually persist on a clean install, ever, until someone
+   inspected the raw DB. Fixed with a self-healing `INSERT OR IGNORE` at every `chain_config` entry
+   point in `repo.rs` (not by reopening the closed, tested Migration A).
+2. **`loyalty_cards.is_active` and `loyalty_transactions.description`** don't exist in the real
+   schema (DRIFT_REPORT.md Finding #5 already flagged this) -- dropped from the model rather than
+   perpetuated.
+3. **`operational_costs.description` and `invoices.notes`** likewise don't exist in the real schema
+   -- the old frontend was silently duplicating `notes` into a nonexistent `description` column on
+   costs, and writing a `notes` field invoices never had. Both dropped, with the corresponding
+   now-dead UI fields (an invoice notes textarea) removed rather than left silently non-functional.
+
+## Two-table dualities found and left alone (stated, not reconciled)
+
+Two more instances of the same pattern as `menu_items` vs T1.6's `menu_item_default`: this slice's
+`branches` (legacy, plural, tenant-only, what `settings/page.tsx`'s "branch" tab actually edits) is
+a DIFFERENT table from T1.1's new `branch` (singular, what `create_branch_v3`/`list_branches_v3`
+operate on). Reconciling either duality is a real architecture decision (migrate data? deprecate
+one? merge?) that wasn't asked for and wasn't attempted -- this slice targets whichever table the
+real, populated UI actually reads today, consistently, and says so.
 
 ## Batch 3b, slice 2: real numbers, not 150/150
 
@@ -331,23 +380,22 @@ frontend work (each page has its own form validation, detail views, CSV export, 
 attempted in this batch to avoid rushing UI changes in files not fully read. Flagged as the next
 concrete T1.7 scope, not silently deferred.
 
-## T1.2 breakdown (~68%)
+## T1.2 breakdown (~79%)
 
 **Done:** command shape (`authn → resolve Scope → authz → validate → repo → audit → commit`)
-followed by all 23 new commands across both slices (slice 1: `take_payment_v3`,
-`list_branches_v3`, `list_staff_v3`, `update_staff_profile_v3`, `set_staff_active_v3`, plus
-`create_staff_v3` finally reachable; slice 2: the 17 menu/inventory/shift commands listed above).
+followed by all 27 new commands this slice (customers/loyalty, debt, finance/reports, settings --
+listed in full above).
 
-**Not done:** of the ~150 commands identified in T1.0a's inventory, **47 exist** in the new scoped
-shape. The remaining ~103 (finance, debt, loyalty, settings, reports, the 4 drift-group pages,
-combo/happy-hour, suppliers, staff shifts/attendance tabs) still run as direct `getDb()` Kysely
-calls or old commands — explicit carry-forward, listed in full in the punch list above.
+**Not done:** of the ~150 commands identified in T1.0a's inventory, **74 exist** in the new scoped
+shape. The remaining ~76 (PO tab, delivery, printer.ts, combo/happy-hour, suppliers, staff
+shifts/attendance tabs) still run as direct `getDb()` Kysely calls or old commands — explicit
+carry-forward, listed in full in the punch list above.
 
-## T1.3 breakdown (~61%)
+## T1.3 breakdown (~70%)
 
-**Done:** `Permission` grew from 13 to 17 variants this slice (`ManageMenu`, `ManageIngredients`,
-`AdjustStock`, `ManageShift`), full RBAC matrix test updated and still exhaustive (17 permissions
-× 6 roles).
+**Done:** `Permission` grew from 17 to 22 variants this slice (`ManageLoyalty`, `ManageDebt`,
+`ManageFinance`, `ViewReports`, `ManageSettings`), full RBAC matrix test updated and still
+exhaustive (22 permissions × 6 roles).
 
 **Not done:** same as before — `ARCHITECTURE_V3.md` §2's full table has more actions than exist yet;
 each future command adds its own permission(s) as built.
@@ -356,65 +404,80 @@ each future command adds its own permission(s) as built.
 
 No auth-mechanism changes this pass. Idle-timeout enforcement, rate-limiting on `login_pin_v3`,
 session-to-device re-verification per call — all still frontend/T1.7 concerns. PIN-uniqueness gap
-added to the punch list above (not urgent, not fixed this slice).
+still on the punch list (not urgent, not fixed).
 
-## T1.7 breakdown (~30%)
+## T1.7 breakdown (~45%)
 
-**Done:** the auth path, `staff/page.tsx`'s employees tab (slice 1), plus `menu/page.tsx`'s items
-and categories tabs, `inventory/page.tsx`'s stock tab, and `shift/page.tsx` in full (slice 2) --
-all calling v3 commands now, not raw SQL.
+**Done:** the auth path, `staff/page.tsx`'s employees tab, `menu/page.tsx`'s items/categories tabs,
+`inventory/page.tsx`'s stock tab, `shift/page.tsx` in full, `customers/page.tsx` in full,
+`loyalty/page.tsx` in full, `debt/page.tsx` in full, `finance/page.tsx` (revenue/costs/invoices/tax
+-- chain_config's currency/tax-mode READ stays on `getDb()`, converted properly in the settings
+group instead), `reports/page.tsx` in full, and `settings/page.tsx` in full (zero `getDb()` calls
+remaining in that file) -- all calling v3 commands now, not raw SQL.
 
 **Not done:** `staff/page.tsx`'s shifts/attendance tabs, `menu/page.tsx`'s offers tab,
-`inventory/page.tsx`'s suppliers/PO-receiving/movements/alerts, and the 4 drift-group pages —
-explicit next-session items, listed in the punch list above.
+`inventory/page.tsx`'s suppliers/PO-receiving/movements/alerts tabs, `delivery/page.tsx`,
+`deliveryService.ts`, `printer.ts` — explicit next-session items, listed in the punch list above.
 
 ## Known gaps carried forward (not fixed this batch, tracked explicitly)
 
-1. **~103 commands still on the old path** — finance, debt, loyalty, settings, reports, the 4
-   drift-group pages, combo/happy-hour, suppliers, staff's remaining tabs. Explicit next-session
-   scope, detailed in the punch list above.
+1. **~76 commands still on the old path** — PO tab, delivery, printer.ts, combo/happy-hour,
+   suppliers, staff's remaining tabs. Explicit next-session scope, detailed in the punch list above.
 2. **Ed25519 audit signing** (T1.5) and **versioned price lists** (T1.6) — unchanged, still deferred.
 3. **~25 legacy tables** still rely solely on the Rust-level `assert_scope_populated` check — unchanged.
 4. **`login_v3`/`login_pin_v3` have no rate-limiting** — flagged, not fixed.
-5. **`check-no-sql-in-frontend.sh` cannot be flipped to blocking yet** — 132 real references remain.
+5. **`check-no-sql-in-frontend.sh` cannot be flipped to blocking yet** — 96 real references remain.
 6. **`kysely`/`tauri_plugin_sql` cannot be removed from `package.json` yet** — still load-bearing.
 7. **Staff photo/CV upload and QR-code persistence are gone** (Batch 3b, stated scope reduction) —
    `staff` has no columns for them; dropped from the UI, not silently left non-functional.
+8. **`chain_config`'s default row was never seeded anywhere** (found and fixed this slice, see
+   above) — self-healing fix landed in `repo.rs`, no migration change needed.
+9. **Two live table dualities left unreconciled** (see above): `menu_items`/`categories` vs
+   `menu_item_default`/`menu_item_override`; legacy `branches` vs T1.1's `branch`.
 
-## Test evidence (slice 1 + slice 2, this document's full scope)
+## Test evidence (all slices to date)
 
 **Slice 1** (payment atomicity + zombie sweep + staff CRUD): 34/34 Rust tests pass.
 
-**Slice 2** (guard-script fixes + menu/inventory/shifts): **37/37 Rust tests pass** (34 carried
-over + 3 new: `menu_crud_categories_and_items_round_trip`,
-`inventory_ingredient_crud_and_stock_adjustment_atomicity`,
-`shift_open_stats_and_close_round_trip`). `cargo build` (full binary, debug profile) succeeds.
-`cargo check` clean. `cargo clippy --lib --tests -- -D warnings` clean. `npx tsc --noEmit` clean.
-`check-no-sql-in-frontend.sh`: 121 real references (down from 132), correctly detected, not
-blocking. `check-no-country-in-core.sh`: fixed and proven with red/green fixtures (see above).
-Full RBAC matrix: 17 permissions × 6 roles, still exhaustive, still green.
+**Slice 2** (guard-script fixes + menu/inventory/shifts): 37/37 Rust tests pass.
 
-**Hand-test confirmed by you** (2026-07-16, before this slice started): fresh db → create owner →
+**Slice 3** (customers/loyalty + debt + finance/reports + settings): **41/41 Rust tests pass**
+(37 carried over + 4 new: `customers_and_loyalty_crud_with_uid_keyboard_entry` (includes the
+duplicate-UID-is-a-hard-error proof), `debt_debtor_crud_and_payment_atomicity`,
+`finance_revenue_costs_invoices_and_sales_report`, `settings_chain_config_legacy_branch_and_
+printers`). `cargo build` (full binary, debug profile) succeeds. `cargo check` clean.
+`cargo clippy --lib --tests -- -D warnings` clean. `npx tsc --noEmit` clean. Full RBAC matrix: 22
+permissions × 6 roles, still exhaustive, still green.
+
+**Hand-test confirmed by you** (2026-07-16, before slice 2 started): fresh db → create owner →
 enter app → restart → PIN pad → login → order persists. Green — this is what authorized 3b to
-start. **Hand-test after this slice** (yours to run, per your instruction): create owner → add
-menu item → add staff → take order → pay → restart → confirm persistence.
+start. No new hand-test requested for slice 3 yet.
 
 ## Next-session punch list (explicit, in priority order)
 
-1. Finance, debt, loyalty, settings, reports.
-2. The 4 drift-group pages' frontend rewire (customers, PO tab, delivery, printer.ts) — backend
-   commands already exist from Batch 3a, only the frontend call sites remain.
-3. `combo_meals`/`combo_items`/`happy_hour_rules` (menu page's offers tab) — deferred this slice.
-4. `suppliers` CRUD, PO-receiving's stock bump, inventory movements/alerts tabs — deferred this slice.
-5. `staff/page.tsx`'s shifts/attendance tabs.
+1. **PO tab** (`inventory/page.tsx`'s Purchases tab + `CreatePOModal`/`ReceivePOModal`) — supplier
+   CRUD, PO creation with line items, and PO receiving (must be one atomic transaction: line-item
+   `quantity_received` update + `ingredients.current_stock` bump + `inventory_logs` fact + PO
+   status → RECEIVED, same principle as `take_payment_v3`/`adjust_stock_v3`).
+2. **Delivery** (`delivery/page.tsx`, `deliveryService.ts`) — driver assignment/status UI; backend
+   commands (`create_delivery_log_v3`, `update_delivery_status_v3`, `list_delivery_logs_v3`,
+   driver CRUD) already exist from Batch 3a, only the frontend call sites remain.
+3. **`printer.ts`** (the print-job service, distinct from `settings/page.tsx`'s printer config tab
+   which IS converted) — still `getDb()`.
+4. `combo_meals`/`combo_items`/`happy_hour_rules` (menu page's offers tab) — deferred slice 2.
+5. `staff/page.tsx`'s shifts/attendance tabs — deferred slice 1.
 6. Once (1)-(5) bring `getDb()` call sites to zero: flip `check-no-sql-in-frontend.sh` to blocking,
    remove `kysely` + `tauri_plugin_sql` from `package.json`, remove the plugin registration in
    `lib.rs`'s `tauri::Builder`.
 7. Full RBAC matrix re-verified at ~150 commands.
-8. **Not urgent, added this slice**: enforce PIN uniqueness per branch. Login is PIN-only now
-   (Batch 3a) — nothing currently stops two staff members on the same branch from having the same
-   PIN, which would make `login_pin_v3`'s scan-and-verify resolve to whichever one it iterates to
-   first (unpredictable, not a security hole exactly, but a real correctness gap now that PIN is
-   the ONLY credential). Needs a uniqueness check in `create_staff_v3`/`update_staff_profile_v3`
-   scoped to branch (or tenant, for Owner/Platform's branch-less rows) before hashing.
-9. T1.9 (the formal proof) starts only after all of the above.
+8. **Not urgent**: enforce PIN uniqueness per branch. Login is PIN-only now (Batch 3a) — nothing
+   currently stops two staff members on the same branch from having the same PIN, which would make
+   `login_pin_v3`'s scan-and-verify resolve to whichever one it iterates to first (unpredictable,
+   not a security hole exactly, but a real correctness gap now that PIN is the ONLY credential).
+   Needs a uniqueness check in `create_staff_v3`/`update_staff_profile_v3` scoped to branch (or
+   tenant, for Owner/Platform's branch-less rows) before hashing.
+9. **Not urgent, added this slice**: reconcile (or explicitly decide not to reconcile) the two
+   table dualities -- `menu_items`/`categories` vs T1.6's `menu_item_default`/`menu_item_override`,
+   and legacy `branches` vs T1.1's `branch`. Both are currently two live schemas for the same
+   concept, one populated and used, one empty and unused.
+10. T1.9 (the formal proof) starts only after all of the above.
