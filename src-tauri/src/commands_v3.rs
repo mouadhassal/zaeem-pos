@@ -850,8 +850,65 @@ pub fn close_shift_v3(state: State<Db>, session_token: String, shift_id: String,
     authorize(&actor, Permission::ManageShift).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).close_shift(&shift_id, ending_cash_cents, difference_cents).map_err(|e| e.to_string())?;
+    Repo::new(&tx).close_shift(&actor.scope(), &shift_id, ending_cash_cents, difference_cents).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::ShiftClosed, "shift", &shift_id, None, Some(&serde_json::json!({ "ending_cash_cents": ending_cash_cents, "difference_cents": difference_cents }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// `staff/page.tsx`'s shifts tab: list + filter, and a manager's "force
+/// close" for an abandoned shift.
+#[tauri::command]
+pub fn list_shifts_v3(state: State<Db>, session_token: String, date_from: Option<String>, date_to: Option<String>, user_id: Option<String>) -> Result<Vec<crate::repo::ShiftAdminRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_shifts(&actor.scope(), date_from.as_deref(), date_to.as_deref(), user_id.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn force_close_shift_v3(state: State<Db>, session_token: String, shift_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).force_close_shift(&actor.scope(), &shift_id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::ShiftClosed, "shift", &shift_id, None, Some(&serde_json::json!({ "forced": true }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_attendance_v3(state: State<Db>, session_token: String, date_from: Option<String>, date_to: Option<String>, user_id: Option<String>) -> Result<Vec<crate::repo::AttendanceRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_attendance(&actor.scope(), date_from.as_deref(), date_to.as_deref(), user_id.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn clock_in_v3(state: State<Db>, session_token: String, user_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Err("clock-in requires a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).clock_in(&actor.scope(), &tenant_id, &branch_id, &user_id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::SettingsChanged, "attendance", &user_id, None, Some(&serde_json::json!({ "action": "clock_in" }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn clock_out_v3(state: State<Db>, session_token: String, user_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).clock_out(&actor.scope(), &user_id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "attendance", &user_id, None, Some(&serde_json::json!({ "action": "clock_out" }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -3098,7 +3155,7 @@ mod tests {
         assert_eq!(stats.card_total, 3500);
         println!("[shifts] shift_stats: 2 orders, total_sales=5500, cash=2000, card=3500 -- matches the 2 payments taken");
 
-        repo.close_shift(&shift_id, 12000, 100).unwrap();
+        repo.close_shift(&scope, &shift_id, 12000, 100).unwrap();
         assert!(repo.get_active_shift(&cashier_id).unwrap().is_none());
         let closed_at: Option<String> = conn.query_row("SELECT closed_at FROM shifts WHERE id = ?1", params![shift_id], |r| r.get(0)).unwrap();
         assert!(closed_at.is_some());
@@ -3951,6 +4008,74 @@ mod tests {
             Err(RepoError::TenantOwnershipViolation { .. }) => println!("[scope] delete_happy_hour_rule correctly rejected another tenant's rule"),
             other => panic!("expected TenantOwnershipViolation, got {other:?}"),
         }
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Slice C, `staff/page.tsx`'s shifts + attendance tabs: list/filter,
+    /// force-close, clock in/out. Also proves the retrofitted `close_shift`
+    /// scope check (found missing entirely: any Cashier could close any
+    /// shift in the database by id) and the new clock-in/out staff-scope
+    /// check, both cross-branch.
+    #[test]
+    fn staff_shifts_and_attendance_list_force_close_and_clock_in_out() {
+        let (db_path, tenant_id, branch_a, table_id) = seeded_db("staff_shifts_attendance");
+        let conn = Connection::open(&db_path).unwrap();
+        let repo = Repo::new(&conn);
+        let branch_b = repo.create_branch(&tenant_id, "Branch B", "USD").unwrap();
+
+        let cashier_a = seed_staff(&conn, &tenant_id, Some(&branch_a), Role::Cashier, "Cashier A");
+        let cashier_b = seed_staff(&conn, &tenant_id, Some(&branch_b), Role::Cashier, "Cashier B");
+        let scope_a = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_a.clone() };
+        let scope_b = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_b.clone() };
+
+        // Shifts: open one per branch, list must only show the caller's own branch.
+        let shift_a = repo.open_shift(&tenant_id, &branch_a, &cashier_a, 5000).unwrap();
+        let shift_b = repo.open_shift(&tenant_id, &branch_b, &cashier_b, 7000).unwrap();
+        let shifts_a = repo.list_shifts(&scope_a, None, None, None).unwrap();
+        assert_eq!(shifts_a.len(), 1);
+        assert_eq!(shifts_a[0].id, shift_a);
+        assert_eq!(shifts_a[0].user_name, "Cashier A");
+        println!("[staff] list_shifts scoped to Branch A shows only Branch A's shift");
+
+        // Cross-branch: Branch A's actor must not be able to force-close Branch B's shift.
+        match repo.force_close_shift(&scope_a, &shift_b) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[staff] force_close_shift correctly rejected Branch A closing Branch B's shift"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
+        repo.force_close_shift(&scope_a, &shift_a).unwrap();
+        let shifts_a = repo.list_shifts(&scope_a, None, None, None).unwrap();
+        assert!(shifts_a[0].closed_at.is_some());
+        assert_eq!(shifts_a[0].ending_cash_cents, Some(0));
+        assert_eq!(shifts_a[0].difference_cents, Some(0));
+        println!("[staff] force_close_shift closed Branch A's own shift with zeroed ending cash/difference");
+        let _ = table_id;
+
+        // Attendance: clock in must reject a staff member from another branch.
+        match repo.clock_in(&scope_a, &tenant_id, &branch_a, &cashier_b) {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[staff] clock_in correctly rejected clocking in Branch B's staff from Branch A's scope"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
+        repo.clock_in(&scope_a, &tenant_id, &branch_a, &cashier_a).unwrap();
+        let attendance_a = repo.list_attendance(&scope_a, None, None, None).unwrap();
+        assert_eq!(attendance_a.len(), 1);
+        assert!(attendance_a[0].clock_in.is_some());
+        assert!(attendance_a[0].clock_out.is_none());
+        println!("[staff] clock_in created today's attendance row for Branch A's own cashier");
+
+        // Clocking in again the same day must UPDATE, not duplicate.
+        repo.clock_in(&scope_a, &tenant_id, &branch_a, &cashier_a).unwrap();
+        assert_eq!(repo.list_attendance(&scope_a, None, None, None).unwrap().len(), 1, "a second clock_in the same day must not create a second row");
+
+        repo.clock_out(&scope_a, &cashier_a).unwrap();
+        let attendance_a = repo.list_attendance(&scope_a, None, None, None).unwrap();
+        assert!(attendance_a[0].clock_out.is_some());
+        println!("[staff] clock_out updated the same row, not a duplicate");
+
+        // Branch B's own actor can still clock in its own staff.
+        repo.clock_in(&scope_b, &tenant_id, &branch_b, &cashier_b).unwrap();
+        assert_eq!(repo.list_attendance(&scope_b, None, None, None).unwrap().len(), 1, "Branch B's clock_in must succeed for its own staff and not be visible from Branch A's scope");
+        assert_eq!(repo.list_attendance(&scope_a, None, None, None).unwrap().len(), 1, "Branch A's attendance list must still show only its own row");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }

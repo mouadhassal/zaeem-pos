@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getDb } from "../../db";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import type { UserRole } from "../../db/types";
@@ -173,70 +172,34 @@ export default function StaffPage() {
 
   const fetchShifts = useCallback(async () => {
     try {
-      const db = await getDb();
-      let query = db
-        .selectFrom("shifts")
-        .innerJoin("staff", "staff.id", "shifts.user_id")
-        .select([
-          "shifts.id",
-          "shifts.user_id",
-          "shifts.opened_at",
-          "shifts.closed_at",
-          "shifts.starting_cash_cents",
-          "shifts.ending_cash_cents",
-          "shifts.difference_cents",
-          "staff.name as user_name",
-        ]);
-      if (shiftDateFrom) {
-        query = query.where("shifts.opened_at", ">=", new Date(shiftDateFrom).toISOString());
-      }
-      if (shiftDateTo) {
-        const endOfDay = new Date(shiftDateTo);
-        endOfDay.setHours(23, 59, 59, 999);
-        query = query.where("shifts.opened_at", "<=", endOfDay.toISOString());
-      }
-      if (shiftEmployeeFilter) {
-        query = query.where("shifts.user_id", "=", shiftEmployeeFilter);
-      }
-      const rows = await query.orderBy("shifts.opened_at", "desc").execute();
+      const rows = await invoke<Shift[]>("list_shifts_v3", {
+        sessionToken: token,
+        dateFrom: shiftDateFrom ? new Date(shiftDateFrom).toISOString() : null,
+        dateTo: shiftDateTo ? (() => { const d = new Date(shiftDateTo); d.setHours(23, 59, 59, 999); return d.toISOString(); })() : null,
+        userId: shiftEmployeeFilter || null,
+      });
       setShifts(rows);
     } catch {
       setError("حدث خطأ في تحميل الورديات");
     }
-  }, [shiftDateFrom, shiftDateTo, shiftEmployeeFilter]);
+  }, [token, shiftDateFrom, shiftDateTo, shiftEmployeeFilter]);
 
   const fetchAttendance = useCallback(async (fromDate?: string, toDate?: string) => {
     try {
-      const db = await getDb();
       const today = new Date().toISOString().slice(0, 10);
       const f = fromDate || today;
       const t = toDate || today;
-      let query = db
-        .selectFrom("attendance")
-        .innerJoin("staff", "staff.id", "attendance.user_id")
-        .select([
-          "attendance.id",
-          "attendance.user_id",
-          "attendance.date",
-          "attendance.clock_in",
-          "attendance.clock_out",
-          "attendance.status",
-          "staff.name as user_name",
-        ]);
-      if (f === t) {
-        query = query.where("attendance.date", "=", f);
-      } else {
-        query = query.where("attendance.date", ">=", f).where("attendance.date", "<=", t);
-      }
-      if (attendanceEmployeeFilter) {
-        query = query.where("attendance.user_id", "=", attendanceEmployeeFilter);
-      }
-      const rows = await query.orderBy("attendance.date", "desc").orderBy("staff.name", "asc").execute();
+      const rows = await invoke<Attendance[]>("list_attendance_v3", {
+        sessionToken: token,
+        dateFrom: f,
+        dateTo: t,
+        userId: attendanceEmployeeFilter || null,
+      });
       setAttendance(rows);
     } catch {
       setError("حدث خطأ في تحميل الحضور");
     }
-  }, [attendanceEmployeeFilter]);
+  }, [token, attendanceEmployeeFilter]);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -359,18 +322,7 @@ export default function StaffPage() {
   const forceCloseShift = async (shiftId: string) => {
     if (!user) return;
     try {
-      const db = await getDb();
-      const now = new Date().toISOString();
-      await db
-        .updateTable("shifts")
-        .set({
-          closed_at: now,
-          ending_cash_cents: 0,
-          difference_cents: 0,
-          last_modified: now,
-        })
-        .where("id", "=", shiftId)
-        .execute();
+      await invoke("force_close_shift_v3", { sessionToken: token, shiftId });
       setForceCloseShiftId(null);
       await fetchShifts();
     } catch {
@@ -381,40 +333,7 @@ export default function StaffPage() {
   const handleClockIn = async (userId: string) => {
     setClockingUserId(userId);
     try {
-      const db = await getDb();
-      const today = new Date().toISOString().slice(0, 10);
-      const now = new Date().toISOString();
-      const hour = new Date().getHours();
-      let status = "PRESENT";
-      if (hour >= 9) status = "LATE";
-      const existing = await db
-        .selectFrom("attendance")
-        .select("id")
-        .where("user_id", "=", userId)
-        .where("date", "=", today)
-        .executeTakeFirst();
-      if (existing) {
-        await db
-          .updateTable("attendance")
-          .set({ clock_in: now, status, last_modified: now })
-          .where("id", "=", existing.id)
-          .execute();
-      } else {
-        await db
-          .insertInto("attendance")
-          .values({
-            id: crypto.randomUUID(),
-            user_id: userId,
-            date: today,
-            clock_in: now,
-            clock_out: null,
-            status,
-            sync_version: 1,
-            last_modified: now,
-            sync_status: "pending",
-          })
-          .execute();
-      }
+      await invoke("clock_in_v3", { sessionToken: token, userId });
       await fetchAttendance();
     } catch {
       setError("حدث خطأ في تسجيل الحضور");
@@ -426,27 +345,7 @@ export default function StaffPage() {
   const handleClockOut = async (userId: string) => {
     setClockingUserId(userId);
     try {
-      const db = await getDb();
-      const today = new Date().toISOString().slice(0, 10);
-      const now = new Date().toISOString();
-      const record = await db
-        .selectFrom("attendance")
-        .select(["clock_in", "status"])
-        .where("user_id", "=", userId)
-        .where("date", "=", today)
-        .executeTakeFirst();
-      let status = record?.status ?? "PRESENT";
-      if (record?.clock_in) {
-        const diffMs = new Date(now).getTime() - new Date(record.clock_in).getTime();
-        const hours = diffMs / 3600000;
-        if (hours < 4) status = "HALF_DAY";
-      }
-      await db
-        .updateTable("attendance")
-        .set({ clock_out: now, status, last_modified: now })
-        .where("user_id", "=", userId)
-        .where("date", "=", today)
-        .execute();
+      await invoke("clock_out_v3", { sessionToken: token, userId });
       await fetchAttendance();
     } catch {
       setError("حدث خطأ في تسجيل الانصراف");

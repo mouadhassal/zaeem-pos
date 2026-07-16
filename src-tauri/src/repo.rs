@@ -238,6 +238,29 @@ pub struct ShiftOrderRow {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct ShiftAdminRow {
+    pub id: String,
+    pub user_id: String,
+    pub user_name: String,
+    pub opened_at: String,
+    pub closed_at: Option<String>,
+    pub starting_cash_cents: i64,
+    pub ending_cash_cents: Option<i64>,
+    pub difference_cents: Option<i64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AttendanceRow {
+    pub id: String,
+    pub user_id: String,
+    pub user_name: String,
+    pub date: String,
+    pub clock_in: Option<String>,
+    pub clock_out: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct IngredientRow {
     pub id: String,
     pub name: String,
@@ -2584,11 +2607,152 @@ impl<'a> Repo<'a> {
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
 
-    pub fn close_shift(&self, shift_id: &str, ending_cash_cents: i64, difference_cents: i64) -> Result<(), RepoError> {
+    /// `scope` is verified before the write -- found missing entirely
+    /// during Slice C verification (any authenticated Cashier could close
+    /// ANY shift in the database by id, regardless of tenant/branch).
+    pub fn close_shift(&self, scope: &Scope, shift_id: &str, ending_cash_cents: i64, difference_cents: i64) -> Result<(), RepoError> {
+        self.assert_shift_in_scope(shift_id, scope)?;
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
             "UPDATE shifts SET closed_at = ?1, ending_cash_cents = ?2, difference_cents = ?3, last_modified = ?1 WHERE id = ?4",
             params![now, ending_cash_cents, difference_cents, shift_id],
+        )?;
+        Ok(())
+    }
+
+    fn assert_shift_in_scope(&self, shift_id: &str, scope: &Scope) -> Result<(), RepoError> {
+        let (predicate, args) = Self::scope_predicate(scope);
+        let id_placeholder = format!("?{}", args.len() + 1);
+        let sql = format!("SELECT 1 FROM shifts WHERE {predicate} AND id = {id_placeholder}");
+        let mut full_args: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        full_args.push(&shift_id);
+        self.conn.query_row(&sql, full_args.as_slice(), |r| r.get::<_, i64>(0))
+            .optional()?
+            .ok_or_else(|| RepoError::TenantOwnershipViolation { table: "shifts".to_string(), id: shift_id.to_string() })?;
+        Ok(())
+    }
+
+    /// The staff-management page's "force close" -- same write as
+    /// `close_shift`, just always zeroing ending cash/difference (an admin
+    /// override for an abandoned shift, not a real reconciliation).
+    pub fn force_close_shift(&self, scope: &Scope, shift_id: &str) -> Result<(), RepoError> {
+        self.close_shift(scope, shift_id, 0, 0)
+    }
+
+    pub fn list_shifts(&self, scope: &Scope, date_from: Option<&str>, date_to: Option<&str>, user_id: Option<&str>) -> Result<Vec<ShiftAdminRow>, RepoError> {
+        self.assert_scope_populated("shifts", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let predicate = predicate.replace("tenant_id", "shifts.tenant_id").replace("branch_id", "shifts.branch_id");
+        let mut sql = format!(
+            "SELECT shifts.id, shifts.user_id, staff.name, shifts.opened_at, shifts.closed_at, \
+                    shifts.starting_cash_cents, shifts.ending_cash_cents, shifts.difference_cents \
+             FROM shifts INNER JOIN staff ON staff.id = shifts.user_id WHERE {predicate}"
+        );
+        let mut full_args: Vec<String> = args;
+        if let Some(f) = date_from { sql.push_str(&format!(" AND shifts.opened_at >= ?{}", full_args.len() + 1)); full_args.push(f.to_string()); }
+        if let Some(t) = date_to { sql.push_str(&format!(" AND shifts.opened_at <= ?{}", full_args.len() + 1)); full_args.push(t.to_string()); }
+        if let Some(u) = user_id { sql.push_str(&format!(" AND shifts.user_id = ?{}", full_args.len() + 1)); full_args.push(u.to_string()); }
+        sql.push_str(" ORDER BY shifts.opened_at DESC");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = full_args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+            Ok(ShiftAdminRow {
+                id: r.get(0)?, user_id: r.get(1)?, user_name: r.get(2)?, opened_at: r.get(3)?, closed_at: r.get(4)?,
+                starting_cash_cents: r.get(5)?, ending_cash_cents: r.get(6)?, difference_cents: r.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    pub fn list_attendance(&self, scope: &Scope, date_from: Option<&str>, date_to: Option<&str>, user_id: Option<&str>) -> Result<Vec<AttendanceRow>, RepoError> {
+        self.assert_scope_populated("attendance", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let predicate = predicate.replace("tenant_id", "attendance.tenant_id").replace("branch_id", "attendance.branch_id");
+        let mut sql = format!(
+            "SELECT attendance.id, attendance.user_id, staff.name, attendance.date, attendance.clock_in, attendance.clock_out, attendance.status \
+             FROM attendance INNER JOIN staff ON staff.id = attendance.user_id WHERE {predicate}"
+        );
+        let mut full_args: Vec<String> = args;
+        if let Some(f) = date_from { sql.push_str(&format!(" AND attendance.date >= ?{}", full_args.len() + 1)); full_args.push(f.to_string()); }
+        if let Some(t) = date_to { sql.push_str(&format!(" AND attendance.date <= ?{}", full_args.len() + 1)); full_args.push(t.to_string()); }
+        if let Some(u) = user_id { sql.push_str(&format!(" AND attendance.user_id = ?{}", full_args.len() + 1)); full_args.push(u.to_string()); }
+        sql.push_str(" ORDER BY attendance.date DESC, staff.name ASC");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = full_args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+            Ok(AttendanceRow { id: r.get(0)?, user_id: r.get(1)?, user_name: r.get(2)?, date: r.get(3)?, clock_in: r.get(4)?, clock_out: r.get(5)?, status: r.get(6)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// Verifies `user_id` is a staff member in the caller's own scope
+    /// before writing an attendance row for them -- a manager clocking in
+    /// staff must not be able to touch another branch's/tenant's roster by
+    /// guessing an id.
+    fn assert_staff_in_scope(&self, staff_id: &str, scope: &Scope) -> Result<(), RepoError> {
+        let (predicate, args) = Self::scope_predicate(scope);
+        let id_placeholder = format!("?{}", args.len() + 1);
+        let sql = format!("SELECT 1 FROM staff WHERE {predicate} AND id = {id_placeholder}");
+        let mut full_args: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        full_args.push(&staff_id);
+        self.conn.query_row(&sql, full_args.as_slice(), |r| r.get::<_, i64>(0))
+            .optional()?
+            .ok_or_else(|| RepoError::TenantOwnershipViolation { table: "staff".to_string(), id: staff_id.to_string() })?;
+        Ok(())
+    }
+
+    /// Clock in: upsert today's `attendance` row for `user_id`. Status is
+    /// LATE past 09:00, matching the old frontend's exact cutoff.
+    pub fn clock_in(&self, scope: &Scope, tenant_id: &str, branch_id: &str, user_id: &str) -> Result<(), RepoError> {
+        self.assert_staff_in_scope(user_id, scope)?;
+        let now = chrono::Utc::now();
+        let today = now.format("%Y-%m-%d").to_string();
+        let now_iso = now.to_rfc3339();
+        let status = if now.format("%H").to_string().parse::<i64>().unwrap_or(0) >= 9 { "LATE" } else { "PRESENT" };
+
+        let existing_id: Option<String> = self.conn.query_row(
+            "SELECT id FROM attendance WHERE user_id = ?1 AND date = ?2", params![user_id, today], |r| r.get(0),
+        ).optional()?;
+        match existing_id {
+            Some(id) => {
+                self.conn.execute(
+                    "UPDATE attendance SET clock_in = ?1, status = ?2, last_modified = ?1 WHERE id = ?3",
+                    params![now_iso, status, id],
+                )?;
+            }
+            None => {
+                self.conn.execute(
+                    "INSERT INTO attendance (id, tenant_id, branch_id, user_id, date, clock_in, status, last_modified, sync_status) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?6, 'pending')",
+                    params![uuid::Uuid::now_v7().to_string(), tenant_id, branch_id, user_id, today, now_iso, status],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Clock out: update today's `attendance` row. HALF_DAY if under 4
+    /// hours since clock-in, matching the old frontend's exact threshold.
+    pub fn clock_out(&self, scope: &Scope, user_id: &str) -> Result<(), RepoError> {
+        self.assert_staff_in_scope(user_id, scope)?;
+        let now = chrono::Utc::now();
+        let today = now.format("%Y-%m-%d").to_string();
+        let now_iso = now.to_rfc3339();
+
+        let record: Option<(Option<String>, String)> = self.conn.query_row(
+            "SELECT clock_in, status FROM attendance WHERE user_id = ?1 AND date = ?2", params![user_id, today],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?;
+        let mut status = record.as_ref().map(|(_, s)| s.clone()).unwrap_or_else(|| "PRESENT".to_string());
+        if let Some((Some(clock_in), _)) = &record {
+            if let Ok(clock_in_dt) = chrono::DateTime::parse_from_rfc3339(clock_in) {
+                let hours = (now.timestamp() - clock_in_dt.timestamp()) as f64 / 3600.0;
+                if hours < 4.0 { status = "HALF_DAY".to_string(); }
+            }
+        }
+        self.conn.execute(
+            "UPDATE attendance SET clock_out = ?1, status = ?2, last_modified = ?1 WHERE user_id = ?3 AND date = ?4",
+            params![now_iso, status, user_id, today],
         )?;
         Ok(())
     }
