@@ -29,7 +29,7 @@ export default function ManagerPinModal({
       // `staff` (never `users`, which Decision A dropped) -- the
       // password/PIN hash never reaches this renderer at all. It also now
       // owns the failure-count/lockout bookkeeping server-side (previously
-      // a client-side `app_settings` read via `getDb()`, trivially
+      // a client-side `app_settings` read via the old Kysely helper, trivially
       // bypassable by clearing local state) and audits a successful grant.
       const token = useAuthStore.getState().token;
       const valid = await invoke<boolean>("verify_manager_override_v3", { sessionToken: token, passwordOrPin: pin }).catch(() => false);

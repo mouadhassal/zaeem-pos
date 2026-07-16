@@ -15,12 +15,13 @@ set -euo pipefail
 # regex, where `\s`/alternation/groups actually work as written) instead of
 # rewriting the pattern to BRE syntax, since ERE was clearly the intent.
 #
-# Still NOT flipped to blocking (still exits 0 on violations) -- 119 real
-# getDb() call sites remain across menu CRUD, inventory, finance, debt,
-# loyalty, settings, reports, and the customers/PO/delivery/printer pages,
-# none converted yet. Flip this to `exit 1` only once that count is
-# genuinely zero -- doing it now would break every dev/CI run for reasons
-# that have nothing to do with a regression.
+# FLIPPED TO BLOCKING (2026-07-16, Batch 3b closeout): the last real
+# consumer (kds/page.tsx, ai/page.tsx) converted to v3 commands this slice,
+# and the getDb()/Kysely/tauri_plugin_sql dependency itself was removed
+# from package.json and deleted from src/db/. Proven both ways before this
+# flip: red on a planted getDb() in an isolated fixture (via
+# CHECK_FRONTEND_SRC), green on the real tree -- not just re-running
+# against a tree already known to be clean.
 
 # Overridable via env var so this script can be pointed at an isolated
 # fixture directory for a red/green self-test, without planting a real
@@ -34,11 +35,11 @@ matches=$(grep -rnE "$PATTERNS" "$SRC" --include='*.ts' --include='*.tsx' 2>/dev
 
 if [ -n "$matches" ]; then
     count=$(echo "$matches" | wc -l)
-    echo "NOT YET GREEN: $count frontend SQL reference(s) found (R1 violation, tracked, not blocking yet)"
+    echo "R1 VIOLATION: $count frontend SQL reference(s) found -- the frontend must never touch the database directly"
     echo "$matches" | head -20
     [ "$count" -gt 20 ] && echo "... and $((count - 20)) more"
-    exit 0
+    exit 1
 fi
 
-echo "OK: No frontend SQL violations -- safe to flip this script to blocking (exit 1) now"
+echo "OK: No frontend SQL violations"
 exit 0

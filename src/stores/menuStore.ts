@@ -72,7 +72,7 @@ export const useMenuStore = create<MenuState>((set) => ({
           // See ComboComponentRow's doc comment (repo.rs): this mirrors an
           // existing combo_items.combo_id/menu_items.id data-model mismatch,
           // not a fix -- it returns empty on a real install today, same as
-          // the old getDb() query did.
+          // the old Kysely-based query did.
           const rows = await invoke<{ menu_item_id: string; menu_item_name: string; quantity: number }[]>(
             "list_combo_components_v3", { sessionToken: token, menuItemId: item.id }
           );

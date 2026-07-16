@@ -1,20 +1,20 @@
 import { useEffect, useState } from "react";
-import { getDb } from "../../db";
-import { checkIntegrity, getWalMode } from "../../db/corruption";
 import { getMemoryUsage, getAverageFps } from "../../lib/performance";
 import { useCartStore } from "../../stores/cartStore";
 import { useAuthStore } from "../../stores/authStore";
 import { invoke } from "@tauri-apps/api/core";
 
+// The database section (integrity/WAL/order count/sync queue) used to read
+// via the old Kysely helper -- a second SQLite connection through the SQL plugin,
+// entirely separate from Rust's own. That dependency is gone (Batch 3b
+// closeout: the frontend no longer touches the database at all). Not
+// replaced with equivalent Rust commands -- this is a dev-only diagnostic
+// page (`import.meta.env.DEV` gated below, on top of `diagnose_db` itself
+// refusing in release builds), not worth new backend surface for.
 function DebugPageContent() {
-  const [integrity, setIntegrity] = useState<{ ok: boolean; errors: string[] } | null>(null);
-  const [walMode, setWal] = useState(false);
-  const [queueSize, setQueueSize] = useState(0);
   const [memory, setMemory] = useState({ heapUsedMB: 0, heapTotalMB: 0 });
   const [fps, setFps] = useState(0);
-  const [orderCount, setOrderCount] = useState(0);
   const [diagnose, setDiagnose] = useState("");
-  const [dbError, setDbError] = useState("");
   const user = useAuthStore((s) => s.user);
   const cartItems = useCartStore((s) => s.items.length);
 
@@ -25,30 +25,6 @@ function DebugPageContent() {
         setDiagnose(diag);
       } catch (e) {
         setDiagnose("diagnose_db failed: " + String(e));
-      }
-
-      const result = await checkIntegrity();
-      setIntegrity(result);
-
-      const wal = await getWalMode();
-      setWal(wal);
-
-      try {
-        const db = await getDb();
-        const count = await db
-          .selectFrom("orders")
-          .select(db.fn.count<number>("id").as("count"))
-          .executeTakeFirst();
-        setOrderCount(count?.count ?? 0);
-
-        const queue = await db
-          .selectFrom("sync_queue")
-          .select(db.fn.count<number>("id").as("count"))
-          .where("sync_status", "=", "pending")
-          .executeTakeFirst();
-        setQueueSize(queue?.count ?? 0);
-      } catch (e) {
-        setDbError(String(e));
       }
 
       setMemory(getMemoryUsage());
@@ -67,59 +43,26 @@ function DebugPageContent() {
         </div>
       )}
 
-      {dbError && (
-        <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
-          <h2 className="font-bold text-red-700 text-sm font-arabic">خطأ DB</h2>
-          <pre className="text-xs font-mono whitespace-pre-wrap text-red-600 mt-1">{dbError}</pre>
-        </div>
-      )}
-
-      <div className="grid grid-cols-2 gap-4">
-        <div className="bg-white rounded-2xl p-4 shadow-sm space-y-2">
-          <h2 className="font-bold text-ink-900 font-arabic">قاعدة البيانات</h2>
-          <div className="space-y-1 text-sm">
-            <div className="flex justify-between">
-              <span className="text-ink-400 font-arabic">السلامة</span>
-              <span className={`font-mono ${integrity?.ok ? "text-saffron-600" : "text-red-500"}`}>
-                {integrity?.ok ? "سليمة ✓" : `تلف: ${integrity?.errors.join(", ")}`}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-ink-400 font-arabic">WAL</span>
-              <span className="font-mono">{walMode ? "مفعل" : "غير مفعل"}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-ink-400 font-arabic">الطلبات</span>
-              <span className="font-mono">{orderCount}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-ink-400 font-arabic">انتظار المزامنة</span>
-              <span className="font-mono">{queueSize}</span>
-            </div>
+      <div className="bg-white rounded-2xl p-4 shadow-sm space-y-2">
+        <h2 className="font-bold text-ink-900 font-arabic">الأداء</h2>
+        <div className="space-y-1 text-sm">
+          <div className="flex justify-between">
+            <span className="text-ink-400 font-arabic">الذاكرة</span>
+            <span className="font-mono">{memory.heapUsedMB} / {memory.heapTotalMB} MB</span>
           </div>
-        </div>
-
-        <div className="bg-white rounded-2xl p-4 shadow-sm space-y-2">
-          <h2 className="font-bold text-ink-900 font-arabic">الأداء</h2>
-          <div className="space-y-1 text-sm">
-            <div className="flex justify-between">
-              <span className="text-ink-400 font-arabic">الذاكرة</span>
-              <span className="font-mono">{memory.heapUsedMB} / {memory.heapTotalMB} MB</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-ink-400 font-arabic">FPS</span>
-              <span className={`font-mono ${fps < 30 ? "text-red-500" : fps < 50 ? "text-amber-500" : "text-saffron-600"}`}>
-                {fps}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-ink-400 font-arabic">السلة</span>
-              <span className="font-mono">{cartItems} أصناف</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-ink-400 font-arabic">المستخدم</span>
-              <span className="font-mono font-arabic">{user?.name ?? "---"}</span>
-            </div>
+          <div className="flex justify-between">
+            <span className="text-ink-400 font-arabic">FPS</span>
+            <span className={`font-mono ${fps < 30 ? "text-red-500" : fps < 50 ? "text-amber-500" : "text-saffron-600"}`}>
+              {fps}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-ink-400 font-arabic">السلة</span>
+            <span className="font-mono">{cartItems} أصناف</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-ink-400 font-arabic">المستخدم</span>
+            <span className="font-mono font-arabic">{user?.name ?? "---"}</span>
           </div>
         </div>
       </div>

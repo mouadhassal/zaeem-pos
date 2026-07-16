@@ -2,8 +2,6 @@ import React, { useState, useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import SplashScreen from "./components/SplashScreen";
-import { runMigrations } from "./db/migrations";
-import { checkIntegrity, applyPragmas } from "./db/corruption";
 import { createBackup, startAutoBackup } from "./lib/backup";
 import { startMemoryMonitoring, measureStartup, startFpsMonitor } from "./lib/performance";
 import { logger } from "./lib/logger";
@@ -27,21 +25,12 @@ function Root() {
 
     (async () => {
       try {
-        await applyPragmas();
-        logger.info("Pragmas applied");
-
-        const integrity = await checkIntegrity();
-        if (!integrity.ok) {
-          logger.error("Database corruption detected", {
-            errors: integrity.errors,
-          });
-        } else {
-          logger.info("Integrity check passed");
-        }
-
-        await runMigrations();
-        logger.info("Migrations complete");
-
+        // Pragmas, integrity checks, and migrations used to run here via a
+        // SECOND SQLite connection (tauri_plugin_sql, entirely separate
+        // from Rust's own). Rust's init_db() already runs its own real
+        // migrations before the frontend ever loads, and applies its own
+        // pragmas on its one authoritative connection -- this redundant
+        // second bootstrap is gone (Batch 3b closeout), not replaced.
         await createBackup();
         startAutoBackup();
         startMemoryMonitoring();
