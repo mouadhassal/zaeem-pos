@@ -1,11 +1,13 @@
+import type { Icon } from "@tabler/icons-react";
+
 interface Props {
   label: string;
-  icon?: string;
+  icon?: Icon;
   active: boolean;
   onClick: () => void;
 }
 
-export default function CategoryChip({ label, icon, active, onClick }: Props) {
+export default function CategoryChip({ label, icon: IconComp, active, onClick }: Props) {
   return (
     <button
       onClick={onClick}
@@ -16,7 +18,7 @@ export default function CategoryChip({ label, icon, active, onClick }: Props) {
       }`}
       style={{ minHeight: 40, minWidth: 44 }}
     >
-      {icon && <span className="text-base">{icon}</span>}
+      {IconComp && <IconComp size={18} stroke={1.75} />}
       <span>{label}</span>
     </button>
   );

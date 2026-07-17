@@ -10,7 +10,7 @@ export default function PayKey({ disabled, onClick, onHold }: Props) {
       <button
         onClick={onClick}
         disabled={disabled}
-        className="flex-1 bg-accent text-white font-bold text-base rounded-[12px] transition-all active:scale-[0.98] disabled:opacity-40"
+        className="flex-1 bg-saffron-500 text-white font-bold text-base rounded-[12px] transition-all active:scale-[0.98] disabled:opacity-40"
         style={{ height: 50, minHeight: 50 }}
       >
         دفع

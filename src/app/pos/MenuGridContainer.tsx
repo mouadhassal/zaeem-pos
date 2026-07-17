@@ -1,9 +1,10 @@
 import { useEffect, useState, useMemo, type ComponentProps } from "react";
-import { IconSearch } from "@tabler/icons-react";
+import { IconSearch, IconLayoutGrid } from "@tabler/icons-react";
 import { useMenuStore, useFilteredMenuItems } from "../../stores/menuStore";
 import { useCartStore } from "../../stores/cartStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useMenuItemPhoto } from "../../hooks/useMenuItemPhoto";
+import { getCategoryStyle } from "../../components/ui/CategoryConfig";
 import SearchBar from "../../components/ui/SearchBar";
 import CategoryChip from "../../components/ui/CategoryChip";
 import ItemCard from "../../components/ui/ItemCard";
@@ -116,6 +117,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
         <div className="flex gap-1.5 overflow-x-auto no-scrollbar flex-1">
           <CategoryChip
             label="الكل"
+            icon={IconLayoutGrid}
             active={activeCategory === null}
             onClick={() => setActiveCategory(null)}
           />
@@ -123,6 +125,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
             <CategoryChip
               key={cat.id}
               label={cat.name}
+              icon={getCategoryStyle(cat.name).icon}
               active={activeCategory === cat.name}
               onClick={() => setActiveCategory(activeCategory === cat.name ? null : cat.name)}
             />
@@ -142,7 +145,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
             {searchValue ? "ما في أصناف تطابق البحث" : "ما في أصناف متاحة"}
           </div>
         ) : (
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-3 xl:grid-cols-4 gap-4">
             {visibleItems.map((item) => {
               const cat = categories.find((c) => c.id === item.category_id);
               return (

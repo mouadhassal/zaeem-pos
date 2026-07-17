@@ -22,12 +22,15 @@ export default function ItemCard({
 
   return (
     <div
-      className="bg-surface rounded-[13px] flex flex-col overflow-hidden shadow-sh-2 transition-all active:scale-[0.98]"
+      className="bg-surface rounded-[12px] flex flex-col overflow-hidden shadow-sh-2 transition-all active:scale-[0.98]"
       style={{ minHeight: 0 }}
     >
+      {/* Photos-first: photo fills this area when present; the category
+       * glyph on its wash color fills the EXACT same geometry when absent
+       * (CategoryGlyph.tsx) -- zero layout shift either way. */}
       <CategoryGlyph categoryName={categoryName} photoUrl={photoUrl} />
-      <div className="p-2.5 flex flex-col gap-2 flex-1">
-        <span className="text-[13px] font-medium text-text leading-tight line-clamp-2">
+      <div className="p-3 flex flex-col gap-2.5 flex-1">
+        <span className="text-sm font-medium text-text leading-tight line-clamp-2">
           {name}
         </span>
         <div className="flex items-center justify-between mt-auto">

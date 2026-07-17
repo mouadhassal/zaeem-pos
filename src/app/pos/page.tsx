@@ -300,21 +300,36 @@ export default function POSPage() {
     fetchTables();
   };
 
+  const menuItemsById = useMenuStore((s) => s.menuItems);
   const orderLines = useMemo(() =>
     items.filter((i) => !i.voided).map((i) => ({
       id: i.id,
+      menuItemId: i.menuItemId,
+      hasPhoto: menuItemsById.find((m) => m.id === i.menuItemId)?.image_path === "HAS_PHOTO",
       name: i.name,
       categoryName: i.categoryName || "",
       quantity: i.quantity,
       unitPriceCents: i.unitPriceCents,
     })),
-  [items]);
+  [items, menuItemsById]);
 
   const totalCents = useCartStore((s) => s.total());
   const subtotalCents = useCartStore((s) => s.subtotal());
   const discountCents = useCartStore((s) => s.discountCents);
   const orderNumber = useMemo(() => tableId?.slice(0, 8) || "0000", [tableId]);
   const currentOrderId = tables.find((t) => t.id === tableId)?.current_order_id;
+
+  // Design-review placeholder only: no FX-rate backend/config exists yet.
+  // Hardcoded purely so the "USD equivalent above the total" layout can be
+  // reviewed -- NOT wired to any real exchange rate. Replace when a real
+  // FX command exists.
+  const PLACEHOLDER_SYP_PER_USD = 15000;
+  const usdTotal = useMemo(() => {
+    if (currencySymbol !== "ل.س" || totalCents === 0) return undefined;
+    return (totalCents / 100 / PLACEHOLDER_SYP_PER_USD).toLocaleString("en-US", {
+      minimumFractionDigits: 2, maximumFractionDigits: 2,
+    });
+  }, [totalCents, currencySymbol]);
 
   const handleIncrementLine = (id: string) => updateQuantity(id, 1);
   const handleDecrementLine = (id: string) => updateQuantity(id, -1);
@@ -423,6 +438,7 @@ export default function POSPage() {
           discountCents={discountCents}
           totalCents={totalCents}
           currencySymbol={currencySymbol}
+          usdTotal={usdTotal}
           onIncrementLine={handleIncrementLine}
           onDecrementLine={handleDecrementLine}
           onVoidLine={handleVoidLineClick}

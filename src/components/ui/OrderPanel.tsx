@@ -3,6 +3,8 @@ import OrderLine from "./OrderLine";
 
 interface LineItem {
   id: string;
+  menuItemId?: string;
+  hasPhoto?: boolean;
   name: string;
   categoryName: string;
   quantity: number;
@@ -16,7 +18,7 @@ interface Props {
   discountCents: number;
   totalCents: number;
   currencySymbol: string;
-  usdTotal?: string;
+  usdTotal?: string | undefined;
   children?: ReactNode;
   toolbar?: ReactNode;
   onIncrementLine?: (id: string) => void;
@@ -79,18 +81,20 @@ export default function OrderPanel({
             </span>
           </div>
         )}
-        <div className="flex justify-between items-baseline pt-2 border-t border-line">
-          <span className="text-base font-medium text-text">الإجمالي</span>
-          <div className="flex items-baseline gap-1.5" style={{ letterSpacing: "-0.02em" }}>
+        <div className="pt-2 border-t border-line">
+          <div className="flex items-center justify-between">
+            <span className="text-base font-medium text-text">الإجمالي</span>
+            {usdTotal && (
+              <span className="tabular text-[11px] text-text-muted" dir="ltr">≈ {usdTotal} USD</span>
+            )}
+          </div>
+          <div className="flex items-baseline justify-end gap-1.5" style={{ letterSpacing: "-0.02em" }}>
             <span className="tabular text-[44px] font-medium text-text leading-none" dir="ltr">
               {fmt(totalCents)}
             </span>
             <span className="text-sm font-medium text-text-2">{currencySymbol}</span>
           </div>
         </div>
-        {usdTotal && (
-          <div className="tabular text-[11px] text-text-muted text-left" dir="ltr">≈ {usdTotal} USD</div>
-        )}
       </div>
 
       {toolbar && (
