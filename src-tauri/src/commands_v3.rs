@@ -2577,6 +2577,7 @@ mod tests {
         migrate_v3::run_remap_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_identity_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_drift_fix_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_index_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -4842,6 +4843,7 @@ mod tests {
         migrate_v3::run_remap_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_identity_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_drift_fix_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_index_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("matrix", &conn);
@@ -5145,6 +5147,155 @@ mod tests {
     /// contain image bytes, and the lazy per-item command must still
     /// correctly resolve (and tenant-scope-check) the real photo on
     /// demand.
+    /// P0 perf proof (2026-07-18), Step 3 of the requested diagnosis: real
+    /// before/after timings for the index migration, at a scale the real
+    /// (near-empty) dev db can't show. Builds two otherwise-identical
+    /// databases -- one with the schema chain stopping BEFORE `run_index_
+    /// migration`, one going through it -- seeds 5,000 orders (with items)
+    /// and 2,000 customers into each via raw bulk INSERT (fast, not through
+    /// the one-row-at-a-time repo layer, so the benchmark measures the
+    /// query plan, not insert overhead), and times `list_orders`/`list_
+    /// customers` -- the exact repo calls `list_orders_v3`/`list_
+    /// customers_v3` make -- on both.
+    #[test]
+    fn p0_index_migration_before_after_at_scale() {
+        fn build_and_seed(with_indexes: bool, tag: &str) -> (PathBuf, String, String) {
+            let temp = std::env::temp_dir().join(format!("commands_v3_test_{tag}_{}", std::process::id()));
+            let _ = fs::remove_dir_all(&temp);
+            fs::create_dir_all(&temp).unwrap();
+            let db_path = temp.join("test.db");
+            let mut conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+            migrate::run_migrations(&mut conn, &db_path).unwrap();
+            migrate_v3::run_expand_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_remap_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_identity_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_drift_fix_migration(&mut conn, &db_path).unwrap();
+            if with_indexes {
+                migrate_v3::run_index_migration(&mut conn, &db_path).unwrap();
+            }
+
+            let (tenant_id, branch_id): (String, String) =
+                conn.query_row("SELECT tenant_id, id FROM branch LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            conn.execute("INSERT INTO tables (id, name) VALUES ('tbl-bench', 'Bench Table')", []).unwrap();
+            let cat_id = "cat-bench".to_string();
+            conn.execute("INSERT INTO categories (id, tenant_id, name) VALUES (?1, ?2, 'Bench Cat')", params![cat_id, tenant_id]).unwrap();
+            let staff_id = "staff-bench".to_string();
+            conn.execute(
+                "INSERT INTO staff (id, tenant_id, branch_id, role, role_rank, name, is_active, updated_at_hlc, device_id, rev) \
+                 VALUES (?1, ?2, ?3, 'CASHIER', 1, 'Bench Cashier', 1, datetime('now'), 'bench', 1)",
+                params![staff_id, tenant_id, branch_id],
+            ).unwrap();
+
+            // Simulate a chain running for a while: 5,000 "other tenants'" orders (noise the
+            // scoped WHERE has to filter past) + 5,000 real orders for OUR tenant/branch.
+            let tx = conn.transaction().unwrap();
+            for i in 0..5000 {
+                let other_tenant = format!("noise-tenant-{}", i % 50);
+                tx.execute(
+                    "INSERT INTO orders (id, tenant_id, branch_id, table_id, user_id, status, order_type, subtotal_cents, tax_cents, total_cents, discount_cents, created_at) \
+                     VALUES (?1, ?2, ?2, 'tbl-bench', ?3, 'PAID', 'DINE_IN', 1000, 0, 1000, 0, datetime('now'))",
+                    params![format!("noise-order-{i}"), other_tenant, staff_id],
+                ).unwrap();
+            }
+            for i in 0..5000 {
+                let order_id = format!("bench-order-{i}");
+                tx.execute(
+                    "INSERT INTO orders (id, tenant_id, branch_id, table_id, user_id, status, order_type, subtotal_cents, tax_cents, total_cents, discount_cents, created_at) \
+                     VALUES (?1, ?2, ?3, 'tbl-bench', ?4, 'PAID', 'DINE_IN', 1000, 0, 1000, 0, datetime('now'))",
+                    params![order_id, tenant_id, branch_id, staff_id],
+                ).unwrap();
+            }
+            for i in 0..2000 {
+                let other_tenant = format!("noise-tenant-{}", i % 50);
+                tx.execute("INSERT INTO customers (id, tenant_id, name, phone, loyalty_points, total_orders, total_spent_cents) VALUES (?1, ?2, 'Noise', '000', 0, 0, 0)", params![format!("noise-cust-{i}"), other_tenant]).unwrap();
+            }
+            for i in 0..2000 {
+                tx.execute("INSERT INTO customers (id, tenant_id, name, phone, loyalty_points, total_orders, total_spent_cents) VALUES (?1, ?2, 'Bench', '111', 0, 0, 0)", params![format!("bench-cust-{i}"), tenant_id]).unwrap();
+            }
+            tx.commit().unwrap();
+            let _ = cat_id;
+            (db_path, tenant_id, branch_id)
+        }
+
+        let (db_before, tenant_before, branch_before) = build_and_seed(false, "p0_bench_before");
+        let (db_after, tenant_after, branch_after) = build_and_seed(true, "p0_bench_after");
+
+        let conn_before = Connection::open(&db_before).unwrap();
+        let repo_before = Repo::new(&conn_before);
+        let scope_before = crate::security::Scope::Branch { tenant_id: tenant_before.clone(), branch_id: branch_before };
+
+        let start = std::time::Instant::now();
+        let orders_before = repo_before.list_orders(&scope_before).unwrap();
+        let list_orders_before = start.elapsed();
+
+        let start = std::time::Instant::now();
+        let customers_before = repo_before.list_customers(&tenant_before).unwrap();
+        let list_customers_before = start.elapsed();
+
+        let conn_after = Connection::open(&db_after).unwrap();
+        let repo_after = Repo::new(&conn_after);
+        let scope_after = crate::security::Scope::Branch { tenant_id: tenant_after.clone(), branch_id: branch_after };
+
+        let start = std::time::Instant::now();
+        let orders_after = repo_after.list_orders(&scope_after).unwrap();
+        let list_orders_after = start.elapsed();
+
+        let start = std::time::Instant::now();
+        let customers_after = repo_after.list_customers(&tenant_after).unwrap();
+        let list_customers_after = start.elapsed();
+
+        assert_eq!(orders_before.len(), 5000, "sanity: scope filtering must still return exactly our 5000 orders, not the 5000 noise rows");
+        assert_eq!(orders_after.len(), 5000);
+        assert_eq!(customers_before.len(), 2000);
+        assert_eq!(customers_after.len(), 2000);
+
+        println!("[p0-index-bench] dataset: 10,000 orders (5,000 ours + 5,000 other-tenant noise), 4,000 customers (2,000 + 2,000 noise)");
+        println!("[p0-index-bench] list_orders    WITHOUT indexes: {list_orders_before:?}");
+        println!("[p0-index-bench] list_orders    WITH indexes:    {list_orders_after:?}");
+        println!("[p0-index-bench] list_customers WITHOUT indexes: {list_customers_before:?}");
+        println!("[p0-index-bench] list_customers WITH indexes:    {list_customers_after:?}");
+
+        let _ = fs::remove_dir_all(db_before.parent().unwrap());
+        let _ = fs::remove_dir_all(db_after.parent().unwrap());
+    }
+
+    #[test]
+    fn diagnostic_authenticate_cost_scales_with_session_count() {
+        let (db_path, tenant_id, branch_id, _table_id) = seeded_db("diag_auth_cost");
+        let conn = Connection::open(&db_path).unwrap();
+        let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Diag Cashier");
+
+        // Simulate a sprint's worth of accumulated login/logout cycles --
+        // the real dev db has 9 session_v3 rows right now from ordinary
+        // hand-testing, with no expiry sweep/cleanup anywhere in the
+        // codebase (grepped: nothing ever DELETEs an expired row).
+        let mut last_session = String::new();
+        for device_n in 0..9 {
+            last_session = security::create_session(&conn, &cashier_id, &format!("device-{device_n}")).unwrap();
+        }
+
+        let start = std::time::Instant::now();
+        security::authenticate(&conn, &last_session).unwrap();
+        let with_9_sessions = start.elapsed();
+
+        // Compare against a single fresh session (no accumulation).
+        let (db_path2, tenant_id2, branch_id2, _) = seeded_db("diag_auth_cost_baseline");
+        let conn2 = Connection::open(&db_path2).unwrap();
+        let cashier_id2 = seed_staff(&conn2, &tenant_id2, Some(&branch_id2), Role::Cashier, "Baseline Cashier");
+        let only_session = security::create_session(&conn2, &cashier_id2, "device-only").unwrap();
+        let start2 = std::time::Instant::now();
+        security::authenticate(&conn2, &only_session).unwrap();
+        let with_1_session = start2.elapsed();
+
+        println!("[diagnostic] authenticate() with 1 stored session:  {with_1_session:?}");
+        println!("[diagnostic] authenticate() with 9 stored sessions: {with_9_sessions:?} (matching the LAST row -- worst case, and the realistic case since a freshly created session has no ORDER BY guarantee to be checked first)");
+        println!("[diagnostic] every one of the app's ~141 commands calls authenticate_actor -> authenticate() at the top, every single call -- this cost is paid on EVERY invoke(), not once per session");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        let _ = fs::remove_dir_all(db_path2.parent().unwrap());
+    }
+
     #[test]
     fn p0_list_menu_items_v3_never_embeds_photos_get_menu_item_photo_v3_does_lazily() {
         let (db_path, tenant_id, _branch_id, _table_id) = seeded_db("p0_photo_hang_fix");

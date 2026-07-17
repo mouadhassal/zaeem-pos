@@ -65,32 +65,38 @@ export const useMenuStore = create<MenuState>((set) => ({
         barcode: string | null; is_active: number;
       }[]>("list_menu_items_v3", { sessionToken: token });
 
-      const itemsWithCombo: MenuItem[] = [];
-      for (const item of allMenuItems.filter((i) => i.is_active === 1)) {
-        let combo_components: ComboComponent[] = [];
-        if (item.is_combo) {
-          // See ComboComponentRow's doc comment (repo.rs): this mirrors an
-          // existing combo_items.combo_id/menu_items.id data-model mismatch,
-          // not a fix -- it returns empty on a real install today, same as
-          // the old Kysely-based query did.
-          const rows = await invoke<{ menu_item_id: string; menu_item_name: string; quantity: number }[]>(
-            "list_combo_components_v3", { sessionToken: token, menuItemId: item.id }
-          );
-          combo_components = rows.map((r) => ({ menuItemId: r.menu_item_id, name: r.menu_item_name, qty: r.quantity }));
-        }
-        itemsWithCombo.push({
-          id: item.id,
-          name: item.name,
-          price_cents: item.price_cents,
-          category_id: item.category_id,
-          image_path: item.image_path,
-          is_combo: item.is_combo === 1,
-          combo_original_price_cents: item.combo_original_price_cents,
-          combo_description: item.combo_description,
-          combo_components,
-          barcode: item.barcode,
-        });
-      }
+      // P0 perf fix (2026-07-18): this used to await list_combo_components_v3
+      // once PER combo item, sequentially, inside a for...of loop -- a
+      // classic N+1 (each invoke() is a real IPC round trip, and they never
+      // overlapped). Fetched in parallel instead; same total work, bounded
+      // by the slowest single call instead of their sum.
+      const activeItems = allMenuItems.filter((i) => i.is_active === 1);
+      const comboRowsByItem = await Promise.all(
+        activeItems.map((item) =>
+          item.is_combo
+            // See ComboComponentRow's doc comment (repo.rs): this mirrors an
+            // existing combo_items.combo_id/menu_items.id data-model mismatch,
+            // not a fix -- it returns empty on a real install today, same as
+            // the old Kysely-based query did.
+            ? invoke<{ menu_item_id: string; menu_item_name: string; quantity: number }[]>(
+                "list_combo_components_v3", { sessionToken: token, menuItemId: item.id }
+              )
+            : Promise.resolve([])
+        )
+      );
+
+      const itemsWithCombo: MenuItem[] = activeItems.map((item, i) => ({
+        id: item.id,
+        name: item.name,
+        price_cents: item.price_cents,
+        category_id: item.category_id,
+        image_path: item.image_path,
+        is_combo: item.is_combo === 1,
+        combo_original_price_cents: item.combo_original_price_cents,
+        combo_description: item.combo_description,
+        combo_components: comboRowsByItem[i].map((r) => ({ menuItemId: r.menu_item_id, name: r.menu_item_name, qty: r.quantity })),
+        barcode: item.barcode,
+      }));
 
       set({ categories, menuItems: itemsWithCombo, loading: false });
     } catch (err) {

@@ -1099,6 +1099,89 @@ pub fn run_drift_fix_migration(conn: &mut Connection, db_path: &Path) -> Result<
     result
 }
 
+pub const MIGRATION_E_VERSION: i64 = 9;
+
+/// P0 perf fix (2026-07-18): reported as "table loads take ~6 seconds,
+/// general lag". The DOMINANT cause, measured, was `security::authenticate`
+/// doing a bcrypt-verify scan over every session_v3 row on every single
+/// command call (fixed separately, in security.rs -- ~8.3s -> ~154us for 9
+/// sessions). This migration is the second, explicitly-requested part:
+/// **zero indexes existed anywhere in this schema** (grepped the whole
+/// migration history -- confirmed) even though every scoped repo query
+/// filters on `tenant_id`/`branch_id` via `scope_predicate`. That's a full
+/// table scan on every list/read call. It wasn't the active cause of
+/// today's reported lag (the real dev db has near-zero rows in every
+/// table right now), but it's exactly the kind of bug that turns into a
+/// production incident the day a restaurant's `orders` table has a few
+/// months of real history -- fixed now, proactively, not after the next
+/// complaint.
+pub fn run_index_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_E_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+
+    for table in TENANT_BRANCH_TABLES.iter().chain(TENANT_ONLY_TABLES.iter()) {
+        if !table_exists(&tx, table)? {
+            continue;
+        }
+        let cols: Vec<String> = {
+            let mut stmt = tx.prepare(&format!("PRAGMA table_info({table})"))?;
+            let names: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(1))?.filter_map(|r| r.ok()).collect();
+            names
+        };
+        if cols.iter().any(|c| c == "tenant_id") && cols.iter().any(|c| c == "branch_id") {
+            tx.execute_batch(&format!("CREATE INDEX IF NOT EXISTS idx_{table}_tenant_branch ON {table}(tenant_id, branch_id);"))?;
+        } else if cols.iter().any(|c| c == "tenant_id") {
+            tx.execute_batch(&format!("CREATE INDEX IF NOT EXISTS idx_{table}_tenant ON {table}(tenant_id);"))?;
+        }
+    }
+    println!("v9_indexes: tenant_id/branch_id indexed on every TENANT_BRANCH_TABLES/TENANT_ONLY_TABLES table present in this database");
+
+    // Foreign-key columns actually used in a JOIN or a scoped-by-parent
+    // WHERE elsewhere in repo.rs (assert_order_in_scope-style lookups,
+    // list_shift_orders, finance summaries, delivery/PO joins).
+    let fk_indexes: &[(&str, &str, &str)] = &[
+        ("order_items", "order_id", "idx_order_items_order_id"),
+        ("order_items", "menu_item_id", "idx_order_items_menu_item_id"),
+        ("payments", "order_id", "idx_payments_order_id"),
+        ("orders", "shift_id", "idx_orders_shift_id"),
+        ("orders", "table_id", "idx_orders_table_id"),
+        ("menu_items", "category_id", "idx_menu_items_category_id"),
+        ("delivery_logs", "order_id", "idx_delivery_logs_order_id"),
+        ("delivery_logs", "driver_id", "idx_delivery_logs_driver_id"),
+        ("purchase_order_items", "po_id", "idx_purchase_order_items_po_id"),
+        ("inventory_logs", "ingredient_id", "idx_inventory_logs_ingredient_id"),
+        ("debt_entries", "debtor_id", "idx_debt_entries_debtor_id"),
+    ];
+    for (table, col, idx_name) in fk_indexes {
+        if !table_exists(&tx, table)? {
+            continue;
+        }
+        let cols: Vec<String> = {
+            let mut stmt = tx.prepare(&format!("PRAGMA table_info({table})"))?;
+            let names: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(1))?.filter_map(|r| r.ok()).collect();
+            names
+        };
+        if cols.iter().any(|c| c == col) {
+            tx.execute_batch(&format!("CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({col});"))?;
+        }
+    }
+    println!("v9_indexes: FK columns used in JOINs/parent-scoped lookups indexed ({} candidates)", fk_indexes.len());
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_E_VERSION, "0009_scope_and_fk_indexes", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

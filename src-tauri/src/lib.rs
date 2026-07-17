@@ -43,6 +43,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_remap_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_identity_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_drift_fix_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_index_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 

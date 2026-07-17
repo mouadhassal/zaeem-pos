@@ -2,12 +2,37 @@
 //! resolution, and role-rank authorization. Per SPRINT_01_multitenant_trust_boundary_v3.md
 //! T1.2/T1.3/T1.4 and SCHEMA_V3.md §2/§3.
 
-use bcrypt::verify;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+
+/// P0 fix (2026-07-18): session tokens used to be hashed with bcrypt and
+/// verified by scanning every `session_v3` row, calling `bcrypt::verify`
+/// (deliberately expensive -- that's the whole point of bcrypt for
+/// PASSWORD storage) on each one until a match. Measured: ~963ms for a
+/// single stored session, ~8.3s with 9 (the real dev db's actual
+/// accumulated count after a sprint of hand-testing -- nothing ever
+/// expired/cleaned old rows). Every one of the app's ~141 commands calls
+/// `authenticate_actor` at the top, so this cost was paid on EVERY
+/// `invoke()`, compounding into exactly the reported "6 second table
+/// load, general lag everywhere".
+///
+/// bcrypt is the wrong tool here: session tokens are already
+/// high-entropy random UUIDs (128 bits), not user-chosen passwords --
+/// they don't need brute-force-resistant slow hashing, they need a fast
+/// hash so the token itself is still never stored in plaintext (a stolen
+/// DB backup can't be replayed directly) AND can be looked up by an
+/// indexed exact match instead of a linear scan. SHA-256 + `WHERE
+/// token_hash = ?` (indexed, see migrate_v3's session_v3 index) gives
+/// both properties in microseconds instead of seconds.
+fn hash_token(raw_token: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(raw_token.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
 
 // ---------------------------------------------------------------------------
 // Scope -- the type that makes cross-tenant/cross-branch leaks structurally
@@ -236,7 +261,8 @@ pub fn ensure_security_schema(conn: &Connection) -> Result<(), SecurityError> {
             token_hash TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             expires_at INTEGER NOT NULL
-        );",
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_v3_token_hash ON session_v3(token_hash);",
     )?;
     Ok(())
 }
@@ -245,9 +271,14 @@ pub fn ensure_security_schema(conn: &Connection) -> Result<(), SecurityError> {
 /// raw token). Returns the raw token (only time it's ever visible).
 pub fn create_session(conn: &Connection, actor_id: &str, device_id: &str) -> Result<String, SecurityError> {
     let raw_token = format!("v3_{}", Uuid::new_v4());
-    let token_hash = bcrypt::hash(&raw_token, bcrypt::DEFAULT_COST).map_err(|_| SecurityError::InvalidSession)?;
+    let token_hash = hash_token(&raw_token);
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
     let expires_at = now + SESSION_IDLE_SECONDS;
+    // Sweep expired sessions on every login, not just on read -- without
+    // this, session_v3 only ever grows (nothing else ever DELETEs a row),
+    // which is exactly how the real dev db accumulated 9 rows over one
+    // sprint of hand-testing in the first place.
+    conn.execute("DELETE FROM session_v3 WHERE expires_at < ?1", params![now]).ok();
     conn.execute(
         "INSERT INTO session_v3 (id, actor_id, device_id, token_hash, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![Uuid::new_v4().to_string(), actor_id, device_id, token_hash, now, expires_at],
@@ -257,43 +288,33 @@ pub fn create_session(conn: &Connection, actor_id: &str, device_id: &str) -> Res
 
 /// authn -- resolves a raw session token to the Actor it belongs to. This is
 /// step 1 of every command's shape. Never trusts a client-supplied actor id.
+/// Indexed exact-match lookup on `token_hash` (see `hash_token`'s doc
+/// comment for why this replaced a bcrypt linear scan) -- O(1)/O(log n),
+/// not O(n) with an expensive op per row.
 pub fn authenticate(conn: &Connection, raw_token: &str) -> Result<Actor, SecurityError> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    let token_hash = hash_token(raw_token);
 
-    let sessions: Vec<(String, String, String, String, i64)> = {
-        let mut stmt = conn.prepare("SELECT id, actor_id, device_id, token_hash, expires_at FROM session_v3")?;
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?))
-        })?;
-        rows.filter_map(|r| r.ok()).collect()
-    };
+    let (actor_id, device_id, expires_at): (String, String, i64) = conn
+        .query_row(
+            "SELECT actor_id, device_id, expires_at FROM session_v3 WHERE token_hash = ?1",
+            params![token_hash],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|_| SecurityError::InvalidSession)?;
 
-    for (_id, actor_id, device_id, token_hash, expires_at) in sessions {
-        if verify(raw_token, &token_hash).unwrap_or(false) {
-            if now > expires_at {
-                return Err(SecurityError::SessionExpired);
-            }
-            return load_actor(conn, &actor_id, &device_id);
-        }
+    if now > expires_at {
+        return Err(SecurityError::SessionExpired);
     }
-    Err(SecurityError::InvalidSession)
+    load_actor(conn, &actor_id, &device_id)
 }
 
-/// Deletes the `session_v3` row backing `raw_token`, if any. Same bcrypt-scan
-/// pattern as `authenticate` (tokens are hashed at rest, so there's no direct
-/// lookup) -- an unrecognized token is not an error, just a no-op logout.
+/// Deletes the `session_v3` row backing `raw_token`, if any -- now a direct
+/// indexed delete instead of a bcrypt-verify scan. An unrecognized token is
+/// not an error, just a no-op logout.
 pub fn revoke_session(conn: &Connection, raw_token: &str) -> Result<(), SecurityError> {
-    let sessions: Vec<(String, String)> = {
-        let mut stmt = conn.prepare("SELECT id, token_hash FROM session_v3")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-        rows.filter_map(|r| r.ok()).collect()
-    };
-    for (id, token_hash) in sessions {
-        if verify(raw_token, &token_hash).unwrap_or(false) {
-            conn.execute("DELETE FROM session_v3 WHERE id = ?1", params![id])?;
-            break;
-        }
-    }
+    let token_hash = hash_token(raw_token);
+    conn.execute("DELETE FROM session_v3 WHERE token_hash = ?1", params![token_hash])?;
     Ok(())
 }
 
