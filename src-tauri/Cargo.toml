@@ -7,6 +7,10 @@ license = ""
 repository = ""
 edition = "2021"
 rust-version = "1.77.2"
+# Adding src/bin/license_signer.rs gave this crate two binaries, so bare
+# `cargo run` (what `tauri dev` invokes) could no longer infer which one to
+# run. `license_signer` stays reachable via `cargo run --bin license_signer`.
+default-run = "app"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
