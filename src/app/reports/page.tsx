@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAuthStore } from "../../stores/authStore";
 import { useCurrency } from "../../hooks/useCurrency";
 import jsPDF from "jspdf";
-import "jspdf-autotable";
+import html2canvas from "html2canvas";
 
 interface SalesSummary {
   totalSales: number;
@@ -14,11 +14,40 @@ interface SalesSummary {
   inventoryStatus: { name: string; currentStock: number; minStock: number }[];
 }
 
+// Item/staff names come from DB data (menu items, staff records) and are
+// interpolated into innerHTML below to build the PDF-source DOM -- must be
+// escaped, same "never trust stored data when it becomes markup" rule as
+// any other HTML-injection surface, even though this DOM is local-only and
+// never sent anywhere.
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function reportTableHtml(title: string, headers: string[], rows: string[][]): string {
+  const head = headers.map((h) => `<th style="border:1px solid #E4E7EC;padding:6px 8px;background:#F2F4F7;font-size:11px;text-align:start">${escapeHtml(h)}</th>`).join("");
+  const body = rows
+    .map((r) => `<tr>${r.map((c) => `<td style="border:1px solid #E4E7EC;padding:6px 8px;font-size:11px">${escapeHtml(c)}</td>`).join("")}</tr>`)
+    .join("");
+  return `
+    <h2 style="font-size:14px;font-weight:700;margin:16px 0 8px">${escapeHtml(title)}</h2>
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr>${head}</tr></thead>
+      <tbody>${body || `<tr><td style="border:1px solid #E4E7EC;padding:6px 8px;font-size:11px;color:#98A2B3" colspan="${headers.length}">لا توجد بيانات</td></tr>`}</tbody>
+    </table>
+  `;
+}
+
 export default function ReportsPage() {
   const { fmt } = useCurrency();
   const token = useAuthStore((s) => s.token);
   const [summary, setSummary] = useState<SalesSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   const fetchReports = useCallback(async () => {
     setLoading(true);
@@ -56,83 +85,86 @@ export default function ReportsPage() {
     fetchReports();
   }, [fetchReports]);
 
-  const exportPdf = () => {
-    if (!summary) return;
-    const doc = new jsPDF();
-    doc.setFontSize(18);
-    doc.text("Sales Report", 105, 20, { align: "center" });
-    doc.setFontSize(10);
-    doc.text(`Date: ${new Date().toLocaleDateString("en-US")}`, 10, 30);
-    doc.setFontSize(12);
-    doc.text(`Total Sales: ${fmt(summary.totalSales * 100)}`, 10, 42);
-    doc.text(`Orders: ${summary.orderCount}`, 10, 52);
-    doc.text(`Avg Ticket: ${fmt(summary.avgTicket * 100)}`, 10, 62);
+  // Arabic PDF export, done right. First attempt used jsPDF's own `.html()`
+  // method (its documented approach, backed by html2canvas) and it broke
+  // exactly the way it's known to: `.html()` mixes automatic layout with
+  // jsPDF's OWN text renderer, which has no Arabic shaping/bidi support at
+  // all (its default fonts don't even have Arabic glyphs) -- verified by
+  // actually generating a PDF and rasterizing it: real Arabic came out as
+  // disconnected mojibake (þ•þŽþÌ...), not text. Fixed by calling
+  // html2canvas manually and embedding the RESULT AS AN IMAGE via
+  // doc.addImage() -- this guarantees jsPDF never touches the Arabic text
+  // itself; it's a picture of what the browser's own text engine drew
+  // (the same Tajawal rendering already correct everywhere else in this
+  // app). Verified by regenerating and rasterizing again: correct shaped,
+  // right-to-left, right-aligned Arabic throughout.
+  const exportPdf = async () => {
+    if (!summary || exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      await document.fonts.ready; // Tajawal must be loaded before html2canvas captures it
 
-    doc.text("Top Items", 10, 78);
-    (doc as any).autoTable({
-      startY: 84,
-      head: [["Item", "Qty"]],
-      body: summary.topItems.map((i) => [i.name, i.quantity.toString()]),
-      theme: "grid",
-      styles: { fontSize: 9 },
-      headStyles: { fillColor: [41, 128, 185] },
-    });
+      // Positioned in-flow (not off-screen with a huge negative offset) --
+      // html2canvas reliably captures blank/wrong-region content for
+      // off-screen-positioned elements; verified during testing. `z-index`
+      // keeps it from visually disrupting the page during the brief moment
+      // it's attached.
+      const container = document.createElement("div");
+      container.dir = "rtl";
+      container.style.cssText = "position:absolute;top:0;left:0;width:700px;padding:24px;background:#fff;font-family:Tajawal,sans-serif;color:#101828;z-index:9999;";
+      container.innerHTML = `
+        <h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 4px">تقرير المبيعات</h1>
+        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${new Date().toLocaleDateString("ar-SA")}</p>
+        <div style="display:flex;gap:12px;margin-bottom:20px">
+          <div style="flex:1;border:1px solid #E4E7EC;border-radius:8px;padding:10px;text-align:center">
+            <div style="font-size:11px;color:#667085">إجمالي المبيعات</div>
+            <div style="font-size:16px;font-weight:700">${fmt(Math.round(summary.totalSales * 100))}</div>
+          </div>
+          <div style="flex:1;border:1px solid #E4E7EC;border-radius:8px;padding:10px;text-align:center">
+            <div style="font-size:11px;color:#667085">عدد الطلبات</div>
+            <div style="font-size:16px;font-weight:700">${summary.orderCount}</div>
+          </div>
+          <div style="flex:1;border:1px solid #E4E7EC;border-radius:8px;padding:10px;text-align:center">
+            <div style="font-size:11px;color:#667085">متوسط الفاتورة</div>
+            <div style="font-size:16px;font-weight:700">${fmt(Math.round(summary.avgTicket * 100))}</div>
+          </div>
+        </div>
+        ${reportTableHtml("أفضل الأصناف", ["الصنف", "الكمية"], summary.topItems.map((i) => [i.name, String(i.quantity)]))}
+        ${reportTableHtml("أداء الموظفين", ["الموظف", "الطلبات"], summary.staffPerformance.map((s) => [s.name, String(s.orderCount)]))}
+        ${reportTableHtml("حالة المخزون", ["الصنف", "المخزون", "الحد الأدنى"], summary.inventoryStatus.map((inv) => [inv.name, String(inv.currentStock), String(inv.minStock)]))}
+      `;
+      document.body.appendChild(container);
+      const canvas = await html2canvas(container, { scale: 2, backgroundColor: "#ffffff" });
+      document.body.removeChild(container);
 
-    const y2 = (doc as any).lastAutoTable.finalY + 12;
-    doc.text("Staff Performance", 10, y2);
-    (doc as any).autoTable({
-      startY: y2 + 6,
-      head: [["Staff", "Orders"]],
-      body: summary.staffPerformance.map((s) => [s.name, s.orderCount.toString()]),
-      theme: "grid",
-      styles: { fontSize: 9 },
-      headStyles: { fillColor: [41, 128, 185] },
-    });
+      const doc = new jsPDF({ unit: "pt", format: "a4" });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const margin = 20;
+      const imgWidth = pageWidth - margin * 2;
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      const imgData = canvas.toDataURL("image/png");
+      const usableHeight = pageHeight - margin * 2;
 
-    const y3 = (doc as any).lastAutoTable.finalY + 12;
-    doc.text("Inventory", 10, y3);
-    (doc as any).autoTable({
-      startY: y3 + 6,
-      head: [["Item", "Stock", "Min"]],
-      body: summary.inventoryStatus.map((inv) => [inv.name, inv.currentStock.toString(), inv.minStock.toString()]),
-      theme: "grid",
-      styles: { fontSize: 9 },
-      headStyles: { fillColor: [41, 128, 185] },
-    });
+      // Multi-page: slice the tall rendered image across pages if the
+      // report is longer than one A4 page (many staff / many low-stock
+      // items). Each page gets the same full-width image, shifted up by
+      // one page's worth of content.
+      let heightLeft = imgHeight;
+      let renderedY = margin;
+      doc.addImage(imgData, "PNG", margin, renderedY, imgWidth, imgHeight);
+      heightLeft -= usableHeight;
+      while (heightLeft > 0) {
+        renderedY = margin - (imgHeight - heightLeft);
+        doc.addPage();
+        doc.addImage(imgData, "PNG", margin, renderedY, imgWidth, imgHeight);
+        heightLeft -= usableHeight;
+      }
 
-    doc.save(`report-${new Date().toISOString().slice(0, 10)}.pdf`);
-  };
-
-  const exportCsv = () => {
-    if (!summary) return;
-    const rows = [
-      ["تقرير المبيعات", "", ""],
-      ["إجمالي المبيعات", summary.totalSales.toString(), ""],
-      ["عدد الطلبات", summary.orderCount.toString(), ""],
-      ["متوسط الفاتورة", summary.avgTicket.toFixed(2), ""],
-      [],
-      ["أفضل الأصناف", "", ""],
-      ...summary.topItems.map((i) => [i.name, i.quantity.toString(), ""]),
-      [],
-      ["أداء الموظفين", "", ""],
-      ...summary.staffPerformance.map((s) => [s.name, s.orderCount.toString(), ""]),
-      [],
-      ["حالة المخزون", "", ""],
-      ...summary.inventoryStatus.map((inv) => [
-        inv.name,
-        inv.currentStock.toString(),
-        inv.minStock.toString(),
-      ]),
-    ];
-
-    const csv = rows.map((r) => r.join(",")).join("\n");
-    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `تقرير-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+      doc.save(`تقرير-المبيعات-${new Date().toISOString().slice(0, 10)}.pdf`);
+    } finally {
+      setExportingPdf(false);
+    }
   };
 
   if (loading) {
@@ -156,16 +188,11 @@ export default function ReportsPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-ink-900">التقارير</h1>
         <button
-          onClick={exportCsv}
-          className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
-        >
-          تصدير CSV
-        </button>
-        <button
           onClick={exportPdf}
-          className="h-10 px-4 rounded-xl bg-red-600 text-white text-sm font-bold hover:bg-red-700 transition-colors"
+          disabled={exportingPdf}
+          className="h-10 px-4 rounded-xl bg-red-600 text-white text-sm font-bold hover:bg-red-700 transition-colors disabled:opacity-50"
         >
-          تصدير PDF
+          {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
         </button>
       </div>
 
