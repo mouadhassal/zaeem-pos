@@ -5,6 +5,7 @@ use tauri::{Manager, State};
 mod migrate;
 mod migrate_v3;
 mod money;
+mod pricing;
 mod security;
 mod repo;
 mod audit;
@@ -45,6 +46,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_identity_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_drift_fix_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_index_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_discount_cap_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -285,6 +287,8 @@ pub fn run() {
             commands_v3::get_chain_config_v3,
             commands_v3::update_chain_currency_v3,
             commands_v3::update_chain_tax_v3,
+            commands_v3::get_discount_caps_v3,
+            commands_v3::update_discount_caps_v3,
             commands_v3::get_legacy_branch_v3,
             commands_v3::save_legacy_branch_v3,
             commands_v3::set_printer_active_v3,

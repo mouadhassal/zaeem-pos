@@ -1182,6 +1182,50 @@ pub fn run_index_migration(conn: &mut Connection, _db_path: &Path) -> Result<(),
     Ok(())
 }
 
+pub const MIGRATION_F_VERSION: i64 = 10;
+
+/// Discount caps, the last T1.9 gap: `create_order_v3`/`create_full_order_v3`
+/// accepted any `discount_cents` with no server-side ceiling at all -- a
+/// cashier (or any renderer calling the command directly) could apply a
+/// 100% discount. Per-role caps are tenant-configurable (an owner should be
+/// able to loosen/tighten them).
+///
+/// These live in `chain_config`, NOT `tenant_settings` -- `tenant_settings`
+/// (defined in this same file, above) has zero read/write call sites
+/// anywhere in `repo.rs`/`commands_v3.rs`; it's v3-schema that was never
+/// actually wired up (see `repo.rs`'s `ensure_chain_config_row` doc comment
+/// for the same duality already documented for `branches`/`branch`).
+/// `chain_config` is the table `get_chain_config_v3`/`update_chain_tax_v3`
+/// actually read and write today, so that's where a setting needs to live
+/// to be real rather than aspirational. Defaults match the values already
+/// used (frontend-only, thus bypassable) by
+/// `lib/permissions.ts::getMaxDiscountPercent`.
+pub fn run_discount_cap_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_F_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+
+    if table_exists(&tx, "chain_config")? {
+        add_column_if_missing(&tx, "chain_config", "discount_cap_cashier_percent", "INTEGER NOT NULL DEFAULT 10")?;
+        add_column_if_missing(&tx, "chain_config", "discount_cap_manager_percent", "INTEGER NOT NULL DEFAULT 50")?;
+        add_column_if_missing(&tx, "chain_config", "discount_cap_owner_percent", "INTEGER NOT NULL DEFAULT 100")?;
+    }
+    println!("v10_discount_caps: chain_config.discount_cap_{{cashier,manager,owner}}_percent added (defaults 10/50/100)");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_F_VERSION, "0010_discount_caps", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

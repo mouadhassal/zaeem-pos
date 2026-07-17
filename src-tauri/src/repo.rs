@@ -1709,6 +1709,29 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
+    /// Per-role discount caps -- see `pricing.rs` for enforcement,
+    /// `migrate_v3.rs::run_discount_cap_migration` for why these three
+    /// columns live on `chain_config` and not the unused `tenant_settings`.
+    pub fn get_discount_caps(&self, tenant_id: &str) -> Result<crate::pricing::DiscountCaps, RepoError> {
+        self.ensure_chain_config_row(tenant_id)?;
+        self.conn.query_row(
+            "SELECT discount_cap_cashier_percent, discount_cap_manager_percent, discount_cap_owner_percent \
+             FROM chain_config WHERE tenant_id = ?1",
+            params![tenant_id],
+            |r| Ok(crate::pricing::DiscountCaps { cashier_percent: r.get(0)?, manager_percent: r.get(1)?, owner_percent: r.get(2)? }),
+        ).map_err(RepoError::from)
+    }
+
+    pub fn update_discount_caps(&self, tenant_id: &str, cashier_percent: i64, manager_percent: i64, owner_percent: i64) -> Result<(), RepoError> {
+        self.ensure_chain_config_row(tenant_id)?;
+        self.conn.execute(
+            "UPDATE chain_config SET discount_cap_cashier_percent = ?1, discount_cap_manager_percent = ?2, \
+             discount_cap_owner_percent = ?3, last_modified = datetime('now') WHERE tenant_id = ?4",
+            params![cashier_percent, manager_percent, owner_percent, tenant_id],
+        )?;
+        Ok(())
+    }
+
     pub fn get_legacy_branch(&self, tenant_id: &str) -> Result<Option<LegacyBranchRow>, RepoError> {
         self.conn.query_row(
             "SELECT id, name, address, phone, max_tables FROM branches WHERE tenant_id = ?1 LIMIT 1",

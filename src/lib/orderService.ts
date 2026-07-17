@@ -108,7 +108,8 @@ export async function createOrder(
   deliveryAddress?: string,
   _savingsCents?: number,
   shiftId?: string,
-  driverId?: string
+  driverId?: string,
+  managerOverridePin?: string
 ): Promise<string> {
   const totalWithTax = subtotalCents + taxCents + secondaryTaxCents + serviceChargeCents - discountCents;
 
@@ -138,6 +139,9 @@ export async function createOrder(
     deliveryFeeCents: 0,
     driverId: driverId ?? null,
     shiftId: shiftId ?? null,
+    // Re-verified server-side inside create_full_order_v3 (via
+    // enforce_discount_cap) -- this is proof to Rust, not a trusted flag.
+    managerOverridePin: managerOverridePin ?? null,
   });
 
   const kitchenItems = items.map((i) => {

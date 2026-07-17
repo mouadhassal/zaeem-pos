@@ -412,6 +412,7 @@ pub fn create_order_v3(
     subtotal_cents: i64,
     tax_cents: i64,
     discount_cents: i64,
+    manager_override_pin: Option<String>,
 ) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
@@ -428,6 +429,8 @@ pub fn create_order_v3(
     let total_cents = std::cmp::max(0, subtotal_cents + tax_cents - discount_cents);
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let override_used = enforce_discount_cap(&mut conn, &actor, &tenant_id, subtotal_cents, discount_cents, manager_override_pin.as_deref())?;
+
     let scope = actor.scope();
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let order_id = Repo::new(&tx)
@@ -454,6 +457,17 @@ pub fn create_order_v3(
         audit::Action::OrderCreated, "order", &order_id,
         None, Some(&serde_json::json!({ "order_type": order_type, "total_cents": total_cents, "table_id_hash": "omitted" })),
     ).map_err(|e| e.to_string())?;
+
+    // Anti-theft record: every applied discount is logged (who, how much,
+    // which order), independent of the ManagerOverrideGranted entry (if
+    // any) written by `enforce_discount_cap` above.
+    if discount_cents > 0 {
+        audit::append(
+            &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+            audit::Action::DiscountApplied, "order", &order_id,
+            None, Some(&serde_json::json!({ "discount_cents": discount_cents, "subtotal_cents": subtotal_cents, "manager_override_used": override_used })),
+        ).map_err(|e| e.to_string())?;
+    }
 
     tx.commit().map_err(|e| e.to_string())?;
     Ok(order_id)
@@ -1329,6 +1343,48 @@ pub fn update_chain_tax_v3(state: State<Db>, session_token: String, tax_rate_cen
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+pub struct DiscountCapsResponse {
+    pub caps: crate::pricing::DiscountCaps,
+    /// The requesting actor's own cap, pre-resolved so the frontend doesn't
+    /// need to duplicate the role->cap mapping `pricing.rs` owns.
+    pub your_cap_percent: i64,
+}
+
+/// No `authorize` beyond being logged in -- every role needs to know its
+/// own cap to render the "disable above this" affordance (UI is affordance
+/// only, Rust enforces regardless of what this returns).
+#[tauri::command]
+pub fn get_discount_caps_v3(state: State<Db>, session_token: String) -> Result<DiscountCapsResponse, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let caps = Repo::new(&conn).get_discount_caps(&actor.tenant_id).map_err(|e| e.to_string())?;
+    let your_cap_percent = caps.for_role(actor.role);
+    Ok(DiscountCapsResponse { caps, your_cap_percent })
+}
+
+/// Owner-only (per `Permission::ManageSettings`, same gate as currency/tax):
+/// adjusts the per-role discount ceilings future orders are checked
+/// against.
+#[tauri::command]
+pub fn update_discount_caps_v3(state: State<Db>, session_token: String, cashier_percent: i64, manager_percent: i64, owner_percent: i64) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
+    if !(0..=100).contains(&cashier_percent) || !(0..=100).contains(&manager_percent) || !(0..=100).contains(&owner_percent) {
+        return Err("discount caps must be between 0 and 100 percent".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_discount_caps(&actor.tenant_id, cashier_percent, manager_percent, owner_percent).map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
+        audit::Action::SettingsChanged, "chain_config", "default",
+        None, Some(&serde_json::json!({ "discount_cap_cashier_percent": cashier_percent, "discount_cap_manager_percent": manager_percent, "discount_cap_owner_percent": owner_percent })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_legacy_branch_v3(state: State<Db>, session_token: String) -> Result<Option<crate::repo::LegacyBranchRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
@@ -2191,6 +2247,43 @@ fn verify_manager_override_impl(conn: &mut rusqlite::Connection, actor: &Actor, 
     }
 }
 
+/// Discount cap enforcement, shared by `create_order_v3` and
+/// `create_full_order_v3`. Returns `Ok(true)` if a manager override was
+/// used to authorize a discount above the actor's own cap (so the caller
+/// can note that in its own audit entry), `Ok(false)` if the discount was
+/// within the actor's cap (including zero) and no override was needed.
+/// The override itself, when used, is audited by
+/// `verify_manager_override_impl` (naming both the requesting actor and
+/// the authorizing manager) -- this function does not duplicate that
+/// write, only the order-level `DiscountApplied` entry the caller writes.
+fn enforce_discount_cap(
+    conn: &mut rusqlite::Connection,
+    actor: &Actor,
+    tenant_id: &str,
+    subtotal_cents: i64,
+    discount_cents: i64,
+    manager_override_pin: Option<&str>,
+) -> Result<bool, String> {
+    if discount_cents <= 0 {
+        return Ok(false);
+    }
+    let caps = Repo::new(conn).get_discount_caps(tenant_id).map_err(|e| e.to_string())?;
+    let cap_percent = caps.for_role(actor.role);
+    match crate::pricing::check_discount_cap(subtotal_cents, discount_cents, cap_percent) {
+        Ok(()) => Ok(false),
+        Err(over) => {
+            let Some(pin) = manager_override_pin else {
+                return Err(over.to_string());
+            };
+            if verify_manager_override_impl(conn, actor, pin)? {
+                Ok(true)
+            } else {
+                Err(over.to_string())
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Slice A -- POS flow commands. These replace the frontend's `orderService.ts`
 // and `pos/page.tsx` getDb() calls with Rust-backed, auth-checked commands.
@@ -2227,6 +2320,7 @@ pub fn create_full_order_v3(
     delivery_fee_cents: i64,
     driver_id: Option<String>,
     shift_id: Option<String>,
+    manager_override_pin: Option<String>,
 ) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
@@ -2238,6 +2332,8 @@ pub fn create_full_order_v3(
     }
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let override_used = enforce_discount_cap(&mut conn, &actor, &tenant_id, subtotal_cents, discount_cents, manager_override_pin.as_deref())?;
+
     let scope = actor.scope();
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let input = FullOrderInput {
@@ -2258,6 +2354,14 @@ pub fn create_full_order_v3(
         audit::Action::OrderCreated, "order", &order_id,
         None, Some(&serde_json::json!({ "order_type": order_type, "total_cents": total_cents })),
     ).map_err(|e| e.to_string())?;
+
+    if discount_cents > 0 {
+        audit::append(
+            &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+            audit::Action::DiscountApplied, "order", &order_id,
+            None, Some(&serde_json::json!({ "discount_cents": discount_cents, "subtotal_cents": subtotal_cents, "manager_override_used": override_used })),
+        ).map_err(|e| e.to_string())?;
+    }
 
     tx.commit().map_err(|e| e.to_string())?;
     Ok(order_id)
@@ -2631,6 +2735,7 @@ mod tests {
         migrate_v3::run_identity_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_drift_fix_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_index_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_discount_cap_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -4210,6 +4315,181 @@ mod tests {
         println!("[override] locked out after {MANAGER_OVERRIDE_MAX_ATTEMPTS} failed attempts, correct PIN rejected while locked");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// The last T1.9 gap: `create_order_v3`/`create_full_order_v3` used to
+    /// accept any `discount_cents` with no server-side ceiling at all.
+    /// These exercise `enforce_discount_cap` (the real function the command
+    /// wrappers call) directly, same convention as this whole module uses
+    /// for `verify_manager_override_impl` above -- the `#[tauri::command]`
+    /// wrapper needs a live `tauri::App` for `State<T>` and is a thin,
+    /// inspectable shim around this.
+    mod discount_caps {
+        use super::*;
+        use crate::audit;
+        use super::super::enforce_discount_cap;
+
+        fn setup(tag: &str) -> (Connection, PathBuf, String, String, String, String) {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db(&format!("discount_caps_{tag}"));
+            let conn = Connection::open(&db_path).unwrap();
+            let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+            let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Manager");
+            (conn, db_path, tenant_id, branch_id, cashier_id, manager_id)
+        }
+
+        fn actor_for(conn: &Connection, staff_id: &str) -> security::Actor {
+            security::authenticate(conn, &security::create_session(conn, staff_id, "pos-device").unwrap()).unwrap()
+        }
+
+        /// Defaults from `run_discount_cap_migration`: cashier 10%, manager
+        /// 50%, owner 100% -- same values `lib/permissions.ts` already used
+        /// frontend-only (and thus bypassably) before this task.
+        #[test]
+        fn defaults_match_the_previously_frontend_only_values() {
+            let (conn, db_path, tenant_id, ..) = setup("defaults");
+            let caps = Repo::new(&conn).get_discount_caps(&tenant_id).unwrap();
+            assert_eq!(caps, crate::pricing::DiscountCaps { cashier_percent: 10, manager_percent: 50, owner_percent: 100 });
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn cashier_within_own_cap_needs_no_override() {
+            let (mut conn, db_path, tenant_id, _branch_id, cashier_id, _manager_id) = setup("within_cap");
+            let actor = actor_for(&conn, &cashier_id);
+            // 8% of a 10,000-cent subtotal -- under the cashier's 10% cap.
+            let used_override = enforce_discount_cap(&mut conn, &actor, &tenant_id, 10_000, 800, None).unwrap();
+            assert!(!used_override);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn cashier_over_cap_without_override_is_rejected() {
+            let (mut conn, db_path, tenant_id, _branch_id, cashier_id, _manager_id) = setup("over_no_override");
+            let actor = actor_for(&conn, &cashier_id);
+            // 20% -- double the cashier's 10% cap, no PIN supplied.
+            let result = enforce_discount_cap(&mut conn, &actor, &tenant_id, 10_000, 2_000, None);
+            let err = result.expect_err("a 20% discount must be rejected against a 10% cashier cap");
+            assert!(err.contains("10%"), "error should name the cap the request exceeded: {err}");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn cashier_over_cap_with_wrong_pin_is_rejected() {
+            let (mut conn, db_path, tenant_id, _branch_id, cashier_id, manager_id) = setup("wrong_pin");
+            let pin_hash = bcrypt::hash("5555", bcrypt::DEFAULT_COST).unwrap();
+            conn.execute("UPDATE staff SET pin_hash = ?1 WHERE id = ?2", params![pin_hash, manager_id]).unwrap();
+            let actor = actor_for(&conn, &cashier_id);
+
+            let result = enforce_discount_cap(&mut conn, &actor, &tenant_id, 10_000, 2_000, Some("0000"));
+            assert!(result.is_err(), "a wrong manager PIN must not authorize an over-cap discount");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// The override path: a cashier over their own cap, authorized by a
+        /// real manager PIN -- allowed, and the authorization is audited
+        /// under the manager's identity (via `verify_manager_override_impl`,
+        /// already proven above to name the authorizing manager), not the
+        /// cashier's.
+        #[test]
+        fn cashier_over_cap_with_valid_manager_override_is_allowed_and_audited() {
+            let (mut conn, db_path, tenant_id, _branch_id, cashier_id, manager_id) = setup("valid_override");
+            let pin_hash = bcrypt::hash("5555", bcrypt::DEFAULT_COST).unwrap();
+            conn.execute("UPDATE staff SET pin_hash = ?1 WHERE id = ?2", params![pin_hash, manager_id]).unwrap();
+            let actor = actor_for(&conn, &cashier_id);
+
+            let used_override = enforce_discount_cap(&mut conn, &actor, &tenant_id, 10_000, 2_000, Some("5555")).unwrap();
+            assert!(used_override);
+
+            let (action, entity_id): (String, String) = conn.query_row(
+                "SELECT action, entity_id FROM audit_log WHERE action = 'ManagerOverrideGranted' ORDER BY ts DESC LIMIT 1",
+                [], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).unwrap();
+            assert_eq!(action, "ManagerOverrideGranted");
+            assert_eq!(entity_id, manager_id, "the override audit entry must name the authorizing MANAGER, not the requesting cashier");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Role-ranked, not a single global ceiling: the same 20% discount
+        /// that's rejected for a cashier (10% cap) is allowed outright for
+        /// a manager (50% cap), no override needed.
+        #[test]
+        fn manager_cap_is_higher_than_cashier_cap_no_override_needed() {
+            let (mut conn, db_path, tenant_id, _branch_id, _cashier_id, manager_id) = setup("manager_higher_cap");
+            let actor = actor_for(&conn, &manager_id);
+            let used_override = enforce_discount_cap(&mut conn, &actor, &tenant_id, 10_000, 2_000, None).unwrap();
+            assert!(!used_override, "20% is within a manager's 50% cap -- no override should be needed");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn owner_can_apply_a_full_100_percent_discount() {
+            let (mut conn, db_path, tenant_id, _branch_id, _cashier_id, _manager_id) = setup("owner_full_discount");
+            let owner_id = seed_staff(&conn, &tenant_id, None, Role::Owner, "Owner");
+            let actor = actor_for(&conn, &owner_id);
+            let used_override = enforce_discount_cap(&mut conn, &actor, &tenant_id, 10_000, 10_000, None).unwrap();
+            assert!(!used_override);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Tenant-configurable, per the task: an owner can loosen or
+        /// tighten the caps, and enforcement immediately reflects it --
+        /// this is a live `chain_config` read on every check, not a
+        /// constant baked into the binary.
+        #[test]
+        fn owner_can_change_the_caps_and_enforcement_reflects_it_immediately() {
+            let (mut conn, db_path, tenant_id, _branch_id, cashier_id, _manager_id) = setup("owner_changes_caps");
+            Repo::new(&conn).update_discount_caps(&tenant_id, 25, 50, 100).unwrap();
+
+            let actor = actor_for(&conn, &cashier_id);
+            // 20% now fits under the cashier's newly-raised 25% cap.
+            let used_override = enforce_discount_cap(&mut conn, &actor, &tenant_id, 10_000, 2_000, None).unwrap();
+            assert!(!used_override, "cap change must take effect immediately, not require a restart");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// The anti-theft record: `create_order_v3`'s actual sequence
+        /// (enforce cap -> create order -> write `DiscountApplied`) is
+        /// replicated directly here (the command wrapper is the thin,
+        /// inspectable shim already noted above) to prove the audit entry
+        /// really lands with the right amount/order, not just that
+        /// `audit::append` compiles.
+        #[test]
+        fn applying_a_discount_writes_a_discount_applied_audit_entry() {
+            let (mut conn, db_path, tenant_id, branch_id, cashier_id, manager_id) = setup("audit_entry");
+            let pin_hash = bcrypt::hash("5555", bcrypt::DEFAULT_COST).unwrap();
+            conn.execute("UPDATE staff SET pin_hash = ?1 WHERE id = ?2", params![pin_hash, manager_id]).unwrap();
+            let actor = actor_for(&conn, &cashier_id);
+            let table_id = "tbl-1".to_string();
+
+            let subtotal_cents = 10_000;
+            let discount_cents = 2_000; // over the cashier's 10% cap -- needs the override
+            let override_used = enforce_discount_cap(&mut conn, &actor, &tenant_id, subtotal_cents, discount_cents, Some("5555")).unwrap();
+            assert!(override_used);
+
+            let tx = conn.transaction().unwrap();
+            let order_id = Repo::new(&tx).create_order(
+                &actor.scope(), &tenant_id, &branch_id,
+                NewOrder { table_id, user_id: actor.id.clone(), order_type: "DINE_IN".into(), subtotal_cents, tax_cents: 0, total_cents: subtotal_cents - discount_cents, discount_cents },
+            ).unwrap();
+            audit::append(
+                &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+                audit::Action::DiscountApplied, "order", &order_id,
+                None, Some(&serde_json::json!({ "discount_cents": discount_cents, "subtotal_cents": subtotal_cents, "manager_override_used": override_used })),
+            ).unwrap();
+            tx.commit().unwrap();
+
+            let (action, actor_id, entity_id, after_json): (String, String, String, String) = conn.query_row(
+                "SELECT action, actor_id, entity_id, after_json FROM audit_log WHERE action = 'DiscountApplied' ORDER BY ts DESC LIMIT 1",
+                [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            ).unwrap();
+            assert_eq!(action, "DiscountApplied");
+            assert_eq!(actor_id, cashier_id, "the discount entry attributes the WHO to the cashier who applied it");
+            assert_eq!(entity_id, order_id, "the discount entry names WHICH order");
+            let parsed: serde_json::Value = serde_json::from_str(&after_json).unwrap();
+            assert_eq!(parsed["discount_cents"], 2_000, "the discount entry records HOW MUCH");
+            assert_eq!(parsed["manager_override_used"], true);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
     }
 
     /// Slice C, group "menu combo/happy-hour": combo meal CRUD with line

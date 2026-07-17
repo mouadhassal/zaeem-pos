@@ -92,6 +92,11 @@ pub enum Action {
     ComboMealChanged,
     HappyHourRuleChanged,
     BranchChanged,
+    /// Discount cap enforcement's anti-theft record: written whenever an
+    /// order carries a positive discount, whether or not it needed a
+    /// manager override -- see `pricing.rs` and `create_order_v3`/
+    /// `create_full_order_v3`.
+    DiscountApplied,
 }
 
 impl Action {
@@ -125,6 +130,7 @@ impl Action {
             Action::ComboMealChanged => "ComboMealChanged",
             Action::HappyHourRuleChanged => "HappyHourRuleChanged",
             Action::BranchChanged => "BranchChanged",
+            Action::DiscountApplied => "DiscountApplied",
         }
     }
 }

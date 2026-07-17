@@ -6,7 +6,12 @@ import { useAuthStore } from "../../stores/authStore";
 interface Props {
   title: string;
   description: string;
-  onSuccess: () => void;
+  /** Receives the verified PIN so callers that need to re-present it as a
+   * manager-override proof (e.g. an over-cap discount) can forward it --
+   * this modal's own `verify_manager_override_v3` call is a UX pre-check,
+   * not the authorization itself; the command that actually needs the
+   * override re-verifies the PIN server-side when the action is taken. */
+  onSuccess: (pin: string) => void;
   onCancel: () => void;
 }
 
@@ -39,7 +44,7 @@ export default function ManagerPinModal({
         return;
       }
 
-      onSuccess();
+      onSuccess(pin);
     } catch {
       setError("حدث خطأ");
     } finally {

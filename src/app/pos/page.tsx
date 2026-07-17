@@ -23,7 +23,7 @@ import { useShiftStore } from "../../stores/shiftStore";
 import { useOrderTypeStore } from "../../stores/orderTypeStore";
 import { useMenuStore } from "../../stores/menuStore";
 import { CURRENCY_SYMBOLS } from "../../hooks/useCurrency";
-import { usePermissions } from "../../hooks/usePermissions";
+import { useDiscountCap } from "../../hooks/useDiscountCap";
 import { createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, lookupLoyaltyCard, earnLoyaltyPoints } from "../../lib/orderService";
 import { enableBarcodeScanner, disableBarcodeScanner } from "../../lib/barcodeScanner";
 import { retryPrintQueue, printReceipt } from "../../lib/printer";
@@ -61,6 +61,7 @@ export default function POSPage() {
   const [loyaltyCard, setLoyaltyCard] = useState<{ card_number: string; customer_name: string; points: number; tier: string } | null>(null);
   const [receiptData, setReceiptData] = useState<ReceiptData | null>(null);
   const [pinAction, setPinAction] = useState<string>("");
+  const [discountOverridePin, setDiscountOverridePin] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [voidTargetItem, setVoidTargetItem] = useState<string | null>(null);
   const [voidTargetName, setVoidTargetName] = useState("");
@@ -72,7 +73,10 @@ export default function POSPage() {
   const { orderType, customerName, customerPhone, deliveryAddress, driverId, resetOrderInfo, setDriverId } = useOrderTypeStore();
   const user = useAuthStore((s) => s.user);
   const shiftId = useShiftStore((s) => s.activeShiftId);
-  const { maxDiscountPercent } = usePermissions();
+  // Real, server-enforced cap (chain_config via get_discount_caps_v3) --
+  // replaces the old usePermissions().maxDiscountPercent, which was a
+  // frontend-only constant Rust never checked (this task's whole point).
+  const { yourCapPercent: maxDiscountPercent } = useDiscountCap();
 
   useEffect(() => {
     getReceiptConfig().then((cfg) => {
@@ -208,7 +212,9 @@ export default function POSPage() {
       orderType === "DELIVERY" ? deliveryAddress : undefined,
       state.savingsCents, shiftId ?? undefined,
       orderType === "DELIVERY" ? driverId : undefined,
+      discountOverridePin ?? undefined,
     );
+    setDiscountOverridePin(null);
     const cfg = await getReceiptConfig();
     const receipt: ReceiptData = {
       chainName: cfg.chain_name, branchName: cfg.branch_name,
@@ -574,7 +580,17 @@ export default function POSPage() {
         <ManagerPinModal
           title="تصريح المدير"
           description={pinAction === "discount" ? "نسبة الخصم تتجاوز الحد المسموح. يرجى إدخال كلمة مرور المدير." : "يرجى إدخال كلمة مرور المدير للمتابعة."}
-          onSuccess={() => { setShowPin(false); if (pinAction === "discount") setShowPayment(true); }}
+          onSuccess={(pin) => {
+            setShowPin(false);
+            if (pinAction === "discount") {
+              // Forwarded as manager_override_pin to create_full_order_v3,
+              // which re-verifies it server-side at order-creation time --
+              // this modal's own check above is a UX pre-check, not the
+              // authorization Rust actually relies on.
+              setDiscountOverridePin(pin);
+              setShowPayment(true);
+            }
+          }}
           onCancel={() => setShowPin(false)}
         />
       )}
