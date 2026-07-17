@@ -10,6 +10,7 @@ mod repo;
 mod audit;
 mod commands_v3;
 mod ai;
+mod photos;
 
 use bcrypt::{hash, DEFAULT_COST};
 
@@ -221,6 +222,8 @@ pub fn run() {
             commands_v3::update_menu_item_v3,
             commands_v3::delete_menu_item_v3,
             commands_v3::set_menu_item_active_v3,
+            commands_v3::upload_menu_item_photo_v3,
+            commands_v3::delete_menu_item_photo_v3,
             commands_v3::list_ingredients_v3,
             commands_v3::create_ingredient_v3,
             commands_v3::update_ingredient_v3,

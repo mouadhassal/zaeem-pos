@@ -2574,22 +2574,33 @@ impl<'a> Repo<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn create_menu_item(&self, tenant_id: &str, name: &str, category_id: &str, price_cents: i64, cost_cents: i64, image_path: Option<&str>, description: Option<&str>, barcode: Option<&str>) -> Result<String, RepoError> {
+    /// `image_path` is deliberately NOT a parameter here (Phase 2 Part 2) --
+    /// it's exclusively owned by `set_menu_item_photo`/`upload_menu_item_
+    /// photo_v3` now. A new item starts with no photo (NULL); the category
+    /// glyph shows until one is uploaded.
+    pub fn create_menu_item(&self, tenant_id: &str, name: &str, category_id: &str, price_cents: i64, cost_cents: i64, description: Option<&str>, barcode: Option<&str>) -> Result<String, RepoError> {
         let id = uuid::Uuid::now_v7().to_string();
         self.conn.execute(
-            "INSERT INTO menu_items (id, tenant_id, name, price_cents, cost_cents, category_id, image_path, description, barcode, is_active, recipe_id, is_combo, last_modified, sync_status) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, NULL, 0, datetime('now'), 'pending')",
-            params![id, tenant_id, name, price_cents, cost_cents, category_id, image_path, description, barcode],
+            "INSERT INTO menu_items (id, tenant_id, name, price_cents, cost_cents, category_id, description, barcode, is_active, recipe_id, is_combo, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, NULL, 0, datetime('now'), 'pending')",
+            params![id, tenant_id, name, price_cents, cost_cents, category_id, description, barcode],
         )?;
         Ok(id)
     }
 
+    /// `image_path` deliberately NOT touched here either -- see `create_
+    /// menu_item`'s doc comment. Found and fixed while wiring photo upload:
+    /// this used to overwrite `image_path` unconditionally on EVERY edit
+    /// (price change, name change, anything), which combined with `list_
+    /// menu_items_v3` now returning a resolved data: URI (not the raw
+    /// path) instead of the raw path would have silently corrupted the
+    /// stored file path the first time anyone edited an item with a photo.
     #[allow(clippy::too_many_arguments)]
-    pub fn update_menu_item(&self, tenant_id: &str, item_id: &str, name: &str, category_id: &str, price_cents: i64, cost_cents: i64, image_path: Option<&str>, description: Option<&str>, barcode: Option<&str>) -> Result<(), RepoError> {
+    pub fn update_menu_item(&self, tenant_id: &str, item_id: &str, name: &str, category_id: &str, price_cents: i64, cost_cents: i64, description: Option<&str>, barcode: Option<&str>) -> Result<(), RepoError> {
         self.assert_tenant_owns_row("menu_items", item_id, tenant_id)?;
         self.conn.execute(
-            "UPDATE menu_items SET name = ?1, category_id = ?2, price_cents = ?3, cost_cents = ?4, image_path = ?5, description = ?6, barcode = ?7, last_modified = datetime('now') WHERE id = ?8",
-            params![name, category_id, price_cents, cost_cents, image_path, description, barcode, item_id],
+            "UPDATE menu_items SET name = ?1, category_id = ?2, price_cents = ?3, cost_cents = ?4, description = ?5, barcode = ?6, last_modified = datetime('now') WHERE id = ?7",
+            params![name, category_id, price_cents, cost_cents, description, barcode, item_id],
         )?;
         Ok(())
     }
@@ -2597,6 +2608,19 @@ impl<'a> Repo<'a> {
     pub fn delete_menu_item(&self, tenant_id: &str, item_id: &str) -> Result<(), RepoError> {
         self.assert_tenant_owns_row("menu_items", item_id, tenant_id)?;
         self.conn.execute("DELETE FROM menu_items WHERE id = ?1", params![item_id])?;
+        Ok(())
+    }
+
+    /// Phase 2 Part 2: persists the on-disk file path written by
+    /// `photos::store_photo` (or clears it with `None`). Scope-checked the
+    /// same as every other menu_items write -- a Manager can only set a
+    /// photo for their own tenant's product.
+    pub fn set_menu_item_photo(&self, tenant_id: &str, item_id: &str, image_path: Option<&str>) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("menu_items", item_id, tenant_id)?;
+        self.conn.execute(
+            "UPDATE menu_items SET image_path = ?1, last_modified = datetime('now') WHERE id = ?2",
+            params![image_path, item_id],
+        )?;
         Ok(())
     }
 

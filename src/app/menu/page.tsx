@@ -47,7 +47,6 @@ interface MenuItemForm {
   category_id: string;
   price_cents: string;
   cost_cents: string;
-  image_path: string;
   description: string;
   barcode: string;
 }
@@ -79,7 +78,6 @@ const emptyMenuItemForm: MenuItemForm = {
   category_id: "",
   price_cents: "",
   cost_cents: "",
-  image_path: "",
   description: "",
   barcode: "",
 };
@@ -111,7 +109,6 @@ const menuItemSchema = z.object({
   category_id: z.string().min(1, "التصنيف مطلوب"),
   price_cents: z.coerce.number().min(0, "يجب أن يكون 0 أو أكثر"),
   cost_cents: z.coerce.number().min(0, "يجب أن يكون 0 أو أكثر").optional().default(0),
-  image_path: z.string().optional().default(""),
   description: z.string().optional().default(""),
   barcode: z.string().optional().default(""),
 });
@@ -187,6 +184,9 @@ export default function MenuPage() {
   const [itemErrors, setItemErrors] = useState<Record<string, string>>({});
   const [deleteItemId, setDeleteItemId] = useState<string | null>(null);
   const [savingItem, setSavingItem] = useState(false);
+  const [itemPhoto, setItemPhoto] = useState<string | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
 
   // Categories tab
   const [showCategoryModal, setShowCategoryModal] = useState(false);
@@ -282,6 +282,8 @@ export default function MenuPage() {
     setEditItemId(null);
     setItemForm(emptyMenuItemForm);
     setItemErrors({});
+    setItemPhoto(null);
+    setPhotoError(null);
     setShowItemModal(true);
   };
 
@@ -292,12 +294,54 @@ export default function MenuPage() {
       category_id: item.category_id,
       price_cents: fromCents(item.price_cents),
       cost_cents: fromCents(item.cost_cents),
-      image_path: item.image_path ?? "",
       description: item.description ?? "",
       barcode: item.barcode ?? "",
     });
     setItemErrors({});
+    // `item.image_path` already arrives as a ready-to-render data: URI --
+    // list_menu_items_v3 resolves the stored file path server-side.
+    setItemPhoto(item.image_path ?? null);
+    setPhotoError(null);
     setShowItemModal(true);
+  };
+
+  const MAX_PHOTO_BYTES = 3 * 1024 * 1024;
+
+  const uploadItemPhoto = async (file: File) => {
+    if (!editItemId) return; // an item must exist (be saved) before a photo can be attached to it
+    setPhotoError(null);
+    if (file.size > MAX_PHOTO_BYTES) {
+      setPhotoError("الصورة كبيرة جداً (الحد الأقصى 3 ميجابايت)");
+      return;
+    }
+    setUploadingPhoto(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const bytes = Array.from(new Uint8Array(buf));
+      await invoke("upload_menu_item_photo_v3", { sessionToken: token, itemId: editItemId, photoBytes: bytes });
+      const items = await invoke<MenuItem[]>("list_menu_items_v3", { sessionToken: token });
+      setMenuItems(items);
+      setItemPhoto(items.find((i) => i.id === editItemId)?.image_path ?? null);
+    } catch {
+      setPhotoError("فشل رفع الصورة -- تأكد أنها JPEG أو PNG أو WEBP");
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
+
+  const removeItemPhoto = async () => {
+    if (!editItemId) return;
+    setUploadingPhoto(true);
+    try {
+      await invoke("delete_menu_item_photo_v3", { sessionToken: token, itemId: editItemId });
+      setItemPhoto(null);
+      const items = await invoke<MenuItem[]>("list_menu_items_v3", { sessionToken: token });
+      setMenuItems(items);
+    } catch {
+      setPhotoError("فشل حذف الصورة");
+    } finally {
+      setUploadingPhoto(false);
+    }
   };
 
   const saveItem = async () => {
@@ -319,7 +363,6 @@ export default function MenuPage() {
         categoryId: parsed.data.category_id,
         priceCents: toCents(itemForm.price_cents),
         costCents: toCents(itemForm.cost_cents),
-        imagePath: parsed.data.image_path || null,
         description: parsed.data.description || null,
         barcode: parsed.data.barcode || null,
       };
@@ -1089,14 +1132,54 @@ export default function MenuPage() {
 
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">
-                  رابط الصورة (اختياري)
+                  صورة الصنف (اختياري)
                 </label>
-                <input
-                  type="text"
-                  value={itemForm.image_path}
-                  onChange={(e) => setItemForm((p) => ({ ...p, image_path: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
-                />
+                {editItemId ? (
+                  <div className="flex items-center gap-3">
+                    <div className="w-[62px] h-[62px] shrink-0 rounded-lg overflow-hidden border border-ink-200 bg-ink-100 flex items-center justify-center">
+                      {itemPhoto ? (
+                        <img src={itemPhoto} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <span className="text-[10px] text-ink-400 font-arabic text-center px-1">
+                          بدون صورة
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="h-9 px-4 rounded-lg bg-saffron-600 text-white text-xs font-arabic flex items-center justify-center cursor-pointer hover:bg-saffron-700 transition-colors">
+                        {uploadingPhoto ? "جاري الرفع..." : itemPhoto ? "تغيير الصورة" : "رفع صورة"}
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          className="hidden"
+                          disabled={uploadingPhoto}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) void uploadItemPhoto(file);
+                            e.target.value = "";
+                          }}
+                        />
+                      </label>
+                      {itemPhoto && (
+                        <button
+                          type="button"
+                          onClick={removeItemPhoto}
+                          disabled={uploadingPhoto}
+                          className="h-9 px-4 rounded-lg bg-white text-ink-700 border border-ink-200 text-xs font-arabic hover:bg-ink-50 transition-colors disabled:opacity-50"
+                        >
+                          إزالة الصورة
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-ink-400 font-arabic">
+                    احفظ الصنف أولاً، بعدها تقدر ترفع صورة له
+                  </p>
+                )}
+                {photoError && (
+                  <p className="text-xs text-red-500 mt-1 font-arabic">{photoError}</p>
+                )}
               </div>
 
               <div>

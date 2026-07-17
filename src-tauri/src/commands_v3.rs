@@ -14,7 +14,7 @@ use crate::Db;
 use bcrypt::{hash, verify, DEFAULT_COST};
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
-use tauri::State;
+use tauri::{Manager, State};
 
 fn authenticate_actor(state: &State<Db>, session_token: &str) -> Result<Actor, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -575,7 +575,57 @@ pub fn delete_category_v3(state: State<Db>, session_token: String, category_id: 
 pub fn list_menu_items_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::MenuItemRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_menu_items(&actor.tenant_id).map_err(|e| e.to_string())
+    let mut items = Repo::new(&conn).list_menu_items(&actor.tenant_id).map_err(|e| e.to_string())?;
+    // Phase 2 Part 2: `image_path` is a real on-disk path written by
+    // `upload_menu_item_photo_v3`; resolve it to a data: URI here so the
+    // frontend can drop it straight into <img src> with zero Tauri
+    // asset-protocol/CSP configuration. A stale/missing/manually-typed
+    // (pre-upload-feature) path just resolves to None, falling back to
+    // the category glyph exactly like "no photo set" already does.
+    for item in &mut items {
+        item.image_path = item.image_path.as_deref().and_then(crate::photos::read_as_data_uri);
+    }
+    Ok(items)
+}
+
+/// Phase 2 Part 2: attach a photo to a product. Stored on disk, keyed by
+/// product id, tenant-namespaced (`photos::store_photo`); `menu_items.
+/// image_path` is updated to the real file path in the same transaction.
+/// `ManageMenu`-gated (Manager+) and tenant-scoped via `set_menu_item_
+/// photo`'s `assert_tenant_owns_row` -- a manager can only set a photo for
+/// their own tenant's product, never another tenant's by id.
+#[tauri::command]
+pub fn upload_menu_item_photo_v3(app: tauri::AppHandle, state: State<Db>, session_token: String, item_id: String, photo_bytes: Vec<u8>) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+
+    let app_data_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let file_path = crate::photos::store_photo(&app_data_dir, &actor.tenant_id, &item_id, &photo_bytes).map_err(|e| e.to_string())?;
+    let path_str = file_path.to_string_lossy().to_string();
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).set_menu_item_photo(&actor.tenant_id, &item_id, Some(&path_str)).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, None, Some(&serde_json::json!({ "photo_uploaded": true, "bytes": photo_bytes.len() }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Removes a product's photo (falls back to the category glyph).
+#[tauri::command]
+pub fn delete_menu_item_photo_v3(app: tauri::AppHandle, state: State<Db>, session_token: String, item_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).set_menu_item_photo(&actor.tenant_id, &item_id, None).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, Some(&serde_json::json!({ "photo_uploaded": true })), Some(&serde_json::json!({ "photo_uploaded": false }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+
+    let app_data_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    crate::photos::delete_photo(&app_data_dir, &actor.tenant_id, &item_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -587,7 +637,7 @@ pub fn list_combo_components_v3(state: State<Db>, session_token: String, menu_it
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_menu_item_v3(state: State<Db>, session_token: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, image_path: Option<String>, description: Option<String>, barcode: Option<String>) -> Result<String, String> {
+pub fn create_menu_item_v3(state: State<Db>, session_token: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, description: Option<String>, barcode: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     if price_cents < 0 || cost_cents < 0 {
@@ -596,7 +646,7 @@ pub fn create_menu_item_v3(state: State<Db>, session_token: String, name: String
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let item_id = Repo::new(&tx)
-        .create_menu_item(&actor.tenant_id, &name, &category_id, price_cents, cost_cents, image_path.as_deref(), description.as_deref(), barcode.as_deref())
+        .create_menu_item(&actor.tenant_id, &name, &category_id, price_cents, cost_cents, description.as_deref(), barcode.as_deref())
         .map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, None, Some(&serde_json::json!({ "name": name, "price_cents": price_cents }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -605,7 +655,7 @@ pub fn create_menu_item_v3(state: State<Db>, session_token: String, name: String
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn update_menu_item_v3(state: State<Db>, session_token: String, item_id: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, image_path: Option<String>, description: Option<String>, barcode: Option<String>) -> Result<(), String> {
+pub fn update_menu_item_v3(state: State<Db>, session_token: String, item_id: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, description: Option<String>, barcode: Option<String>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     if price_cents < 0 || cost_cents < 0 {
@@ -614,7 +664,7 @@ pub fn update_menu_item_v3(state: State<Db>, session_token: String, item_id: Str
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     Repo::new(&tx)
-        .update_menu_item(&actor.tenant_id, &item_id, &name, &category_id, price_cents, cost_cents, image_path.as_deref(), description.as_deref(), barcode.as_deref())
+        .update_menu_item(&actor.tenant_id, &item_id, &name, &category_id, price_cents, cost_cents, description.as_deref(), barcode.as_deref())
         .map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, None, Some(&serde_json::json!({ "name": name, "price_cents": price_cents }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -3118,14 +3168,14 @@ mod tests {
         assert_eq!(cat.sort_order, 2);
         println!("[menu-crud] category updated");
 
-        let item_id = repo.create_menu_item(&tenant_id, "حمص", &cat_id, 500, 200, None, Some("لذيذ"), Some("BC-001")).unwrap();
+        let item_id = repo.create_menu_item(&tenant_id, "حمص", &cat_id, 500, 200, Some("لذيذ"), Some("BC-001")).unwrap();
         let items = repo.list_menu_items(&tenant_id).unwrap();
         let item = items.iter().find(|i| i.id == item_id).unwrap();
         assert_eq!(item.price_cents, 500);
         assert_eq!(item.barcode.as_deref(), Some("BC-001"));
         println!("[menu-crud] menu item created and listed");
 
-        repo.update_menu_item(&tenant_id, &item_id, "حمص بالطحينة", &cat_id, 600, 250, None, None, Some("BC-001")).unwrap();
+        repo.update_menu_item(&tenant_id, &item_id, "حمص بالطحينة", &cat_id, 600, 250, None, Some("BC-001")).unwrap();
         let items = repo.list_menu_items(&tenant_id).unwrap();
         let item = items.iter().find(|i| i.id == item_id).unwrap();
         assert_eq!(item.name, "حمص بالطحينة");
@@ -3168,7 +3218,7 @@ mod tests {
             "INSERT INTO menu_items (id, tenant_id, name, price_cents, category_id) VALUES (?1, 'other-tenant', 'Hijack Target', 100, 'other-tenant-cat-2')",
             params![other_item_id],
         ).unwrap();
-        match repo.update_menu_item(&tenant_id, other_item_id, "hijacked", &cat_id, 1, 1, None, None, None) {
+        match repo.update_menu_item(&tenant_id, other_item_id, "hijacked", &cat_id, 1, 1, None, None) {
             Err(RepoError::TenantOwnershipViolation { .. }) => println!("[menu-crud] update_menu_item correctly rejected another tenant's menu item"),
             other => panic!("expected TenantOwnershipViolation, got {other:?}"),
         }
@@ -3181,6 +3231,58 @@ mod tests {
             other => panic!("expected TenantOwnershipViolation, got {other:?}"),
         }
 
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Phase 2 Part 2: product photo storage + tenant scope. Proves the
+    /// full path -- `photos::store_photo` writes a real file, `Repo::
+    /// set_menu_item_photo` persists the path (rejecting another tenant's
+    /// item by id, same `assert_tenant_owns_row` guard as the rest of
+    /// menu_items), and `photos::read_as_data_uri` reads it back as a
+    /// ready-to-render `data:` URI -- the same round trip `list_menu_
+    /// items_v3` performs on every read.
+    #[test]
+    fn menu_item_photo_upload_is_tenant_scoped_and_roundtrips() {
+        let (db_path, tenant_id, _branch_id, _table_id) = seeded_db("menu_photo");
+        let conn = Connection::open(&db_path).unwrap();
+        let repo = Repo::new(&conn);
+
+        let cat_id = repo.create_category(&tenant_id, "أطباق", None, 0, None).unwrap();
+        let item_id = repo.create_menu_item(&tenant_id, "برجر", &cat_id, 1000, 400, None, None).unwrap();
+
+        let photos_root = std::env::temp_dir().join(format!("menu_photo_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&photos_root);
+
+        let jpeg_bytes: [u8; 8] = [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3, 4];
+        let file_path = crate::photos::store_photo(&photos_root, &tenant_id, &item_id, &jpeg_bytes).unwrap();
+        repo.set_menu_item_photo(&tenant_id, &item_id, Some(file_path.to_str().unwrap())).unwrap();
+
+        let items = repo.list_menu_items(&tenant_id).unwrap();
+        let item = items.iter().find(|i| i.id == item_id).unwrap();
+        let data_uri = crate::photos::read_as_data_uri(item.image_path.as_deref().unwrap()).unwrap();
+        assert!(data_uri.starts_with("data:image/jpeg;base64,"), "an uploaded photo must round-trip to a ready-to-render data: URI");
+        println!("[menu-photo] photo stored on disk, path persisted, and read back as a data: URI");
+
+        // Clearing the photo (None) must fall back cleanly -- no photo set
+        // is a legitimate state, not an error.
+        repo.set_menu_item_photo(&tenant_id, &item_id, None).unwrap();
+        let items = repo.list_menu_items(&tenant_id).unwrap();
+        assert!(items.iter().find(|i| i.id == item_id).unwrap().image_path.is_none());
+        println!("[menu-photo] photo cleared -- falls back to no photo (category glyph shows)");
+
+        // Cross-tenant: a Manager must not be able to set a photo for
+        // another tenant's product by id.
+        let other_item_id = "other-tenant-photo-item";
+        conn.execute(
+            "INSERT INTO menu_items (id, tenant_id, name, price_cents, category_id) VALUES (?1, 'other-tenant', 'Hijack Target', 100, ?2)",
+            params![other_item_id, cat_id],
+        ).unwrap();
+        match repo.set_menu_item_photo(&tenant_id, other_item_id, Some("/tmp/hijacked.jpg")) {
+            Err(RepoError::TenantOwnershipViolation { table, .. }) => { assert_eq!(table, "menu_items"); println!("[menu-photo] set_menu_item_photo correctly rejected another tenant's product"); }
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&photos_root);
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
@@ -3773,8 +3875,8 @@ mod tests {
         let repo = Repo::new(&conn);
 
         let cat_id = repo.create_category(&tenant_id, "مشروبات", None, 0, None).unwrap();
-        let item_a = repo.create_menu_item(&tenant_id, "شاي", &cat_id, 500, 200, None, None, None).unwrap();
-        let item_b = repo.create_menu_item(&tenant_id, "قهوة", &cat_id, 700, 300, None, None, None).unwrap();
+        let item_a = repo.create_menu_item(&tenant_id, "شاي", &cat_id, 500, 200, None, None).unwrap();
+        let item_b = repo.create_menu_item(&tenant_id, "قهوة", &cat_id, 700, 300, None, None).unwrap();
 
         // create_full_order: this is the exact call that would have
         // hard-failed on the pre-fix `orders.driver_id` INSERT.
@@ -3877,7 +3979,7 @@ mod tests {
         let scope_b = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_b.clone() };
 
         let cat_id = repo.create_category(&tenant_id, "Cat", None, 0, None).unwrap();
-        let item_id = repo.create_menu_item(&tenant_id, "Item", &cat_id, 1000, 500, None, None, None).unwrap();
+        let item_id = repo.create_menu_item(&tenant_id, "Item", &cat_id, 1000, 500, None, None).unwrap();
 
         // Branch B's order + item.
         let order_b = repo.create_full_order(&scope_b, &tenant_id, &branch_b, FullOrderInput {
@@ -4035,9 +4137,9 @@ mod tests {
         let repo = Repo::new(&conn);
 
         let cat_id = repo.create_category(&tenant_id, "أطباق", None, 0, None).unwrap();
-        let burger_id = repo.create_menu_item(&tenant_id, "برجر", &cat_id, 1500, 600, None, None, None).unwrap();
-        let fries_id = repo.create_menu_item(&tenant_id, "بطاطا", &cat_id, 500, 150, None, None, None).unwrap();
-        let drink_id = repo.create_menu_item(&tenant_id, "مشروب", &cat_id, 300, 100, None, None, None).unwrap();
+        let burger_id = repo.create_menu_item(&tenant_id, "برجر", &cat_id, 1500, 600, None, None).unwrap();
+        let fries_id = repo.create_menu_item(&tenant_id, "بطاطا", &cat_id, 500, 150, None, None).unwrap();
+        let drink_id = repo.create_menu_item(&tenant_id, "مشروب", &cat_id, 300, 100, None, None).unwrap();
 
         // Combo create with items.
         let combo_id = repo.create_combo_meal(&tenant_id, "وجبة برجر", 2000, &[(burger_id.clone(), 1), (fries_id.clone(), 1)]).unwrap();
@@ -4284,8 +4386,8 @@ mod tests {
         let scope_b = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_b.clone() };
 
         let cat_id = repo.create_category(&tenant_id, "Cat", None, 0, None).unwrap();
-        let burger_id = repo.create_menu_item(&tenant_id, "Burger", &cat_id, 1000, 400, None, None, None).unwrap();
-        let fries_id = repo.create_menu_item(&tenant_id, "Fries", &cat_id, 500, 150, None, None, None).unwrap();
+        let burger_id = repo.create_menu_item(&tenant_id, "Burger", &cat_id, 1000, 400, None, None).unwrap();
+        let fries_id = repo.create_menu_item(&tenant_id, "Fries", &cat_id, 500, 150, None, None).unwrap();
 
         // Branch A: a PENDING order with one normal item and one voided item.
         let order_a = repo.create_full_order(&scope_a, &tenant_id, &branch_a, FullOrderInput {
@@ -4773,9 +4875,9 @@ mod tests {
 
         // ---- MENU (tenant-only scope): seeded per tenant ----
         let cat_1 = repo.create_category(&fx.tenant1, "تصنيف تينانت1", None, 0, None).unwrap();
-        let item_1 = repo.create_menu_item(&fx.tenant1, "صنف تينانت1", &cat_1, 1000, 400, None, None, None).unwrap();
+        let item_1 = repo.create_menu_item(&fx.tenant1, "صنف تينانت1", &cat_1, 1000, 400, None, None).unwrap();
         let cat_2 = repo.create_category(&fx.tenant2, "تصنيف تينانت2", None, 0, None).unwrap();
-        let item_2 = repo.create_menu_item(&fx.tenant2, "صنف تينانت2", &cat_2, 1500, 600, None, None, None).unwrap();
+        let item_2 = repo.create_menu_item(&fx.tenant2, "صنف تينانت2", &cat_2, 1500, 600, None, None).unwrap();
         let items_1 = repo.list_menu_items(&fx.tenant1).unwrap();
         assert!(items_1.iter().any(|i| i.id == item_1) && !items_1.iter().any(|i| i.id == item_2), "Tenant1's menu must contain only its own item");
         let items_2 = repo.list_menu_items(&fx.tenant2).unwrap();
@@ -4839,7 +4941,7 @@ mod tests {
         let scope_b = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_b.clone() };
 
         let cat_id = repo.create_category(&tenant_id, "هجوم", None, 0, None).unwrap();
-        let item_id = repo.create_menu_item(&tenant_id, "طبق باهظ", &cat_id, 10000, 3000, None, None, None).unwrap();
+        let item_id = repo.create_menu_item(&tenant_id, "طبق باهظ", &cat_id, 10000, 3000, None, None).unwrap();
 
         // ---- Attack 1: zero a total ----
         // Real item, real quantity, but subtotal/total declared as 0.
@@ -4962,7 +5064,7 @@ mod tests {
         let staff_still_exists: bool = conn.query_row("SELECT COUNT(*) > 0 FROM staff WHERE id = ?1", params![cashier_a], |r| r.get(0)).unwrap();
         assert!(staff_still_exists, "[attack-17] SQL injection via customer name must NOT have dropped the staff table");
 
-        let inj_item = repo.create_menu_item(&tenant_id, injection, &cat_id, 100, 0, None, None, None).unwrap();
+        let inj_item = repo.create_menu_item(&tenant_id, injection, &cat_id, 100, 0, None, None).unwrap();
         let stored_item_name: String = conn.query_row("SELECT name FROM menu_items WHERE id = ?1", params![inj_item], |r| r.get(0)).unwrap();
         assert_eq!(stored_item_name, injection);
 

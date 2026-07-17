@@ -177,7 +177,7 @@ pub(crate) fn apply_draft_impl(conn: &mut rusqlite::Connection, session_token: &
         let cat_id = cat_name_to_id
             .get(&item.category_name)
             .expect("category should exist by now");
-        repo.create_menu_item(&actor.tenant_id, &item.ar_name, cat_id, item.price_cents, 0, None, None, None)
+        repo.create_menu_item(&actor.tenant_id, &item.ar_name, cat_id, item.price_cents, 0, None, None)
             .map_err(|e| format!("Failed to create item '{}': {}", item.ar_name, e))?;
         items_created += 1;
     }
