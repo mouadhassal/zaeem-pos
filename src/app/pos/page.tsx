@@ -430,7 +430,7 @@ export default function POSPage() {
         </div>
       </div>
 
-      <div className="w-[226px] shrink-0 flex flex-col py-4">
+      <div className="w-[268px] shrink-0 flex flex-col py-4">
         <OrderPanel
           orderNumber={orderNumber}
           lines={orderLines}
