@@ -1,21 +1,23 @@
 import {
-  IconMeat, IconGrill, IconGlassFull, IconSalad, IconCake, IconBox,
+  IconMeat, IconFlame, IconCup, IconSalad, IconCake, IconBox,
   type Icon,
 } from "@tabler/icons-react";
 
 export interface CategoryStyle {
   wash: string;
+  /** Deeper shade of `wash`, same hue -- gradient endpoint for the no-photo tile. */
+  washDeep: string;
   icon: Icon;
   glyphColor: string;
 }
 
 export const CATEGORY_STYLES: Record<string, CategoryStyle> = {
-  meat:    { wash: "#FDEDE8", icon: IconMeat,     glyphColor: "#F04E23" },
-  grill:   { wash: "#FBF0DE", icon: IconGrill,     glyphColor: "#C4841D" },
-  drink:   { wash: "#E8F1FB", icon: IconGlassFull, glyphColor: "#3E8BD8" },
-  salad:   { wash: "#E9F4EE", icon: IconSalad,     glyphColor: "#2E8B5B" },
-  sweet:   { wash: "#F3EDFB", icon: IconCake,      glyphColor: "#7B5BC4" },
-  other:   { wash: "#F2F4F7", icon: IconBox,       glyphColor: "#667085" },
+  meat:    { wash: "#FDEDE8", washDeep: "#FAD9CE", icon: IconMeat,  glyphColor: "#F04E23" },
+  grill:   { wash: "#FBF0DE", washDeep: "#F5DFAF", icon: IconFlame, glyphColor: "#C4841D" },
+  drink:   { wash: "#E8F1FB", washDeep: "#CFE3F7", icon: IconCup,   glyphColor: "#3E8BD8" },
+  salad:   { wash: "#E9F4EE", washDeep: "#CFEADA", icon: IconSalad, glyphColor: "#2E8B5B" },
+  sweet:   { wash: "#F3EDFB", washDeep: "#E3D3F5", icon: IconCake,  glyphColor: "#7B5BC4" },
+  other:   { wash: "#F2F4F7", washDeep: "#E1E5EA", icon: IconBox,   glyphColor: "#667085" },
 };
 
 export function getCategoryStyle(categoryName: string): CategoryStyle {

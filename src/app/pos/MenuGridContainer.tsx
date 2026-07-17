@@ -100,7 +100,10 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
     }
   };
 
-  const visibleItems = filteredItems.slice(0, 12);
+  // A real restaurant menu is 40+ items; the cashier scrolls the grid
+  // (already `overflow-y-auto` below), so there is no reason to truncate
+  // the list to a fixed count -- that just hides items that exist.
+  const visibleItems = filteredItems;
   const isEmpty = visibleItems.length === 0;
 
   const countByCategoryId = useMemo(() => {
@@ -153,7 +156,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
             {searchValue ? "ما في أصناف تطابق البحث" : "ما في أصناف متاحة"}
           </div>
         ) : (
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}>
             {visibleItems.map((item) => {
               const cat = categories.find((c) => c.id === item.category_id);
               return (

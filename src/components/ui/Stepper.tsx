@@ -9,8 +9,7 @@ export default function Stepper({ quantity, onAdd, onRemove }: Props) {
     return (
       <button
         onClick={onAdd}
-        className="w-8 h-8 rounded-[10px] flex items-center justify-center bg-surface-alt text-text-3 text-lg font-medium transition-all active:scale-95"
-        style={{ minWidth: 32, minHeight: 32 }}
+        className="w-[26px] h-[26px] rounded-[7px] flex items-center justify-center bg-saffron-500 text-white text-base font-medium transition-all active:scale-95"
         aria-label="إضافة"
       >
         +
@@ -19,27 +18,23 @@ export default function Stepper({ quantity, onAdd, onRemove }: Props) {
   }
 
   return (
-    // Color discipline: accent is reserved for the cart's "+" (OrderLine.tsx) --
-    // these items aren't in the order yet, so this stepper stays neutral/ink.
     // DOM order is [+, qty, -] so that under dir="rtl" it reads left-to-right
     // as "- qty +", per spec.
     <div className="flex items-center gap-1">
       <button
         onClick={onAdd}
-        className="w-8 h-8 rounded-[10px] flex items-center justify-center bg-surface-alt text-text-3 text-lg font-medium transition-all active:scale-95"
-        style={{ minWidth: 32, minHeight: 32 }}
+        className="w-[26px] h-[26px] rounded-[7px] flex items-center justify-center bg-saffron-500 text-white text-base font-medium transition-all active:scale-95"
         aria-label="زيادة"
       >
         +
       </button>
-      <span className="tabular text-sm text-text-2 min-w-[20px] text-center">
+      <span className="tabular text-xs text-text-2 min-w-[16px] text-center">
         {quantity}
       </span>
-      {onRemove && quantity > 0 && (
+      {onRemove && (
         <button
           onClick={onRemove}
-          className="w-8 h-8 rounded-[10px] flex items-center justify-center bg-surface-alt text-text-3 text-lg font-medium transition-all active:scale-95"
-          style={{ minWidth: 32, minHeight: 32 }}
+          className="w-[26px] h-[26px] rounded-[7px] flex items-center justify-center bg-surface-alt text-text-3 text-base font-medium transition-all active:scale-95"
           aria-label="تقليل"
         >
           −
