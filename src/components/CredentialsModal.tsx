@@ -25,7 +25,7 @@ export default function CredentialsModal({ isOpen, onClose }: { isOpen: boolean;
       <div className="w-full max-w-lg bg-ink-50 border border-ink-200 rounded-2xl shadow-2xl overflow-hidden">
         <div className="flex items-center justify-between p-6 border-b border-ink-200">
           <div>
-            <h2 className="text-xl font-bold text-white">بيانات تسجيل الدخول</h2>
+            <h2 className="text-xl font-bold text-ink-900">بيانات تسجيل الدخول</h2>
             <p className="text-sm text-ink-500 mt-1">احفظ هذه البيانات أو شاركها مع الموظفين</p>
           </div>
           <button onClick={onClose} className="p-2 rounded-lg hover:bg-white text-ink-500">

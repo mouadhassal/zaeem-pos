@@ -38,6 +38,41 @@
   --ink-700: #344054;
   --ink-800: #1D2939;
   --ink-900: #101828;
+
+  /* `saffron` (persimmon brand ramp) and `live` (success/active-status ramp)
+     were referenced by classes like bg-saffron-600 and bg-live-700 across 29
+     files but never defined anywhere in the theme -- Tailwind silently
+     emits no CSS for an unrecognized utility, so every button using them
+     had no background at all (white/transparent) under white text. This is
+     the root-cause fix: define both ramps once, here, so every consumer
+     inherits real color instead of falling through to nothing.
+     saffron-600/700/800 are deliberately darker than the raw --accent
+     (#F04E23) brand color -- pure #F04E23 with white text measures ~3.6:1
+     contrast, below the 4.5:1 AA text bar. #C43A14 (saffron-600, same value
+     as --accent-text below) measures ~5.3:1. --accent itself is kept as
+     the soft/light brand color (badges, focus rings, accent-soft tints),
+     not as a button fill. */
+  --saffron-50: #FEF3EE;
+  --saffron-100: #FDEDE8;
+  --saffron-200: #FBD9CB;
+  --saffron-300: #F7B99E;
+  --saffron-400: #F38F65;
+  --saffron-500: #D14016;
+  --saffron-600: #C43A14;
+  --saffron-700: #A02D0F;
+  --saffron-800: #7A230C;
+  --saffron-900: #5C1A09;
+
+  --live-50: #EAFBF1;
+  --live-100: #D1F5E1;
+  --live-200: #A8ECC4;
+  --live-300: #78DFA3;
+  --live-400: #45CD82;
+  --live-500: #22B86A;
+  --live-600: #0E8442;
+  --live-700: #0A6631;
+  --live-800: #084F26;
+  --live-900: #063B1D;
 }
 
 ::selection {
