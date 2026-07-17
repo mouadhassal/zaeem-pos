@@ -3,7 +3,9 @@
 @tailwind utilities;
 
 :root {
-  --bg: #F5F6F8;
+  /* Single canvas colour app-wide -- white cards float on this, nothing else. */
+  --bg: #EDEFF2;
+  --panel-footer: #FAFBFC;
   --surface: #FFFFFF;
   --surface-alt: #F2F4F7;
 

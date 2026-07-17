@@ -15,7 +15,7 @@ import PayKey from "../../components/ui/PayKey";
 import {
   IconUser as User, IconAward as Award, IconTruck as Truck,
   IconArrowsSplit2 as Split, IconArrowsLeftRight as ArrowLeftRight,
-  IconTag as Tag, IconPrinter as Printer, IconTrash as Trash2,
+  IconPrinter as Printer, IconTrash as Trash2,
 } from "@tabler/icons-react";
 import { useCartStore } from "../../stores/cartStore";
 import { useAuthStore } from "../../stores/authStore";
@@ -319,6 +319,13 @@ export default function POSPage() {
   const orderNumber = useMemo(() => tableId?.slice(0, 8) || "0000", [tableId]);
   const currentOrderId = tables.find((t) => t.id === tableId)?.current_order_id;
 
+  const ORDER_TYPE_LABELS: Record<string, string> = {
+    DINE_IN: "صالة", TAKEAWAY: "سفري", DELIVERY: "توصيل", ONLINE: "أونلاين",
+  };
+  const tableLabel = tableId
+    ? `طاولة ${tableName} / #${orderNumber} · ${ORDER_TYPE_LABELS[orderType] || orderType}`
+    : "اختر طاولة";
+
   // Design-review placeholder only: no FX-rate backend/config exists yet.
   // Hardcoded purely so the "USD equivalent above the total" layout can be
   // reviewed -- NOT wired to any real exchange rate. Replace when a real
@@ -369,7 +376,83 @@ export default function POSPage() {
   };
 
   return (
+    // Order panel is the FIRST child so RTL flow pins it to the physical
+    // right edge of the screen (RTL start side); menu column + table bar
+    // are wrapped together so the table bar spans the menu column's full
+    // width instead of shrinking to its own content width.
     <div className="flex h-full" dir="rtl">
+      <div className="w-[250px] shrink-0 h-full">
+        <OrderPanel
+          tableLabel={tableLabel}
+          lines={orderLines}
+          subtotalCents={subtotalCents}
+          discountCents={discountCents}
+          totalCents={totalCents}
+          currencySymbol={currencySymbol}
+          usdTotal={usdTotal}
+          onEditOrder={() => setShowOrderType(true)}
+          onIncrementLine={handleIncrementLine}
+          onDecrementLine={handleDecrementLine}
+          onVoidLine={handleVoidLineClick}
+          toolbar={
+            <div className="grid grid-cols-4 gap-1.5">
+              <button
+                type="button"
+                onClick={() => setShowSplit(true)}
+                disabled={!currentOrderId}
+                title="تقسيم الفاتورة"
+                className="h-9 rounded-[9px] bg-surface-alt text-text-2 flex items-center justify-center hover:bg-line transition-colors disabled:opacity-30 disabled:pointer-events-none"
+              >
+                <Split className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowTransfer(true)}
+                disabled={!currentOrderId}
+                title="نقل الطاولة"
+                className="h-9 rounded-[9px] bg-surface-alt text-text-2 flex items-center justify-center hover:bg-line transition-colors disabled:opacity-30 disabled:pointer-events-none"
+              >
+                <ArrowLeftRight className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={handlePrintDraft}
+                disabled={items.length === 0}
+                title="طباعة الفاتورة"
+                className="h-9 rounded-[9px] bg-surface-alt text-text-2 flex items-center justify-center hover:bg-line transition-colors disabled:opacity-30 disabled:pointer-events-none"
+              >
+                <Printer className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => { if (items.length > 0) clearCart(); }}
+                disabled={items.length === 0}
+                title="إلغاء الطلبية"
+                className="h-9 rounded-[9px] bg-surface-alt text-text-2 flex items-center justify-center hover:text-danger transition-colors disabled:opacity-30 disabled:pointer-events-none"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          }
+        >
+          <PayKey
+            disabled={items.length === 0 || !tableId}
+            onClick={() => {
+              const discountPercent = Math.round(
+                (useCartStore.getState().discountCents / useCartStore.getState().subtotal()) * 100
+              );
+              if (discountPercent > maxDiscountPercent) {
+                setPinAction("discount");
+                setShowPin(true);
+              } else {
+                setShowPayment(true);
+              }
+            }}
+            {...(items.length > 0 ? { onHold: handleHold as () => void } : {})}
+          />
+        </OrderPanel>
+      </div>
+
       <div className="flex-1 flex flex-col overflow-hidden">
         {orderType !== "DINE_IN" && (
           <div className="h-12 shrink-0 bg-surface border-b border-line flex items-center gap-2 px-3 text-sm">
@@ -428,95 +511,16 @@ export default function POSPage() {
             showNumpad={showNumpad}
           />
         </div>
-      </div>
 
-      <div className="w-[268px] shrink-0 flex flex-col py-4">
-        <OrderPanel
-          orderNumber={orderNumber}
-          lines={orderLines}
-          subtotalCents={subtotalCents}
-          discountCents={discountCents}
-          totalCents={totalCents}
-          currencySymbol={currencySymbol}
-          usdTotal={usdTotal}
-          onIncrementLine={handleIncrementLine}
-          onDecrementLine={handleDecrementLine}
-          onVoidLine={handleVoidLineClick}
-          toolbar={
-            <div className="grid grid-cols-5 gap-1.5">
-              <button
-                type="button"
-                onClick={() => setShowOrderType(true)}
-                title="نوع الطلب"
-                className="h-9 rounded-[9px] bg-surface-alt text-text-2 flex items-center justify-center hover:bg-line transition-colors"
-              >
-                <Tag className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowSplit(true)}
-                disabled={!currentOrderId}
-                title="تقسيم الفاتورة"
-                className="h-9 rounded-[9px] bg-surface-alt text-text-2 flex items-center justify-center hover:bg-line transition-colors disabled:opacity-30 disabled:pointer-events-none"
-              >
-                <Split className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowTransfer(true)}
-                disabled={!currentOrderId}
-                title="نقل الطاولة"
-                className="h-9 rounded-[9px] bg-surface-alt text-text-2 flex items-center justify-center hover:bg-line transition-colors disabled:opacity-30 disabled:pointer-events-none"
-              >
-                <ArrowLeftRight className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onClick={handlePrintDraft}
-                disabled={items.length === 0}
-                title="طباعة الفاتورة"
-                className="h-9 rounded-[9px] bg-surface-alt text-text-2 flex items-center justify-center hover:bg-line transition-colors disabled:opacity-30 disabled:pointer-events-none"
-              >
-                <Printer className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => { if (items.length > 0) clearCart(); }}
-                disabled={items.length === 0}
-                title="إلغاء الطلبية"
-                className="h-9 rounded-[9px] bg-surface-alt text-text-2 flex items-center justify-center hover:text-danger transition-colors disabled:opacity-30 disabled:pointer-events-none"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </div>
-          }
-        >
-          <PayKey
-            disabled={items.length === 0 || !tableId}
-            onClick={() => {
-              const discountPercent = Math.round(
-                (useCartStore.getState().discountCents / useCartStore.getState().subtotal()) * 100
-              );
-              if (discountPercent > maxDiscountPercent) {
-                setPinAction("discount");
-                setShowPin(true);
-              } else {
-                setShowPayment(true);
-              }
-            }}
-            {...(items.length > 0 ? { onHold: handleHold as () => void } : {})}
-          />
-        </OrderPanel>
+        <TableBar
+          tables={tables}
+          selectedId={tableId}
+          onSelect={(t) => {
+            if (t.status === "FREE" || t.status === "OCCUPIED") handleTableSelect(t);
+          }}
+          onMerge={() => setShowMerge(true)}
+        />
       </div>
-
-      <TableBar
-        tables={tables}
-        selectedId={tableId}
-        onSelect={(t) => {
-          if (t.status === "FREE" || t.status === "OCCUPIED") handleTableSelect(t);
-        }}
-        onMerge={() => setShowMerge(true)}
-      />
 
       {showOrderType && (
         <OrderTypeSelector

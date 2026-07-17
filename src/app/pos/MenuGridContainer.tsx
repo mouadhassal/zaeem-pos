@@ -103,6 +103,14 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
   const visibleItems = filteredItems.slice(0, 12);
   const isEmpty = visibleItems.length === 0;
 
+  const countByCategoryId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const item of allItems) {
+      map.set(item.category_id, (map.get(item.category_id) ?? 0) + 1);
+    }
+    return map;
+  }, [allItems]);
+
   return (
     <div className="flex flex-col h-full">
       <div className="h-12 shrink-0 flex items-center gap-2 px-3 border-b border-line">
@@ -116,7 +124,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
 
         <div className="flex gap-1.5 overflow-x-auto no-scrollbar flex-1">
           <CategoryChip
-            label="الكل"
+            label={`الكل · ${allItems.length}`}
             icon={IconLayoutGrid}
             active={activeCategory === null}
             onClick={() => setActiveCategory(null)}
@@ -124,7 +132,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
           {categories.map((cat) => (
             <CategoryChip
               key={cat.id}
-              label={cat.name}
+              label={`${cat.name} · ${countByCategoryId.get(cat.id) ?? 0}`}
               icon={getCategoryStyle(cat.name).icon}
               active={activeCategory === cat.name}
               onClick={() => setActiveCategory(activeCategory === cat.name ? null : cat.name)}
@@ -145,7 +153,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
             {searchValue ? "ما في أصناف تطابق البحث" : "ما في أصناف متاحة"}
           </div>
         ) : (
-          <div className="grid grid-cols-3 xl:grid-cols-4 gap-4">
+          <div className="grid grid-cols-3 gap-3">
             {visibleItems.map((item) => {
               const cat = categories.find((c) => c.id === item.category_id);
               return (

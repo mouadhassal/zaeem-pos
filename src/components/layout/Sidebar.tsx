@@ -50,68 +50,61 @@ export default function Sidebar({ active, onNavigate }: Props) {
   const items = navItems.filter((n) => n.allowed);
 
   return (
-    <aside className="w-[152px] bg-surface flex flex-col shrink-0 border-l border-line" dir="rtl">
-      <div className="h-14 flex items-center gap-2 px-3 border-b border-line shrink-0">
+    // Narrow icon-rail, not a labelled panel -- it must not compete with the
+    // canvas/menu/order-panel for width or introduce its own background tint.
+    <aside className="w-[74px] bg-surface flex flex-col shrink-0 border-l border-line items-center" dir="rtl">
+      <div className="h-14 flex items-center justify-center border-b border-line shrink-0 w-full">
         <div
-          className="w-7 h-7 rounded-[9px] flex items-center justify-center text-white text-sm font-bold shrink-0"
+          className="w-8 h-8 rounded-[9px] flex items-center justify-center text-white text-sm font-bold shrink-0"
           style={{ backgroundColor: "var(--accent)" }}
         >
           ز
         </div>
-        <span className="font-bold text-text text-base">زعيم</span>
       </div>
 
-      <nav className="flex-1 py-2 px-2 space-y-0.5 overflow-y-auto">
-        {items.map((item, i) => {
+      <nav className="flex-1 py-2 px-1.5 space-y-1 overflow-y-auto w-full flex flex-col items-center">
+        {items.map((item) => {
           const isActive = active === item.id;
-          const shortcut = i < 9 ? `F${i + 1}` : "";
           const ItemIcon = ICON_BY_ID[item.id];
           return (
             <button
               key={item.id}
               onClick={() => onNavigate(item.id)}
-              className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-[10px] text-sm transition-all ${
+              className={`w-full flex flex-col items-center gap-1 py-2 rounded-[10px] transition-all ${
                 isActive
-                  ? "bg-accent-soft text-accent-text font-semibold"
-                  : "text-text-3 hover:text-text-2"
+                  ? "bg-accent-soft text-accent-text"
+                  : "text-text-3 hover:text-text-2 hover:bg-surface-alt"
               }`}
             >
               {ItemIcon
-                ? <ItemIcon className="w-4 h-4 shrink-0" stroke={1.75} />
-                : <span className="w-4 h-4 shrink-0" />}
-              <span className="flex-1 text-right text-sm">{item.label}</span>
-              {shortcut && (
-                <kbd className="text-[9px] text-text-muted font-mono tabular">{shortcut}</kbd>
-              )}
+                ? <ItemIcon className="w-5 h-5 shrink-0" stroke={1.75} />
+                : <span className="w-5 h-5 shrink-0" />}
+              <span className="text-[9px] leading-tight text-center px-0.5">{item.label}</span>
             </button>
           );
         })}
       </nav>
 
       {user && (
-        <div className="p-2.5 border-t border-line shrink-0">
-          <div className="flex items-center gap-2.5 px-2 py-2">
-            <div
-              className="w-8 h-8 rounded-[9px] flex items-center justify-center text-white text-sm font-bold shrink-0"
-              style={{ backgroundColor: "var(--accent)" }}
-            >
-              {user.name[0]}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-text truncate">{user.name}</p>
-              <p className="text-[10px] text-text-muted">{roleLabels[user.role] || user.role}</p>
-              {activeShiftId && (
-                <p className="text-[9px] text-ok">وردية نشطة</p>
-              )}
-            </div>
-            <button
-              onClick={logout}
-              className="p-1 rounded-[7px] text-text-muted hover:text-danger transition-colors"
-              title="تسجيل الخروج"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-            </button>
+        <div className="p-2 border-t border-line shrink-0 w-full flex flex-col items-center gap-1.5">
+          <div
+            className="w-8 h-8 rounded-[9px] flex items-center justify-center text-white text-sm font-bold shrink-0 relative"
+            style={{ backgroundColor: "var(--accent)" }}
+            title={user.name}
+          >
+            {user.name[0]}
+            {activeShiftId && (
+              <span className="absolute -bottom-0.5 -left-0.5 w-2 h-2 rounded-full border-2 border-surface" style={{ backgroundColor: "var(--ok)" }} />
+            )}
           </div>
+          <p className="text-[9px] text-text-muted text-center leading-tight">{roleLabels[user.role] || user.role}</p>
+          <button
+            onClick={logout}
+            aria-label="تسجيل الخروج"
+            className="p-1 rounded-[7px] text-text-muted hover:text-danger transition-colors"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
     </aside>
