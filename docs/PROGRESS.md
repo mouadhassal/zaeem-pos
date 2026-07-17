@@ -1,8 +1,56 @@
 # PROGRESS.md — SPRINT_01_multitenant_trust_boundary_v3.md
 
-**Last updated:** 2026-07-16. Slice C (the final conversion slice) + closeout are DONE.
-**`getDb()` count: 0. `check-no-sql-in-frontend.sh` is now BLOCKING and genuinely green.
-`kysely` and `tauri_plugin_sql` are removed from both package.json and Cargo.toml.**
+**Last updated:** 2026-07-17. S1 (Phase 1, multi-tenant trust boundary conversion) is DONE.
+T1.9 (the final gate) passed and is committed, tagged `s1-complete`.**
+
+## T1.9 — THE PROOF (S1's final gate): passed
+
+Exhaustive scope-isolation sweep + 20-attack malicious-renderer battery + kill-9×100 payment
+atomicity, per `SPRINT_01_multitenant_trust_boundary_v3.md`'s closing acceptance criterion.
+`cargo test`: **57/57 passing**. `cargo clippy --all-targets`: **0 warnings**. `cargo build
+--release`: succeeds. Full detail in the commit message (`git log` on the `s1-complete` tag);
+summary:
+
+- **Pre-sweep audit found 29 real cross-tenant/cross-branch holes** in already-shipped code (far
+  more than the 3 that motivated this gate) — 22 repo methods with zero tenant/branch scope check
+  on a client-supplied id, the `chain_config` global-singleton (any tenant's Owner could rewrite
+  another tenant's currency/tax), `get_receipt_config`'s matching leak, `list_staff` filtering by
+  tenant only (ignoring branch — caught live by the new isolation matrix test), the AI
+  `apply_draft` command having no authentication at all (NULL-tenant orphan writes), 5 more
+  unauthenticated AI upload-queue commands, and `take_payment`/`create_full_order` never verifying
+  the paid/declared amount matches the order's real total (attacks "zero a total" / "pay an amount
+  != total"). **Every one of the 29 has its own permanent, red-on-revert regression test** — proven
+  by literally reverting one fix live, confirming the test failed with the expected error, then
+  restoring it.
+- **2-tenant × 2-branch isolation matrix**: 5 domains (orders/staff/customers/menu/shifts), 20
+  assertions, 0 leaks.
+- **20-attack battery**: 9 directly tested and rejected (zero a total, self-promote to OWNER, void
+  another cashier's item cross-branch, forge a session, replay a revoked session, change a
+  colleague's password, set FX without permission, create a branch as owner, pay amount != total,
+  SQL-injection via name/reason fields — all correctly stored as literal data via rusqlite's
+  parameterized queries, never executed); 6 more cross-referenced to existing tests (audit-row
+  tamper rejection, cross-branch/cross-tenant reads, AI-panel escalation, .db tamper detection); 1
+  (debug page in release) is a compile-time guarantee, not a runtime test.
+- **Kill-9×100 payment atomicity**: 100 independent crashed payments (mixed CASH/CARD/CREDIT),
+  both invariants (never PAID+OCCUPIED, never a payment without a committed order) held **100/100**,
+  plus a control iteration proving the commit-succeeds path still works.
+- **3 attacks are genuine, unfixed gaps — deferred, not fixed, reported honestly rather than faked
+  green.** Added to the punch list below.
+
+Also fixed this gate: **12 pre-v3 commands still registered in `lib.rs`'s `generate_handler!`**
+(`get_debtors`, `create_debtor`, `update_order_status`, `get_settings`, etc.) that took only
+`State<Db>` with **no authentication at all** — a complete, live bypass of the entire security
+model, reachable by any renderer JS. Confirmed zero frontend callers; deleted, not gated.
+
+### Punch list additions from T1.9 (deferred, explicitly NOT fixed this gate)
+
+1. **Discount cap** — no discount-cap/max-discount mechanism exists anywhere in the codebase.
+   Unbuilt feature; next sprint.
+2. **Idempotency key** — no idempotency mechanism exists anywhere in the codebase (payment retries,
+   duplicate submission, etc. are not deduplicated). Unbuilt feature; belongs with the future
+   sync/S5 work, not S1.
+3. **License / device-binding rejection** — copying the `.db` file to another machine does not get
+   rejected; `license.ts` is still a stub (already tracked as its own pending item, not new).
 
 ## Slice C + closeout: the frontend is off the database entirely
 
