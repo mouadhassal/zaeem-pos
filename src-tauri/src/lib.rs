@@ -224,6 +224,7 @@ pub fn run() {
             commands_v3::set_menu_item_active_v3,
             commands_v3::upload_menu_item_photo_v3,
             commands_v3::delete_menu_item_photo_v3,
+            commands_v3::get_menu_item_photo_v3,
             commands_v3::list_ingredients_v3,
             commands_v3::create_ingredient_v3,
             commands_v3::update_ingredient_v3,

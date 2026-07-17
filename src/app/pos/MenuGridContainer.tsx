@@ -1,11 +1,24 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, type ComponentProps } from "react";
 import { IconSearch } from "@tabler/icons-react";
 import { useMenuStore, useFilteredMenuItems } from "../../stores/menuStore";
 import { useCartStore } from "../../stores/cartStore";
+import { useAuthStore } from "../../stores/authStore";
+import { useMenuItemPhoto } from "../../hooks/useMenuItemPhoto";
 import SearchBar from "../../components/ui/SearchBar";
 import CategoryChip from "../../components/ui/CategoryChip";
 import ItemCard from "../../components/ui/ItemCard";
 import Numpad from "../../components/ui/Numpad";
+
+// list_menu_items_v3 returns "HAS_PHOTO" (not a real path/URL, see its
+// P0-fix doc comment) when an item has a photo, null otherwise -- this
+// wrapper resolves the real photo lazily via useMenuItemPhoto so the grid
+// renders instantly with glyphs and photos fill in as each one loads.
+function LazyItemCard(props: Omit<ComponentProps<typeof ItemCard>, "photoUrl"> & { itemId: string; hasPhoto: boolean }) {
+  const token = useAuthStore((s) => s.token);
+  const { itemId, hasPhoto, ...rest } = props;
+  const photoUrl = useMenuItemPhoto(itemId, hasPhoto, token);
+  return <ItemCard {...rest} photoUrl={photoUrl} />;
+}
 
 
 interface Props {
@@ -133,12 +146,13 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
             {visibleItems.map((item) => {
               const cat = categories.find((c) => c.id === item.category_id);
               return (
-                <ItemCard
+                <LazyItemCard
                   key={item.id}
+                  itemId={item.id}
+                  hasPhoto={item.image_path === "HAS_PHOTO"}
                   name={item.name}
                   priceCents={item.price_cents}
                   categoryName={cat?.name || ""}
-                  photoUrl={item.image_path}
                   quantity={getQty(item.id)}
                   currencySymbol={currencySymbol}
                   onAdd={() => handleAdd(item)}

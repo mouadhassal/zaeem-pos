@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAuthStore } from "../../stores/authStore";
+import { invalidateMenuItemPhotoCache } from "../../hooks/useMenuItemPhoto";
 import { z } from "zod";
 
 interface Category {
@@ -298,10 +299,20 @@ export default function MenuPage() {
       barcode: item.barcode ?? "",
     });
     setItemErrors({});
-    // `item.image_path` already arrives as a ready-to-render data: URI --
-    // list_menu_items_v3 resolves the stored file path server-side.
-    setItemPhoto(item.image_path ?? null);
     setPhotoError(null);
+    // P0 fix (2026-07-18): `item.image_path` from list_menu_items_v3 is now
+    // just a "HAS_PHOTO" marker, not a usable image -- the real photo is
+    // fetched lazily, on demand, only when this modal actually opens (not
+    // embedded in every list load; see get_menu_item_photo_v3's doc
+    // comment for why).
+    if (item.image_path === "HAS_PHOTO") {
+      setItemPhoto(null);
+      invoke<string | null>("get_menu_item_photo_v3", { sessionToken: token, itemId: item.id })
+        .then(setItemPhoto)
+        .catch(() => setItemPhoto(null));
+    } else {
+      setItemPhoto(null);
+    }
     setShowItemModal(true);
   };
 
@@ -319,9 +330,13 @@ export default function MenuPage() {
       const buf = await file.arrayBuffer();
       const bytes = Array.from(new Uint8Array(buf));
       await invoke("upload_menu_item_photo_v3", { sessionToken: token, itemId: editItemId, photoBytes: bytes });
-      const items = await invoke<MenuItem[]>("list_menu_items_v3", { sessionToken: token });
+      invalidateMenuItemPhotoCache(editItemId);
+      const [items, freshPhoto] = await Promise.all([
+        invoke<MenuItem[]>("list_menu_items_v3", { sessionToken: token }),
+        invoke<string | null>("get_menu_item_photo_v3", { sessionToken: token, itemId: editItemId }),
+      ]);
       setMenuItems(items);
-      setItemPhoto(items.find((i) => i.id === editItemId)?.image_path ?? null);
+      setItemPhoto(freshPhoto);
     } catch {
       setPhotoError("فشل رفع الصورة -- تأكد أنها JPEG أو PNG أو WEBP");
     } finally {
@@ -334,6 +349,7 @@ export default function MenuPage() {
     setUploadingPhoto(true);
     try {
       await invoke("delete_menu_item_photo_v3", { sessionToken: token, itemId: editItemId });
+      invalidateMenuItemPhotoCache(editItemId);
       setItemPhoto(null);
       const items = await invoke<MenuItem[]>("list_menu_items_v3", { sessionToken: token });
       setMenuItems(items);

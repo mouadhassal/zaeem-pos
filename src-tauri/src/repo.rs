@@ -2624,6 +2624,17 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
+    /// P0 fix (2026-07-18): the lazy-load counterpart to `set_menu_item_
+    /// photo` -- returns the real on-disk path for exactly one item,
+    /// scope-checked the same way, so `get_menu_item_photo_v3` can resolve
+    /// a single photo on demand instead of `list_menu_items_v3` resolving
+    /// (and embedding) every photo on every list call.
+    pub fn get_menu_item_photo_path(&self, tenant_id: &str, item_id: &str) -> Result<Option<String>, RepoError> {
+        self.assert_tenant_owns_row("menu_items", item_id, tenant_id)?;
+        self.conn.query_row("SELECT image_path FROM menu_items WHERE id = ?1", params![item_id], |r| r.get(0))
+            .map_err(RepoError::from)
+    }
+
     pub fn set_menu_item_active(&self, tenant_id: &str, item_id: &str, is_active: bool) -> Result<(), RepoError> {
         self.assert_tenant_owns_row("menu_items", item_id, tenant_id)?;
         self.conn.execute(
