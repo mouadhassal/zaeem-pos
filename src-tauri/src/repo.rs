@@ -22,6 +22,11 @@ pub enum RepoError {
     ItemUnavailable { item_id: String, branch_id: String, reason: String },
     OrderOutOfScope { order_id: String },
     OrderAlreadyPaid { order_id: String },
+    /// T1.9 finding: `take_payment` never checked that `amount_cents -
+    /// change_cents` actually equalled the order's real `total_cents` --
+    /// a malicious renderer could pay any amount for any order (attack:
+    /// "pay an amount != order total").
+    PaymentAmountMismatch { order_id: String, expected_cents: i64, got_cents: i64 },
     PurchaseOrderOutOfScope { po_id: String },
     PurchaseOrderNotPending { po_id: String, status: String },
     OrderItemOutOfScope { item_id: String },
@@ -51,6 +56,9 @@ impl fmt::Display for RepoError {
             Self::OrderItemOutOfScope { item_id } => write!(f, "order item {item_id} does not belong to the caller's tenant/branch"),
             Self::TableOutOfScope { table_id } => write!(f, "table {table_id} does not belong to the caller's tenant/branch"),
             Self::TenantOwnershipViolation { table, id } => write!(f, "{table} row {id} does not belong to the caller's tenant"),
+            Self::PaymentAmountMismatch { order_id, expected_cents, got_cents } => write!(
+                f, "order {order_id}: amount tendered minus change ({got_cents}) does not equal the order total ({expected_cents})"
+            ),
         }
     }
 }
@@ -886,16 +894,31 @@ impl<'a> Repo<'a> {
         self.assert_scope_populated("payments", true)?;
         self.assert_scope_populated("orders", true)?;
 
-        let (order_tenant_id, order_branch_id, order_status): (String, String, String) = self.conn.query_row(
-            "SELECT tenant_id, branch_id, status FROM orders WHERE id = ?1",
+        let (order_tenant_id, order_branch_id, order_status, order_total_cents): (String, String, String, i64) = self.conn.query_row(
+            "SELECT tenant_id, branch_id, status, total_cents FROM orders WHERE id = ?1",
             params![input.order_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
         if order_tenant_id != tenant_id || order_branch_id != branch_id {
             return Err(RepoError::OrderOutOfScope { order_id: input.order_id.clone() });
         }
         if order_status == "PAID" {
             return Err(RepoError::OrderAlreadyPaid { order_id: input.order_id.clone() });
+        }
+        // T1.9 finding: this method never checked that the tendered amount
+        // actually covers the order's real total -- a malicious renderer
+        // could call take_payment with amount_cents far below (or above,
+        // pocketing phantom change) the real total and the order would
+        // still flip to PAID. The only correct invariant given this
+        // schema's single-payment-per-order model (no partial/split
+        // payments -- `split_bill` creates separate child orders instead,
+        // each paid in full) is amount tendered minus change == total.
+        if input.amount_cents - input.change_cents != order_total_cents {
+            return Err(RepoError::PaymentAmountMismatch {
+                order_id: input.order_id.clone(),
+                expected_cents: order_total_cents,
+                got_cents: input.amount_cents - input.change_cents,
+            });
         }
 
         let now = chrono::Utc::now().to_rfc3339();
@@ -1069,24 +1092,23 @@ impl<'a> Repo<'a> {
     /// in the tenant, not just their own branch's staff). Who may see whom
     /// beyond that is `authorize_scope`'s job at the command layer, same as
     /// every other list method here.
+    /// T1.9 finding (2026-07-17): this used to filter by `tenant_id` ONLY,
+    /// even for a `Scope::Branch` caller -- a branch-scoped Manager could
+    /// list every staff member across their ENTIRE tenant, including other
+    /// branches, not just their own. Found via the T1.9 2-tenant/2-branch
+    /// isolation matrix (a Manager in Branch 1A saw all 3 of Tenant1's
+    /// managers instead of just herself). Now uses the same `scope_
+    /// predicate` every other scoped list method already uses, so a Branch
+    /// actor is correctly restricted to `tenant_id = ? AND branch_id = ?`.
     pub fn list_staff(&self, scope: &Scope) -> Result<Vec<StaffRow>, RepoError> {
-        let tenant_id = match scope {
-            Scope::Platform => None,
-            Scope::Tenant { tenant_id } | Scope::Branch { tenant_id, .. } => Some(tenant_id.clone()),
-        };
-        let (sql, tenant_id) = match &tenant_id {
-            Some(t) => ("SELECT id, name, role, role_rank, branch_id, is_active, created_at FROM staff WHERE tenant_id = ?1 ORDER BY name ASC", Some(t.clone())),
-            None => ("SELECT id, name, role, role_rank, branch_id, is_active, created_at FROM staff ORDER BY name ASC", None),
-        };
-        let mut stmt = self.conn.prepare(sql)?;
-        let row_mapper = |r: &rusqlite::Row| {
+        let (pred, binds) = Self::scope_predicate(scope);
+        let sql = format!("SELECT id, name, role, role_rank, branch_id, is_active, created_at FROM staff WHERE {pred} ORDER BY name ASC");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(bind_refs.as_slice(), |r| {
             Ok(StaffRow { id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, role_rank: r.get(3)?, branch_id: r.get(4)?, is_active: r.get(5)?, created_at: r.get(6)? })
-        };
-        let rows = match tenant_id {
-            Some(t) => stmt.query_map(params![t], row_mapper)?.collect::<Result<Vec<_>, _>>(),
-            None => stmt.query_map([], row_mapper)?.collect::<Result<Vec<_>, _>>(),
-        };
-        rows.map_err(RepoError::from)
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
 
     // -----------------------------------------------------------------
@@ -1241,7 +1263,8 @@ impl<'a> Repo<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn update_customer(&self, customer_id: &str, name: &str, phone: &str, email: Option<&str>, address: Option<&str>, notes: Option<&str>, birthday: Option<&str>) -> Result<(), RepoError> {
+    pub fn update_customer(&self, tenant_id: &str, customer_id: &str, name: &str, phone: &str, email: Option<&str>, address: Option<&str>, notes: Option<&str>, birthday: Option<&str>) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("customers", customer_id, tenant_id)?;
         self.conn.execute(
             "UPDATE customers SET name = ?1, phone = ?2, email = ?3, address = ?4, notes = ?5, birthday = ?6, last_modified = datetime('now') WHERE id = ?7",
             params![name, phone, email, address, notes, birthday, customer_id],
@@ -1249,7 +1272,8 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
-    pub fn delete_customer(&self, customer_id: &str) -> Result<(), RepoError> {
+    pub fn delete_customer(&self, tenant_id: &str, customer_id: &str) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("customers", customer_id, tenant_id)?;
         self.conn.execute("DELETE FROM customers WHERE id = ?1", params![customer_id])?;
         Ok(())
     }
@@ -1382,7 +1406,9 @@ impl<'a> Repo<'a> {
         Ok(id)
     }
 
-    pub fn update_debtor(&self, debtor_id: &str, name: &str, phone: &str, email: Option<&str>, address: Option<&str>, notes: Option<&str>) -> Result<(), RepoError> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_debtor(&self, scope: &Scope, debtor_id: &str, name: &str, phone: &str, email: Option<&str>, address: Option<&str>, notes: Option<&str>) -> Result<(), RepoError> {
+        self.assert_row_in_scope("debtors", debtor_id, scope)?;
         self.conn.execute(
             "UPDATE debtors SET name = ?1, phone = ?2, email = ?3, address = ?4, notes = ?5, last_modified = datetime('now') WHERE id = ?6",
             params![name, phone, email, address, notes, debtor_id],
@@ -1390,7 +1416,8 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
-    pub fn deactivate_debtor(&self, debtor_id: &str) -> Result<(), RepoError> {
+    pub fn deactivate_debtor(&self, scope: &Scope, debtor_id: &str) -> Result<(), RepoError> {
+        self.assert_row_in_scope("debtors", debtor_id, scope)?;
         self.conn.execute(
             "UPDATE debtors SET is_active = 0, last_modified = datetime('now') WHERE id = ?1",
             params![debtor_id],
@@ -1398,7 +1425,8 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
-    pub fn list_debt_entries(&self, debtor_id: &str) -> Result<Vec<DebtEntryRow>, RepoError> {
+    pub fn list_debt_entries(&self, scope: &Scope, debtor_id: &str) -> Result<Vec<DebtEntryRow>, RepoError> {
+        self.assert_row_in_scope("debtors", debtor_id, scope)?;
         let mut stmt = self.conn.prepare(
             "SELECT id, debtor_id, order_id, amount_cents, type, notes, created_by, created_at FROM debt_entries WHERE debtor_id = ?1 ORDER BY created_at DESC LIMIT 50",
         )?;
@@ -1410,7 +1438,9 @@ impl<'a> Repo<'a> {
 
     /// One transaction: the PAYMENT fact + the running-balance update on
     /// `debtors` -- same atomicity principle as `take_payment`/`adjust_stock`.
-    pub fn record_debt_payment(&self, tenant_id: &str, branch_id: &str, debtor_id: &str, amount_cents: i64, notes: Option<&str>, actor_id: &str) -> Result<String, RepoError> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_debt_payment(&self, scope: &Scope, tenant_id: &str, branch_id: &str, debtor_id: &str, amount_cents: i64, notes: Option<&str>, actor_id: &str) -> Result<String, RepoError> {
+        self.assert_row_in_scope("debtors", debtor_id, scope)?;
         let id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
@@ -1532,7 +1562,8 @@ impl<'a> Repo<'a> {
         Ok(id)
     }
 
-    pub fn mark_invoice_paid(&self, invoice_id: &str) -> Result<(), RepoError> {
+    pub fn mark_invoice_paid(&self, scope: &Scope, invoice_id: &str) -> Result<(), RepoError> {
+        self.assert_row_in_scope("invoices", invoice_id, scope)?;
         self.conn.execute(
             "UPDATE invoices SET status = 'PAID', paid_at = datetime('now'), last_modified = datetime('now') WHERE id = ?1",
             params![invoice_id],
@@ -1610,22 +1641,44 @@ impl<'a> Repo<'a> {
     /// rows -- a user could "save" currency/tax settings on a fresh install
     /// and nothing would ever actually persist. Fixed at the repo layer
     /// (not by reopening the closed, tested Migration A): every entry point
-    /// here self-heals via `INSERT OR IGNORE`, relying on the schema's own
+    /// here self-heals via an insert-if-missing, relying on the schema's own
     /// column `DEFAULT`s (chain_name='Zaeem POS', currency='SYP',
     /// tax_mode='exclusive', tax_rate_cents=0) for every column this doesn't
     /// explicitly set.
-    fn ensure_chain_config_row(&self) -> Result<(), RepoError> {
-        self.conn.execute("INSERT OR IGNORE INTO chain_config (id) VALUES ('default')", [])?;
+    ///
+    /// T1.9 finding (2026-07-17): this used to be keyed on the single
+    /// hardcoded `id = 'default'` row with NO `tenant_id` filter anywhere --
+    /// every tenant on the install shared one `chain_config` row, so any
+    /// Owner/Manager with `ManageSettings` in Tenant A could silently
+    /// rewrite Tenant B's currency and tax rate (previously documented here
+    /// as a "known, stated architectural gap ... out of scope for this
+    /// slice"; T1.9's mandate is exactly to close cross-tenant holes like
+    /// this one, so it's closed now, not just documented). `chain_config`
+    /// already carries a `tenant_id` column (Migration A backfilled it for
+    /// the pre-existing 'default' row), so this keys future rows off
+    /// `tenant_id` instead of the singleton id -- the grandfathered
+    /// 'default' row still works because its `tenant_id` was already
+    /// backfilled to the one pre-multi-tenant install's tenant.
+    fn ensure_chain_config_row(&self, tenant_id: &str) -> Result<(), RepoError> {
+        let exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM chain_config WHERE tenant_id = ?1", params![tenant_id], |r| r.get(0),
+        )?;
+        if !exists {
+            self.conn.execute(
+                "INSERT INTO chain_config (id, tenant_id) VALUES (?1, ?2)",
+                params![uuid::Uuid::now_v7().to_string(), tenant_id],
+            )?;
+        }
         Ok(())
     }
 
-    pub fn get_chain_config(&self) -> Result<ChainConfigRow, RepoError> {
-        self.ensure_chain_config_row()?;
+    pub fn get_chain_config(&self, tenant_id: &str) -> Result<ChainConfigRow, RepoError> {
+        self.ensure_chain_config_row(tenant_id)?;
         // `secondary_tax_rate_cents`/`service_charge_rate_cents` were added
         // via a bare `ALTER TABLE ADD COLUMN` with no SQL `DEFAULT`
         // (migrate_v3.rs's v6_identity) and only backfilled for a
         // `chain_config` row that already existed at migration time -- on a
-        // fresh install, `ensure_chain_config_row`'s `INSERT OR IGNORE`
+        // fresh install, `ensure_chain_config_row`'s insert-if-missing
         // creates the row LATER, so these two columns are genuinely NULL,
         // not just conceptually zero. `COALESCE` here, not a migration
         // change, matching the same "self-healing read" pattern already
@@ -1633,25 +1686,25 @@ impl<'a> Repo<'a> {
         self.conn.query_row(
             "SELECT chain_name, currency, tax_mode, tax_rate_cents, default_paper_width, \
                     COALESCE(secondary_tax_rate_cents, 0), COALESCE(service_charge_rate_cents, 0) \
-             FROM chain_config WHERE id = 'default'",
-            [], |r| Ok(ChainConfigRow {
+             FROM chain_config WHERE tenant_id = ?1",
+            params![tenant_id], |r| Ok(ChainConfigRow {
                 chain_name: r.get(0)?, currency: r.get(1)?, tax_mode: r.get(2)?, tax_rate_cents: r.get(3)?,
                 default_paper_width: r.get(4)?, secondary_tax_rate_cents: r.get(5)?, service_charge_rate_cents: r.get(6)?,
             }),
         ).map_err(RepoError::from)
     }
 
-    pub fn update_chain_currency(&self, currency: &str) -> Result<(), RepoError> {
-        self.ensure_chain_config_row()?;
-        self.conn.execute("UPDATE chain_config SET currency = ?1, last_modified = datetime('now') WHERE id = 'default'", params![currency])?;
+    pub fn update_chain_currency(&self, tenant_id: &str, currency: &str) -> Result<(), RepoError> {
+        self.ensure_chain_config_row(tenant_id)?;
+        self.conn.execute("UPDATE chain_config SET currency = ?1, last_modified = datetime('now') WHERE tenant_id = ?2", params![currency, tenant_id])?;
         Ok(())
     }
 
-    pub fn update_chain_tax(&self, tax_rate_cents: i64, tax_mode: &str) -> Result<(), RepoError> {
-        self.ensure_chain_config_row()?;
+    pub fn update_chain_tax(&self, tenant_id: &str, tax_rate_cents: i64, tax_mode: &str) -> Result<(), RepoError> {
+        self.ensure_chain_config_row(tenant_id)?;
         self.conn.execute(
-            "UPDATE chain_config SET tax_rate_cents = ?1, tax_mode = ?2, last_modified = datetime('now') WHERE id = 'default'",
-            params![tax_rate_cents, tax_mode],
+            "UPDATE chain_config SET tax_rate_cents = ?1, tax_mode = ?2, last_modified = datetime('now') WHERE tenant_id = ?3",
+            params![tax_rate_cents, tax_mode, tenant_id],
         )?;
         Ok(())
     }
@@ -2002,7 +2055,8 @@ impl<'a> Repo<'a> {
         Ok(id)
     }
 
-    pub fn update_supplier(&self, supplier_id: &str, name: &str, phone: Option<&str>, email: Option<&str>) -> Result<(), RepoError> {
+    pub fn update_supplier(&self, scope: &Scope, supplier_id: &str, name: &str, phone: Option<&str>, email: Option<&str>) -> Result<(), RepoError> {
+        self.assert_row_in_scope("suppliers", supplier_id, scope)?;
         self.conn.execute(
             "UPDATE suppliers SET name = ?1, phone = ?2, email = ?3, last_modified = datetime('now') WHERE id = ?4",
             params![name, phone, email, supplier_id],
@@ -2014,7 +2068,8 @@ impl<'a> Repo<'a> {
     /// if a `purchase_orders` row still references this supplier, SQLite's
     /// own FK constraint (`PRAGMA foreign_keys=ON`) rejects it, same failure
     /// mode as before. Not "fixed" into a soft delete.
-    pub fn delete_supplier(&self, supplier_id: &str) -> Result<(), RepoError> {
+    pub fn delete_supplier(&self, scope: &Scope, supplier_id: &str) -> Result<(), RepoError> {
+        self.assert_row_in_scope("suppliers", supplier_id, scope)?;
         self.conn.execute("DELETE FROM suppliers WHERE id = ?1", params![supplier_id])?;
         Ok(())
     }
@@ -2069,8 +2124,9 @@ impl<'a> Repo<'a> {
         Ok(id)
     }
 
-    pub fn update_driver_location(&self, driver_id: &str, lat: f64, lng: f64) -> Result<(), RepoError> {
+    pub fn update_driver_location(&self, scope: &Scope, driver_id: &str, lat: f64, lng: f64) -> Result<(), RepoError> {
         self.assert_scope_populated("drivers", true)?;
+        self.assert_row_in_scope("drivers", driver_id, scope)?;
         self.conn.execute(
             "UPDATE drivers SET current_lat = ?1, current_lng = ?2, last_modified = datetime('now') WHERE id = ?3",
             params![lat, lng, driver_id],
@@ -2124,7 +2180,8 @@ impl<'a> Repo<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn update_driver(&self, driver_id: &str, name: &str, phone: Option<&str>, vehicle_type: &str, vehicle_plate: Option<&str>, license_number: Option<&str>) -> Result<(), RepoError> {
+    pub fn update_driver(&self, scope: &Scope, driver_id: &str, name: &str, phone: Option<&str>, vehicle_type: &str, vehicle_plate: Option<&str>, license_number: Option<&str>) -> Result<(), RepoError> {
+        self.assert_row_in_scope("drivers", driver_id, scope)?;
         self.conn.execute(
             "UPDATE drivers SET name = ?1, phone = ?2, vehicle_type = ?3, vehicle_plate = ?4, license_number = ?5, last_modified = datetime('now') WHERE id = ?6",
             params![name, phone, vehicle_type, vehicle_plate, license_number, driver_id],
@@ -2135,7 +2192,8 @@ impl<'a> Repo<'a> {
     /// Soft delete, matching the old frontend's `deleteDriver` -- a driver
     /// with delivery history can't be hard-deleted without orphaning
     /// `delivery_logs.driver_id` (`NOT NULL REFERENCES drivers`).
-    pub fn deactivate_driver(&self, driver_id: &str) -> Result<(), RepoError> {
+    pub fn deactivate_driver(&self, scope: &Scope, driver_id: &str) -> Result<(), RepoError> {
+        self.assert_row_in_scope("drivers", driver_id, scope)?;
         self.conn.execute(
             "UPDATE drivers SET is_active = 0, status = 'INACTIVE', last_modified = datetime('now') WHERE id = ?1",
             params![driver_id],
@@ -2147,8 +2205,13 @@ impl<'a> Repo<'a> {
     /// and the driver flipping to BUSY (the derived state) commit together.
     /// Deliberately does NOT touch `orders.driver_id` -- that column does
     /// not exist in the real schema (DRIFT_REPORT.md Finding #1).
-    pub fn assign_driver_to_delivery(&self, tenant_id: &str, branch_id: &str, order_id: &str, driver_id: &str) -> Result<String, RepoError> {
-        let log_id = self.create_delivery_log(tenant_id, branch_id, order_id, driver_id)?;
+    ///
+    /// T1.9 finding: `driver_id`/`order_id` were never checked against
+    /// `scope` -- a Branch actor could assign another tenant's/branch's
+    /// driver to (or log a delivery against) an order that wasn't theirs.
+    /// Both are now verified inside `create_delivery_log`.
+    pub fn assign_driver_to_delivery(&self, scope: &Scope, tenant_id: &str, branch_id: &str, order_id: &str, driver_id: &str) -> Result<String, RepoError> {
+        let log_id = self.create_delivery_log(scope, tenant_id, branch_id, order_id, driver_id)?;
         self.conn.execute(
             "UPDATE drivers SET status = 'BUSY', last_modified = datetime('now') WHERE id = ?1",
             params![driver_id],
@@ -2162,8 +2225,9 @@ impl<'a> Repo<'a> {
     /// same principle as `assign_driver_to_delivery`, just the reverse edge.
     /// `failure_reason` is a real column (0001_init.sql); the old frontend's
     /// `notes` field on this same call is NOT (dropped, DRIFT).
-    pub fn update_delivery_status_and_driver(&self, delivery_log_id: &str, new_status: &str, failure_reason: Option<&str>) -> Result<(), RepoError> {
+    pub fn update_delivery_status_and_driver(&self, scope: &Scope, delivery_log_id: &str, new_status: &str, failure_reason: Option<&str>) -> Result<(), RepoError> {
         self.assert_scope_populated("delivery_logs", true)?;
+        self.assert_row_in_scope("delivery_logs", delivery_log_id, scope)?;
         let driver_id: String = self.conn.query_row(
             "SELECT driver_id FROM delivery_logs WHERE id = ?1", params![delivery_log_id], |r| r.get(0),
         )?;
@@ -2298,7 +2362,8 @@ impl<'a> Repo<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn update_delivery_zone(&self, zone_id: &str, name: &str, fee_cents: i64, min_order_cents: i64, estimated_minutes: i64) -> Result<(), RepoError> {
+    pub fn update_delivery_zone(&self, scope: &Scope, zone_id: &str, name: &str, fee_cents: i64, min_order_cents: i64, estimated_minutes: i64) -> Result<(), RepoError> {
+        self.assert_row_in_scope("delivery_zones", zone_id, scope)?;
         self.conn.execute(
             "UPDATE delivery_zones SET name = ?1, fee_cents = ?2, min_order_cents = ?3, estimated_minutes = ?4, last_modified = datetime('now') WHERE id = ?5",
             params![name, fee_cents, min_order_cents, estimated_minutes, zone_id],
@@ -2306,7 +2371,8 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
-    pub fn deactivate_delivery_zone(&self, zone_id: &str) -> Result<(), RepoError> {
+    pub fn deactivate_delivery_zone(&self, scope: &Scope, zone_id: &str) -> Result<(), RepoError> {
+        self.assert_row_in_scope("delivery_zones", zone_id, scope)?;
         self.conn.execute(
             "UPDATE delivery_zones SET is_active = 0, last_modified = datetime('now') WHERE id = ?1",
             params![zone_id],
@@ -2351,12 +2417,14 @@ impl<'a> Repo<'a> {
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
 
-    pub fn set_printer_active(&self, printer_id: &str, is_active: bool) -> Result<(), RepoError> {
+    pub fn set_printer_active(&self, scope: &Scope, printer_id: &str, is_active: bool) -> Result<(), RepoError> {
+        self.assert_row_in_scope("printers", printer_id, scope)?;
         self.conn.execute("UPDATE printers SET is_active = ?1, last_modified = datetime('now') WHERE id = ?2", params![is_active as i64, printer_id])?;
         Ok(())
     }
 
-    pub fn update_printer_paper_width(&self, printer_id: &str, paper_width_mm: i64) -> Result<(), RepoError> {
+    pub fn update_printer_paper_width(&self, scope: &Scope, printer_id: &str, paper_width_mm: i64) -> Result<(), RepoError> {
+        self.assert_row_in_scope("printers", printer_id, scope)?;
         self.conn.execute("UPDATE printers SET paper_width_mm = ?1, last_modified = datetime('now') WHERE id = ?2", params![paper_width_mm, printer_id])?;
         Ok(())
     }
@@ -2378,8 +2446,13 @@ impl<'a> Repo<'a> {
     /// `assigned_at` is set here, at creation -- matching the status the row
     /// starts in (`ASSIGNED`), never left NULL for a status the row claims
     /// to already be in.
-    pub fn create_delivery_log(&self, tenant_id: &str, branch_id: &str, order_id: &str, driver_id: &str) -> Result<String, RepoError> {
+    /// T1.9 finding: neither `order_id` nor `driver_id` was ever checked
+    /// against `scope` -- a Branch actor could log a delivery against
+    /// another tenant's/branch's order or driver by id.
+    pub fn create_delivery_log(&self, scope: &Scope, tenant_id: &str, branch_id: &str, order_id: &str, driver_id: &str) -> Result<String, RepoError> {
         self.assert_scope_populated("delivery_logs", true)?;
+        self.assert_order_in_scope(order_id, scope)?;
+        self.assert_row_in_scope("drivers", driver_id, scope)?;
         let id = uuid::Uuid::now_v7().to_string();
         self.conn.execute(
             "INSERT INTO delivery_logs (id, tenant_id, branch_id, order_id, driver_id, status, assigned_at, created_at, last_modified, sync_status) \
@@ -2392,8 +2465,9 @@ impl<'a> Repo<'a> {
     /// Append-only in spirit, same as order status (SCHEMA_V3.md §6): each
     /// status transition stamps its own timestamp column and never touches
     /// the ones a prior transition already set.
-    pub fn update_delivery_status(&self, delivery_log_id: &str, new_status: &str) -> Result<(), RepoError> {
+    pub fn update_delivery_status(&self, scope: &Scope, delivery_log_id: &str, new_status: &str) -> Result<(), RepoError> {
         self.assert_scope_populated("delivery_logs", true)?;
+        self.assert_row_in_scope("delivery_logs", delivery_log_id, scope)?;
         let ts_column = match new_status {
             "PICKED_UP" => Some("picked_up_at"),
             "DELIVERED" => Some("delivered_at"),
@@ -2704,7 +2778,8 @@ impl<'a> Repo<'a> {
         Ok(id)
     }
 
-    pub fn update_ingredient(&self, ingredient_id: &str, name: &str, unit: &str, cost_cents_per_unit: i64, min_stock: f64) -> Result<(), RepoError> {
+    pub fn update_ingredient(&self, scope: &Scope, ingredient_id: &str, name: &str, unit: &str, cost_cents_per_unit: i64, min_stock: f64) -> Result<(), RepoError> {
+        self.assert_row_in_scope("ingredients", ingredient_id, scope)?;
         self.conn.execute(
             "UPDATE ingredients SET name = ?1, unit = ?2, cost_cents_per_unit = ?3, min_stock = ?4, last_modified = datetime('now') WHERE id = ?5",
             params![name, unit, cost_cents_per_unit, min_stock, ingredient_id],
@@ -2717,8 +2792,10 @@ impl<'a> Repo<'a> {
     /// append-only fact that justifies it) update together -- same
     /// principle as `take_payment`, just smaller. Never one without the
     /// other in the same transaction.
-    pub fn adjust_stock(&self, tenant_id: &str, branch_id: &str, ingredient_id: &str, change_amount: f64, reason: &str, actor_id: &str) -> Result<String, RepoError> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn adjust_stock(&self, scope: &Scope, tenant_id: &str, branch_id: &str, ingredient_id: &str, change_amount: f64, reason: &str, actor_id: &str) -> Result<String, RepoError> {
         self.assert_scope_populated("ingredients", true)?;
+        self.assert_row_in_scope("ingredients", ingredient_id, scope)?;
         let log_id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
@@ -2994,8 +3071,53 @@ impl<'a> Repo<'a> {
     /// caught only because nothing had exercised this path with a test yet.
     /// Delivery driver assignment happens via `assign_driver_to_delivery`
     /// against `delivery_logs`, a separate explicit follow-up call.
+    /// T1.9 finding (2026-07-17), attack "zero a total": `create_full_order`/
+    /// `hold_order`/`schedule_delayed_order` never verified any relationship
+    /// between `input.items`, `subtotal_cents`, `tax_cents`, `discount_cents`,
+    /// and `total_cents` -- a malicious renderer could submit real items with
+    /// `subtotal_cents: 0, tax_cents: 0, total_cents: 0` and the order would
+    /// be created (and, before this session's `take_payment` fix, "paid" for
+    /// 0 with no error at all). This closes the arithmetic half of that hole:
+    /// `subtotal_cents` must equal the items' own declared prices summed, and
+    /// `total_cents` must equal `max(0, subtotal + tax - discount)` -- the
+    /// exact formula `orderService.ts` already uses client-side (`delivery
+    /// FeeCents` is hardcoded to 0 there today and not added to total).
+    ///
+    /// NOT closed by this check, and a genuine remaining gap: an attacker
+    /// who submits real items with a fabricated LOW `unit_price_cents` per
+    /// item (rather than a mismatched subtotal) still passes this check,
+    /// because there is currently no server-side ground truth to verify a
+    /// line price against -- `resolve_menu_price`/`menu_item_default` (T1.6)
+    /// is the only price-authority mechanism that exists, but it reads a
+    /// table `create_menu_item_v3` never populates (real menu items live in
+    /// the legacy `menu_items` table -- the same table duality already on
+    /// the punch list), and happy-hour discounts are applied entirely
+    /// client-side with no backend equivalent to check against. Closing
+    /// that requires building server-side happy-hour-aware price
+    /// resolution against the table that's actually populated -- flagged
+    /// as the next work item, not silently left unmentioned.
+    fn validate_order_money_consistency(input: &FullOrderInput) -> Result<(), RepoError> {
+        let items_subtotal: i64 = input.items.iter().map(|item| {
+            let modifiers_total: i64 = item.modifiers.iter().map(|m| m.price_cents).sum();
+            (item.unit_price_cents + modifiers_total) * item.quantity
+        }).sum();
+        if items_subtotal != input.subtotal_cents {
+            return Err(RepoError::PaymentAmountMismatch {
+                order_id: "(order being created)".to_string(), expected_cents: items_subtotal, got_cents: input.subtotal_cents,
+            });
+        }
+        let expected_total = std::cmp::max(0, input.subtotal_cents + input.tax_cents - input.discount_cents);
+        if expected_total != input.total_cents {
+            return Err(RepoError::PaymentAmountMismatch {
+                order_id: "(order being created)".to_string(), expected_cents: expected_total, got_cents: input.total_cents,
+            });
+        }
+        Ok(())
+    }
+
     pub fn create_full_order(&self, scope: &Scope, tenant_id: &str, branch_id: &str, input: FullOrderInput) -> Result<String, RepoError> {
         self.assert_scope_populated("orders", true)?;
+        Self::validate_order_money_consistency(&input)?;
         let _ = scope; // populated-check already ran; write path is branch-pinned
         let id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
@@ -3064,6 +3186,7 @@ impl<'a> Repo<'a> {
     /// frontend `orderService.holdOrder`.
     pub fn hold_order(&self, scope: &Scope, tenant_id: &str, branch_id: &str, input: FullOrderInput) -> Result<String, RepoError> {
         self.assert_scope_populated("orders", true)?;
+        Self::validate_order_money_consistency(&input)?;
         let _ = scope;
         let id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
@@ -3232,6 +3355,36 @@ impl<'a> Repo<'a> {
     fn assert_tenant_owns_row(&self, table: &str, id: &str, tenant_id: &str) -> Result<(), RepoError> {
         let sql = format!("SELECT 1 FROM {table} WHERE id = ?1 AND tenant_id = ?2");
         self.conn.query_row(&sql, params![id, tenant_id], |r| r.get::<_, i64>(0))
+            .optional()?
+            .ok_or_else(|| RepoError::TenantOwnershipViolation { table: table.to_string(), id: id.to_string() })?;
+        Ok(())
+    }
+
+    /// T1.9 finding (2026-07-17): the exact same class of hole
+    /// `assert_tenant_owns_row` closed for `TENANT_ONLY_TABLES` was still
+    /// wide open on every `TENANT_BRANCH_TABLES` row reached by a
+    /// client-supplied id with no `Scope` check at all -- `update_customer`/
+    /// `delete_customer` (tenant-only, now `assert_tenant_owns_row`) plus
+    /// `update_debtor`/`deactivate_debtor`/`list_debt_entries`,
+    /// `mark_invoice_paid`, `update_supplier`/`delete_supplier`,
+    /// `update_driver`/`update_driver_location`/`deactivate_driver`,
+    /// `update_delivery_status`/`update_delivery_status_and_driver`,
+    /// `update_delivery_zone`/`deactivate_delivery_zone`,
+    /// `set_printer_active`/`update_printer_paper_width`, and
+    /// `update_ingredient` all took only a bare id -- any authenticated
+    /// staff member, any tenant or branch, could mutate any row in these
+    /// tables by guessing/enumerating an id. Generic guard for
+    /// `TENANT_BRANCH_TABLES` rows, same numbered-placeholder-after-predicate
+    /// pattern as `assert_order_in_scope`/`assert_shift_in_scope` so a Branch
+    /// actor is restricted to their own branch while a Tenant-scoped Owner
+    /// can reach any branch in their tenant.
+    fn assert_row_in_scope(&self, table: &str, id: &str, scope: &Scope) -> Result<(), RepoError> {
+        let (predicate, args) = Self::scope_predicate(scope);
+        let id_placeholder = format!("?{}", args.len() + 1);
+        let sql = format!("SELECT 1 FROM {table} WHERE {predicate} AND id = {id_placeholder}");
+        let mut full_args: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        full_args.push(&id);
+        self.conn.query_row(&sql, full_args.as_slice(), |r| r.get::<_, i64>(0))
             .optional()?
             .ok_or_else(|| RepoError::TenantOwnershipViolation { table: table.to_string(), id: id.to_string() })?;
         Ok(())
@@ -3436,6 +3589,7 @@ impl<'a> Repo<'a> {
     /// Create a SCHEDULED order + items + modifiers + delayed_orders entry.
     pub fn schedule_delayed_order(&self, scope: &Scope, tenant_id: &str, branch_id: &str, input: FullOrderInput, scheduled_at: &str) -> Result<String, RepoError> {
         self.assert_scope_populated("orders", true)?;
+        Self::validate_order_money_consistency(&input)?;
         let _ = scope;
         let id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
@@ -3535,18 +3689,24 @@ impl<'a> Repo<'a> {
         Ok(activated_ids)
     }
 
-    /// Get chain_name, currency from chain_config + branch name. No scope
-    /// (config is global).
-    pub fn get_receipt_config(&self) -> Result<ReceiptConfig, RepoError> {
+    /// Get chain_name, currency from chain_config + branch name.
+    ///
+    /// T1.9 finding: this read `chain_config WHERE id = 'default'` (the same
+    /// global-singleton bug `get_chain_config` had) and `branches ORDER BY
+    /// rowid LIMIT 1` (an arbitrary branch, not necessarily the caller's) --
+    /// a receipt could print another tenant's chain name/currency or another
+    /// branch's name. Now scoped to the calling actor's tenant/branch.
+    pub fn get_receipt_config(&self, tenant_id: &str, branch_id: &str) -> Result<ReceiptConfig, RepoError> {
+        self.ensure_chain_config_row(tenant_id)?;
         let (chain_name, currency): (String, String) = self.conn.query_row(
-            "SELECT chain_name, currency FROM chain_config WHERE id = 'default'",
-            [],
+            "SELECT chain_name, currency FROM chain_config WHERE tenant_id = ?1",
+            params![tenant_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         ).map_err(RepoError::from)?;
 
         let branch_name: String = self.conn.query_row(
-            "SELECT name FROM branches ORDER BY rowid LIMIT 1",
-            [],
+            "SELECT name FROM branches WHERE id = ?1 AND tenant_id = ?2",
+            params![branch_id, tenant_id],
             |r| r.get(0),
         ).unwrap_or_else(|_| "الفرع الرئيسي".to_string());
 
@@ -3614,16 +3774,22 @@ impl<'a> Repo<'a> {
     pub fn finalize_order_with_payment(&self, tenant_id: &str, branch_id: &str, order_id: &str, method: &str, amount_cents: i64, change_cents: i64, debtor_id: Option<&str>, actor_id: &str) -> Result<String, RepoError> {
         self.assert_scope_populated("payments", true)?;
 
-        let (order_tenant, order_branch, order_status): (String, String, String) = self.conn.query_row(
-            "SELECT tenant_id, branch_id, status FROM orders WHERE id = ?1",
+        let (order_tenant, order_branch, order_status, order_total_cents): (String, String, String, i64) = self.conn.query_row(
+            "SELECT tenant_id, branch_id, status, total_cents FROM orders WHERE id = ?1",
             params![order_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
         if order_tenant != tenant_id || order_branch != branch_id {
             return Err(RepoError::OrderOutOfScope { order_id: order_id.to_string() });
         }
         if order_status == "PAID" {
             return Err(RepoError::OrderAlreadyPaid { order_id: order_id.to_string() });
+        }
+        // T1.9 finding: same missing amount-vs-total check as `take_payment`.
+        if amount_cents - change_cents != order_total_cents {
+            return Err(RepoError::PaymentAmountMismatch {
+                order_id: order_id.to_string(), expected_cents: order_total_cents, got_cents: amount_cents - change_cents,
+            });
         }
 
         let now = chrono::Utc::now().to_rfc3339();

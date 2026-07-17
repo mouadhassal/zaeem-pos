@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Camera, Upload, Mic, Check, X, ChevronUp, RotateCcw, Plus, Trash2 } from "lucide-react";
+import { useAuthStore } from "../../stores/authStore";
 
 interface DraftCategory {
   name: string;
@@ -57,6 +58,7 @@ function parseCents(s: string): number {
 }
 
 export default function AiOnboardingPage() {
+  const token = useAuthStore((s) => s.token);
   const [uploads, setUploads] = useState<UploadItem[]>([]);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [processing, setProcessing] = useState(false);
@@ -69,7 +71,7 @@ export default function AiOnboardingPage() {
 
   const refreshUploads = useCallback(async () => {
     try {
-      const items = await invoke<UploadItem[]>("list_uploads");
+      const items = await invoke<UploadItem[]>("list_uploads", { sessionToken: token });
       setUploads(items);
       if (selectedIdx !== null && items.length <= selectedIdx) {
         setSelectedIdx(null);
@@ -77,7 +79,7 @@ export default function AiOnboardingPage() {
     } catch (e) {
       console.error("Failed to list uploads:", e);
     }
-  }, [selectedIdx]);
+  }, [selectedIdx, token]);
 
   const handleFiles = async (files: FileList | null, kind: string) => {
     if (!files) return;
@@ -87,6 +89,7 @@ export default function AiOnboardingPage() {
       try {
         await invoke("queue_media", {
           request: {
+            session_token: token,
             kind,
             filename: file.name,
             data,
@@ -103,7 +106,7 @@ export default function AiOnboardingPage() {
   const processAll = async () => {
     setProcessing(true);
     try {
-      await invoke("process_queue");
+      await invoke("process_queue", { sessionToken: token });
       await refreshUploads();
     } catch (e) {
       console.error("Failed to process queue:", e);
@@ -185,7 +188,7 @@ export default function AiOnboardingPage() {
     setApplyResult(null);
     try {
       const result = await invoke<{ categories_created: number; items_created: number }>("apply_draft", {
-        request: { draft: editedDraft },
+        request: { session_token: token, draft: editedDraft },
       });
       setApplyResult(`✅ تم إنشاء ${result.categories_created} تصنيف و ${result.items_created} صنف بنجاح`);
       setEditing(false);
@@ -251,7 +254,7 @@ export default function AiOnboardingPage() {
             )}
             {uploads.some((u) => u.status === "FAILED") && (
               <button
-                onClick={async () => { await invoke("reset_failed_uploads"); await refreshUploads(); }}
+                onClick={async () => { await invoke("reset_failed_uploads", { sessionToken: token }); await refreshUploads(); }}
                 className="h-9 px-4 rounded-xl border border-ink-300 text-ink-700 text-sm flex items-center gap-2 hover:bg-ink-100 transition-colors"
               >
                 <RotateCcw className="w-4 h-4" />

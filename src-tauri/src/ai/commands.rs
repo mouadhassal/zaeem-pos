@@ -1,10 +1,12 @@
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::State;
 
 use super::*;
 use super::queue::{UploadItem, UploadStatus};
+use crate::audit;
+use crate::repo::Repo;
+use crate::security::{self, Permission};
 
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
@@ -20,10 +22,17 @@ pub struct ApplyResult {
 
 #[derive(Debug, Deserialize)]
 pub struct QueueMediaRequest {
+    pub session_token: String,
     pub kind: String,
     pub filename: String,
     pub data: Vec<u8>,
     pub mime: String,
+}
+
+fn authenticate_ai_actor(state: &State<AppState>, session_token: &str) -> Result<security::Actor, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    security::ensure_security_schema(&conn).map_err(|e| e.to_string())?;
+    security::authenticate(&conn, session_token).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -31,6 +40,7 @@ pub fn queue_media(
     state: State<AppState>,
     request: QueueMediaRequest,
 ) -> Result<UploadItem, String> {
+    authenticate_ai_actor(&state, &request.session_token)?;
     let kind = match request.kind.to_uppercase().as_str() {
         "PHOTO" => MediaKind::Photo,
         "PDF" => MediaKind::Pdf,
@@ -45,13 +55,15 @@ pub fn queue_media(
 }
 
 #[tauri::command]
-pub fn list_uploads(state: State<AppState>) -> Result<Vec<UploadItem>, String> {
+pub fn list_uploads(state: State<AppState>, session_token: String) -> Result<Vec<UploadItem>, String> {
+    authenticate_ai_actor(&state, &session_token)?;
     let queue = state.queue.lock().map_err(|e| e.to_string())?;
     queue.list().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn process_queue(state: State<AppState>) -> Result<Vec<UploadItem>, String> {
+pub fn process_queue(state: State<AppState>, session_token: String) -> Result<Vec<UploadItem>, String> {
+    authenticate_ai_actor(&state, &session_token)?;
     let mut results = Vec::new();
     loop {
         let mut queue = state.queue.lock().map_err(|e| e.to_string())?;
@@ -76,19 +88,22 @@ pub fn process_queue(state: State<AppState>) -> Result<Vec<UploadItem>, String> 
 }
 
 #[tauri::command]
-pub fn reset_failed_uploads(state: State<AppState>) -> Result<usize, String> {
+pub fn reset_failed_uploads(state: State<AppState>, session_token: String) -> Result<usize, String> {
+    authenticate_ai_actor(&state, &session_token)?;
     let mut queue = state.queue.lock().map_err(|e| e.to_string())?;
     queue.reset_failed().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn clear_uploads(state: State<AppState>) -> Result<usize, String> {
+pub fn clear_uploads(state: State<AppState>, session_token: String) -> Result<usize, String> {
+    authenticate_ai_actor(&state, &session_token)?;
     let mut queue = state.queue.lock().map_err(|e| e.to_string())?;
     queue.clear_done().map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ApplyDraftRequest {
+    pub session_token: String,
     pub draft: DraftMenu,
 }
 
@@ -97,8 +112,15 @@ pub fn apply_draft(
     state: State<AppState>,
     request: ApplyDraftRequest,
 ) -> Result<ApplyResult, String> {
-    let draft = request.draft;
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    apply_draft_impl(&mut conn, &request.session_token, request.draft)
+}
 
+/// Extracted from `apply_draft` so the test module (real `rusqlite::Connection`,
+/// not a live `tauri::App` -- `AppState`'s `State<T>` can't be constructed
+/// outside one) can exercise the T1.9 fix (auth + tenant-scoped writes)
+/// directly, same pattern as `verify_manager_override_impl`.
+pub(crate) fn apply_draft_impl(conn: &mut rusqlite::Connection, session_token: &str, draft: DraftMenu) -> Result<ApplyResult, String> {
     if draft.items.is_empty() {
         return Err("Draft has no items".into());
     }
@@ -118,8 +140,12 @@ pub fn apply_draft(
         }
     }
 
-    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    security::ensure_security_schema(conn).map_err(|e| e.to_string())?;
+    let actor = security::authenticate(conn, session_token).map_err(|e| e.to_string())?;
+    security::authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let repo = Repo::new(&tx);
 
     let mut cat_name_to_id: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut categories_created = 0usize;
@@ -128,8 +154,8 @@ pub fn apply_draft(
     for cat in &draft.categories {
         let existing: Option<String> = tx
             .query_row(
-                "SELECT id FROM categories WHERE name = ?1 AND is_active = 1",
-                params![cat.name],
+                "SELECT id FROM categories WHERE tenant_id = ?1 AND name = ?2 AND is_active = 1",
+                rusqlite::params![actor.tenant_id, cat.name],
                 |row| row.get(0),
             )
             .ok();
@@ -137,14 +163,9 @@ pub fn apply_draft(
         let cat_id = match existing {
             Some(id) => id,
             None => {
-                let id = uuid::Uuid::new_v4().to_string();
-                let now = chrono::Utc::now().to_rfc3339();
-                tx.execute(
-                    "INSERT INTO categories (id, name, color, sort_order, is_active, sync_version, last_modified, sync_status)
-                     VALUES (?1, ?2, ?3, ?4, 1, 1, ?5, 'synced')",
-                    params![id, cat.name, "#10b981", cat.sort_order, now],
-                )
-                .map_err(|e| format!("Failed to create category '{}': {}", cat.name, e))?;
+                let id = repo
+                    .create_category(&actor.tenant_id, &cat.name, Some("#10b981"), cat.sort_order as i64, None)
+                    .map_err(|e| format!("Failed to create category '{}': {}", cat.name, e))?;
                 categories_created += 1;
                 id
             }
@@ -156,16 +177,24 @@ pub fn apply_draft(
         let cat_id = cat_name_to_id
             .get(&item.category_name)
             .expect("category should exist by now");
-        let id = uuid::Uuid::new_v4().to_string();
-        let now = chrono::Utc::now().to_rfc3339();
-        tx.execute(
-            "INSERT INTO menu_items (id, name, price_cents, cost_cents, category_id, is_active, sync_version, last_modified, sync_status)
-             VALUES (?1, ?2, ?3, 0, ?4, 1, 1, ?5, 'synced')",
-            params![id, item.ar_name, item.price_cents, cat_id, now],
-        )
-        .map_err(|e| format!("Failed to create item '{}': {}", item.ar_name, e))?;
+        repo.create_menu_item(&actor.tenant_id, &item.ar_name, cat_id, item.price_cents, 0, None, None, None)
+            .map_err(|e| format!("Failed to create item '{}': {}", item.ar_name, e))?;
         items_created += 1;
     }
+
+    audit::append(
+        &tx,
+        &actor.device_id,
+        &actor.tenant_id,
+        actor.branch_id.as_deref(),
+        &actor.id,
+        audit::Action::MenuItemChanged,
+        "ai_draft",
+        "applied",
+        None,
+        Some(&serde_json::json!({ "categories_created": categories_created, "items_created": items_created })),
+    )
+    .map_err(|e| e.to_string())?;
 
     tx.commit().map_err(|e| format!("Failed to commit: {}", e))?;
 
