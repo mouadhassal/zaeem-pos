@@ -1,63 +1,63 @@
 import { useEffect, useState } from "react";
-import { validateLicense, type LicenseStatus } from "../lib/license";
+import { checkLicense, startLicensePolling, type LicenseStatus } from "../lib/license";
 import { AlertTriangle, Clock, Lock, X } from "lucide-react";
 
 interface Props {
-  jwt: string;
-  onExpired: () => void;
+  /** Fires whenever the resolved status changes, so a parent (PosLayout)
+   * can gate back-office navigation without duplicating the check/poll logic. */
+  onStatusChange?: (status: LicenseStatus) => void;
 }
 
 interface ChipInfo {
   icon: typeof AlertTriangle;
   text: string;
-  color: string;
+  color: "orange" | "red";
 }
 
-const STATUS_CHIP: Record<string, (days: number) => ChipInfo> = {
-  expiring: (d) => ({
-    icon: AlertTriangle,
-    text: `ينتهي الاشتراك خلال ${d} أيام`,
-    color: "amber",
-  }),
-  grace: () => ({
-    icon: Clock,
-    text: "فترة سماح: يرجى تجديد الاشتراك",
-    color: "orange",
-  }),
-  expired: () => ({
-    icon: Lock,
-    text: "الاشتراك منتهي — اتصل بالدعم",
-    color: "red",
-  }),
+function chipFor(status: LicenseStatus): ChipInfo | null {
+  switch (status.kind) {
+    case "Active":
+      return null;
+    case "Grace":
+      return { icon: Clock, text: `فترة سماح: يرجى تجديد الترخيص خلال ${status.days_left_in_grace} أيام`, color: "orange" };
+    case "LockedBackOffice":
+      return { icon: Lock, text: "الترخيص منتهي — الإدارة والتقارير مقفلة. نقطة البيع تعمل بشكل طبيعي.", color: "red" };
+    case "Invalid":
+      return { icon: Lock, text: "لا يوجد ترخيص صالح — الإدارة والتقارير مقفلة. نقطة البيع تعمل بشكل طبيعي.", color: "red" };
+  }
+}
+
+const COLOR_CLASSES: Record<string, { bg: string; border: string; text: string }> = {
+  orange: { bg: "bg-amber-500/10", border: "border-amber-500/20", text: "text-amber-600" },
+  red: { bg: "bg-red-500/10", border: "border-red-500/20", text: "text-red-600" },
 };
 
-const COLOR_CLASSES: Record<string, { bg: string; border: string; text: string; dot: string }> = {
-  amber: { bg: "bg-amber-500/10", border: "border-amber-500/20", text: "text-amber-600", dot: "bg-amber-500" },
-  orange: { bg: "bg-orange-500/10", border: "border-orange-500/20", text: "text-orange-600", dot: "bg-orange-500" },
-  red: { bg: "bg-red-500/10", border: "border-red-500/20", text: "text-red-600", dot: "bg-red-500" },
-};
-
-export default function LicenseBanner({ jwt, onExpired }: Props) {
-  const [status, setStatus] = useState<LicenseStatus>("active");
-  const [days, setDays] = useState(0);
+export default function LicenseBanner({ onStatusChange }: Props) {
+  const [status, setStatus] = useState<LicenseStatus | null>(null);
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
-    validateLicense(jwt).then((result) => {
-      setStatus(result.status);
-      setDays(result.daysRemaining);
-      if (result.status === "expired") {
-        onExpired();
-      }
-    });
-  }, [jwt, onExpired]);
+    let cancelled = false;
+    checkLicense().then((result) => {
+      if (cancelled) return;
+      setStatus(result);
+      onStatusChange?.(result);
+    }).catch(() => {});
 
-  if (status === "active" || dismissed) return null;
+    const stopPolling = startLicensePolling();
+    return () => { cancelled = true; stopPolling(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const chip = STATUS_CHIP[status]?.(days);
+  if (!status || dismissed) return null;
+
+  // Locked cases render the full lock screen in PosLayout too -- this chip
+  // is just the always-visible nag so a cashier knows to tell the owner,
+  // dismissible per-session since the lock screen itself isn't.
+  const chip = chipFor(status);
   if (!chip) return null;
 
-  const colors = COLOR_CLASSES[chip.color] || COLOR_CLASSES.amber;
+  const colors = COLOR_CLASSES[chip.color];
 
   return (
     <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${colors.bg} ${colors.border} border`}>

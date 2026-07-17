@@ -22,6 +22,16 @@ fn authenticate_actor(state: &State<Db>, session_token: &str) -> Result<Actor, S
     security::authenticate(&conn, session_token).map_err(|e| e.to_string())
 }
 
+/// The POS-never-stops-selling guarantee is structural, not a flag check:
+/// order/payment/print commands never call this at all. Only back-office /
+/// reports commands do. See license/signed.rs's `LicenseStatus::back_office_locked`.
+fn require_license_not_locked(license: &State<crate::license::store::LicenseState>) -> Result<(), String> {
+    if license.cached_status().back_office_locked() {
+        return Err("license expired -- back-office access is locked until renewed. Point of sale keeps working normally.".to_string());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Serialize)]
 pub struct LoginV3Response {
     pub token: String,
@@ -299,10 +309,15 @@ pub fn list_branches_v3(state: State<Db>, session_token: String) -> Result<Vec<(
     Repo::new(&conn).list_branches(&actor.tenant_id).map_err(|e| e.to_string())
 }
 
+/// Back-office command -- license-gated (see `require_license_not_locked`).
+/// This is a representative example of the gate, not exhaustive coverage:
+/// staff/reports/settings management are the intended surface, order/
+/// payment/print commands must never be gated this way.
 #[tauri::command]
-pub fn list_staff_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::StaffRow>, String> {
+pub fn list_staff_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::StaffRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_staff(&actor.scope()).map_err(|e| e.to_string())
 }
@@ -1266,10 +1281,12 @@ pub fn mark_invoice_paid_v3(state: State<Db>, session_token: String, invoice_id:
     Ok(())
 }
 
+/// Back-office command -- license-gated. See the note on `list_staff_v3`.
 #[tauri::command]
-pub fn get_sales_report_v3(state: State<Db>, session_token: String, today_start_iso: String) -> Result<crate::repo::SalesReportRow, String> {
+pub fn get_sales_report_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, today_start_iso: String) -> Result<crate::repo::SalesReportRow, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).sales_report(&actor.scope(), &today_start_iso).map_err(|e| e.to_string())
 }
@@ -2545,6 +2562,42 @@ pub fn finalize_order_with_payment_v3(
 
     tx.commit().map_err(|e| e.to_string())?;
     Ok(payment_id)
+}
+
+// ---------------------------------------------------------------------------
+// Offline signed license -- see src-tauri/src/license/ for the actual
+// crypto/fingerprint/grace-period logic. These three commands are thin
+// wrappers, no auth required for the read paths (the license banner must be
+// visible even at the login screen, before any staff session exists).
+// ---------------------------------------------------------------------------
+
+/// Fast path: returns whatever the last `recheck` computed, no disk I/O or
+/// crypto. Safe to call frequently (e.g. every app render) without concern.
+#[tauri::command]
+pub fn get_cached_license_status_v3(license: State<crate::license::store::LicenseState>) -> crate::license::signed::LicenseStatus {
+    license.cached_status()
+}
+
+/// Forces a fresh read of the license file + re-verification. Called at
+/// boot and on a 6h timer (see lib.rs's setup); also safe to call from a
+/// UI "check now" action.
+#[tauri::command]
+pub fn check_license_v3(license: State<crate::license::store::LicenseState>) -> crate::license::signed::LicenseStatus {
+    license.recheck()
+}
+
+/// Installs a renewal blob (pasted/scanned/dropped in by the collector on
+/// cash payment). `blob_json` is the raw text of the .lic file the CLI
+/// produced -- fully offline, no server round trip. No permission check
+/// beyond being an authenticated staff member: a forged or wrong-machine
+/// blob is rejected by signature/fingerprint verification regardless of
+/// who submits it, and an owner handing a cashier the renewal file to type
+/// in is a completely normal flow for this product.
+#[tauri::command]
+pub fn renew_license_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, blob_json: String) -> Result<crate::license::signed::LicenseStatus, String> {
+    authenticate_actor(&state, &session_token)?;
+    let file: crate::license::signed::SignedLicenseFile = serde_json::from_str(&blob_json).map_err(|_| "renewal file is not valid JSON".to_string())?;
+    license.accept_renewal(file).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

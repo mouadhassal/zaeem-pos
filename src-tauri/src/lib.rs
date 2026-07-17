@@ -11,6 +11,7 @@ mod audit;
 mod commands_v3;
 mod ai;
 mod photos;
+pub mod license;
 
 use bcrypt::{hash, DEFAULT_COST};
 
@@ -173,6 +174,24 @@ pub fn run() {
                 queue: Mutex::new(queue),
                 provider,
             });
+
+            // Offline signed license: verified at boot (here) and on a 6h
+            // timer below. Never on the hot path of a sale -- every command
+            // that cares reads `cached_status()`, a Mutex read of whatever
+            // this last computed, not a fresh signature check.
+            let license_dir = db_path.parent().expect("db_path must have a parent dir").to_path_buf();
+            let license_state = license::store::LicenseState::init(license_dir, license::compiled_public_key());
+            app.manage(license_state);
+            let license_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(6 * 60 * 60)).await;
+                    if let Some(state) = license_handle.try_state::<license::store::LicenseState>() {
+                        state.recheck();
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -321,6 +340,9 @@ pub fn run() {
             commands_v3::lookup_loyalty_card_v3,
             commands_v3::earn_loyalty_points_v3,
             commands_v3::finalize_order_with_payment_v3,
+            commands_v3::get_cached_license_status_v3,
+            commands_v3::check_license_v3,
+            commands_v3::renew_license_v3,
             commands::queue_media,
             commands::list_uploads,
             commands::process_queue,

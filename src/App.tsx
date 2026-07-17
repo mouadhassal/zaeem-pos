@@ -4,6 +4,9 @@ import LoginPage from "./components/LoginPage";
 import SetupWizard from "./components/SetupWizard";
 import Sidebar from "./components/layout/Sidebar";
 import TopBar from "./components/layout/TopBar";
+import LicenseBanner from "./components/LicenseBanner";
+import { backOfficeLocked, type LicenseStatus } from "./lib/license";
+import { IconLock } from "@tabler/icons-react";
 import { usePermissions } from "./hooks/usePermissions";
 
 const POSPage = lazy(() => import("./app/pos/page"));
@@ -37,6 +40,7 @@ function LoadingFallback() {
 
 function PosLayout({ children }: { children: React.ReactNode }) {
   const [activeView, setActiveView] = useState("pos");
+  const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
   const { navItems } = usePermissions();
 
   const handleNavigate = (id: string) => {
@@ -52,7 +56,23 @@ function PosLayout({ children }: { children: React.ReactNode }) {
     }
   };
 
+  // POS never locks, regardless of license status -- a dinner service is
+  // never interrupted. Every other screen (back-office/reports) locks once
+  // the license is past grace or invalid, per the licensing spec.
+  const locked = activeView !== "pos" && licenseStatus !== null && backOfficeLocked(licenseStatus);
+
   const renderContent = () => {
+    if (locked) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full text-center gap-3 px-6">
+          <IconLock className="w-10 h-10 text-text-muted" stroke={1.5} />
+          <p className="text-base font-medium text-text">هذه الشاشة مقفلة — الترخيص منتهي</p>
+          <p className="text-sm text-text-muted max-w-sm">
+            نقطة البيع تعمل بشكل طبيعي. لإعادة فتح الإدارة والتقارير، جدّد الترخيص من المالك أو المندوب.
+          </p>
+        </div>
+      );
+    }
     switch (activeView) {
       case "pos": return children;
       case "reports": return <ReportsPage />;
@@ -83,6 +103,9 @@ function PosLayout({ children }: { children: React.ReactNode }) {
         </div>
       )}
       <TopBar />
+      <div className="px-4">
+        <LicenseBanner onStatusChange={setLicenseStatus} />
+      </div>
       <div className="flex flex-1 overflow-hidden">
         <Sidebar active={activeView} onNavigate={handleNavigate} />
         <main className="flex-1 overflow-hidden bg-canvas">
