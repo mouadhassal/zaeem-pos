@@ -20,8 +20,8 @@
 
 use app_lib::license::b64;
 use app_lib::license::fingerprint::MachineFingerprint;
-use app_lib::license::signed::LicensePayload;
-use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+use app_lib::license::signed::{sign_payload, LicensePayload};
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 use std::collections::HashMap;
 use std::env;
@@ -96,12 +96,10 @@ fn mint(signing_key_path: &str, out_path: &str, flags: &HashMap<String, String>)
         nonce: uuid::Uuid::new_v4().to_string(),
     };
 
-    let payload_json = serde_json::to_string(&payload).expect("serialize payload");
-    let signature = signing_key.sign(payload_json.as_bytes());
-    let file = app_lib::license::signed::SignedLicenseFile {
-        payload_json,
-        signature_b64: b64::encode(&signature.to_bytes()),
-    };
+    // The one shared signing function (license-core) -- the same one
+    // services/license-signer uses, so a blob minted here and a blob
+    // minted by the real signing service are byte-for-byte the same shape.
+    let file = sign_payload(&signing_key, &payload);
 
     fs::write(out_path, serde_json::to_vec_pretty(&file).unwrap()).expect("write license file");
     println!("Minted license -> {out_path}");

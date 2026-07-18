@@ -3,8 +3,8 @@
 //! never on the hot path of a sale: `cached_status()` is a `Mutex` read of
 //! an already-computed enum, not a signature verification.
 
-use super::fingerprint::MachineFingerprint;
-use super::signed::{evaluate, verify_signature, LicenseError, LicenseStatus, SignedLicenseFile};
+use super::fingerprint;
+use license_core::signed::{evaluate, verify_signature, LicenseError, LicenseStatus, SignedLicenseFile};
 use ed25519_dalek::VerifyingKey;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -53,7 +53,7 @@ impl LicenseState {
     /// to also call from a UI "check now" action without concern.
     pub fn recheck(&self) -> LicenseStatus {
         let file = self.load_file();
-        let current_machine = MachineFingerprint::current();
+        let current_machine = fingerprint::current();
         let status = evaluate(file.as_ref(), &self.pubkey, &current_machine, now_ms());
         *self.cached.lock().unwrap() = status.clone();
         status
@@ -72,7 +72,7 @@ impl LicenseState {
     pub fn accept_renewal(&self, new_file: SignedLicenseFile) -> Result<LicenseStatus, LicenseError> {
         let new_payload = verify_signature(&new_file, &self.pubkey)?;
 
-        let current_machine = MachineFingerprint::current();
+        let current_machine = fingerprint::current();
         if !new_payload.machine_fingerprint.fuzzy_matches(&current_machine) {
             return Err(LicenseError::WrongMachine);
         }
@@ -92,7 +92,7 @@ impl LicenseState {
 
 #[cfg(test)]
 mod tests {
-    use super::super::signed::test_support::*;
+    use license_core::signed::test_support::*;
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -117,7 +117,7 @@ mod tests {
         let state = LicenseState::init(dir, key.verifying_key());
         assert!(state.cached_status().back_office_locked(), "starts locked with no license");
 
-        let machine = super::MachineFingerprint::current();
+        let machine = super::fingerprint::current();
         let now = chrono::Utc::now().timestamp_millis();
         let payload = sample_payload(machine, now - 1000, now + 30 * 86_400_000);
         let file = mint(&key, &payload);
@@ -132,7 +132,7 @@ mod tests {
         let dir = temp_dir("stale_renewal");
         let key = test_keypair();
         let state = LicenseState::init(dir, key.verifying_key());
-        let machine = super::MachineFingerprint::current();
+        let machine = super::fingerprint::current();
         let now = chrono::Utc::now().timestamp_millis();
 
         let newer = mint(&key, &sample_payload(machine.clone(), now, now + 60 * 86_400_000));
@@ -152,7 +152,7 @@ mod tests {
         let state = LicenseState::init(dir, key.verifying_key());
         let now = chrono::Utc::now().timestamp_millis();
 
-        let someone_elses_machine = super::MachineFingerprint::from_raw(Some("cpu-other"), Some("disk-other"), Some("mac-other"));
+        let someone_elses_machine = super::fingerprint::MachineFingerprint::from_raw(Some("cpu-other"), Some("disk-other"), Some("mac-other"));
         let file = mint(&key, &sample_payload(someone_elses_machine, now, now + 30 * 86_400_000));
 
         let result = state.accept_renewal(file);

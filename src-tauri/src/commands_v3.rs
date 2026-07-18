@@ -6127,7 +6127,7 @@ mod tests {
             drop(dummy_conn);
 
             let now = chrono::Utc::now().timestamp_millis();
-            let machine = crate::license::fingerprint::MachineFingerprint::current();
+            let machine = crate::license::fingerprint::current();
             let payload = crate::license::signed::test_support::sample_payload(machine, now - 1000, now + 30 * 86_400_000);
             let file = crate::license::signed::test_support::mint(&key, &payload);
             let status_after_install = license_state.accept_renewal(file).unwrap();

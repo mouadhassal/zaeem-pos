@@ -94,6 +94,7 @@ dependencies = [
  "bcrypt",
  "chrono",
  "ed25519-dalek",
+ "license-core",
  "log",
  "rand",
  "rusqlite",
@@ -1980,6 +1981,17 @@ dependencies = [
  "cc",
  "pkg-config",
  "vcpkg",
+]
+
+[[package]]
+name = "license-core"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "rand",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

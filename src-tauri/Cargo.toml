@@ -35,3 +35,4 @@ sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["std", "rand_core"] }
 rand = "0.8"
 tokio = { version = "1.53.0", features = ["time"] }
+license-core = { path = "../../../packages/license-core" }

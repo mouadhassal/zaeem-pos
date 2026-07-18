@@ -2,26 +2,33 @@
 //! wrong" list -- `lib/license.ts` returning `active` unconditionally was
 //! the stub this module replaces. Trust decisions happen here, in Rust,
 //! never in the frontend (R1).
+//!
+//! The payload shape, signing, and verification logic live in the shared
+//! `license-core` crate (`packages/license-core`), not here -- so this app
+//! (verifier) and `services/license-signer` (signer) can never disagree on
+//! serialization. This module keeps only what's app-specific: reading
+//! THIS machine's real hardware (`fingerprint`) and the on-disk cache/store
+//! (`store`).
 
-pub mod b64;
 pub mod fingerprint;
-pub mod signed;
 pub mod store;
+
+pub use license_core::b64;
+pub use license_core::signed;
 
 use ed25519_dalek::VerifyingKey;
 
 /// Public key compiled into every release binary. The matching private key
-/// lives only on the machine running `license_signer` and is never
-/// committed to this repo. Generated once via `license_signer genkey` --
-/// see that binary's doc comment to mint a new keypair if this one is ever
-/// rotated.
+/// lives only on the signing service (`services/license-signer`), never in
+/// this repo. Generated via that service's own keygen step -- see its
+/// README for how to mint a new keypair if this one is ever rotated.
 ///
-/// This is a DEV/PLACEHOLDER keypair generated during this task so the
-/// full pipeline (mint -> verify -> test) is real and runnable end to end.
-/// Before shipping to a real restaurant, generate a production keypair the
-/// same way and replace this constant -- the private half of THIS dev key
-/// is sitting in the scratchpad, not the repo, but it should still be
-/// treated as burned/public knowledge, never used to sign a real license.
+/// This is a DEV/PLACEHOLDER keypair generated during earlier offline-only
+/// work so the pipeline (mint -> verify -> test) was real and runnable end
+/// to end. It is BURNED -- treated as public knowledge, never used to sign
+/// a real license. The production keypair (generated on the signing
+/// service, private half never leaving it) replaces this constant as its
+/// own explicit, gated step, not bundled into this refactor.
 pub const LICENSE_PUBLIC_KEY_B64: &str = "r9skr7ezD4+AGO0Fl9krD1ijHIFz422RDLkGOQQhDlk=";
 
 pub fn compiled_public_key() -> VerifyingKey {
