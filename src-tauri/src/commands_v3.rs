@@ -2800,6 +2800,30 @@ pub fn renew_license_v3(state: State<Db>, license: State<crate::license::cloud::
     license.accept_renewal(file).map_err(|e| e.to_string())
 }
 
+/// Settings -> License page's "activate" action: decodes the base64
+/// activation-key bundle apps/admin's mint flow produces, installs its
+/// offline blob through the exact same `accept_renewal` validation
+/// `renew_license_v3` uses (signature, machine fingerprint, staleness), and
+/// -- if that succeeds -- wires up the cloud identity (license_id +
+/// device_token) so future hybrid cloud checks (Slice 1c) start working too,
+/// both in this running process and on the next boot.
+#[tauri::command]
+pub fn activate_license_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, activation_key: String) -> Result<crate::license::signed::LicenseStatus, String> {
+    authenticate_actor(&state, &session_token)?;
+    let bundle = crate::license::cloud::decode_activation_key(&activation_key)?;
+    let file = crate::license::signed::SignedLicenseFile { payload_json: bundle.payload_json, signature_b64: bundle.signature_b64 };
+    let status = license.accept_renewal(file).map_err(|e| e.to_string())?;
+
+    license.set_config(crate::license::cloud::CloudConfig { license_id: bundle.license_id, device_token: bundle.device_token });
+    // Best-effort: if the disk write fails, activation itself already
+    // succeeded (the offline blob is installed and cached_status reflects
+    // it) -- this only affects whether the NEXT boot also has cloud
+    // credentials, not the result the user sees right now.
+    let _ = license.persist_cloud_config();
+
+    Ok(status)
+}
+
 #[cfg(test)]
 mod tests {
     //! Integration tests against a real, fully-migrated DB (0001-0003 + T1.1's
@@ -5987,7 +6011,7 @@ mod tests {
         const NOT_GATED: &[&str] = &[
             "login_v3", "login_pin_v3", "setup_owner_v3", "needs_setup_v3", "logout_v3",
             "change_own_password_v3",
-            "get_cached_license_status_v3", "check_license_v3", "renew_license_v3",
+            "get_cached_license_status_v3", "check_license_v3", "renew_license_v3", "activate_license_v3",
             "create_order_v3", "update_order_status_v3", "take_payment_v3",
             "create_full_order_v3", "hold_order_v3", "retrieve_held_order_v3",
             "split_bill_v3", "merge_tables_v3", "unmerge_tables_v3", "void_order_item_v3",

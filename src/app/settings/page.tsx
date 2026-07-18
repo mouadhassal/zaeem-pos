@@ -2,8 +2,9 @@ import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAuthStore } from "../../stores/authStore";
 import type { TaxMode } from "../../db/types";
+import { checkLicense, activateLicense, type LicenseStatus } from "../../lib/license";
 
-type SettingsTab = "general" | "printer" | "tax" | "branch" | "subscription" | "cloud" | "backup" | "about";
+type SettingsTab = "general" | "printer" | "tax" | "branch" | "license" | "cloud" | "backup" | "about";
 
 interface ChainConfig {
   currency: string;
@@ -42,19 +43,48 @@ const TABS: { id: SettingsTab; label: string }[] = [
   { id: "printer", label: "الطابعة" },
   { id: "tax", label: "الضرائب" },
   { id: "branch", label: "الفرع" },
-  { id: "subscription", label: "الاشتراك" },
+  { id: "license", label: "الترخيص" },
   { id: "cloud", label: "المزامنة السحابية" },
   { id: "backup", label: "النسخ الاحتياطي" },
   { id: "about", label: "عن النظام" },
 ];
 
-const FEATURES = [
-  { name: "عدد المستخدمين", starter: "3", pro: "10", enterprise: "غير محدود" },
-  { name: "الفروع", starter: "1", pro: "5", enterprise: "غير محدود" },
-  { name: "التقارير", starter: "أساسية", pro: "متقدمة", enterprise: "مخصصة" },
-  { name: "المخزون", starter: "يدوي", pro: "آلي", enterprise: "آلي + ذكي" },
-  { name: "الدعم", starter: "البريد", pro: "هاتف", enterprise: "مخصص 24/7" },
-];
+/**
+ * Maps the backend's activation failure strings to distinct Arabic
+ * messages. The backend returns exact, stable strings -- either from
+ * license/cloud.rs's decode_activation_key (malformed key) or from
+ * license_core::signed::LicenseError's Display impl (accept_renewal
+ * failures) -- matched here by substring so this stays correct even if the
+ * exact English wording is tweaked later.
+ */
+function mapActivationError(raw: string): string {
+  if (raw.includes("not valid base64")) {
+    return "المفتاح غير صالح — تأكد من نسخه بالكامل والمحاولة مرة أخرى.";
+  }
+  if (raw.includes("corrupted or not in the expected format")) {
+    return "تعذر قراءة المفتاح — تأكد من نسخه بالكامل دون أي تعديل.";
+  }
+  if (raw.includes("not valid base64/64 bytes")) {
+    return "توقيع الترخيص غير صالح.";
+  }
+  if (raw.includes("does not verify against the embedded public key")) {
+    return "توقيع الترخيص غير صحيح — قد يكون المفتاح تالفاً أو مزوراً.";
+  }
+  if (raw.includes("payload is not valid JSON")) {
+    return "بيانات الترخيص تالفة.";
+  }
+  if (raw.includes("was not issued for this machine")) {
+    return "هذا الترخيص صادر لجهاز آخر ولا يمكن استخدامه على هذا الجهاز.";
+  }
+  if (raw.includes("older than the currently installed license")) {
+    return "هذا المفتاح أقدم من الترخيص المثبت حالياً على هذا الجهاز.";
+  }
+  return `حدث خطأ أثناء التفعيل: ${raw}`;
+}
+
+function formatExpiry(expiresAtMs: number): string {
+  return new Date(expiresAtMs).toLocaleDateString("ar", { year: "numeric", month: "long", day: "numeric" });
+}
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<SettingsTab>("general");
@@ -86,6 +116,43 @@ export default function SettingsPage() {
 
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+
+  const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
+  const [activationKey, setActivationKey] = useState("");
+  const [activating, setActivating] = useState(false);
+  const [activationError, setActivationError] = useState<string | null>(null);
+  const [activationSuccess, setActivationSuccess] = useState(false);
+
+  const refreshLicense = useCallback(async () => {
+    try {
+      setLicenseStatus(await checkLicense());
+    } catch {
+      // checkLicense() itself never network-calls and shouldn't throw in
+      // practice; leaving licenseStatus as-is (null shows a loading state,
+      // a stale value stays visible) is safer than showing a fake error.
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshLicense();
+  }, [refreshLicense]);
+
+  const handleActivate = async () => {
+    if (!activationKey.trim() || !token) return;
+    setActivating(true);
+    setActivationError(null);
+    setActivationSuccess(false);
+    try {
+      const status = await activateLicense(token, activationKey.trim());
+      setLicenseStatus(status);
+      setActivationSuccess(true);
+      setActivationKey("");
+    } catch (e) {
+      setActivationError(mapActivationError(String(e)));
+    } finally {
+      setActivating(false);
+    }
+  };
 
   const showMsg = (msg: string) => {
     setMessage(msg);
@@ -210,8 +277,8 @@ export default function SettingsPage() {
               tab === t.id
                 ? "bg-saffron-50 text-saffron-600 font-bold border-r-2 border-saffron-600"
                 : "text-ink-500 hover:bg-white hover:text-ink-900"
-            } ${t.id === "subscription" && !isOwner ? "opacity-50 cursor-not-allowed" : ""}`}
-            disabled={t.id === "subscription" && !isOwner}
+            } ${t.id === "license" && !isOwner ? "opacity-50 cursor-not-allowed" : ""}`}
+            disabled={t.id === "license" && !isOwner}
           >
             {t.label}
           </button>
@@ -470,56 +537,113 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {tab === "subscription" && (
+        {tab === "license" && (
           <div className="space-y-6 max-w-xl">
-            <h2 className="text-lg font-bold text-ink-900 font-arabic">الاشتراك</h2>
+            <h2 className="text-lg font-bold text-ink-900 font-arabic">الترخيص</h2>
             {!isOwner && (
               <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-amber-700 font-arabic text-sm">
                 هذه الصفحة متاحة للمالك فقط
               </div>
             )}
-            <div className="grid grid-cols-3 gap-4">
-              {(["STARTER", "PRO", "ENTERPRISE"] as const).map((plan) => (
-                <div
-                  key={plan}
-                  className={`bg-white rounded-2xl p-5 shadow-sm space-y-3 ${
-                    plan === "PRO" ? "ring-2 ring-saffron-400" : ""
-                  }`}
-                >
-                  <div className="text-center">
-                    <h3 className="font-bold text-ink-900 font-arabic text-lg">
-                      {plan === "STARTER" ? "ستارتر" : plan === "PRO" ? "برو" : "إنتربرايز"}
-                    </h3>
-                    {plan === "PRO" && (
-                      <span className="inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-arabic font-medium bg-saffron-100 text-saffron-700">
-                        الاشتراك الحالي
-                      </span>
-                    )}
+
+            <div className="bg-white rounded-2xl p-5 shadow-sm space-y-3">
+              {!licenseStatus && (
+                <p className="text-sm text-ink-400 font-arabic">جاري تحميل حالة الترخيص...</p>
+              )}
+              {licenseStatus?.kind === "Active" && (
+                <>
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
+                    <span className="font-arabic font-bold text-ink-900">نشط</span>
                   </div>
-                  <div className="text-2xl font-bold text-center text-saffron-600 font-mono">
-                    {plan === "STARTER" ? "مجاني" : plan === "PRO" ? "99 $" : "199 $"}
+                  <div className="flex justify-between text-sm">
+                    <span className="font-arabic text-ink-400">الباقة</span>
+                    <span className="font-mono text-ink-900">{licenseStatus.plan}</span>
                   </div>
-                  <ul className="space-y-2 text-sm">
-                    {FEATURES.map((f) => (
-                      <li key={f.name} className="flex justify-between text-ink-500">
-                        <span className="font-arabic">{f.name}</span>
-                        <span className="font-mono text-ink-900 font-medium">
-                          {f[plan.toLowerCase() as keyof typeof f]}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
+                  <div className="flex justify-between text-sm">
+                    <span className="font-arabic text-ink-400">تاريخ الانتهاء</span>
+                    <span className="font-mono text-ink-900">{formatExpiry(licenseStatus.expires_at)}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="font-arabic text-ink-400">الأيام المتبقية</span>
+                    <span className="font-mono text-ink-900">{licenseStatus.days_remaining}</span>
+                  </div>
+                </>
+              )}
+              {licenseStatus?.kind === "Grace" && (
+                <>
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+                    <span className="font-arabic font-bold text-ink-900">فترة سماح</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="font-arabic text-ink-400">الباقة</span>
+                    <span className="font-mono text-ink-900">{licenseStatus.plan}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="font-arabic text-ink-400">انتهى في</span>
+                    <span className="font-mono text-ink-900">{formatExpiry(licenseStatus.expires_at)}</span>
+                  </div>
+                  <p className="text-sm font-arabic text-amber-700">
+                    يرجى تجديد الترخيص خلال {licenseStatus.days_left_in_grace} أيام. نقطة البيع تعمل بشكل طبيعي.
+                  </p>
+                </>
+              )}
+              {licenseStatus?.kind === "LockedBackOffice" && (
+                <>
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-red-500" />
+                    <span className="font-arabic font-bold text-ink-900">منتهي</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="font-arabic text-ink-400">الباقة السابقة</span>
+                    <span className="font-mono text-ink-900">{licenseStatus.plan}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="font-arabic text-ink-400">انتهى في</span>
+                    <span className="font-mono text-ink-900">{formatExpiry(licenseStatus.expires_at)}</span>
+                  </div>
+                  <p className="text-sm font-arabic text-red-700">
+                    الإدارة والتقارير مقفلة. نقطة البيع تعمل بشكل طبيعي. فعّل مفتاحاً جديداً أدناه لإعادة الفتح.
+                  </p>
+                </>
+              )}
+              {licenseStatus?.kind === "Invalid" && (
+                <>
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-red-500" />
+                    <span className="font-arabic font-bold text-ink-900">لا يوجد ترخيص صالح</span>
+                  </div>
+                  <p className="text-sm font-arabic text-red-700">
+                    الإدارة والتقارير مقفلة. نقطة البيع تعمل بشكل طبيعي. فعّل مفتاحاً أدناه.
+                  </p>
+                </>
+              )}
             </div>
+
             {isOwner && (
-              <div className="bg-white rounded-2xl p-5 shadow-sm flex items-center justify-between">
-                <div>
-                  <p className="font-arabic text-ink-900">تاريخ انتهاء الاشتراك</p>
-                  <p className="font-mono text-ink-900 font-bold">2027-12-31</p>
-                </div>
-                <button className="h-10 px-6 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">
-                  تجديد الاشتراك
+              <div className="bg-white rounded-2xl p-5 shadow-sm space-y-3">
+                <label className="block text-sm font-arabic text-ink-900 mb-1">مفتاح التفعيل</label>
+                <textarea
+                  value={activationKey}
+                  onChange={(e) => { setActivationKey(e.target.value); setActivationError(null); setActivationSuccess(false); }}
+                  rows={4}
+                  dir="ltr"
+                  placeholder="الصق مفتاح التفعيل هنا"
+                  className="w-full px-4 py-3 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-xs outline-none focus:border-saffron-500"
+                />
+                {activationError && (
+                  <p className="text-sm font-arabic text-red-700">{activationError}</p>
+                )}
+                {activationSuccess && (
+                  <p className="text-sm font-arabic text-green-700">تم تفعيل الترخيص بنجاح.</p>
+                )}
+                <button
+                  onClick={handleActivate}
+                  disabled={activating || !activationKey.trim()}
+                  className="h-10 px-6 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                >
+                  {activating ? "جاري التفعيل..." : "تفعيل"}
                 </button>
               </div>
             )}

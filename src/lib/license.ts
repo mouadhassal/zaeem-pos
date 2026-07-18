@@ -6,9 +6,9 @@ import { invoke } from "@tauri-apps/api/core";
 // unconditionally returned "active" (see AGENTS.md's "things that must not
 // be re-introduced" list).
 export type LicenseStatus =
-  | { kind: "Active"; days_remaining: number }
-  | { kind: "Grace"; days_left_in_grace: number }
-  | { kind: "LockedBackOffice"; days_since_grace_ended: number }
+  | { kind: "Active"; days_remaining: number; plan: string; expires_at: number }
+  | { kind: "Grace"; days_left_in_grace: number; plan: string; expires_at: number }
+  | { kind: "LockedBackOffice"; days_since_grace_ended: number; plan: string; expires_at: number }
   | { kind: "Invalid"; reason: string };
 
 export function backOfficeLocked(status: LicenseStatus): boolean {
@@ -32,6 +32,18 @@ export async function checkLicense(): Promise<LicenseStatus> {
  */
 export async function renewLicense(sessionToken: string, blobJson: string): Promise<LicenseStatus> {
   return invoke<LicenseStatus>("renew_license_v3", { sessionToken, blobJson });
+}
+
+/**
+ * Settings -> License page's paste-activation action. `activationKey` is
+ * the single base64 bundle apps/admin's mint flow produces (license_id +
+ * device_token + payload_json + signature_b64). Installs the offline blob
+ * through the same validation renewLicense() uses, and -- on success --
+ * wires up the cloud identity too, so the hybrid cloud check (Slice 1c)
+ * starts working for this device.
+ */
+export async function activateLicense(sessionToken: string, activationKey: string): Promise<LicenseStatus> {
+  return invoke<LicenseStatus>("activate_license_v3", { sessionToken, activationKey });
 }
 
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;

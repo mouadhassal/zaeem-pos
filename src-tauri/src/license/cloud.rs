@@ -17,6 +17,7 @@
 
 use crate::license::store::LicenseState;
 use license_core::signed::{LicenseStatus, SignedLicenseFile};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -40,10 +41,10 @@ pub enum CloudCheckOutcome {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CloudVerdict {
-    /// `status = 'active'` in the cloud row. Carries the cloud's own
-    /// `expires_at` so a fresh-cache read can report a real days-remaining
-    /// figure instead of a placeholder.
-    Active { expires_at_ms: i64 },
+    /// `status = 'active'` in the cloud row. Carries the cloud's own `plan`
+    /// and `expires_at` so a fresh-cache read can report the real plan/days-
+    /// remaining, not a placeholder.
+    Active { expires_at_ms: i64, plan: String },
     /// Any non-active cloud status (`revoked`, `superseded`, or the row not
     /// found at all for this id+token pair) -- all lock back-office.
     NotActive { reason: String },
@@ -74,9 +75,18 @@ struct CloudCache {
 
 pub struct CloudLicenseState {
     offline: LicenseState,
-    config: Option<CloudConfig>,
+    /// `Mutex`, not a plain field: activation (see `set_config`) needs to
+    /// wire up cloud credentials into an already-running, already-managed
+    /// state -- there's no "swap the Tauri-managed value" seam, so this has
+    /// to be interior-mutable instead.
+    config: Mutex<Option<CloudConfig>>,
     transport: Box<dyn CloudTransport>,
     cache: Mutex<CloudCache>,
+    /// Where `cloud_config.json` lives -- same directory as the offline
+    /// `license.lic` file. Needed so activation can persist the newly
+    /// learned `{license_id, device_token}` for the NEXT boot's
+    /// `load_config_from_file` to pick up, not just the current process.
+    license_dir: PathBuf,
 }
 
 fn now_ms() -> i64 {
@@ -97,8 +107,8 @@ fn combined_status(
         let age_days = (now_ms - last_success) / MS_PER_DAY;
         if age_days <= CLOUD_CACHE_GRACE_DAYS {
             return match verdict {
-                CloudVerdict::Active { expires_at_ms } => {
-                    LicenseStatus::Active { days_remaining: (expires_at_ms - now_ms) / MS_PER_DAY }
+                CloudVerdict::Active { expires_at_ms, plan } => {
+                    LicenseStatus::Active { days_remaining: (expires_at_ms - now_ms) / MS_PER_DAY, plan: plan.clone(), expires_at: *expires_at_ms }
                 }
                 CloudVerdict::NotActive { reason } => {
                     LicenseStatus::Invalid { reason: format!("revoked by cloud: {reason}") }
@@ -110,8 +120,14 @@ fn combined_status(
 }
 
 impl CloudLicenseState {
-    pub fn new(offline: LicenseState, config: Option<CloudConfig>, transport: Box<dyn CloudTransport>) -> Self {
-        Self { offline, config, transport, cache: Mutex::new(CloudCache { last_successful_check_at_ms: None, last_verdict: None }) }
+    pub fn new(offline: LicenseState, license_dir: PathBuf, config: Option<CloudConfig>, transport: Box<dyn CloudTransport>) -> Self {
+        Self {
+            offline,
+            config: Mutex::new(config),
+            transport,
+            cache: Mutex::new(CloudCache { last_successful_check_at_ms: None, last_verdict: None }),
+            license_dir,
+        }
     }
 
     /// The fast path every command reads (mirrors `LicenseState::cached_status`
@@ -131,7 +147,8 @@ impl CloudLicenseState {
     /// hot path; meant for a periodic background timer (and an initial
     /// best-effort call at boot).
     pub async fn refresh_from_cloud(&self) {
-        let Some(config) = &self.config else { return };
+        let config = { self.config.lock().unwrap().clone() };
+        let Some(config) = config else { return };
         let outcome = self.transport.check(&config.license_id, &config.device_token).await;
 
         match outcome {
@@ -181,6 +198,48 @@ impl CloudLicenseState {
         self.offline.accept_renewal(new_file)?;
         Ok(self.cached_status())
     }
+
+    /// Wires up cloud credentials into an already-running state -- used by
+    /// `activate_license_v3` so a freshly-pasted activation key starts
+    /// cloud-checking immediately, without requiring an app restart.
+    pub fn set_config(&self, config: CloudConfig) {
+        *self.config.lock().unwrap() = Some(config);
+    }
+
+    /// Writes the current cloud config to `cloud_config.json` so the NEXT
+    /// boot's `load_config_from_file` also picks it up -- `set_config` alone
+    /// only affects the current process's in-memory state.
+    pub fn persist_cloud_config(&self) -> std::io::Result<()> {
+        let config = self.config.lock().unwrap().clone();
+        let Some(config) = config else { return Ok(()) };
+        #[derive(serde::Serialize)]
+        struct Raw<'a> {
+            license_id: &'a str,
+            device_token: &'a str,
+        }
+        let json = serde_json::to_vec_pretty(&Raw { license_id: &config.license_id, device_token: &config.device_token })?;
+        std::fs::write(self.license_dir.join("cloud_config.json"), json)
+    }
+}
+
+/// Everything encoded into one activation key by `apps/admin`'s mint flow --
+/// base64 (standard alphabet, matching `license_core::b64`'s decoder
+/// byte-for-byte) of this struct's JSON. One string an operator pastes into
+/// the POS's Settings -> License page, decoded here into the pieces
+/// `activate_license_v3` needs: the offline blob (`payload_json` +
+/// `signature_b64`) and the cloud identity (`license_id` + `device_token`).
+#[derive(Debug, serde::Deserialize)]
+pub struct ActivationBundle {
+    pub license_id: String,
+    pub device_token: String,
+    pub payload_json: String,
+    pub signature_b64: String,
+}
+
+pub fn decode_activation_key(key: &str) -> Result<ActivationBundle, String> {
+    let bytes = license_core::b64::decode(key.trim())
+        .ok_or_else(|| "activation key is not valid base64".to_string())?;
+    serde_json::from_slice(&bytes).map_err(|_| "activation key is corrupted or not in the expected format".to_string())
 }
 
 /// Public Supabase project URL + anon key. Unlike `LICENSE_PUBLIC_KEY_B64`
@@ -241,6 +300,7 @@ impl SupabaseCloudTransport {
 #[derive(serde::Deserialize)]
 struct CheckLicenseRow {
     status: String,
+    plan: String,
     expires_at: String,
     #[serde(default)]
     payload_json: Option<String>,
@@ -283,7 +343,7 @@ impl CloudTransport for SupabaseCloudTransport {
         };
 
         let verdict = if row.status == "active" {
-            CloudVerdict::Active { expires_at_ms }
+            CloudVerdict::Active { expires_at_ms, plan: row.plan }
         } else {
             CloudVerdict::NotActive { reason: row.status }
         };
@@ -330,22 +390,22 @@ mod tests {
         }
     }
 
-    fn offline_state_with_blob(dir_name: &str, days_from_now_expiry: i64) -> (LicenseState, ed25519_dalek::SigningKey) {
+    fn offline_state_with_blob(dir_name: &str, days_from_now_expiry: i64) -> (LicenseState, PathBuf, ed25519_dalek::SigningKey) {
         let dir = temp_dir(dir_name);
         let key = test_keypair();
-        let state = LicenseState::init(dir, key.verifying_key());
+        let state = LicenseState::init(dir.clone(), key.verifying_key());
         let machine = crate::license::fingerprint::current();
         let now = chrono::Utc::now().timestamp_millis();
         let payload = sample_payload(machine, now - 30 * 86_400_000, now + days_from_now_expiry * 86_400_000);
         let file = mint(&key, &payload);
         state.accept_renewal(file).expect("valid renewal must be accepted");
-        (state, key)
+        (state, dir, key)
     }
 
-    fn offline_state_with_no_license(dir_name: &str) -> LicenseState {
+    fn offline_state_with_no_license(dir_name: &str) -> (LicenseState, PathBuf) {
         let dir = temp_dir(dir_name);
         let key = test_keypair();
-        LicenseState::init(dir, key.verifying_key())
+        (LicenseState::init(dir.clone(), key.verifying_key()), dir)
     }
 
     fn cloud_config() -> Option<CloudConfig> {
@@ -355,10 +415,10 @@ mod tests {
     // --- 1. valid online: cloud says active, must not lock ---
     #[tokio::test]
     async fn valid_online_is_not_locked() {
-        let (offline, _key) = offline_state_with_blob("valid_online", 30);
+        let (offline, dir, _key) = offline_state_with_blob("valid_online", 30);
         let now = chrono::Utc::now().timestamp_millis();
-        let transport = ScriptedTransport::new(CloudCheckOutcome::Success(CloudVerdict::Active { expires_at_ms: now + 30 * 86_400_000 }, None));
-        let cloud = CloudLicenseState::new(offline, cloud_config(), Box::new(transport));
+        let transport = ScriptedTransport::new(CloudCheckOutcome::Success(CloudVerdict::Active { expires_at_ms: now + 30 * 86_400_000, plan: "standard".into() }, None));
+        let cloud = CloudLicenseState::new(offline, dir, cloud_config(), Box::new(transport));
 
         cloud.refresh_from_cloud().await;
         let status = cloud.cached_status();
@@ -369,9 +429,9 @@ mod tests {
     // --- 2. cloud explicitly says revoked: must lock, even though the offline blob is still within its own validity window ---
     #[tokio::test]
     async fn cloud_says_revoked_locks_even_with_valid_offline_blob() {
-        let (offline, _key) = offline_state_with_blob("cloud_revoked", 30); // offline blob still has 30 days left
+        let (offline, dir, _key) = offline_state_with_blob("cloud_revoked", 30); // offline blob still has 30 days left
         let transport = ScriptedTransport::new(CloudCheckOutcome::Success(CloudVerdict::NotActive { reason: "revoked".into() }, None));
-        let cloud = CloudLicenseState::new(offline, cloud_config(), Box::new(transport));
+        let cloud = CloudLicenseState::new(offline, dir, cloud_config(), Box::new(transport));
 
         cloud.refresh_from_cloud().await;
         let status = cloud.cached_status();
@@ -381,15 +441,15 @@ mod tests {
     // --- 3. cloud is down, but within the 14-day cache grace: last known-good cloud verdict (active) still applies ---
     #[tokio::test]
     async fn cloud_down_within_cache_grace_uses_cached_active_verdict() {
-        let (offline, _key) = offline_state_with_blob("cache_grace_within", -20); // offline blob itself is long past its own 7-day grace
-        let cloud = CloudLicenseState::new(offline, cloud_config(), Box::new(ScriptedTransport::new(CloudCheckOutcome::Unreachable)));
+        let (offline, dir, _key) = offline_state_with_blob("cache_grace_within", -20); // offline blob itself is long past its own 7-day grace
+        let cloud = CloudLicenseState::new(offline, dir, cloud_config(), Box::new(ScriptedTransport::new(CloudCheckOutcome::Unreachable)));
 
         // Simulate a successful check that happened 10 days ago (within the 14-day cache grace).
         let now = chrono::Utc::now().timestamp_millis();
         {
             let mut cache = cloud.cache.lock().unwrap();
             cache.last_successful_check_at_ms = Some(now - 10 * 86_400_000);
-            cache.last_verdict = Some(CloudVerdict::Active { expires_at_ms: now + 5 * 86_400_000 });
+            cache.last_verdict = Some(CloudVerdict::Active { expires_at_ms: now + 5 * 86_400_000, plan: "standard".into() });
         }
 
         // A live check right now fails (network down) -- must NOT clear the cache.
@@ -401,14 +461,14 @@ mod tests {
     // --- 4. cloud down, past the 14-day cache grace: falls through to the offline blob, which is itself still valid ---
     #[tokio::test]
     async fn cloud_down_past_cache_grace_falls_to_valid_offline_blob() {
-        let (offline, _key) = offline_state_with_blob("cache_grace_past_valid_offline", 10); // offline blob still has 10 days left
-        let cloud = CloudLicenseState::new(offline, cloud_config(), Box::new(ScriptedTransport::new(CloudCheckOutcome::Unreachable)));
+        let (offline, dir, _key) = offline_state_with_blob("cache_grace_past_valid_offline", 10); // offline blob still has 10 days left
+        let cloud = CloudLicenseState::new(offline, dir, cloud_config(), Box::new(ScriptedTransport::new(CloudCheckOutcome::Unreachable)));
 
         let now = chrono::Utc::now().timestamp_millis();
         {
             let mut cache = cloud.cache.lock().unwrap();
             cache.last_successful_check_at_ms = Some(now - 20 * 86_400_000); // 20 days ago, past the 14-day grace
-            cache.last_verdict = Some(CloudVerdict::Active { expires_at_ms: now - 10 * 86_400_000 });
+            cache.last_verdict = Some(CloudVerdict::Active { expires_at_ms: now - 10 * 86_400_000, plan: "standard".into() });
         }
 
         cloud.refresh_from_cloud().await;
@@ -420,14 +480,14 @@ mod tests {
     // --- 5. cloud down, past cache grace, AND the offline blob is also expired past its own 7-day grace: only now must it lock ---
     #[tokio::test]
     async fn offline_blob_also_expired_locks_only_when_both_lapse() {
-        let (offline, _key) = offline_state_with_blob("both_lapsed", -20); // expired 20 days ago, past the 7-day offline grace
-        let cloud = CloudLicenseState::new(offline, cloud_config(), Box::new(ScriptedTransport::new(CloudCheckOutcome::Unreachable)));
+        let (offline, dir, _key) = offline_state_with_blob("both_lapsed", -20); // expired 20 days ago, past the 7-day offline grace
+        let cloud = CloudLicenseState::new(offline, dir, cloud_config(), Box::new(ScriptedTransport::new(CloudCheckOutcome::Unreachable)));
 
         let now = chrono::Utc::now().timestamp_millis();
         {
             let mut cache = cloud.cache.lock().unwrap();
             cache.last_successful_check_at_ms = Some(now - 20 * 86_400_000); // past the 14-day cache grace too
-            cache.last_verdict = Some(CloudVerdict::Active { expires_at_ms: now - 20 * 86_400_000 });
+            cache.last_verdict = Some(CloudVerdict::Active { expires_at_ms: now - 20 * 86_400_000, plan: "standard".into() });
         }
 
         cloud.refresh_from_cloud().await;
@@ -438,10 +498,10 @@ mod tests {
     // --- 6. fresh install, fully offline, never once reached the cloud: must behave exactly like the pre-Slice-1c offline-only path ---
     #[tokio::test]
     async fn never_checked_cloud_falls_straight_to_offline_blob() {
-        let (offline, _key) = offline_state_with_blob("never_checked_valid", 30);
+        let (offline, dir, _key) = offline_state_with_blob("never_checked_valid", 30);
         // No cloud config at all -- simulates a device that was never
         // handed cloud credentials, e.g. activated fully offline.
-        let cloud = CloudLicenseState::new(offline, None, Box::new(ScriptedTransport::new(CloudCheckOutcome::Unreachable)));
+        let cloud = CloudLicenseState::new(offline, dir, None, Box::new(ScriptedTransport::new(CloudCheckOutcome::Unreachable)));
 
         cloud.refresh_from_cloud().await; // should be a no-op: no config means no call at all
         let status = cloud.cached_status();
@@ -451,17 +511,17 @@ mod tests {
 
     #[tokio::test]
     async fn never_checked_cloud_with_no_config_never_calls_transport() {
-        let offline = offline_state_with_no_license("never_checked_no_call");
+        let (offline, dir) = offline_state_with_no_license("never_checked_no_call");
         struct CountingTransport(AtomicUsize);
         #[async_trait::async_trait]
         impl CloudTransport for CountingTransport {
             async fn check(&self, _license_id: &str, _device_token: &str) -> CloudCheckOutcome {
                 self.0.fetch_add(1, Ordering::SeqCst);
-                CloudCheckOutcome::Success(CloudVerdict::Active { expires_at_ms: 0 }, None)
+                CloudCheckOutcome::Success(CloudVerdict::Active { expires_at_ms: 0, plan: "standard".into() }, None)
             }
         }
         let transport = CountingTransport(AtomicUsize::new(0));
-        let cloud = CloudLicenseState::new(offline, None, Box::new(transport));
+        let cloud = CloudLicenseState::new(offline, dir, None, Box::new(transport));
         cloud.refresh_from_cloud().await;
         // No way to inspect the box after moving it in -- the meaningful
         // assertion is behavioral: with no config, a fresh install with no
@@ -474,8 +534,8 @@ mod tests {
     // --- 7. cloud returns garbage / 500: must NOT be treated as revoked ---
     #[tokio::test]
     async fn cloud_returns_garbage_or_500_does_not_lock() {
-        let (offline, _key) = offline_state_with_blob("garbage_response", 30);
-        let cloud = CloudLicenseState::new(offline, cloud_config(), Box::new(ScriptedTransport::new(CloudCheckOutcome::Unreachable)));
+        let (offline, dir, _key) = offline_state_with_blob("garbage_response", 30);
+        let cloud = CloudLicenseState::new(offline, dir, cloud_config(), Box::new(ScriptedTransport::new(CloudCheckOutcome::Unreachable)));
 
         cloud.refresh_from_cloud().await;
         let status = cloud.cached_status();
@@ -489,32 +549,170 @@ mod tests {
     // --- opportunistic silent renewal: a successful check carrying a fresh signed blob installs it via accept_renewal ---
     #[tokio::test]
     async fn successful_check_with_renewal_blob_installs_it_silently() {
-        let (offline, key) = offline_state_with_blob("silent_renewal", 5); // currently expires in 5 days
+        let (offline, dir, key) = offline_state_with_blob("silent_renewal", 5); // currently expires in 5 days
         let now = chrono::Utc::now().timestamp_millis();
         let machine = crate::license::fingerprint::current();
         let fresh_payload = sample_payload(machine, now, now + 365 * 86_400_000); // a fresh year-long renewal
         let fresh_file = mint(&key, &fresh_payload);
 
-        let transport = ScriptedTransport::new(CloudCheckOutcome::Success(CloudVerdict::Active { expires_at_ms: now + 365 * 86_400_000 }, Some(fresh_file)));
-        let cloud = CloudLicenseState::new(offline, cloud_config(), Box::new(transport));
+        let transport = ScriptedTransport::new(CloudCheckOutcome::Success(CloudVerdict::Active { expires_at_ms: now + 365 * 86_400_000, plan: "standard".into() }, Some(fresh_file)));
+        let cloud = CloudLicenseState::new(offline, dir, cloud_config(), Box::new(transport));
 
         cloud.refresh_from_cloud().await;
         cloud.recheck_offline(); // re-read the (now renewed) offline blob off disk
         let offline_status = cloud.offline.cached_status();
-        assert!(matches!(offline_status, LicenseStatus::Active { days_remaining } if days_remaining > 300), "expected the silently-installed year-long renewal to be reflected in the offline evaluator, got {offline_status:?}");
+        assert!(matches!(offline_status, LicenseStatus::Active { days_remaining, .. } if days_remaining > 300), "expected the silently-installed year-long renewal to be reflected in the offline evaluator, got {offline_status:?}");
     }
 
     // A malformed/wrong-machine renewal blob must not crash or block the cloud verdict itself from applying.
     #[tokio::test]
     async fn malformed_renewal_blob_does_not_break_the_cloud_verdict() {
-        let (offline, _key) = offline_state_with_blob("bad_renewal_blob", 30);
+        let (offline, dir, _key) = offline_state_with_blob("bad_renewal_blob", 30);
         let now = chrono::Utc::now().timestamp_millis();
         let bogus = SignedLicenseFile { payload_json: "not json".into(), signature_b64: "not base64!!".into() };
-        let transport = ScriptedTransport::new(CloudCheckOutcome::Success(CloudVerdict::Active { expires_at_ms: now + 30 * 86_400_000 }, Some(bogus)));
-        let cloud = CloudLicenseState::new(offline, cloud_config(), Box::new(transport));
+        let transport = ScriptedTransport::new(CloudCheckOutcome::Success(CloudVerdict::Active { expires_at_ms: now + 30 * 86_400_000, plan: "standard".into() }, Some(bogus)));
+        let cloud = CloudLicenseState::new(offline, dir, cloud_config(), Box::new(transport));
 
         cloud.refresh_from_cloud().await;
         let status = cloud.cached_status();
         assert!(!status.back_office_locked(), "a bogus renewal blob must be silently ignored, not break the cloud verdict, got {status:?}");
+    }
+
+    /// Everything the Settings -> License paste-activation flow actually
+    /// exercises: decode the activation key bundle apps/admin's mint flow
+    /// produces, then run it through the exact same `CloudLicenseState`
+    /// `activate_license_v3` uses. Each failure mode gets its own test with
+    /// a distinct assertion, per the acceptance criteria's "each gets a
+    /// distinct message" requirement -- these prove the underlying Result is
+    /// actually distinct per failure, which is what the frontend's Arabic
+    /// message mapping switches on.
+    mod activation {
+        use super::*;
+
+        fn encode_bundle(license_id: &str, device_token: &str, payload_json: &str, signature_b64: &str) -> String {
+            let json = serde_json::json!({
+                "license_id": license_id,
+                "device_token": device_token,
+                "payload_json": payload_json,
+                "signature_b64": signature_b64,
+            });
+            license_core::b64::encode(serde_json::to_string(&json).unwrap().as_bytes())
+        }
+
+        fn valid_bundle_key(dir_name: &str) -> (String, PathBuf, ed25519_dalek::SigningKey) {
+            let dir = temp_dir(dir_name);
+            let key = test_keypair();
+            let machine = crate::license::fingerprint::current();
+            let now = chrono::Utc::now().timestamp_millis();
+            let payload = sample_payload(machine, now - 1000, now + 30 * 86_400_000);
+            let file = mint(&key, &payload);
+            let bundle_key = encode_bundle("lic-abc-123", "a".repeat(64).as_str(), &file.payload_json, &file.signature_b64);
+            (bundle_key, dir, key)
+        }
+
+        // --- decode-level failures (never reach accept_renewal at all) ---
+
+        #[test]
+        fn invalid_base64_is_rejected_with_a_distinct_message() {
+            let err = decode_activation_key("not valid base64 at all!!").unwrap_err();
+            assert_eq!(err, "activation key is not valid base64");
+        }
+
+        #[test]
+        fn valid_base64_but_not_json_is_rejected_with_a_distinct_message() {
+            let key = license_core::b64::encode(b"this is not json");
+            let err = decode_activation_key(&key).unwrap_err();
+            assert_eq!(err, "activation key is corrupted or not in the expected format");
+        }
+
+        #[test]
+        fn valid_json_missing_required_fields_is_rejected() {
+            let key = license_core::b64::encode(b"{\"license_id\":\"only-this-field\"}");
+            let err = decode_activation_key(&key).unwrap_err();
+            assert_eq!(err, "activation key is corrupted or not in the expected format");
+        }
+
+        // --- full end-to-end activation through CloudLicenseState (the actual production path) ---
+
+        #[test]
+        fn valid_bundle_installs_offline_blob_and_wires_cloud_config() {
+            let (bundle_key, dir, key) = valid_bundle_key("activation_valid");
+            let state = LicenseState::init(dir.clone(), key.verifying_key());
+            let cloud = CloudLicenseState::new(state, dir.clone(), None, Box::new(ScriptedTransport::new(CloudCheckOutcome::Unreachable)));
+
+            let bundle = decode_activation_key(&bundle_key).expect("a well-formed bundle must decode");
+            let file = SignedLicenseFile { payload_json: bundle.payload_json, signature_b64: bundle.signature_b64 };
+            let status = cloud.accept_renewal(file).expect("a valid, correctly-signed bundle must be accepted");
+            assert!(!status.back_office_locked(), "a freshly activated valid license must not be locked, got {status:?}");
+
+            cloud.set_config(CloudConfig { license_id: bundle.license_id.clone(), device_token: bundle.device_token.clone() });
+            cloud.persist_cloud_config().expect("persisting cloud_config.json must succeed");
+
+            let loaded = load_config_from_file(&dir.join("cloud_config.json")).expect("cloud_config.json must be loadable after activation");
+            assert_eq!(loaded.license_id, bundle.license_id);
+            assert_eq!(loaded.device_token, bundle.device_token);
+        }
+
+        #[test]
+        fn bundle_with_forged_signature_is_rejected() {
+            let dir = temp_dir("activation_forged");
+            let real_key = test_keypair();
+            let attacker_key = test_keypair();
+            let machine = crate::license::fingerprint::current();
+            let now = chrono::Utc::now().timestamp_millis();
+            let payload = sample_payload(machine, now - 1000, now + 30 * 86_400_000);
+            let file = mint(&attacker_key, &payload); // signed by the WRONG key
+            let bundle_key = encode_bundle("lic-x", &"b".repeat(64), &file.payload_json, &file.signature_b64);
+
+            let state = LicenseState::init(dir.clone(), real_key.verifying_key()); // app trusts real_key, not attacker_key
+            let cloud = CloudLicenseState::new(state, dir, None, Box::new(ScriptedTransport::new(CloudCheckOutcome::Unreachable)));
+
+            let bundle = decode_activation_key(&bundle_key).unwrap();
+            let file = SignedLicenseFile { payload_json: bundle.payload_json, signature_b64: bundle.signature_b64 };
+            let err = cloud.accept_renewal(file).unwrap_err();
+            assert_eq!(err, license_core::signed::LicenseError::ForgedOrCorruptSignature);
+        }
+
+        #[test]
+        fn bundle_issued_for_a_different_machine_is_rejected() {
+            let dir = temp_dir("activation_wrong_machine");
+            let key = test_keypair();
+            let someone_elses_machine = license_core::fingerprint::MachineFingerprint::from_raw(Some("cpu-other"), Some("disk-other"), Some("mac-other"));
+            let now = chrono::Utc::now().timestamp_millis();
+            let payload = sample_payload(someone_elses_machine, now - 1000, now + 30 * 86_400_000);
+            let file = mint(&key, &payload);
+            let bundle_key = encode_bundle("lic-y", &"c".repeat(64), &file.payload_json, &file.signature_b64);
+
+            let state = LicenseState::init(dir.clone(), key.verifying_key());
+            let cloud = CloudLicenseState::new(state, dir, None, Box::new(ScriptedTransport::new(CloudCheckOutcome::Unreachable)));
+
+            let bundle = decode_activation_key(&bundle_key).unwrap();
+            let file = SignedLicenseFile { payload_json: bundle.payload_json, signature_b64: bundle.signature_b64 };
+            let err = cloud.accept_renewal(file).unwrap_err();
+            assert_eq!(err, license_core::signed::LicenseError::WrongMachine);
+        }
+
+        #[test]
+        fn bundle_older_than_the_currently_installed_license_is_rejected_as_stale() {
+            let dir = temp_dir("activation_stale");
+            let key = test_keypair();
+            let machine = crate::license::fingerprint::current();
+            let now = chrono::Utc::now().timestamp_millis();
+
+            let state = LicenseState::init(dir.clone(), key.verifying_key());
+            let cloud = CloudLicenseState::new(state, dir, None, Box::new(ScriptedTransport::new(CloudCheckOutcome::Unreachable)));
+
+            let newer = mint(&key, &sample_payload(machine.clone(), now, now + 60 * 86_400_000));
+            cloud.accept_renewal(newer).expect("installing the newer license first must succeed");
+
+            let older_payload = sample_payload(machine, now - 10 * 86_400_000, now + 5 * 86_400_000);
+            let older = mint(&key, &older_payload);
+            let bundle_key = encode_bundle("lic-z", &"d".repeat(64), &older.payload_json, &older.signature_b64);
+            let bundle = decode_activation_key(&bundle_key).unwrap();
+            let file = SignedLicenseFile { payload_json: bundle.payload_json, signature_b64: bundle.signature_b64 };
+
+            let err = cloud.accept_renewal(file).unwrap_err();
+            assert_eq!(err, license_core::signed::LicenseError::StaleRenewal);
+        }
     }
 }

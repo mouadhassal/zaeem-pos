@@ -188,7 +188,7 @@ pub fn run() {
             let license_state = license::store::LicenseState::init(license_dir.clone(), license::compiled_public_key());
             let cloud_config = license::cloud::load_config_from_file(&license_dir.join("cloud_config.json"));
             let transport = license::cloud::SupabaseCloudTransport::new(license::cloud::supabase_url(), license::cloud::supabase_anon_key());
-            let cloud_license_state = license::cloud::CloudLicenseState::new(license_state, cloud_config, Box::new(transport));
+            let cloud_license_state = license::cloud::CloudLicenseState::new(license_state, license_dir.clone(), cloud_config, Box::new(transport));
             app.manage(cloud_license_state);
 
             let offline_timer_handle = app.handle().clone();
@@ -373,6 +373,7 @@ pub fn run() {
             commands_v3::get_cached_license_status_v3,
             commands_v3::check_license_v3,
             commands_v3::renew_license_v3,
+            commands_v3::activate_license_v3,
             commands::queue_media,
             commands::list_uploads,
             commands::process_queue,
