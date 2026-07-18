@@ -25,7 +25,7 @@ fn authenticate_actor(state: &State<Db>, session_token: &str) -> Result<Actor, S
 /// The POS-never-stops-selling guarantee is structural, not a flag check:
 /// order/payment/print commands never call this at all. Only back-office /
 /// reports commands do. See license/signed.rs's `LicenseStatus::back_office_locked`.
-fn require_license_not_locked(license: &State<crate::license::store::LicenseState>) -> Result<(), String> {
+fn require_license_not_locked(license: &State<crate::license::cloud::CloudLicenseState>) -> Result<(), String> {
     if license.cached_status().back_office_locked() {
         return Err("license expired -- back-office access is locked until renewed. Point of sale keeps working normally.".to_string());
     }
@@ -177,7 +177,7 @@ pub fn logout_v3(state: State<Db>, session_token: String) -> Result<(), String> 
 }
 
 #[tauri::command]
-pub fn create_branch_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, tenant_id: String, name: String, currency: String) -> Result<String, String> {
+pub fn create_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, tenant_id: String, name: String, currency: String) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::CreateBranch).map_err(|e| e.to_string())?;
@@ -203,7 +203,7 @@ pub fn create_branch_v3(state: State<Db>, license: State<crate::license::store::
 
 #[tauri::command]
 pub fn create_staff_v3(
-    state: State<Db>, license: State<crate::license::store::LicenseState>,
+    state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>,
     session_token: String,
     target_branch_id: Option<String>,
     role: String,
@@ -264,7 +264,7 @@ pub fn create_staff_v3(
 /// the new role being assigned -- an actor cannot demote-then-promote around
 /// the rule, and cannot touch a target who already outranks them.
 #[tauri::command]
-pub fn update_staff_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, target_staff_id: String, new_role: String) -> Result<(), String> {
+pub fn update_staff_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, target_staff_id: String, new_role: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
@@ -306,7 +306,7 @@ pub fn update_staff_v3(state: State<Db>, license: State<crate::license::store::L
 /// dedicated permission -- picking a branch to create staff into isn't a
 /// sensitive read by itself; `create_staff_v3` re-checks everything).
 #[tauri::command]
-pub fn list_branches_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<(String, String)>, String> {
+pub fn list_branches_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<(String, String)>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -318,7 +318,7 @@ pub fn list_branches_v3(state: State<Db>, license: State<crate::license::store::
 /// staff/reports/settings management are the intended surface, order/
 /// payment/print commands must never be gated this way.
 #[tauri::command]
-pub fn list_staff_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::StaffRow>, String> {
+pub fn list_staff_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::StaffRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
     require_license_not_locked(&license)?;
@@ -332,7 +332,7 @@ pub fn list_staff_v3(state: State<Db>, license: State<crate::license::store::Lic
 /// comment). Role changes still go through `update_staff_v3` (the
 /// rank-checked path); this command never touches `role`/`role_rank`.
 #[tauri::command]
-pub fn update_staff_profile_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, target_staff_id: String, name: String, new_pin: Option<String>) -> Result<(), String> {
+pub fn update_staff_profile_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, target_staff_id: String, name: String, new_pin: Option<String>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
@@ -363,7 +363,7 @@ pub fn update_staff_profile_v3(state: State<Db>, license: State<crate::license::
 }
 
 #[tauri::command]
-pub fn set_staff_active_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, target_staff_id: String, is_active: bool) -> Result<(), String> {
+pub fn set_staff_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, target_staff_id: String, is_active: bool) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
@@ -391,7 +391,7 @@ pub fn set_staff_active_v3(state: State<Db>, license: State<crate::license::stor
 }
 
 #[tauri::command]
-pub fn list_orders_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<OrderRow>, String> {
+pub fn list_orders_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<OrderRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ViewOrders).map_err(|e| e.to_string())?;
@@ -572,7 +572,7 @@ pub fn list_categories_v3(state: State<Db>, session_token: String) -> Result<Vec
 }
 
 #[tauri::command]
-pub fn create_category_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, name: String, color: Option<String>, sort_order: i64, image_path: Option<String>) -> Result<String, String> {
+pub fn create_category_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, color: Option<String>, sort_order: i64, image_path: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
@@ -586,7 +586,7 @@ pub fn create_category_v3(state: State<Db>, license: State<crate::license::store
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn update_category_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, category_id: String, name: String, color: Option<String>, sort_order: i64, image_path: Option<String>) -> Result<(), String> {
+pub fn update_category_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category_id: String, name: String, color: Option<String>, sort_order: i64, image_path: Option<String>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
@@ -599,7 +599,7 @@ pub fn update_category_v3(state: State<Db>, license: State<crate::license::store
 }
 
 #[tauri::command]
-pub fn delete_category_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, category_id: String) -> Result<(), String> {
+pub fn delete_category_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
@@ -668,7 +668,7 @@ pub fn get_menu_item_photo_v3(state: State<Db>, session_token: String, item_id: 
 /// photo`'s `assert_tenant_owns_row` -- a manager can only set a photo for
 /// their own tenant's product, never another tenant's by id.
 #[tauri::command]
-pub fn upload_menu_item_photo_v3(app: tauri::AppHandle, state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, item_id: String, photo_bytes: Vec<u8>) -> Result<(), String> {
+pub fn upload_menu_item_photo_v3(app: tauri::AppHandle, state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, photo_bytes: Vec<u8>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
@@ -687,7 +687,7 @@ pub fn upload_menu_item_photo_v3(app: tauri::AppHandle, state: State<Db>, licens
 
 /// Removes a product's photo (falls back to the category glyph).
 #[tauri::command]
-pub fn delete_menu_item_photo_v3(app: tauri::AppHandle, state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, item_id: String) -> Result<(), String> {
+pub fn delete_menu_item_photo_v3(app: tauri::AppHandle, state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
@@ -712,7 +712,7 @@ pub fn list_combo_components_v3(state: State<Db>, session_token: String, menu_it
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_menu_item_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, description: Option<String>, barcode: Option<String>) -> Result<String, String> {
+pub fn create_menu_item_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, description: Option<String>, barcode: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
@@ -731,7 +731,7 @@ pub fn create_menu_item_v3(state: State<Db>, license: State<crate::license::stor
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn update_menu_item_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, item_id: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, description: Option<String>, barcode: Option<String>) -> Result<(), String> {
+pub fn update_menu_item_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, description: Option<String>, barcode: Option<String>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
@@ -749,7 +749,7 @@ pub fn update_menu_item_v3(state: State<Db>, license: State<crate::license::stor
 }
 
 #[tauri::command]
-pub fn delete_menu_item_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, item_id: String) -> Result<(), String> {
+pub fn delete_menu_item_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
@@ -762,7 +762,7 @@ pub fn delete_menu_item_v3(state: State<Db>, license: State<crate::license::stor
 }
 
 #[tauri::command]
-pub fn set_menu_item_active_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, item_id: String, is_active: bool) -> Result<(), String> {
+pub fn set_menu_item_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, is_active: bool) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
@@ -775,7 +775,7 @@ pub fn set_menu_item_active_v3(state: State<Db>, license: State<crate::license::
 }
 
 #[tauri::command]
-pub fn list_combo_meals_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::ComboMealRow>, String> {
+pub fn list_combo_meals_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::ComboMealRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -783,7 +783,7 @@ pub fn list_combo_meals_v3(state: State<Db>, license: State<crate::license::stor
 }
 
 #[tauri::command]
-pub fn list_combo_meal_items_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::ComboItemJoinRow>, String> {
+pub fn list_combo_meal_items_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::ComboItemJoinRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -791,7 +791,7 @@ pub fn list_combo_meal_items_v3(state: State<Db>, license: State<crate::license:
 }
 
 #[tauri::command]
-pub fn create_combo_meal_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, name: String, bundle_price_cents: i64, items: Vec<(String, i64)>) -> Result<String, String> {
+pub fn create_combo_meal_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, bundle_price_cents: i64, items: Vec<(String, i64)>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
@@ -804,7 +804,7 @@ pub fn create_combo_meal_v3(state: State<Db>, license: State<crate::license::sto
 }
 
 #[tauri::command]
-pub fn update_combo_meal_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, combo_id: String, name: String, bundle_price_cents: i64, items: Vec<(String, i64)>) -> Result<(), String> {
+pub fn update_combo_meal_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, combo_id: String, name: String, bundle_price_cents: i64, items: Vec<(String, i64)>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
@@ -817,7 +817,7 @@ pub fn update_combo_meal_v3(state: State<Db>, license: State<crate::license::sto
 }
 
 #[tauri::command]
-pub fn delete_combo_meal_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, combo_id: String) -> Result<(), String> {
+pub fn delete_combo_meal_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, combo_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
@@ -830,7 +830,7 @@ pub fn delete_combo_meal_v3(state: State<Db>, license: State<crate::license::sto
 }
 
 #[tauri::command]
-pub fn list_happy_hour_rules_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::HappyHourRuleRow>, String> {
+pub fn list_happy_hour_rules_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::HappyHourRuleRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -839,7 +839,7 @@ pub fn list_happy_hour_rules_v3(state: State<Db>, license: State<crate::license:
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_happy_hour_rule_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, menu_item_id: String, discount_percent: i64, day_of_week: i64, start_time: String, end_time: String, is_active: bool) -> Result<String, String> {
+pub fn create_happy_hour_rule_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, menu_item_id: String, discount_percent: i64, day_of_week: i64, start_time: String, end_time: String, is_active: bool) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
@@ -853,7 +853,7 @@ pub fn create_happy_hour_rule_v3(state: State<Db>, license: State<crate::license
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn update_happy_hour_rule_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, rule_id: String, menu_item_id: String, discount_percent: i64, day_of_week: i64, start_time: String, end_time: String, is_active: bool) -> Result<(), String> {
+pub fn update_happy_hour_rule_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, rule_id: String, menu_item_id: String, discount_percent: i64, day_of_week: i64, start_time: String, end_time: String, is_active: bool) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
@@ -866,7 +866,7 @@ pub fn update_happy_hour_rule_v3(state: State<Db>, license: State<crate::license
 }
 
 #[tauri::command]
-pub fn delete_happy_hour_rule_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, rule_id: String) -> Result<(), String> {
+pub fn delete_happy_hour_rule_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, rule_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
@@ -879,7 +879,7 @@ pub fn delete_happy_hour_rule_v3(state: State<Db>, license: State<crate::license
 }
 
 #[tauri::command]
-pub fn set_happy_hour_rule_active_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, rule_id: String, is_active: bool) -> Result<(), String> {
+pub fn set_happy_hour_rule_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, rule_id: String, is_active: bool) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
@@ -898,7 +898,7 @@ pub fn set_happy_hour_rule_active_v3(state: State<Db>, license: State<crate::lic
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn list_branches_full_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::LegacyBranchFullRow>, String> {
+pub fn list_branches_full_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::LegacyBranchFullRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
@@ -908,7 +908,7 @@ pub fn list_branches_full_v3(state: State<Db>, license: State<crate::license::st
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_branch_full_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, name: String, address: Option<String>, city: Option<String>, phone: Option<String>, timezone: String, currency: String, tax_rate_cents: i64, max_tables: i64) -> Result<String, String> {
+pub fn create_branch_full_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, address: Option<String>, city: Option<String>, phone: Option<String>, timezone: String, currency: String, tax_rate_cents: i64, max_tables: i64) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
@@ -922,7 +922,7 @@ pub fn create_branch_full_v3(state: State<Db>, license: State<crate::license::st
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn update_branch_full_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, branch_id: String, name: String, address: Option<String>, city: Option<String>, phone: Option<String>, timezone: String, currency: String, tax_rate_cents: i64, max_tables: i64) -> Result<(), String> {
+pub fn update_branch_full_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, branch_id: String, name: String, address: Option<String>, city: Option<String>, phone: Option<String>, timezone: String, currency: String, tax_rate_cents: i64, max_tables: i64) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
@@ -935,7 +935,7 @@ pub fn update_branch_full_v3(state: State<Db>, license: State<crate::license::st
 }
 
 #[tauri::command]
-pub fn set_branch_full_active_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, branch_id: String, is_active: bool) -> Result<(), String> {
+pub fn set_branch_full_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, branch_id: String, is_active: bool) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
@@ -948,7 +948,7 @@ pub fn set_branch_full_active_v3(state: State<Db>, license: State<crate::license
 }
 
 #[tauri::command]
-pub fn update_branch_detail_field_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, branch_id: String, field: String, value: Option<String>) -> Result<(), String> {
+pub fn update_branch_detail_field_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, branch_id: String, field: String, value: Option<String>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
@@ -961,7 +961,7 @@ pub fn update_branch_detail_field_v3(state: State<Db>, license: State<crate::lic
 }
 
 #[tauri::command]
-pub fn list_terminals_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, branch_id: String) -> Result<Vec<crate::repo::TerminalRow>, String> {
+pub fn list_terminals_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, branch_id: String) -> Result<Vec<crate::repo::TerminalRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
@@ -977,7 +977,7 @@ pub struct TenantTodayStats {
 }
 
 #[tauri::command]
-pub fn get_tenant_today_stats_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<TenantTodayStats, String> {
+pub fn get_tenant_today_stats_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<TenantTodayStats, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
@@ -987,7 +987,7 @@ pub fn get_tenant_today_stats_v3(state: State<Db>, license: State<crate::license
 }
 
 #[tauri::command]
-pub fn get_terminal_counts_by_branch_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<(String, i64)>, String> {
+pub fn get_terminal_counts_by_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<(String, i64)>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
@@ -1002,7 +1002,7 @@ pub fn get_terminal_counts_by_branch_v3(state: State<Db>, license: State<crate::
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn list_ingredients_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::IngredientRow>, String> {
+pub fn list_ingredients_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::IngredientRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -1010,7 +1010,7 @@ pub fn list_ingredients_v3(state: State<Db>, license: State<crate::license::stor
 }
 
 #[tauri::command]
-pub fn create_ingredient_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, name: String, unit: String, cost_cents_per_unit: i64, min_stock: f64) -> Result<String, String> {
+pub fn create_ingredient_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, unit: String, cost_cents_per_unit: i64, min_stock: f64) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageIngredients).map_err(|e| e.to_string())?;
@@ -1027,7 +1027,7 @@ pub fn create_ingredient_v3(state: State<Db>, license: State<crate::license::sto
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn update_ingredient_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, ingredient_id: String, name: String, unit: String, cost_cents_per_unit: i64, min_stock: f64) -> Result<(), String> {
+pub fn update_ingredient_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String, name: String, unit: String, cost_cents_per_unit: i64, min_stock: f64) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageIngredients).map_err(|e| e.to_string())?;
@@ -1043,7 +1043,7 @@ pub fn update_ingredient_v3(state: State<Db>, license: State<crate::license::sto
 /// `inventory_logs` fact + the audit entry, same atomicity principle as
 /// `take_payment_v3`.
 #[tauri::command]
-pub fn adjust_stock_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, ingredient_id: String, change_amount: f64, reason: String) -> Result<String, String> {
+pub fn adjust_stock_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String, change_amount: f64, reason: String) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::AdjustStock).map_err(|e| e.to_string())?;
@@ -1116,7 +1116,7 @@ pub fn close_shift_v3(state: State<Db>, session_token: String, shift_id: String,
 /// `staff/page.tsx`'s shifts tab: list + filter, and a manager's "force
 /// close" for an abandoned shift.
 #[tauri::command]
-pub fn list_shifts_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, date_from: Option<String>, date_to: Option<String>, user_id: Option<String>) -> Result<Vec<crate::repo::ShiftAdminRow>, String> {
+pub fn list_shifts_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, date_from: Option<String>, date_to: Option<String>, user_id: Option<String>) -> Result<Vec<crate::repo::ShiftAdminRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
@@ -1125,7 +1125,7 @@ pub fn list_shifts_v3(state: State<Db>, license: State<crate::license::store::Li
 }
 
 #[tauri::command]
-pub fn force_close_shift_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, shift_id: String) -> Result<(), String> {
+pub fn force_close_shift_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, shift_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
@@ -1138,7 +1138,7 @@ pub fn force_close_shift_v3(state: State<Db>, license: State<crate::license::sto
 }
 
 #[tauri::command]
-pub fn list_attendance_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, date_from: Option<String>, date_to: Option<String>, user_id: Option<String>) -> Result<Vec<crate::repo::AttendanceRow>, String> {
+pub fn list_attendance_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, date_from: Option<String>, date_to: Option<String>, user_id: Option<String>) -> Result<Vec<crate::repo::AttendanceRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
@@ -1188,7 +1188,7 @@ pub fn list_debtors_v3(state: State<Db>, session_token: String) -> Result<Vec<cr
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>) -> Result<String, String> {
+pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
@@ -1205,7 +1205,7 @@ pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::store::
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn update_debtor_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, debtor_id: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>) -> Result<(), String> {
+pub fn update_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
@@ -1218,7 +1218,7 @@ pub fn update_debtor_v3(state: State<Db>, license: State<crate::license::store::
 }
 
 #[tauri::command]
-pub fn deactivate_debtor_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, debtor_id: String) -> Result<(), String> {
+pub fn deactivate_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
@@ -1231,7 +1231,7 @@ pub fn deactivate_debtor_v3(state: State<Db>, license: State<crate::license::sto
 }
 
 #[tauri::command]
-pub fn list_debt_entries_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, debtor_id: String) -> Result<Vec<crate::repo::DebtEntryRow>, String> {
+pub fn list_debt_entries_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String) -> Result<Vec<crate::repo::DebtEntryRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
@@ -1242,7 +1242,7 @@ pub fn list_debt_entries_v3(state: State<Db>, license: State<crate::license::sto
 /// One transaction: the PAYMENT fact + the debtor's running-balance update +
 /// the audit entry, same atomicity principle as `take_payment_v3`.
 #[tauri::command]
-pub fn record_debt_payment_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, debtor_id: String, amount_cents: i64, notes: Option<String>) -> Result<String, String> {
+pub fn record_debt_payment_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String, amount_cents: i64, notes: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
@@ -1265,7 +1265,7 @@ pub fn record_debt_payment_v3(state: State<Db>, license: State<crate::license::s
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn get_finance_revenue_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, start_iso: String, end_iso: String) -> Result<crate::repo::RevenueSummaryRow, String> {
+pub fn get_finance_revenue_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String) -> Result<crate::repo::RevenueSummaryRow, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
@@ -1274,7 +1274,7 @@ pub fn get_finance_revenue_v3(state: State<Db>, license: State<crate::license::s
 }
 
 #[tauri::command]
-pub fn get_tax_collected_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, since_iso: String) -> Result<i64, String> {
+pub fn get_tax_collected_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, since_iso: String) -> Result<i64, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
@@ -1283,7 +1283,7 @@ pub fn get_tax_collected_v3(state: State<Db>, license: State<crate::license::sto
 }
 
 #[tauri::command]
-pub fn list_operational_costs_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::OperationalCostRow>, String> {
+pub fn list_operational_costs_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::OperationalCostRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
@@ -1292,7 +1292,7 @@ pub fn list_operational_costs_v3(state: State<Db>, license: State<crate::license
 }
 
 #[tauri::command]
-pub fn create_operational_cost_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, category: String, amount_cents: i64, date: String, notes: Option<String>) -> Result<String, String> {
+pub fn create_operational_cost_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category: String, amount_cents: i64, date: String, notes: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
@@ -1311,7 +1311,7 @@ pub fn create_operational_cost_v3(state: State<Db>, license: State<crate::licens
 }
 
 #[tauri::command]
-pub fn list_invoices_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::InvoiceRow>, String> {
+pub fn list_invoices_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::InvoiceRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
@@ -1320,7 +1320,7 @@ pub fn list_invoices_v3(state: State<Db>, license: State<crate::license::store::
 }
 
 #[tauri::command]
-pub fn create_invoice_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, period_start: String, period_end: String, amount_cents: i64, due_date: String) -> Result<String, String> {
+pub fn create_invoice_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, period_start: String, period_end: String, amount_cents: i64, due_date: String) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
@@ -1339,7 +1339,7 @@ pub fn create_invoice_v3(state: State<Db>, license: State<crate::license::store:
 }
 
 #[tauri::command]
-pub fn mark_invoice_paid_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, invoice_id: String) -> Result<(), String> {
+pub fn mark_invoice_paid_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, invoice_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
@@ -1353,7 +1353,7 @@ pub fn mark_invoice_paid_v3(state: State<Db>, license: State<crate::license::sto
 
 /// Back-office command -- license-gated. See the note on `list_staff_v3`.
 #[tauri::command]
-pub fn get_sales_report_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, today_start_iso: String) -> Result<crate::repo::SalesReportRow, String> {
+pub fn get_sales_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, today_start_iso: String) -> Result<crate::repo::SalesReportRow, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
     require_license_not_locked(&license)?;
@@ -1373,7 +1373,7 @@ pub fn get_chain_config_v3(state: State<Db>, session_token: String) -> Result<cr
 }
 
 #[tauri::command]
-pub fn update_chain_currency_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, currency: String) -> Result<(), String> {
+pub fn update_chain_currency_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, currency: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
@@ -1386,7 +1386,7 @@ pub fn update_chain_currency_v3(state: State<Db>, license: State<crate::license:
 }
 
 #[tauri::command]
-pub fn update_chain_tax_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, tax_rate_cents: i64, tax_mode: String) -> Result<(), String> {
+pub fn update_chain_tax_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, tax_rate_cents: i64, tax_mode: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
@@ -1425,7 +1425,7 @@ pub fn get_discount_caps_v3(state: State<Db>, session_token: String) -> Result<D
 /// adjusts the per-role discount ceilings future orders are checked
 /// against.
 #[tauri::command]
-pub fn update_discount_caps_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, cashier_percent: i64, manager_percent: i64, owner_percent: i64) -> Result<(), String> {
+pub fn update_discount_caps_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, cashier_percent: i64, manager_percent: i64, owner_percent: i64) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
@@ -1445,7 +1445,7 @@ pub fn update_discount_caps_v3(state: State<Db>, license: State<crate::license::
 }
 
 #[tauri::command]
-pub fn get_legacy_branch_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Option<crate::repo::LegacyBranchRow>, String> {
+pub fn get_legacy_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Option<crate::repo::LegacyBranchRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -1454,7 +1454,7 @@ pub fn get_legacy_branch_v3(state: State<Db>, license: State<crate::license::sto
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn save_legacy_branch_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, existing_id: Option<String>, name: String, address: Option<String>, phone: Option<String>, max_tables: i64, currency: String) -> Result<String, String> {
+pub fn save_legacy_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, existing_id: Option<String>, name: String, address: Option<String>, phone: Option<String>, max_tables: i64, currency: String) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
@@ -1467,7 +1467,7 @@ pub fn save_legacy_branch_v3(state: State<Db>, license: State<crate::license::st
 }
 
 #[tauri::command]
-pub fn set_printer_active_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, printer_id: String, is_active: bool) -> Result<(), String> {
+pub fn set_printer_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, printer_id: String, is_active: bool) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
@@ -1480,7 +1480,7 @@ pub fn set_printer_active_v3(state: State<Db>, license: State<crate::license::st
 }
 
 #[tauri::command]
-pub fn update_printer_paper_width_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, printer_id: String, paper_width_mm: i64) -> Result<(), String> {
+pub fn update_printer_paper_width_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, printer_id: String, paper_width_mm: i64) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
@@ -1520,7 +1520,7 @@ pub fn resolve_menu_price_v3(state: State<Db>, session_token: String, branch_id:
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_customer_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>, birthday: Option<String>) -> Result<String, String> {
+pub fn create_customer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>, birthday: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
@@ -1539,7 +1539,7 @@ pub fn create_customer_v3(state: State<Db>, license: State<crate::license::store
 }
 
 #[tauri::command]
-pub fn list_customers_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::CustomerRow>, String> {
+pub fn list_customers_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::CustomerRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
@@ -1549,7 +1549,7 @@ pub fn list_customers_v3(state: State<Db>, license: State<crate::license::store:
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn update_customer_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, customer_id: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>, birthday: Option<String>) -> Result<(), String> {
+pub fn update_customer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, customer_id: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>, birthday: Option<String>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
@@ -1564,7 +1564,7 @@ pub fn update_customer_v3(state: State<Db>, license: State<crate::license::store
 }
 
 #[tauri::command]
-pub fn delete_customer_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, customer_id: String) -> Result<(), String> {
+pub fn delete_customer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, customer_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
@@ -1583,7 +1583,7 @@ pub struct CustomerDetailV3 {
 }
 
 #[tauri::command]
-pub fn get_customer_detail_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, phone: String) -> Result<CustomerDetailV3, String> {
+pub fn get_customer_detail_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, phone: String) -> Result<CustomerDetailV3, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
@@ -1601,7 +1601,7 @@ pub fn get_customer_detail_v3(state: State<Db>, license: State<crate::license::s
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn list_loyalty_cards_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::LoyaltyCardRow>, String> {
+pub fn list_loyalty_cards_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::LoyaltyCardRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
@@ -1613,7 +1613,7 @@ pub fn list_loyalty_cards_v3(state: State<Db>, license: State<crate::license::st
 /// issue-card form -- a scanner is just a keyboard emitting the UID string,
 /// so there is no separate hardware code path here at all.
 #[tauri::command]
-pub fn issue_loyalty_card_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, customer_id: String, card_number: String) -> Result<String, String> {
+pub fn issue_loyalty_card_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, customer_id: String, card_number: String) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
@@ -1631,7 +1631,7 @@ pub fn issue_loyalty_card_v3(state: State<Db>, license: State<crate::license::st
 }
 
 #[tauri::command]
-pub fn list_loyalty_transactions_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, card_id: Option<String>) -> Result<Vec<crate::repo::LoyaltyTxRow>, String> {
+pub fn list_loyalty_transactions_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, card_id: Option<String>) -> Result<Vec<crate::repo::LoyaltyTxRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
@@ -1640,7 +1640,7 @@ pub fn list_loyalty_transactions_v3(state: State<Db>, license: State<crate::lice
 }
 
 #[tauri::command]
-pub fn create_purchase_order_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, supplier_id: String, notes: Option<String>) -> Result<String, String> {
+pub fn create_purchase_order_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, notes: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
@@ -1663,7 +1663,7 @@ pub fn create_purchase_order_v3(state: State<Db>, license: State<crate::license:
 
 /// `NewOrderModal`'s quick-create path -- bare PO + `total_orders` bump.
 #[tauri::command]
-pub fn create_purchase_order_and_bump_supplier_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, supplier_id: String, notes: Option<String>) -> Result<String, String> {
+pub fn create_purchase_order_and_bump_supplier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, notes: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
@@ -1689,7 +1689,7 @@ pub fn create_purchase_order_and_bump_supplier_v3(state: State<Db>, license: Sta
 /// `create_purchase_order_with_items` expects, so no reshaping needed
 /// between the Tauri boundary and the repo call.
 #[tauri::command]
-pub fn create_purchase_order_with_items_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, supplier_id: String, notes: Option<String>, items: Vec<(String, f64, i64)>) -> Result<String, String> {
+pub fn create_purchase_order_with_items_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, notes: Option<String>, items: Vec<(String, f64, i64)>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
@@ -1711,7 +1711,7 @@ pub fn create_purchase_order_with_items_v3(state: State<Db>, license: State<crat
 }
 
 #[tauri::command]
-pub fn list_purchase_orders_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::PurchaseOrderRow>, String> {
+pub fn list_purchase_orders_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::PurchaseOrderRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
@@ -1720,7 +1720,7 @@ pub fn list_purchase_orders_v3(state: State<Db>, license: State<crate::license::
 }
 
 #[tauri::command]
-pub fn cancel_purchase_order_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, po_id: String) -> Result<(), String> {
+pub fn cancel_purchase_order_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, po_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
@@ -1741,7 +1741,7 @@ pub fn cancel_purchase_order_v3(state: State<Db>, license: State<crate::license:
 }
 
 #[tauri::command]
-pub fn list_purchase_order_items_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, po_id: String) -> Result<Vec<crate::repo::PurchaseOrderItemRow>, String> {
+pub fn list_purchase_order_items_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, po_id: String) -> Result<Vec<crate::repo::PurchaseOrderItemRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
@@ -1753,7 +1753,7 @@ pub fn list_purchase_order_items_v3(state: State<Db>, license: State<crate::lice
 /// `items` is `(purchase_order_item_id, ingredient_id, quantity_received)`
 /// triples for however many line items the PO has.
 #[tauri::command]
-pub fn receive_purchase_order_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, po_id: String, items: Vec<(String, String, f64)>) -> Result<(), String> {
+pub fn receive_purchase_order_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, po_id: String, items: Vec<(String, String, f64)>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
@@ -1776,7 +1776,7 @@ pub fn receive_purchase_order_v3(state: State<Db>, license: State<crate::license
 }
 
 #[tauri::command]
-pub fn list_suppliers_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::SupplierRow>, String> {
+pub fn list_suppliers_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::SupplierRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
@@ -1785,7 +1785,7 @@ pub fn list_suppliers_v3(state: State<Db>, license: State<crate::license::store:
 }
 
 #[tauri::command]
-pub fn create_supplier_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, name: String, phone: Option<String>, email: Option<String>) -> Result<String, String> {
+pub fn create_supplier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: Option<String>, email: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
@@ -1807,7 +1807,7 @@ pub fn create_supplier_v3(state: State<Db>, license: State<crate::license::store
 }
 
 #[tauri::command]
-pub fn update_supplier_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, supplier_id: String, name: String, phone: Option<String>, email: Option<String>) -> Result<(), String> {
+pub fn update_supplier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, name: String, phone: Option<String>, email: Option<String>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
@@ -1827,7 +1827,7 @@ pub fn update_supplier_v3(state: State<Db>, license: State<crate::license::store
 }
 
 #[tauri::command]
-pub fn delete_supplier_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, supplier_id: String) -> Result<(), String> {
+pub fn delete_supplier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
@@ -1847,7 +1847,7 @@ pub fn delete_supplier_v3(state: State<Db>, license: State<crate::license::store
 }
 
 #[tauri::command]
-pub fn list_inventory_logs_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::InventoryLogRow>, String> {
+pub fn list_inventory_logs_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::InventoryLogRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
@@ -1856,7 +1856,7 @@ pub fn list_inventory_logs_v3(state: State<Db>, license: State<crate::license::s
 }
 
 #[tauri::command]
-pub fn list_low_stock_ingredients_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::IngredientRow>, String> {
+pub fn list_low_stock_ingredients_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::IngredientRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
@@ -1866,7 +1866,7 @@ pub fn list_low_stock_ingredients_v3(state: State<Db>, license: State<crate::lic
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_driver_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, name: String, phone: Option<String>, vehicle_type: String, license_number: Option<String>, vehicle_plate: Option<String>) -> Result<String, String> {
+pub fn create_driver_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: Option<String>, vehicle_type: String, license_number: Option<String>, vehicle_plate: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
@@ -1905,7 +1905,7 @@ pub fn list_drivers_v3(state: State<Db>, session_token: String) -> Result<Vec<cr
 
 /// `DriversView`'s management tab -- includes deactivated drivers.
 #[tauri::command]
-pub fn list_all_drivers_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::DriverRow>, String> {
+pub fn list_all_drivers_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::DriverRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
@@ -1925,7 +1925,7 @@ pub fn list_available_drivers_v3(state: State<Db>, session_token: String) -> Res
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn update_driver_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, driver_id: String, name: String, phone: Option<String>, vehicle_type: String, vehicle_plate: Option<String>, license_number: Option<String>) -> Result<(), String> {
+pub fn update_driver_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, driver_id: String, name: String, phone: Option<String>, vehicle_type: String, vehicle_plate: Option<String>, license_number: Option<String>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
@@ -1945,7 +1945,7 @@ pub fn update_driver_v3(state: State<Db>, license: State<crate::license::store::
 }
 
 #[tauri::command]
-pub fn deactivate_driver_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, driver_id: String) -> Result<(), String> {
+pub fn deactivate_driver_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, driver_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
@@ -1966,7 +1966,7 @@ pub fn deactivate_driver_v3(state: State<Db>, license: State<crate::license::sto
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_printer_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, name: String, printer_type: String, interface: String, vendor_id: Option<String>, product_id: Option<String>, drawer_pulse_ms: i64, is_primary: bool) -> Result<String, String> {
+pub fn create_printer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, printer_type: String, interface: String, vendor_id: Option<String>, product_id: Option<String>, drawer_pulse_ms: i64, is_primary: bool) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
@@ -1988,7 +1988,7 @@ pub fn create_printer_v3(state: State<Db>, license: State<crate::license::store:
 }
 
 #[tauri::command]
-pub fn list_printers_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::PrinterRow>, String> {
+pub fn list_printers_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::PrinterRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
@@ -2111,7 +2111,7 @@ pub fn list_active_deliveries_v3(state: State<Db>, session_token: String) -> Res
 }
 
 #[tauri::command]
-pub fn list_delivery_history_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, limit: i64, offset: i64) -> Result<Vec<crate::repo::DeliveryHistoryRow>, String> {
+pub fn list_delivery_history_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, limit: i64, offset: i64) -> Result<Vec<crate::repo::DeliveryHistoryRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
@@ -2128,7 +2128,7 @@ pub fn list_driver_deliveries_v3(state: State<Db>, session_token: String, driver
 }
 
 #[tauri::command]
-pub fn list_delivery_zones_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String) -> Result<Vec<crate::repo::DeliveryZoneRow>, String> {
+pub fn list_delivery_zones_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::DeliveryZoneRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
@@ -2138,7 +2138,7 @@ pub fn list_delivery_zones_v3(state: State<Db>, license: State<crate::license::s
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_delivery_zone_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, name: String, boundaries: Option<String>, fee_cents: i64, min_order_cents: i64, estimated_minutes: i64) -> Result<String, String> {
+pub fn create_delivery_zone_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, boundaries: Option<String>, fee_cents: i64, min_order_cents: i64, estimated_minutes: i64) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
@@ -2161,7 +2161,7 @@ pub fn create_delivery_zone_v3(state: State<Db>, license: State<crate::license::
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn update_delivery_zone_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, zone_id: String, name: String, fee_cents: i64, min_order_cents: i64, estimated_minutes: i64) -> Result<(), String> {
+pub fn update_delivery_zone_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, zone_id: String, name: String, fee_cents: i64, min_order_cents: i64, estimated_minutes: i64) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
@@ -2181,7 +2181,7 @@ pub fn update_delivery_zone_v3(state: State<Db>, license: State<crate::license::
 }
 
 #[tauri::command]
-pub fn deactivate_delivery_zone_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, zone_id: String) -> Result<(), String> {
+pub fn deactivate_delivery_zone_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, zone_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
@@ -2774,7 +2774,7 @@ pub fn finalize_order_with_payment_v3(
 /// Fast path: returns whatever the last `recheck` computed, no disk I/O or
 /// crypto. Safe to call frequently (e.g. every app render) without concern.
 #[tauri::command]
-pub fn get_cached_license_status_v3(license: State<crate::license::store::LicenseState>) -> crate::license::signed::LicenseStatus {
+pub fn get_cached_license_status_v3(license: State<crate::license::cloud::CloudLicenseState>) -> crate::license::signed::LicenseStatus {
     license.cached_status()
 }
 
@@ -2782,7 +2782,7 @@ pub fn get_cached_license_status_v3(license: State<crate::license::store::Licens
 /// boot and on a 6h timer (see lib.rs's setup); also safe to call from a
 /// UI "check now" action.
 #[tauri::command]
-pub fn check_license_v3(license: State<crate::license::store::LicenseState>) -> crate::license::signed::LicenseStatus {
+pub fn check_license_v3(license: State<crate::license::cloud::CloudLicenseState>) -> crate::license::signed::LicenseStatus {
     license.recheck()
 }
 
@@ -2794,7 +2794,7 @@ pub fn check_license_v3(license: State<crate::license::store::LicenseState>) -> 
 /// who submits it, and an owner handing a cashier the renewal file to type
 /// in is a completely normal flow for this product.
 #[tauri::command]
-pub fn renew_license_v3(state: State<Db>, license: State<crate::license::store::LicenseState>, session_token: String, blob_json: String) -> Result<crate::license::signed::LicenseStatus, String> {
+pub fn renew_license_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, blob_json: String) -> Result<crate::license::signed::LicenseStatus, String> {
     authenticate_actor(&state, &session_token)?;
     let file: crate::license::signed::SignedLicenseFile = serde_json::from_str(&blob_json).map_err(|_| "renewal file is not valid JSON".to_string())?;
     license.accept_renewal(file).map_err(|e| e.to_string())
@@ -6043,7 +6043,7 @@ mod tests {
             let mut missing = Vec::new();
             for name in GATED {
                 let body = function_body(source, name);
-                let has_param = body.contains("license: State<crate::license::store::LicenseState>");
+                let has_param = body.contains("license: State<crate::license::cloud::CloudLicenseState>");
                 let has_call = body.contains("require_license_not_locked(&license)?;");
                 if !has_param || !has_call {
                     missing.push(*name);

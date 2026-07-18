@@ -177,19 +177,45 @@ pub fn run() {
                 provider,
             });
 
-            // Offline signed license: verified at boot (here) and on a 6h
-            // timer below. Never on the hot path of a sale -- every command
-            // that cares reads `cached_status()`, a Mutex read of whatever
-            // this last computed, not a fresh signature check.
+            // Offline signed license, verified at boot and on a 6h timer.
+            // Slice 1c wraps it in `CloudLicenseState`, which adds the
+            // hybrid cloud+offline check on top -- see license/cloud.rs for
+            // the precedence rules. Never on the hot path of a sale: every
+            // command that cares reads `cached_status()`, a Mutex read of
+            // whatever was last computed, not a fresh network call or
+            // signature check.
             let license_dir = db_path.parent().expect("db_path must have a parent dir").to_path_buf();
-            let license_state = license::store::LicenseState::init(license_dir, license::compiled_public_key());
-            app.manage(license_state);
-            let license_handle = app.handle().clone();
+            let license_state = license::store::LicenseState::init(license_dir.clone(), license::compiled_public_key());
+            let cloud_config = license::cloud::load_config_from_file(&license_dir.join("cloud_config.json"));
+            let transport = license::cloud::SupabaseCloudTransport::new(license::cloud::supabase_url(), license::cloud::supabase_anon_key());
+            let cloud_license_state = license::cloud::CloudLicenseState::new(license_state, cloud_config, Box::new(transport));
+            app.manage(cloud_license_state);
+
+            let offline_timer_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(6 * 60 * 60)).await;
-                    if let Some(state) = license_handle.try_state::<license::store::LicenseState>() {
-                        state.recheck();
+                    if let Some(state) = offline_timer_handle.try_state::<license::cloud::CloudLicenseState>() {
+                        state.recheck_offline();
+                    }
+                }
+            });
+
+            // Cloud check on its own, shorter cadence -- bounded by a 5s
+            // per-call timeout inside the transport, so this never blocks
+            // anything else even if the network is degraded rather than
+            // fully down. Also fires once immediately at boot (best-effort,
+            // not blocking startup) so a freshly-opened, online terminal
+            // doesn't wait 5 minutes for its first authoritative check.
+            let cloud_timer_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Some(state) = cloud_timer_handle.try_state::<license::cloud::CloudLicenseState>() {
+                    state.refresh_from_cloud().await;
+                }
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5 * 60)).await;
+                    if let Some(state) = cloud_timer_handle.try_state::<license::cloud::CloudLicenseState>() {
+                        state.refresh_from_cloud().await;
                     }
                 }
             });

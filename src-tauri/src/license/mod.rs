@@ -10,6 +10,7 @@
 //! THIS machine's real hardware (`fingerprint`) and the on-disk cache/store
 //! (`store`).
 
+pub mod cloud;
 pub mod fingerprint;
 pub mod store;
 
