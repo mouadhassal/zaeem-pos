@@ -48,6 +48,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
   const {
     categories,
     fetchMenu,
+    loading,
   } = useMenuStore();
 
   const filteredByStore = useFilteredMenuItems();
@@ -104,7 +105,13 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
   // (already `overflow-y-auto` below), so there is no reason to truncate
   // the list to a fixed count -- that just hides items that exist.
   const visibleItems = filteredItems;
-  const isEmpty = visibleItems.length === 0;
+  // "No items yet because still loading" and "genuinely zero items" must
+  // never render the same message -- this was the actual bug behind the
+  // post-login "لا توجد أصناف" flash: isEmpty used to fire the instant
+  // menuItems was [], which is also true for every millisecond before the
+  // first fetch resolves.
+  const isInitialLoading = loading && allItems.length === 0;
+  const isEmpty = !loading && visibleItems.length === 0;
 
   const countByCategoryId = useMemo(() => {
     const map = new Map<string, number>();
@@ -151,7 +158,13 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
       )}
 
       <div className="flex-1 overflow-y-auto p-3">
-        {isEmpty ? (
+        {isInitialLoading ? (
+          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}>
+            {Array.from({ length: 12 }, (_, i) => (
+              <div key={i} className="h-28 rounded-[12px] bg-surface-alt animate-pulse" />
+            ))}
+          </div>
+        ) : isEmpty ? (
           <div className="flex items-center justify-center h-full text-text-muted text-sm">
             {searchValue ? "ما في أصناف تطابق البحث" : "ما في أصناف متاحة"}
           </div>

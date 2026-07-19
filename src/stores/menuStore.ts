@@ -45,25 +45,36 @@ export const useMenuStore = create<MenuState>((set) => ({
   menuItems: [],
   selectedCategoryId: null,
   searchQuery: "",
-  loading: false,
+  // Starts true, not false: fetchMenu() is always called on mount (see
+  // MenuGridContainer), so there is no real moment where "not loading, zero
+  // items" is true before the first fetch resolves. Defaulting this to
+  // false was exactly what let the UI render "no items" for the one frame
+  // before the mount effect's set({ loading: true }) landed.
+  loading: true,
 
   fetchMenu: async () => {
     set({ loading: true });
     try {
       const token = useAuthStore.getState().token;
-      const allCategories = await invoke<{ id: string; name: string; color: string | null; sort_order: number; is_active: number }[]>(
-        "list_categories_v3", { sessionToken: token }
-      );
+      // Perf fix (post-login load lag): these two reads have no data
+      // dependency on each other (menu items don't need categories loaded
+      // first, they're joined client-side by category_id) -- they used to
+      // be sequential awaits, serializing two IPC round trips where one
+      // would do. Fetched in parallel now.
+      const [allCategories, allMenuItems] = await Promise.all([
+        invoke<{ id: string; name: string; color: string | null; sort_order: number; is_active: number }[]>(
+          "list_categories_v3", { sessionToken: token }
+        ),
+        invoke<{
+          id: string; name: string; price_cents: number; category_id: string; image_path: string | null;
+          is_combo: number; combo_original_price_cents: number | null; combo_description: string | null;
+          barcode: string | null; is_active: number;
+        }[]>("list_menu_items_v3", { sessionToken: token }),
+      ]);
       const categories: Category[] = allCategories
         .filter((c) => c.is_active === 1)
         .sort((a, b) => a.sort_order - b.sort_order)
         .map((c) => ({ id: c.id, name: c.name, color: c.color, sort_order: c.sort_order }));
-
-      const allMenuItems = await invoke<{
-        id: string; name: string; price_cents: number; category_id: string; image_path: string | null;
-        is_combo: number; combo_original_price_cents: number | null; combo_description: string | null;
-        barcode: string | null; is_active: number;
-      }[]>("list_menu_items_v3", { sessionToken: token });
 
       // P0 perf fix (2026-07-18): this used to await list_combo_components_v3
       // once PER combo item, sequentially, inside a for...of loop -- a

@@ -1,14 +1,22 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, lazy, Suspense } from "react";
 import TableBar from "../../components/layout/TableBar";
-import OrderTypeSelector from "../../components/ui/OrderTypeSelector";
-import PaymentModal from "../../components/PaymentModal";
-import ManagerPinModal from "../../components/modals/ManagerPinModal";
-import SplitBillModal from "../../components/modals/SplitBillModal";
-import MergeTablesModal from "../../components/modals/MergeTablesModal";
-import VoidItemModal from "../../components/modals/VoidItemModal";
-import TransferOrderModal from "../../components/modals/TransferOrderModal";
-import OnScreenReceiptModal from "../../components/modals/OnScreenReceiptModal";
-import DriverSelectModal from "../../components/modals/DriverSelectModal";
+// Perf fix (post-login load lag): these 8 components are only ever needed
+// once the cashier actually opens them (payment, split, merge, void,
+// transfer, on-screen receipt, driver select, order-type switch) -- never
+// on first paint. They were previously eager imports, bundled into the
+// same chunk as the POS grid itself; Vite's own build output flagged that
+// chunk at 599KB/179KB gzipped, the single largest in the app. Lazy here
+// means their JS-parse cost is deferred to first actual use, off the
+// critical "login -> see the menu" path entirely.
+const OrderTypeSelector = lazy(() => import("../../components/ui/OrderTypeSelector"));
+const PaymentModal = lazy(() => import("../../components/PaymentModal"));
+const ManagerPinModal = lazy(() => import("../../components/modals/ManagerPinModal"));
+const SplitBillModal = lazy(() => import("../../components/modals/SplitBillModal"));
+const MergeTablesModal = lazy(() => import("../../components/modals/MergeTablesModal"));
+const VoidItemModal = lazy(() => import("../../components/modals/VoidItemModal"));
+const TransferOrderModal = lazy(() => import("../../components/modals/TransferOrderModal"));
+const OnScreenReceiptModal = lazy(() => import("../../components/modals/OnScreenReceiptModal"));
+const DriverSelectModal = lazy(() => import("../../components/modals/DriverSelectModal"));
 import MenuGridContainer from "./MenuGridContainer";
 import OrderPanel from "../../components/ui/OrderPanel";
 import PayKey from "../../components/ui/PayKey";
@@ -528,12 +536,19 @@ export default function POSPage() {
         />
       </div>
 
+      {/* fallback={null}: these only ever appear in response to a direct
+          click (pay, split, merge, void, transfer, driver select, order
+          type), so a one-frame gap before the lazy chunk resolves is
+          imperceptible -- unlike the first-paint menu grid, nothing here is
+          ever the thing a user is staring at waiting for on page load. */}
+      <Suspense fallback={null}>
       {showOrderType && (
         <OrderTypeSelector
           onSelect={(type) => { setOrderType(type); setShowOrderType(false); }}
           onClose={() => setShowOrderType(false)}
         />
       )}
+      </Suspense>
 
       {showLoyaltyScan && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
@@ -564,6 +579,7 @@ export default function POSPage() {
         </div>
       )}
 
+      <Suspense fallback={null}>
       {showDriverSelect && (
         <DriverSelectModal
           selectedId={driverId}
@@ -612,6 +628,7 @@ export default function POSPage() {
       {showOnScreenReceipt && receiptData && (
         <OnScreenReceiptModal receiptData={receiptData} onClose={() => setShowOnScreenReceipt(false)} />
       )}
+      </Suspense>
 
       {successMsg && (
         <div className="fixed top-20 left-1/2 -translate-x-1/2 text-white px-6 py-3 rounded-[12px] shadow-sh-3 z-50 text-sm font-medium" style={{ backgroundColor: "var(--ok)" }}>

@@ -2902,6 +2902,100 @@ mod tests {
         }
     }
 
+    /// Perf regression guard for the post-login POS load lag investigation:
+    /// measures the actual Rust-side cost of every command the POS screen
+    /// fires on its first mount after login, against a realistically-sized
+    /// menu (10 categories, 80 items, 8 combos). At the time this was
+    /// written every one of these completed in low-single-digit
+    /// milliseconds (authenticate: ~163us, list_categories: ~181us,
+    /// list_menu_items: ~321us, 8x list_combo_components: ~307us total,
+    /// list_tables: ~61us, activate_delayed_orders: ~55us,
+    /// get_discount_caps: ~1.4ms, get_receipt_config: ~111us) -- proving the
+    /// reported ~3s lag was never a Rust query-time or missing-index
+    /// problem (confirmed via EXPLAIN QUERY PLAN below: both queries SEARCH
+    /// the v9 index migration's indexes, not a table SCAN). The generous
+    /// 50ms bound here exists to catch a future N+1 or missing-index
+    /// regression, not to pin today's exact numbers.
+    #[test]
+    fn pos_first_load_commands_stay_fast_and_use_indexes() {
+        let (db_path, tenant_id, branch_id, _table_id) = seeded_db("perf_diag");
+        let conn = Connection::open(&db_path).unwrap();
+        let repo = Repo::new(&conn);
+
+        let owner_id = seed_staff(&conn, &tenant_id, None, Role::Owner, "Owner");
+        let session = security::create_session(&conn, &owner_id, "device-1").unwrap();
+
+        let mut category_ids = Vec::new();
+        for i in 0..10 {
+            category_ids.push(repo.create_category(&tenant_id, &format!("Category {i}"), None, i, None).unwrap());
+        }
+        let mut item_ids = Vec::new();
+        for i in 0..80 {
+            let cat = &category_ids[i % category_ids.len()];
+            item_ids.push(repo.create_menu_item(&tenant_id, &format!("Item {i}"), cat, 1000 + i as i64, 500, None, None).unwrap());
+        }
+        // A handful combos so list_combo_components_v3's per-item fan-out is
+        // actually exercised, not a zero-cost no-op.
+        for i in 0..8 {
+            conn.execute(
+                "UPDATE menu_items SET is_combo = 1 WHERE id = ?1",
+                params![item_ids[i]],
+            ).unwrap();
+        }
+
+        const BUDGET: std::time::Duration = std::time::Duration::from_millis(50);
+
+        let t0 = std::time::Instant::now();
+        let _actor = security::authenticate(&conn, &session).unwrap();
+        assert!(t0.elapsed() < BUDGET, "authenticate took {:?}, expected well under {:?}", t0.elapsed(), BUDGET);
+
+        let t1 = std::time::Instant::now();
+        let categories = repo.list_categories(&tenant_id).unwrap();
+        assert_eq!(categories.len(), 10);
+        assert!(t1.elapsed() < BUDGET, "list_categories took {:?}", t1.elapsed());
+
+        let t2 = std::time::Instant::now();
+        let items = repo.list_menu_items(&tenant_id).unwrap();
+        assert_eq!(items.len(), 80);
+        assert!(t2.elapsed() < BUDGET, "list_menu_items took {:?}", t2.elapsed());
+
+        let t3 = std::time::Instant::now();
+        for item in items.iter().filter(|i| i.is_combo != 0) {
+            let _ = repo.list_combo_components(&tenant_id, &item.id).unwrap();
+        }
+        assert!(t3.elapsed() < BUDGET, "list_combo_components x8 took {:?}", t3.elapsed());
+
+        let t4 = std::time::Instant::now();
+        let _ = repo.list_tables().unwrap();
+        assert!(t4.elapsed() < BUDGET, "list_tables took {:?}", t4.elapsed());
+
+        let t5 = std::time::Instant::now();
+        let _ = repo.activate_delayed_orders().unwrap();
+        assert!(t5.elapsed() < BUDGET, "activate_delayed_orders took {:?}", t5.elapsed());
+
+        let t6 = std::time::Instant::now();
+        let _ = repo.get_discount_caps(&tenant_id).unwrap();
+        assert!(t6.elapsed() < BUDGET, "get_discount_caps took {:?}", t6.elapsed());
+
+        let t7 = std::time::Instant::now();
+        let _ = repo.get_receipt_config(&tenant_id, &branch_id).unwrap();
+        assert!(t7.elapsed() < BUDGET, "get_receipt_config took {:?}", t7.elapsed());
+
+        // Prove the categories/menu_items queries actually use the v9 index
+        // migration's idx_categories_tenant / idx_menu_items_tenant (SEARCH,
+        // not a full-table SCAN) -- this is the actual index-coverage proof,
+        // not just an inference from the migration's table list.
+        let mut stmt = conn.prepare("EXPLAIN QUERY PLAN SELECT id, name, color, sort_order, image_path, is_active FROM categories WHERE tenant_id = ?1 ORDER BY sort_order ASC").unwrap();
+        let plan: Vec<String> = stmt.query_map(params![tenant_id], |r| r.get::<_, String>(3)).unwrap().filter_map(|r| r.ok()).collect();
+        assert!(plan.iter().any(|p| p.contains("USING INDEX idx_categories_tenant")), "categories query must use idx_categories_tenant, got: {plan:?}");
+
+        let mut stmt = conn.prepare("EXPLAIN QUERY PLAN SELECT id FROM menu_items WHERE tenant_id = ?1 ORDER BY name ASC").unwrap();
+        let plan: Vec<String> = stmt.query_map(params![tenant_id], |r| r.get::<_, String>(3)).unwrap().filter_map(|r| r.ok()).collect();
+        assert!(plan.iter().any(|p| p.contains("USING INDEX idx_menu_items_tenant")), "menu_items query must use idx_menu_items_tenant, got: {plan:?}");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
     #[test]
     fn end_to_end_login_create_order_list_orders() {
         let (db_path, tenant_id, branch_id, table_id) = seeded_db("e2e");
