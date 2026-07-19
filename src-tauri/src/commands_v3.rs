@@ -16,7 +16,11 @@ use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 use tauri::{Manager, State};
 
-fn authenticate_actor(state: &State<Db>, session_token: &str) -> Result<Actor, String> {
+/// Takes `&Db` rather than `&State<Db>` so it (and everything built on it)
+/// can be called both from the real `#[tauri::command]` wrapper (where
+/// `&state` deref-coerces from `State<Db>`) and directly from command-wrapper
+/// tests holding a plain `Db` -- no `tauri::App`/`State` construction needed.
+fn authenticate_actor(state: &Db, session_token: &str) -> Result<Actor, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     security::ensure_security_schema(&conn).map_err(|e| e.to_string())?;
     security::authenticate(&conn, session_token).map_err(|e| e.to_string())
@@ -25,7 +29,7 @@ fn authenticate_actor(state: &State<Db>, session_token: &str) -> Result<Actor, S
 /// The POS-never-stops-selling guarantee is structural, not a flag check:
 /// order/payment/print commands never call this at all. Only back-office /
 /// reports commands do. See license/signed.rs's `LicenseStatus::back_office_locked`.
-fn require_license_not_locked(license: &State<crate::license::cloud::CloudLicenseState>) -> Result<(), String> {
+fn require_license_not_locked(license: &crate::license::cloud::CloudLicenseState) -> Result<(), String> {
     if license.cached_status().back_office_locked() {
         return Err("license expired -- back-office access is locked until renewed. Point of sale keeps working normally.".to_string());
     }
@@ -421,7 +425,23 @@ pub fn create_order_v3(
     discount_cents: i64,
     manager_override_pin: Option<String>,
 ) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    create_order_v3_impl(&state, session_token, table_id, order_type, subtotal_cents, tax_cents, discount_cents, manager_override_pin)
+}
+
+/// Real body, `&Db` instead of `State<Db>` -- see `authenticate_actor`'s doc
+/// comment for why. Command-wrapper tests call this exact function.
+#[allow(clippy::too_many_arguments)]
+fn create_order_v3_impl(
+    state: &Db,
+    session_token: String,
+    table_id: String,
+    order_type: String,
+    subtotal_cents: i64,
+    tax_cents: i64,
+    discount_cents: i64,
+    manager_override_pin: Option<String>,
+) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
 
     // Platform/Owner have no single branch to write into -- order creation is
@@ -530,7 +550,20 @@ pub fn take_payment_v3(
     change_cents: i64,
     debtor_id: Option<String>,
 ) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    take_payment_v3_impl(&state, session_token, order_id, method, amount_cents, change_cents, debtor_id)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn take_payment_v3_impl(
+    state: &Db,
+    session_token: String,
+    order_id: String,
+    method: String,
+    amount_cents: i64,
+    change_cents: i64,
+    debtor_id: Option<String>,
+) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::TakePayment).map_err(|e| e.to_string())?;
     let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
         return Err("taking a payment requires a Branch-scoped actor".to_string());
@@ -2419,7 +2452,35 @@ pub fn create_full_order_v3(
     shift_id: Option<String>,
     manager_override_pin: Option<String>,
 ) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    create_full_order_v3_impl(
+        &state, &license, session_token, table_id, order_type, items, subtotal_cents, tax_cents,
+        total_cents, discount_cents, discount_reason, customer_name, customer_phone,
+        delivery_address, delivery_fee_cents, driver_id, shift_id, manager_override_pin,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_full_order_v3_impl(
+    state: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
+    session_token: String,
+    table_id: String,
+    order_type: String,
+    items: Vec<crate::repo::OrderItemInput>,
+    subtotal_cents: i64,
+    tax_cents: i64,
+    total_cents: i64,
+    discount_cents: i64,
+    discount_reason: Option<String>,
+    customer_name: Option<String>,
+    customer_phone: Option<String>,
+    delivery_address: Option<String>,
+    delivery_fee_cents: i64,
+    driver_id: Option<String>,
+    shift_id: Option<String>,
+    manager_override_pin: Option<String>,
+) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
         return Err("order creation requires a Branch-scoped actor".to_string());
@@ -2573,7 +2634,22 @@ pub fn hold_order_v3(
     total_cents: i64,
     shift_id: Option<String>,
 ) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    hold_order_v3_impl(&state, session_token, table_id, order_type, items, subtotal_cents, tax_cents, total_cents, shift_id)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn hold_order_v3_impl(
+    state: &Db,
+    session_token: String,
+    table_id: String,
+    order_type: String,
+    items: Vec<crate::repo::OrderItemInput>,
+    subtotal_cents: i64,
+    tax_cents: i64,
+    total_cents: i64,
+    shift_id: Option<String>,
+) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
         return Err("order creation requires a Branch-scoped actor".to_string());
@@ -2619,7 +2695,17 @@ pub fn split_bill_v3(
     splits: Vec<SplitBillInput>,
     table_id: String,
 ) -> Result<Vec<String>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    split_bill_v3_impl(&state, session_token, order_id, splits, table_id)
+}
+
+fn split_bill_v3_impl(
+    state: &Db,
+    session_token: String,
+    order_id: String,
+    splits: Vec<SplitBillInput>,
+    table_id: String,
+) -> Result<Vec<String>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let scope = actor.scope();
 
@@ -2647,7 +2733,16 @@ pub fn merge_tables_v3(
     source_table_ids: Vec<String>,
     target_table_id: String,
 ) -> Result<Option<String>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    merge_tables_v3_impl(&state, session_token, source_table_ids, target_table_id)
+}
+
+fn merge_tables_v3_impl(
+    state: &Db,
+    session_token: String,
+    source_table_ids: Vec<String>,
+    target_table_id: String,
+) -> Result<Option<String>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let scope = actor.scope();
 
@@ -2690,7 +2785,11 @@ pub fn unmerge_tables_v3(state: State<Db>, session_token: String, merge_group_id
 /// Soft-void an order item (set voided=1 + void_reason).
 #[tauri::command]
 pub fn void_order_item_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, reason: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    void_order_item_v3_impl(&state, &license, session_token, item_id, reason)
+}
+
+fn void_order_item_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String, reason: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let scope = actor.scope();
 
@@ -2723,7 +2822,11 @@ pub fn void_order_item_v3(state: State<Db>, license: State<crate::license::cloud
 /// Transfer an order from one table to another.
 #[tauri::command]
 pub fn transfer_order_v3(state: State<Db>, session_token: String, order_id: String, from_table_id: String, to_table_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    transfer_order_v3_impl(&state, session_token, order_id, from_table_id, to_table_id)
+}
+
+fn transfer_order_v3_impl(state: &Db, session_token: String, order_id: String, from_table_id: String, to_table_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let scope = actor.scope();
 
@@ -2755,7 +2858,22 @@ pub fn schedule_delayed_order_v3(
     total_cents: i64,
     scheduled_at: String,
 ) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    schedule_delayed_order_v3_impl(&state, session_token, table_id, order_type, items, subtotal_cents, tax_cents, total_cents, scheduled_at)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn schedule_delayed_order_v3_impl(
+    state: &Db,
+    session_token: String,
+    table_id: String,
+    order_type: String,
+    items: Vec<crate::repo::OrderItemInput>,
+    subtotal_cents: i64,
+    tax_cents: i64,
+    total_cents: i64,
+    scheduled_at: String,
+) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
         return Err("order creation requires a Branch-scoped actor".to_string());
@@ -2848,7 +2966,21 @@ pub fn finalize_order_with_payment_v3(
     change_cents: i64,
     debtor_id: Option<String>,
 ) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    finalize_order_with_payment_v3_impl(&state, &license, session_token, order_id, method, amount_cents, change_cents, debtor_id)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finalize_order_with_payment_v3_impl(
+    state: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
+    session_token: String,
+    order_id: String,
+    method: String,
+    amount_cents: i64,
+    change_cents: i64,
+    debtor_id: Option<String>,
+) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::TakePayment).map_err(|e| e.to_string())?;
     let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
         return Err("taking a payment requires a Branch-scoped actor".to_string());
@@ -3083,10 +3215,10 @@ mod tests {
         }
         // A handful combos so list_combo_components_v3's per-item fan-out is
         // actually exercised, not a zero-cost no-op.
-        for i in 0..8 {
+        for item_id in item_ids.iter().take(8) {
             conn.execute(
                 "UPDATE menu_items SET is_combo = 1 WHERE id = ?1",
-                params![item_ids[i]],
+                params![item_id],
             ).unwrap();
         }
 
@@ -3210,10 +3342,14 @@ mod tests {
     fn sale_path_commands_enqueue_sync_facts_and_never_touch_the_network() {
         let source = include_str!("commands_v3.rs");
 
+        // `_v3`/`_v3_impl` split (this slice's test-gap closure): each
+        // command is a one-line `State<T>` shim now, and the real body --
+        // where these sync calls actually live -- is in the `_impl`
+        // function. Both must never touch the network either way.
         let wiring: &[(&str, &[&str])] = &[
-            ("create_full_order_v3", &["sync_enqueue_order(", "sync_enqueue_order_items("]),
-            ("finalize_order_with_payment_v3", &["sync_enqueue_payment(", "sync_enqueue_order("]),
-            ("void_order_item_v3", &["sync_enqueue_single_order_item("]),
+            ("create_full_order_v3_impl", &["sync_enqueue_order(", "sync_enqueue_order_items("]),
+            ("finalize_order_with_payment_v3_impl", &["sync_enqueue_payment(", "sync_enqueue_order("]),
+            ("void_order_item_v3_impl", &["sync_enqueue_single_order_item("]),
         ];
 
         for (name, expected_calls) in wiring {
@@ -3222,6 +3358,391 @@ mod tests {
                 assert!(body.contains(call), "{name} must call {call}, it's the whole point of this slice");
             }
             assert!(!body.contains("reqwest") && !body.contains(".send()"), "{name} is the sale path -- it must never touch the network directly, got a match in its body");
+        }
+    }
+
+    /// Closes the exact blindness the nested-BEGIN bug lived in: every test
+    /// above (and everywhere else in this file) calls `Repo::` methods
+    /// directly on a plain `Connection`, never through the real
+    /// `#[tauri::command]` wrapper's own `conn.transaction()`. That's why
+    /// `create_full_order_v3`, `finalize_order_with_payment_v3`, and 5
+    /// siblings could nest a second `BEGIN IMMEDIATE` inside the wrapper's
+    /// transaction and NOTHING caught it -- the wrapper's transaction
+    /// boundary itself was never exercised.
+    ///
+    /// Constructing a real `tauri::App`/`State<T>` here (via
+    /// `tauri::test::mock_builder().build(...)`) crashes this Windows dev
+    /// box with `STATUS_ENTRYPOINT_NOT_FOUND` before any test body runs --
+    /// verified in isolation with a throwaway smoke test outside this crate
+    /// entirely, so it is not a bug in these tests. `tauri::State` has no
+    /// public constructor other than through a live `Manager`
+    /// (`StateManager::new` is `pub(crate)`), so there is no way to obtain
+    /// one without an `App`.
+    ///
+    /// Given that, each of the ten commands below was split into a thin
+    /// `#[tauri::command] pub fn X(state: State<Db>, ...)` that only calls
+    /// `X_impl(&state, ...)`, plus `fn X_impl(state: &Db, ...)` carrying the
+    /// entire original body verbatim (authn -> scope -> authz -> outer
+    /// `conn.transaction()` -> repo -> audit -> commit). `&state` deref-
+    /// coerces from `State<Db>` for the one-line wrapper, so production
+    /// behavior, IPC extraction, and the macro's generated glue are
+    /// completely unchanged. These tests call `X_impl` with a real `Db`
+    /// wrapping a real `rusqlite::Connection` -- the exact transaction
+    /// boundary the nested-BEGIN bug broke is exercised end to end. If
+    /// anyone reintroduces a nested transaction in any of these ten
+    /// commands, its test fails with the same "cannot start a transaction
+    /// within a transaction" error this bug produced.
+    mod command_wrapper_tests {
+        use super::*;
+        use crate::commands_v3::*;
+        use crate::repo::OrderItemInput;
+        use crate::Db;
+
+        fn real_db(db_path: &std::path::Path) -> Db {
+            Db(std::sync::Mutex::new(Connection::open(db_path).unwrap()))
+        }
+
+        fn never_checked_license(db_path: &std::path::Path) -> crate::license::cloud::CloudLicenseState {
+            struct NeverCalledTransport;
+            #[async_trait::async_trait]
+            impl crate::license::cloud::CloudTransport for NeverCalledTransport {
+                async fn check(&self, _license_id: &str, _device_token: &str) -> crate::license::cloud::CloudCheckOutcome {
+                    panic!("sale-path commands must never call the cloud transport");
+                }
+            }
+            let license_dir = db_path.parent().unwrap().to_path_buf();
+            let key = license_core::signed::test_support::test_keypair();
+            let offline = crate::license::store::LicenseState::init(license_dir.clone(), key.verifying_key());
+            crate::license::cloud::CloudLicenseState::new(offline, license_dir, None, Box::new(NeverCalledTransport))
+        }
+
+        #[test]
+        fn create_order_v3_wrapper_succeeds_through_the_real_command() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_create_order");
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier")
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let order_id = create_order_v3_impl(
+                &db, session, table_id, "DINE_IN".to_string(),
+                0, 0, 0, None,
+            ).expect("create_order_v3 must succeed through the real wrapper body (authn -> scope -> authz -> outer tx -> repo -> audit -> commit)");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let exists: bool = conn.query_row("SELECT COUNT(*) > 0 FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert!(exists, "the order must actually be committed, not just return Ok without a row");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn create_full_order_v3_wrapper_succeeds_through_the_real_command() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_create_full_order");
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 1000, 500, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            let items = vec![OrderItemInput {
+                menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 1000,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let order_id = create_full_order_v3_impl(
+                &db, &license,
+                session, table_id, "DINE_IN".to_string(), items,
+                2000, 0, 2000, 0, None, None, None, None, 0, None, None, None,
+            ).expect("create_full_order_v3 must succeed through the real wrapper body");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let item_count: i64 = conn.query_row("SELECT COUNT(*) FROM order_items WHERE order_id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(item_count, 1);
+            let outbox_count: i64 = conn.query_row("SELECT COUNT(*) FROM sync_outbox WHERE tenant_id = ?1", params![tenant_id], |r| r.get(0)).unwrap();
+            assert_eq!(outbox_count, 2, "one orders row + one order_items row must have been enqueued for sync, through the real wrapper body");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn hold_order_v3_wrapper_succeeds_through_the_real_command() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_hold_order");
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier")
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let order_id = hold_order_v3_impl(
+                &db, session, table_id, "DINE_IN".to_string(), vec![], 0, 0, 0, None,
+            ).expect("hold_order_v3 must succeed through the real wrapper body");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let status: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(status, "DRAFT");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn split_bill_v3_wrapper_succeeds_through_the_real_command() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_split_bill");
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                // `seeded_db`'s own table insert predates T1.1's tenant/branch
+                // scoping columns on `tables` -- back-fill them here so
+                // `split_bill`'s `assert_table_in_scope` (added post-EXPAND)
+                // can find this row under the caller's scope.
+                conn.execute("UPDATE tables SET tenant_id = ?1, branch_id = ?2 WHERE id = ?3", params![tenant_id, branch_id, table_id]).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 1000, 500, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            let items = vec![OrderItemInput {
+                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let order_id = create_full_order_v3_impl(
+                &db, &license,
+                session.clone(), table_id.clone(), "DINE_IN".to_string(), items,
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+            ).unwrap();
+            let item_db_id: String = {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_id], |r| r.get(0)).unwrap()
+            };
+
+            let split_ids = split_bill_v3_impl(
+                &db, session, order_id,
+                vec![SplitBillInput { item_ids: vec![item_db_id], amount_cents: 1000, label: "split".into() }],
+                table_id,
+            ).expect("split_bill_v3 must succeed through the real wrapper body");
+            assert_eq!(split_ids.len(), 1);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn merge_tables_v3_wrapper_succeeds_through_the_real_command() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_merge_tables");
+            let (cashier_id, table_2_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                // See the split_bill test's comment: `tables` rows created
+                // via `seeded_db`/here need their T1.1 scope columns set
+                // explicitly, since `assert_table_in_scope` requires them.
+                conn.execute("UPDATE tables SET tenant_id = ?1, branch_id = ?2 WHERE id = ?3", params![tenant_id, branch_id, table_id]).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let table_2_id = "tbl-2".to_string();
+                conn.execute(
+                    "INSERT INTO tables (id, name, tenant_id, branch_id) VALUES (?1, 'Table 2', ?2, ?3)",
+                    params![table_2_id, tenant_id, branch_id],
+                ).unwrap();
+                (cashier_id, table_2_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            // The order must sit on the *target* table -- `merge_tables`
+            // only reports back the order that was already on
+            // `target_table_id`, not one being merged in from a source.
+            // `create_order_v3` (unlike `create_full_order_v3`) never
+            // stamps `tables.current_order_id`, so it can't be used here.
+            create_full_order_v3_impl(
+                &db, &license, session.clone(), table_2_id.clone(), "DINE_IN".to_string(), vec![],
+                0, 0, 0, 0, None, None, None, None, 0, None, None, None,
+            ).unwrap();
+
+            // `source_table_ids` must include the target table itself --
+            // `merge_tables` only picks up an order for a table id that
+            // appears in this list (it's the set of all tables in the merge
+            // group, not just the ones being folded away).
+            let result = merge_tables_v3_impl(&db, session, vec![table_id, table_2_id.clone()], table_2_id)
+                .expect("merge_tables_v3 must succeed through the real wrapper body");
+            assert!(result.is_some(), "the target table had an order on it, merge must report it");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn transfer_order_v3_wrapper_succeeds_through_the_real_command() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_transfer_order");
+            let (cashier_id, table_2_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                // See the split_bill test's comment: `tables` rows created
+                // via `seeded_db`/here need their T1.1 scope columns set
+                // explicitly, since `assert_table_in_scope` requires them.
+                conn.execute("UPDATE tables SET tenant_id = ?1, branch_id = ?2 WHERE id = ?3", params![tenant_id, branch_id, table_id]).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let table_2_id = "tbl-2".to_string();
+                conn.execute(
+                    "INSERT INTO tables (id, name, tenant_id, branch_id) VALUES (?1, 'Table 2', ?2, ?3)",
+                    params![table_2_id, tenant_id, branch_id],
+                ).unwrap();
+                (cashier_id, table_2_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let order_id = create_order_v3_impl(&db, session.clone(), table_id.clone(), "DINE_IN".to_string(), 0, 0, 0, None).unwrap();
+
+            transfer_order_v3_impl(&db, session, order_id.clone(), table_id, table_2_id.clone())
+                .expect("transfer_order_v3 must succeed through the real wrapper body");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let new_table_id: String = conn.query_row("SELECT table_id FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(new_table_id, table_2_id);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn schedule_delayed_order_v3_wrapper_succeeds_through_the_real_command() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_schedule_delayed");
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier")
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let scheduled_at = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+            let order_id = schedule_delayed_order_v3_impl(
+                &db, session, table_id, "DINE_IN".to_string(), vec![], 0, 0, 0, scheduled_at,
+            ).expect("schedule_delayed_order_v3 must succeed through the real wrapper body");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let status: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(status, "SCHEDULED");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn finalize_order_with_payment_v3_wrapper_succeeds_through_the_real_command() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_finalize_payment");
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier")
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            let order_id = create_order_v3_impl(&db, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None).unwrap();
+
+            let payment_id = finalize_order_with_payment_v3_impl(
+                &db, &license,
+                session, order_id.clone(), "CASH".to_string(), 1000, 0, None,
+            ).expect("finalize_order_with_payment_v3 must succeed through the real wrapper body");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let status: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(status, "PAID");
+            let payment_exists: bool = conn.query_row("SELECT COUNT(*) > 0 FROM payments WHERE id = ?1", params![payment_id], |r| r.get(0)).unwrap();
+            assert!(payment_exists);
+            let outbox_count: i64 = conn.query_row("SELECT COUNT(*) FROM sync_outbox WHERE tenant_id = ?1", params![tenant_id], |r| r.get(0)).unwrap();
+            assert_eq!(outbox_count, 2, "one payments row + one re-stamped orders row must have been enqueued");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn take_payment_v3_wrapper_succeeds_through_the_real_command() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_take_payment");
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier")
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let order_id = create_order_v3_impl(&db, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None).unwrap();
+
+            let payment_id = take_payment_v3_impl(&db, session, order_id, "CASH".to_string(), 1000, 0, None)
+                .expect("take_payment_v3 must succeed through the real wrapper body");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let exists: bool = conn.query_row("SELECT COUNT(*) > 0 FROM payments WHERE id = ?1", params![payment_id], |r| r.get(0)).unwrap();
+            assert!(exists);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn void_order_item_v3_wrapper_succeeds_through_the_real_command() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_void_item");
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 1000, 500, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            let items = vec![OrderItemInput {
+                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let order_id = create_full_order_v3_impl(
+                &db, &license,
+                session.clone(), table_id, "DINE_IN".to_string(), items,
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+            ).unwrap();
+            let item_db_id: String = {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_id], |r| r.get(0)).unwrap()
+            };
+
+            void_order_item_v3_impl(
+                &db, &license,
+                session, item_db_id.clone(), "نفذت الكمية".to_string(),
+            ).expect("void_order_item_v3 must succeed through the real wrapper body");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let voided: i64 = conn.query_row("SELECT voided FROM order_items WHERE id = ?1", params![item_db_id], |r| r.get(0)).unwrap();
+            assert_eq!(voided, 1);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
     }
 
@@ -6372,7 +6893,7 @@ mod tests {
         ];
 
         pub(super) fn function_body(source: &str, name: &str) -> String {
-            let sig = format!("pub fn {name}(");
+            let sig = format!("fn {name}(");
             let sig_start = source.find(&sig).unwrap_or_else(|| panic!("{name}: not found in commands_v3.rs -- renamed or removed?"));
             let paren_start = sig_start + sig.len() - 1;
             let mut depth = 0i32;
