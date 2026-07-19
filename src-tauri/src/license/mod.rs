@@ -24,16 +24,31 @@ use ed25519_dalek::VerifyingKey;
 /// this repo. Generated via that service's own keygen step -- see its
 /// README for how to mint a new keypair if this one is ever rotated.
 ///
-/// This is a DEV/PLACEHOLDER keypair generated during earlier offline-only
-/// work so the pipeline (mint -> verify -> test) was real and runnable end
-/// to end. It is BURNED -- treated as public knowledge, never used to sign
-/// a real license. The production keypair (generated on the signing
-/// service, private half never leaving it) replaces this constant as its
-/// own explicit, gated step, not bundled into this refactor.
-pub const LICENSE_PUBLIC_KEY_B64: &str = "r9skr7ezD4+AGO0Fl9krD1ijHIFz422RDLkGOQQhDlk=";
+/// This is the PRODUCTION keypair's public half (generated on the signing
+/// service, private half never leaving it) -- rotated in as its own
+/// explicit, gated step. The prior dev/placeholder key
+/// (`r9skr7ezD4+AGO0Fl9krD1ijHIFz422RDLkGOQQhDlk=`) is now retired: any
+/// license blob signed with it will correctly fail verification against
+/// this key, exactly as a forged signature would.
+pub const LICENSE_PUBLIC_KEY_B64: &str = "aIaw4/8jh8nPNU/nMYY+dCGUkFUckmNAyErI68Vfafw=";
 
 pub fn compiled_public_key() -> VerifyingKey {
     let bytes = b64::decode(LICENSE_PUBLIC_KEY_B64).expect("LICENSE_PUBLIC_KEY_B64 must be valid base64");
     let array: [u8; 32] = bytes.as_slice().try_into().expect("LICENSE_PUBLIC_KEY_B64 must decode to 32 bytes");
     VerifyingKey::from_bytes(&array).expect("LICENSE_PUBLIC_KEY_B64 must be a valid Ed25519 public key")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compiled_public_key_is_a_valid_ed25519_point() {
+        // Exercises the exact same decode+parse compiled_public_key() does
+        // at boot -- this is the only place LICENSE_PUBLIC_KEY_B64 is
+        // actually validated as a real curve point, not just 32 arbitrary
+        // bytes, since no other test calls compiled_public_key() (all of
+        // them use their own test_keypair()).
+        let _ = compiled_public_key();
+    }
 }
