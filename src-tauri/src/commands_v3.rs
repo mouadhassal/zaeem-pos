@@ -2814,12 +2814,17 @@ pub fn activate_license_v3(state: State<Db>, license: State<crate::license::clou
     let file = crate::license::signed::SignedLicenseFile { payload_json: bundle.payload_json, signature_b64: bundle.signature_b64 };
     let status = license.accept_renewal(file).map_err(|e| e.to_string())?;
 
-    license.set_config(crate::license::cloud::CloudConfig { license_id: bundle.license_id, device_token: bundle.device_token });
-    // Best-effort: if the disk write fails, activation itself already
-    // succeeded (the offline blob is installed and cached_status reflects
-    // it) -- this only affects whether the NEXT boot also has cloud
-    // credentials, not the result the user sees right now.
-    let _ = license.persist_cloud_config();
+    // A bare, hand-signed blob (no license_id/device_token) has no cloud
+    // identity to wire up -- that's fine, it just means this device stays
+    // offline-only until a proper cloud-aware key is pasted later.
+    if let (Some(license_id), Some(device_token)) = (bundle.license_id, bundle.device_token) {
+        license.set_config(crate::license::cloud::CloudConfig { license_id, device_token });
+        // Best-effort: if the disk write fails, activation itself already
+        // succeeded (the offline blob is installed and cached_status
+        // reflects it) -- this only affects whether the NEXT boot also has
+        // cloud credentials, not the result the user sees right now.
+        let _ = license.persist_cloud_config();
+    }
 
     Ok(status)
 }

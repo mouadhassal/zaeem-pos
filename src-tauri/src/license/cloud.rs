@@ -227,19 +227,46 @@ impl CloudLicenseState {
 /// byte-for-byte) of this struct's JSON. One string an operator pastes into
 /// the POS's Settings -> License page, decoded here into the pieces
 /// `activate_license_v3` needs: the offline blob (`payload_json` +
-/// `signature_b64`) and the cloud identity (`license_id` + `device_token`).
+/// `signature_b64`) and, if present, the cloud identity (`license_id` +
+/// `device_token`) for the hybrid cloud check. `license_id`/`device_token`
+/// are optional so a bare, hand-signed `SignedLicenseFile` (e.g. minted
+/// directly via `services/license-signer`'s CLI, without going through
+/// apps/admin's cloud-aware mint flow) can also be pasted here as plain
+/// JSON, not base64 -- it installs the offline blob exactly like
+/// `renew_license_v3` always did; the device simply stays unconfigured for
+/// cloud checks, same as if it had never been activated with a cloud
+/// identity at all.
 #[derive(Debug, serde::Deserialize)]
 pub struct ActivationBundle {
-    pub license_id: String,
-    pub device_token: String,
+    #[serde(default)]
+    pub license_id: Option<String>,
+    #[serde(default)]
+    pub device_token: Option<String>,
     pub payload_json: String,
     pub signature_b64: String,
 }
 
 pub fn decode_activation_key(key: &str) -> Result<ActivationBundle, String> {
-    let bytes = license_core::b64::decode(key.trim())
-        .ok_or_else(|| "activation key is not valid base64".to_string())?;
-    serde_json::from_slice(&bytes).map_err(|_| "activation key is corrupted or not in the expected format".to_string())
+    let trimmed = key.trim();
+
+    // The full cloud-aware bundle: base64(JSON{license_id, device_token,
+    // payload_json, signature_b64}). `b64::decode` itself rejects any
+    // character outside the base64 alphabet (so plain JSON text -- which
+    // starts with `{`, a character never in that alphabet -- fails here
+    // immediately and falls through, it never silently mis-decodes).
+    if let Some(bytes) = license_core::b64::decode(trimmed) {
+        if let Ok(bundle) = serde_json::from_slice::<ActivationBundle>(&bytes) {
+            return Ok(bundle);
+        }
+    }
+
+    // Fallback: a bare SignedLicenseFile pasted as plain JSON, no base64,
+    // no license_id/device_token wrapper.
+    if let Ok(raw) = serde_json::from_str::<SignedLicenseFile>(trimmed) {
+        return Ok(ActivationBundle { license_id: None, device_token: None, payload_json: raw.payload_json, signature_b64: raw.signature_b64 });
+    }
+
+    Err("activation key is corrupted or not in the expected format".to_string())
 }
 
 /// The real production Supabase project URL + anon key, compiled in.
@@ -613,9 +640,9 @@ mod tests {
         // --- decode-level failures (never reach accept_renewal at all) ---
 
         #[test]
-        fn invalid_base64_is_rejected_with_a_distinct_message() {
-            let err = decode_activation_key("not valid base64 at all!!").unwrap_err();
-            assert_eq!(err, "activation key is not valid base64");
+        fn garbage_input_that_is_neither_a_bundle_nor_a_raw_blob_is_rejected() {
+            let err = decode_activation_key("not valid base64 at all!! and not json either").unwrap_err();
+            assert_eq!(err, "activation key is corrupted or not in the expected format");
         }
 
         #[test]
@@ -632,6 +659,36 @@ mod tests {
             assert_eq!(err, "activation key is corrupted or not in the expected format");
         }
 
+        // --- the bare, hand-signed blob fallback (this exact shape is what a
+        // license-signer-CLI-only mint, without apps/admin, produces) ---
+
+        #[test]
+        fn bare_signed_file_json_with_no_license_id_or_device_token_decodes_and_activates() {
+            let key = test_keypair();
+            let machine = crate::license::fingerprint::current();
+            let now = chrono::Utc::now().timestamp_millis();
+            let payload = sample_payload(machine, now - 1000, now + 30 * 86_400_000);
+            let file = mint(&key, &payload);
+            let raw_blob = serde_json::to_string(&file).unwrap();
+
+            let bundle = decode_activation_key(&raw_blob).expect("a bare SignedLicenseFile JSON must decode");
+            assert!(bundle.license_id.is_none());
+            assert!(bundle.device_token.is_none());
+
+            let dir = temp_dir("bare_blob_activation");
+            let state = LicenseState::init(dir.clone(), key.verifying_key());
+            let cloud = CloudLicenseState::new(state, dir, None, Box::new(ScriptedTransport::new(CloudCheckOutcome::Unreachable)));
+            let signed = SignedLicenseFile { payload_json: bundle.payload_json, signature_b64: bundle.signature_b64 };
+            let status = cloud.accept_renewal(signed).expect("a valid bare blob must still activate");
+            assert!(!status.back_office_locked());
+        }
+
+        #[test]
+        fn bare_signed_file_json_missing_signature_is_rejected() {
+            let err = decode_activation_key("{\"payload_json\":\"{}\"}").unwrap_err();
+            assert_eq!(err, "activation key is corrupted or not in the expected format");
+        }
+
         // --- full end-to-end activation through CloudLicenseState (the actual production path) ---
 
         #[test]
@@ -641,16 +698,18 @@ mod tests {
             let cloud = CloudLicenseState::new(state, dir.clone(), None, Box::new(ScriptedTransport::new(CloudCheckOutcome::Unreachable)));
 
             let bundle = decode_activation_key(&bundle_key).expect("a well-formed bundle must decode");
+            let license_id = bundle.license_id.clone().expect("this bundle carries a cloud identity");
+            let device_token = bundle.device_token.clone().expect("this bundle carries a cloud identity");
             let file = SignedLicenseFile { payload_json: bundle.payload_json, signature_b64: bundle.signature_b64 };
             let status = cloud.accept_renewal(file).expect("a valid, correctly-signed bundle must be accepted");
             assert!(!status.back_office_locked(), "a freshly activated valid license must not be locked, got {status:?}");
 
-            cloud.set_config(CloudConfig { license_id: bundle.license_id.clone(), device_token: bundle.device_token.clone() });
+            cloud.set_config(CloudConfig { license_id: license_id.clone(), device_token: device_token.clone() });
             cloud.persist_cloud_config().expect("persisting cloud_config.json must succeed");
 
             let loaded = load_config_from_file(&dir.join("cloud_config.json")).expect("cloud_config.json must be loadable after activation");
-            assert_eq!(loaded.license_id, bundle.license_id);
-            assert_eq!(loaded.device_token, bundle.device_token);
+            assert_eq!(loaded.license_id, license_id);
+            assert_eq!(loaded.device_token, device_token);
         }
 
         #[test]

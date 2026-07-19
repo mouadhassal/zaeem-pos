@@ -58,9 +58,6 @@ const TABS: { id: SettingsTab; label: string }[] = [
  * exact English wording is tweaked later.
  */
 function mapActivationError(raw: string): string {
-  if (raw.includes("not valid base64")) {
-    return "المفتاح غير صالح — تأكد من نسخه بالكامل والمحاولة مرة أخرى.";
-  }
   if (raw.includes("corrupted or not in the expected format")) {
     return "تعذر قراءة المفتاح — تأكد من نسخه بالكامل دون أي تعديل.";
   }
