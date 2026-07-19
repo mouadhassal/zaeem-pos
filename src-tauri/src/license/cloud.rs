@@ -242,22 +242,22 @@ pub fn decode_activation_key(key: &str) -> Result<ActivationBundle, String> {
     serde_json::from_slice(&bytes).map_err(|_| "activation key is corrupted or not in the expected format".to_string())
 }
 
-/// Public Supabase project URL + anon key. Unlike `LICENSE_PUBLIC_KEY_B64`
-/// these are DESIGNED to be embedded in public clients -- that's the entire
-/// point of RLS plus the already-proven `check_license` grant restriction
-/// (Slice 1b's RLS probes). Placeholders here, swapped for the real
-/// production project's values as a build-config step, not bundled into
-/// this slice; overridable via env vars so local/dev runs don't require
-/// editing source.
-pub const SUPABASE_URL_PLACEHOLDER: &str = "https://REPLACE-WITH-PRODUCTION-PROJECT.supabase.co";
-pub const SUPABASE_ANON_KEY_PLACEHOLDER: &str = "REPLACE-WITH-PRODUCTION-ANON-KEY";
+/// The real production Supabase project URL + anon key, compiled in.
+/// Unlike `LICENSE_PUBLIC_KEY_B64` (the Ed25519 offline-verification key,
+/// a completely separate credential) these are DESIGNED to be embedded in
+/// public clients -- that's the entire point of RLS plus the already-proven
+/// `check_license` grant restriction (Slice 1b's RLS probes): the anon key
+/// can do nothing except call that one RPC. Overridable via env vars so
+/// local/dev runs don't require editing source.
+pub const SUPABASE_URL: &str = "https://bfeyulkqpdoykyarqvcu.supabase.co";
+pub const SUPABASE_ANON_KEY: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJmZXl1bGtxcGRveWt5YXJxdmN1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQzMjA1NTEsImV4cCI6MjA5OTg5NjU1MX0.pnxSnMCtcKU7NuIWCRozywIGr3IZe_ZsJcTQuKR0a4I";
 
 pub fn supabase_url() -> String {
-    std::env::var("ZAEEM_SUPABASE_URL").unwrap_or_else(|_| SUPABASE_URL_PLACEHOLDER.to_string())
+    std::env::var("ZAEEM_SUPABASE_URL").unwrap_or_else(|_| SUPABASE_URL.to_string())
 }
 
 pub fn supabase_anon_key() -> String {
-    std::env::var("ZAEEM_SUPABASE_ANON_KEY").unwrap_or_else(|_| SUPABASE_ANON_KEY_PLACEHOLDER.to_string())
+    std::env::var("ZAEEM_SUPABASE_ANON_KEY").unwrap_or_else(|_| SUPABASE_ANON_KEY.to_string())
 }
 
 /// Loads the per-device `{license_id, device_token}` pair written during
