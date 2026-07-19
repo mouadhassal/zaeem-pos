@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAuthStore } from "../../stores/authStore";
 import type { TaxMode } from "../../db/types";
-import { checkLicense, activateLicense, type LicenseStatus } from "../../lib/license";
+import { checkLicense, activateLicense, backOfficeLocked, type LicenseStatus } from "../../lib/license";
 
 type SettingsTab = "general" | "printer" | "tax" | "branch" | "license" | "cloud" | "backup" | "about";
 
@@ -122,6 +122,11 @@ export default function SettingsPage() {
   const [activating, setActivating] = useState(false);
   const [activationError, setActivationError] = useState<string | null>(null);
   const [activationSuccess, setActivationSuccess] = useState(false);
+
+  // Every OTHER settings tab is back-office and locks with the rest of the
+  // app; the license tab itself never does -- it's the only way out of a
+  // locked state, so it can't be gated by the very thing it's meant to fix.
+  const settingsLocked = licenseStatus !== null && backOfficeLocked(licenseStatus);
 
   const refreshLicense = useCallback(async () => {
     try {
@@ -286,6 +291,15 @@ export default function SettingsPage() {
       </nav>
 
       <div className="flex-1 p-6 space-y-6 overflow-y-auto">
+        {tab !== "license" && settingsLocked ? (
+          <div className="flex flex-col items-center justify-center h-full text-center gap-3 px-6">
+            <p className="text-base font-medium text-ink-900 font-arabic">هذه الشاشة مقفلة — الترخيص منتهي</p>
+            <p className="text-sm text-ink-500 font-arabic max-w-sm">
+              نقطة البيع تعمل بشكل طبيعي. اذهب إلى تبويب &quot;الترخيص&quot; على اليمين لتفعيل مفتاح جديد.
+            </p>
+          </div>
+        ) : (
+        <>
         {tab === "general" && (
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">الإعدادات العامة</h2>
@@ -747,6 +761,8 @@ export default function SettingsPage() {
               </div>
             </div>
           </div>
+        )}
+        </>
         )}
       </div>
 

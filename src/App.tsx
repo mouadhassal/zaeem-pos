@@ -58,8 +58,12 @@ function PosLayout({ children }: { children: React.ReactNode }) {
 
   // POS never locks, regardless of license status -- a dinner service is
   // never interrupted. Every other screen (back-office/reports) locks once
-  // the license is past grace or invalid, per the licensing spec.
-  const locked = activeView !== "pos" && licenseStatus !== null && backOfficeLocked(licenseStatus);
+  // the license is past grace or invalid, per the licensing spec. Settings
+  // is also excluded from this blanket lock -- it's where Settings ->
+  // License lives, the only place a locked device can paste a new
+  // activation key. SettingsPage itself gates its OTHER tabs individually
+  // when locked, so nothing except the license tab becomes reachable.
+  const locked = activeView !== "pos" && activeView !== "settings" && licenseStatus !== null && backOfficeLocked(licenseStatus);
 
   const renderContent = () => {
     if (locked) {
