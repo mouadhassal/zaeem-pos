@@ -46,6 +46,16 @@ export async function activateLicense(sessionToken: string, activationKey: strin
   return invoke<LicenseStatus>("activate_license_v3", { sessionToken, activationKey });
 }
 
+/**
+ * The real-world minting flow: the customer reads this off Settings ->
+ * License and sends it (WhatsApp, etc.) to whoever mints their license.
+ * No auth required -- must work even before any staff session exists, on
+ * a brand new install with no license at all.
+ */
+export async function getDeviceId(): Promise<string> {
+  return invoke<string>("get_device_id_v3");
+}
+
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
 
 /** Starts the periodic 6h recheck. Call once at app boot. Returns a cleanup function. */

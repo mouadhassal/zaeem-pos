@@ -46,3 +46,19 @@ pub fn current() -> MachineFingerprint {
     let (cpu, disk, mac) = collect_raw();
     MachineFingerprint::from_raw(cpu.as_deref(), disk.as_deref(), mac.as_deref())
 }
+
+/// The real-world minting flow: a customer reads this off their own
+/// Settings -> License screen and sends it (WhatsApp, etc.) to whoever
+/// mints their license; apps/admin's mint form decodes it back into the
+/// raw cpu/disk/mac values `/sign` needs, so the signed license's
+/// `machine_fingerprint` hashes end up identical to what THIS same
+/// function will compute again at verification time. Deliberately the RAW
+/// values, not their hashes -- license-signer only ever accepts raw
+/// cpu/disk/mac and hashes them itself (the one, shared hashing logic in
+/// `license_core::fingerprint`), so this has to hand over the same raw
+/// inputs, not a hash of them.
+pub fn device_id() -> String {
+    let (cpu, disk, mac) = collect_raw();
+    let json = serde_json::json!({ "cpu": cpu, "disk": disk, "mac": mac });
+    license_core::b64::encode(serde_json::to_string(&json).expect("device id json always serializes").as_bytes())
+}

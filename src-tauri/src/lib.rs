@@ -374,6 +374,7 @@ pub fn run() {
             commands_v3::check_license_v3,
             commands_v3::renew_license_v3,
             commands_v3::activate_license_v3,
+            commands_v3::get_device_id_v3,
             commands::queue_media,
             commands::list_uploads,
             commands::process_queue,

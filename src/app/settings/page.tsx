@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAuthStore } from "../../stores/authStore";
 import type { TaxMode } from "../../db/types";
-import { checkLicense, activateLicense, backOfficeLocked, type LicenseStatus } from "../../lib/license";
+import { checkLicense, activateLicense, getDeviceId, backOfficeLocked, type LicenseStatus } from "../../lib/license";
 
 type SettingsTab = "general" | "printer" | "tax" | "branch" | "license" | "cloud" | "backup" | "about";
 
@@ -119,6 +119,19 @@ export default function SettingsPage() {
   const [activating, setActivating] = useState(false);
   const [activationError, setActivationError] = useState<string | null>(null);
   const [activationSuccess, setActivationSuccess] = useState(false);
+  const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [deviceIdCopied, setDeviceIdCopied] = useState(false);
+
+  useEffect(() => {
+    getDeviceId().then(setDeviceId).catch(() => {});
+  }, []);
+
+  const copyDeviceId = async () => {
+    if (!deviceId) return;
+    await navigator.clipboard.writeText(deviceId);
+    setDeviceIdCopied(true);
+    setTimeout(() => setDeviceIdCopied(false), 2000);
+  };
 
   // Every OTHER settings tab is back-office and locks with the rest of the
   // app; the license tab itself never does -- it's the only way out of a
@@ -554,6 +567,30 @@ export default function SettingsPage() {
             {!isOwner && (
               <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-amber-700 font-arabic text-sm">
                 هذه الصفحة متاحة للمالك فقط
+              </div>
+            )}
+
+            {isOwner && (
+              <div className="bg-white rounded-2xl p-5 shadow-sm space-y-2">
+                <p className="text-sm font-arabic text-ink-900 font-bold">معرّف الجهاز (Device ID)</p>
+                <p className="text-xs font-arabic text-ink-500">
+                  أرسل هذا المعرّف إلى المورّد لإصدار ترخيص خاص بهذا الجهاز فقط.
+                </p>
+                <textarea
+                  readOnly
+                  value={deviceId ?? "جاري القراءة..."}
+                  rows={2}
+                  dir="ltr"
+                  className="w-full px-3 py-2 rounded-xl bg-ink-50 border border-ink-200 text-ink-900 font-mono text-xs"
+                  onFocus={(e) => e.currentTarget.select()}
+                />
+                <button
+                  onClick={copyDeviceId}
+                  disabled={!deviceId}
+                  className="h-9 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-xs font-bold hover:bg-ink-100 transition-colors disabled:opacity-50"
+                >
+                  {deviceIdCopied ? "تم النسخ!" : "نسخ المعرّف"}
+                </button>
               </div>
             )}
 

@@ -2778,6 +2778,17 @@ pub fn get_cached_license_status_v3(license: State<crate::license::cloud::CloudL
     license.cached_status()
 }
 
+/// The real-world minting flow: shown on Settings -> License even before
+/// any license exists (no auth, same reasoning as the status reads below --
+/// this screen has to work for a brand new install with no staff session
+/// yet). The customer copies this and sends it to whoever mints their
+/// license; apps/admin's mint form decodes it back into the raw cpu/disk/
+/// mac values the signing service needs.
+#[tauri::command]
+pub fn get_device_id_v3() -> String {
+    crate::license::fingerprint::device_id()
+}
+
 /// Forces a fresh read of the license file + re-verification. Called at
 /// boot and on a 6h timer (see lib.rs's setup); also safe to call from a
 /// UI "check now" action.
@@ -6016,7 +6027,7 @@ mod tests {
         const NOT_GATED: &[&str] = &[
             "login_v3", "login_pin_v3", "setup_owner_v3", "needs_setup_v3", "logout_v3",
             "change_own_password_v3",
-            "get_cached_license_status_v3", "check_license_v3", "renew_license_v3", "activate_license_v3",
+            "get_cached_license_status_v3", "check_license_v3", "renew_license_v3", "activate_license_v3", "get_device_id_v3",
             "create_order_v3", "update_order_status_v3", "take_payment_v3",
             "create_full_order_v3", "hold_order_v3", "retrieve_held_order_v3",
             "split_bill_v3", "merge_tables_v3", "unmerge_tables_v3", "void_order_item_v3",
