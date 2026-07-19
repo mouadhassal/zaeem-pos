@@ -13,6 +13,8 @@ mod commands_v3;
 mod ai;
 mod photos;
 pub mod license;
+mod hlc;
+mod sync;
 
 use bcrypt::{hash, DEFAULT_COST};
 
@@ -47,6 +49,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_drift_fix_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_index_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_discount_cap_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_sync_outbox_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -216,6 +219,24 @@ pub fn run() {
                     tokio::time::sleep(std::time::Duration::from_secs(5 * 60)).await;
                     if let Some(state) = cloud_timer_handle.try_state::<license::cloud::CloudLicenseState>() {
                         state.refresh_from_cloud().await;
+                    }
+                }
+            });
+
+            // Cloud sync outbox worker (CLOUD_AND_LICENSING_PLAN.md §5,
+            // Slice 2a): drains sync_outbox on its own timer, batched, with
+            // exponential backoff + jitter on failure. `send_batch_stub`
+            // (sync.rs) always fails in this slice -- there is no network
+            // path yet, only this scheduling loop, which Slice 2c plugs a
+            // real POST into without touching anything else here. Never on
+            // the sale path: this is the ONLY thing that ever reads
+            // `sync_outbox`.
+            let sync_timer_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    if let Some(db) = sync_timer_handle.try_state::<Db>() {
+                        let _ = sync::run_tick(&db.0, 500).await;
                     }
                 }
             });

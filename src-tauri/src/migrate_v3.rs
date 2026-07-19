@@ -1226,6 +1226,60 @@ pub fn run_discount_cap_migration(conn: &mut Connection, _db_path: &Path) -> Res
     Ok(())
 }
 
+pub const MIGRATION_G_VERSION: i64 = 11;
+
+/// Cloud sync outbox (Plan §5 / CLOUD_AND_LICENSING_PLAN.md, Slice 2a): every
+/// syncable fact (order/order_item/payment creation or mutation) is queued
+/// here in the SAME transaction as the fact itself -- see
+/// `commands_v3::create_full_order_v3`/`finalize_order_with_payment_v3`/
+/// `void_order_item_v3`. A background worker (sync.rs) drains this on its own
+/// timer; nothing here is ever read on the sale path itself.
+///
+/// `license_status_at_enqueue` exists so the eventual owner dashboard can
+/// distinguish paid-period facts from ones created while the license was
+/// lapsed -- POS never stops selling regardless of license state, so this
+/// column records the fact, it never gates the enqueue.
+pub fn run_sync_outbox_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_G_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sync_outbox (
+            id TEXT PRIMARY KEY,
+            table_name TEXT NOT NULL CHECK(table_name IN ('orders','order_items','payments')),
+            row_id TEXT NOT NULL,
+            tenant_id TEXT NOT NULL,
+            branch_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            rev INTEGER NOT NULL,
+            hlc TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            license_status_at_enqueue TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'QUEUED' CHECK(status IN ('QUEUED','FAILED')),
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_outbox_due ON sync_outbox(status, next_attempt_at);
+        CREATE INDEX IF NOT EXISTS idx_sync_outbox_tenant ON sync_outbox(tenant_id);"
+    )?;
+    println!("v11_sync_outbox: sync_outbox table created (Plan Slice 2a)");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_G_VERSION, "0011_sync_outbox", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

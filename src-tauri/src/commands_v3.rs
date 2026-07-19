@@ -2401,6 +2401,7 @@ pub fn list_tables_v3(state: State<Db>, _session_token: String) -> Result<Vec<Ta
 #[allow(clippy::too_many_arguments)]
 pub fn create_full_order_v3(
     state: State<Db>,
+    license: State<crate::license::cloud::CloudLicenseState>,
     session_token: String,
     table_id: String,
     order_type: String,
@@ -2459,8 +2460,103 @@ pub fn create_full_order_v3(
         ).map_err(|e| e.to_string())?;
     }
 
+    // Sync (Plan §5, Slice 2a): queued in the SAME transaction as the order
+    // and its items -- if anything above rolls back, these outbox rows never
+    // existed either. No network here; a background worker drains this.
+    let license_status = license.cached_status();
+    sync_enqueue_order(&tx, &tenant_id, &branch_id, &order_id, &actor.device_id, &license_status)?;
+    sync_enqueue_order_items(&tx, &tenant_id, &branch_id, &order_id, &actor.device_id, &license_status)?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(order_id)
+}
+
+/// Stamps `orders.rev`/`updated_at_hlc`/`device_id` (previously never
+/// populated on write -- the v9 migration added the columns but nothing
+/// filled them in) and queues the row's current snapshot. Called at
+/// creation (rev 1) and again whenever the order's status changes to a
+/// terminal state (rev 2+, see `finalize_order_with_payment_v3`).
+fn sync_enqueue_order(
+    tx: &rusqlite::Transaction,
+    tenant_id: &str,
+    branch_id: &str,
+    order_id: &str,
+    device_id: &str,
+    license_status: &crate::license::signed::LicenseStatus,
+) -> Result<(), String> {
+    tx.execute(
+        "UPDATE orders SET rev = COALESCE(rev, 0) + 1, updated_at_hlc = ?1, device_id = ?2 WHERE id = ?3",
+        params![crate::hlc::next(), device_id, order_id],
+    ).map_err(|e| e.to_string())?;
+
+    let (status, order_type, subtotal_cents, tax_cents, total_cents, discount_cents, created_at, rev): (String, String, i64, i64, i64, i64, String, i64) = tx.query_row(
+        "SELECT status, order_type, subtotal_cents, tax_cents, total_cents, discount_cents, created_at, rev FROM orders WHERE id = ?1",
+        params![order_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
+    ).map_err(|e| e.to_string())?;
+
+    let payload = serde_json::json!({
+        "id": order_id, "tenant_id": tenant_id, "branch_id": branch_id, "device_id": device_id,
+        "status": status, "order_type": order_type, "subtotal_cents": subtotal_cents,
+        "tax_cents": tax_cents, "total_cents": total_cents, "discount_cents": discount_cents,
+        "created_at": created_at,
+    });
+    crate::sync::enqueue(tx, "orders", order_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
+}
+
+/// Stamps and queues every item currently on `order_id` -- called once at
+/// order creation (all items at rev 1). `void_order_item_v3` handles its own
+/// single-item re-stamp+enqueue separately (see `sync_enqueue_single_order_item`).
+fn sync_enqueue_order_items(
+    tx: &rusqlite::Transaction,
+    tenant_id: &str,
+    branch_id: &str,
+    order_id: &str,
+    device_id: &str,
+    license_status: &crate::license::signed::LicenseStatus,
+) -> Result<(), String> {
+    let item_ids: Vec<String> = {
+        let mut stmt = tx.prepare("SELECT id FROM order_items WHERE order_id = ?1").map_err(|e| e.to_string())?;
+        let ids = stmt.query_map(params![order_id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        ids.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    };
+    for item_id in item_ids {
+        sync_enqueue_single_order_item(tx, tenant_id, branch_id, &item_id, device_id, license_status)?;
+    }
+    Ok(())
+}
+
+/// Stamps `order_items.rev`/`updated_at_hlc`/`device_id` and queues one
+/// item's current snapshot -- `menu_item_name` is denormalized in
+/// (looked up now, not stored by reference) so a later menu rename can never
+/// rewrite this historical fact.
+fn sync_enqueue_single_order_item(
+    tx: &rusqlite::Transaction,
+    tenant_id: &str,
+    branch_id: &str,
+    item_id: &str,
+    device_id: &str,
+    license_status: &crate::license::signed::LicenseStatus,
+) -> Result<(), String> {
+    tx.execute(
+        "UPDATE order_items SET rev = COALESCE(rev, 0) + 1, updated_at_hlc = ?1, device_id = ?2 WHERE id = ?3",
+        params![crate::hlc::next(), device_id, item_id],
+    ).map_err(|e| e.to_string())?;
+
+    let (order_id, menu_item_id, quantity, unit_price_cents, voided, rev): (String, String, i64, i64, i64, i64) = tx.query_row(
+        "SELECT order_id, menu_item_id, quantity, unit_price_cents, voided, rev FROM order_items WHERE id = ?1",
+        params![item_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+    ).map_err(|e| e.to_string())?;
+    let menu_item_name: String = tx.query_row("SELECT name FROM menu_items WHERE id = ?1", params![menu_item_id], |r| r.get(0))
+        .unwrap_or_default();
+
+    let payload = serde_json::json!({
+        "id": item_id, "order_id": order_id, "tenant_id": tenant_id, "branch_id": branch_id,
+        "menu_item_id": menu_item_id, "menu_item_name": menu_item_name,
+        "quantity": quantity, "unit_price_cents": unit_price_cents, "voided": voided != 0,
+    });
+    crate::sync::enqueue(tx, "order_items", item_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
 }
 
 /// DRAFT order + items + modifiers + table→OCCUPIED. Replaces `orderService.holdOrder`.
@@ -2593,7 +2689,7 @@ pub fn unmerge_tables_v3(state: State<Db>, session_token: String, merge_group_id
 
 /// Soft-void an order item (set voided=1 + void_reason).
 #[tauri::command]
-pub fn void_order_item_v3(state: State<Db>, session_token: String, item_id: String, reason: String) -> Result<(), String> {
+pub fn void_order_item_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, reason: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let scope = actor.scope();
@@ -2607,6 +2703,18 @@ pub fn void_order_item_v3(state: State<Db>, session_token: String, item_id: Stri
         audit::Action::OrderStatusChanged, "order_item", &item_id,
         None, Some(&serde_json::json!({ "action": "void", "reason": reason })),
     ).map_err(|e| e.to_string())?;
+
+    // Sync: re-stamp+re-queue this one item at its next rev (voided=1).
+    // tenant_id/branch_id come from the item's OWN row, not the actor's
+    // scope -- correct regardless of whether the caller is Branch- or
+    // Tenant-scoped, and it's the row's true scope that matters for RLS
+    // once this reaches Supabase (Slice 2b).
+    let (item_tenant_id, item_branch_id): (String, String) = tx.query_row(
+        "SELECT tenant_id, branch_id FROM order_items WHERE id = ?1", params![item_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).map_err(|e| e.to_string())?;
+    let license_status = license.cached_status();
+    sync_enqueue_single_order_item(&tx, &item_tenant_id, &item_branch_id, &item_id, &actor.device_id, &license_status)?;
 
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
@@ -2729,8 +2837,10 @@ pub fn earn_loyalty_points_v3(state: State<Db>, session_token: String, card_numb
 /// optional debt entry. Replaces `orderService.finalizeOrder` (the DB
 /// part). Receipt printing stays on the frontend.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn finalize_order_with_payment_v3(
     state: State<Db>,
+    license: State<crate::license::cloud::CloudLicenseState>,
     session_token: String,
     order_id: String,
     method: String,
@@ -2760,8 +2870,44 @@ pub fn finalize_order_with_payment_v3(
         None, Some(&serde_json::json!({ "payment_id": payment_id, "method": method, "amount_cents": amount_cents, "change_cents": change_cents, "debtor_id": debtor_id })),
     ).map_err(|e| e.to_string())?;
 
+    // Sync: the payment is a brand-new fact (rev 1); the order's own row
+    // changed too (status -> PAID), so it gets re-stamped and re-queued at
+    // its next rev -- same transaction as everything else above.
+    let license_status = license.cached_status();
+    sync_enqueue_payment(&tx, &tenant_id, &branch_id, &payment_id, &actor.device_id, &license_status)?;
+    sync_enqueue_order(&tx, &tenant_id, &branch_id, &order_id, &actor.device_id, &license_status)?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(payment_id)
+}
+
+/// Stamps `payments.rev`/`updated_at_hlc`/`device_id` and queues the row --
+/// payments are never mutated after creation, so this only ever runs once
+/// per payment, always at rev 1.
+fn sync_enqueue_payment(
+    tx: &rusqlite::Transaction,
+    tenant_id: &str,
+    branch_id: &str,
+    payment_id: &str,
+    device_id: &str,
+    license_status: &crate::license::signed::LicenseStatus,
+) -> Result<(), String> {
+    tx.execute(
+        "UPDATE payments SET rev = COALESCE(rev, 0) + 1, updated_at_hlc = ?1, device_id = ?2 WHERE id = ?3",
+        params![crate::hlc::next(), device_id, payment_id],
+    ).map_err(|e| e.to_string())?;
+
+    let (order_id, method, amount_cents, change_cents, created_at, rev): (String, String, i64, i64, String, i64) = tx.query_row(
+        "SELECT order_id, method, amount_cents, change_cents, created_at, rev FROM payments WHERE id = ?1",
+        params![payment_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+    ).map_err(|e| e.to_string())?;
+
+    let payload = serde_json::json!({
+        "id": payment_id, "order_id": order_id, "tenant_id": tenant_id, "branch_id": branch_id,
+        "method": method, "amount_cents": amount_cents, "change_cents": change_cents, "created_at": created_at,
+    });
+    crate::sync::enqueue(tx, "payments", payment_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -2872,6 +3018,7 @@ mod tests {
         migrate_v3::run_drift_fix_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_index_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_discount_cap_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_sync_outbox_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -2994,6 +3141,88 @@ mod tests {
         assert!(plan.iter().any(|p| p.contains("USING INDEX idx_menu_items_tenant")), "menu_items query must use idx_menu_items_tenant, got: {plan:?}");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Slice 2a's core acceptance criterion: a sync_outbox row and the fact
+    /// it queues must commit or roll back TOGETHER, never independently.
+    /// Exercises `Repo::create_full_order` + `sync::enqueue` exactly as
+    /// `create_full_order_v3` calls them, inside one manually-driven
+    /// transaction -- this test module's own established pattern of testing
+    /// the real logic directly rather than through the `#[tauri::command]`
+    /// wrapper (see this module's top doc comment).
+    #[test]
+    fn sync_outbox_enqueue_is_transactional_with_the_fact_it_queues() {
+        let (db_path, tenant_id, branch_id, table_id) = seeded_db("sync_atomicity");
+        let mut conn = Connection::open(&db_path).unwrap();
+        let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let active = crate::license::signed::LicenseStatus::Active { days_remaining: 30, plan: "standard".into(), expires_at: 0 };
+
+        let new_order_input = |subtotal: i64| FullOrderInput {
+            table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".to_string(),
+            subtotal_cents: subtotal, tax_cents: 0, total_cents: subtotal, discount_cents: 0,
+            discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
+            delivery_fee_cents: 0, driver_id: None, shift_id: None, items: vec![],
+        };
+
+        // --- committed transaction: both the fact and its outbox row persist ---
+        let tx = conn.transaction().unwrap();
+        let order_id = Repo::new(&tx).create_full_order(&scope, &tenant_id, &branch_id, new_order_input(0)).unwrap();
+        crate::sync::enqueue(&tx, "orders", &order_id, &tenant_id, &branch_id, &serde_json::json!({"id": order_id}), 1, "device-1", &active).unwrap();
+        tx.commit().unwrap();
+
+        let order_exists: bool = conn.query_row("SELECT COUNT(*) > 0 FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+        let outbox_exists: bool = conn.query_row("SELECT COUNT(*) > 0 FROM sync_outbox WHERE row_id = ?1", params![order_id], |r| r.get(0)).unwrap();
+        assert!(order_exists, "committed order must exist");
+        assert!(outbox_exists, "committed outbox row must exist alongside it");
+
+        // --- rolled-back transaction: NEITHER survives ---
+        let tx = conn.transaction().unwrap();
+        let order_id_2 = Repo::new(&tx).create_full_order(&scope, &tenant_id, &branch_id, new_order_input(0)).unwrap();
+        crate::sync::enqueue(&tx, "orders", &order_id_2, &tenant_id, &branch_id, &serde_json::json!({"id": order_id_2}), 1, "device-1", &active).unwrap();
+
+        // Both are visible INSIDE the still-open transaction...
+        let order_in_tx: bool = tx.query_row("SELECT COUNT(*) > 0 FROM orders WHERE id = ?1", params![order_id_2], |r| r.get(0)).unwrap();
+        let outbox_in_tx: bool = tx.query_row("SELECT COUNT(*) > 0 FROM sync_outbox WHERE row_id = ?1", params![order_id_2], |r| r.get(0)).unwrap();
+        assert!(order_in_tx && outbox_in_tx, "both must be visible pre-commit, inside the transaction");
+
+        tx.rollback().unwrap();
+
+        // ...but neither survives the rollback -- this is the actual proof.
+        let order_exists_2: bool = conn.query_row("SELECT COUNT(*) > 0 FROM orders WHERE id = ?1", params![order_id_2], |r| r.get(0)).unwrap();
+        let outbox_exists_2: bool = conn.query_row("SELECT COUNT(*) > 0 FROM sync_outbox WHERE row_id = ?1", params![order_id_2], |r| r.get(0)).unwrap();
+        assert!(!order_exists_2, "rolled-back order must not exist");
+        assert!(!outbox_exists_2, "rolled-back outbox row must not exist -- fact and sync entry commit together or not at all");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Source-inspection proof (same technique as `license_gate_coverage`,
+    /// this file's own established pattern for proving a wrapper's body
+    /// contains a specific call without needing a live `tauri::App` to
+    /// construct `State<T>`): the three real sale-path commands must each
+    /// actually call into `sync::enqueue*`, and NONE of the five sale-path
+    /// commands most likely to touch a sync helper may reference `reqwest`
+    /// or any network client directly -- the sale path must never touch the
+    /// network, full stop; only a separate background worker (not yet wired
+    /// to a real network call in this slice) may.
+    #[test]
+    fn sale_path_commands_enqueue_sync_facts_and_never_touch_the_network() {
+        let source = include_str!("commands_v3.rs");
+
+        let wiring: &[(&str, &[&str])] = &[
+            ("create_full_order_v3", &["sync_enqueue_order(", "sync_enqueue_order_items("]),
+            ("finalize_order_with_payment_v3", &["sync_enqueue_payment(", "sync_enqueue_order("]),
+            ("void_order_item_v3", &["sync_enqueue_single_order_item("]),
+        ];
+
+        for (name, expected_calls) in wiring {
+            let body = license_gate_coverage::function_body(source, name);
+            for call in *expected_calls {
+                assert!(body.contains(call), "{name} must call {call}, it's the whole point of this slice");
+            }
+            assert!(!body.contains("reqwest") && !body.contains(".send()"), "{name} is the sale path -- it must never touch the network directly, got a match in its body");
+        }
     }
 
     #[test]
@@ -6142,7 +6371,7 @@ mod tests {
             "update_driver_location_v3", "create_delivery_log_v3", "list_delivery_logs_v3",
         ];
 
-        fn function_body(source: &str, name: &str) -> String {
+        pub(super) fn function_body(source: &str, name: &str) -> String {
             let sig = format!("pub fn {name}(");
             let sig_start = source.find(&sig).unwrap_or_else(|| panic!("{name}: not found in commands_v3.rs -- renamed or removed?"));
             let paren_start = sig_start + sig.len() - 1;
