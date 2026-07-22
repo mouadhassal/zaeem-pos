@@ -44,7 +44,7 @@ export default function CategoryDock({ categories = [], active = null, onChange 
       {showScroll && (
         <button
           onClick={() => scroll("right")}
-          className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-7 h-7 flex items-center justify-center bg-white border border-ink-200 rounded-sm shadow-sm text-ink-500 hover:text-ink-700"
+          className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-7 h-7 flex items-center justify-center bg-white border border-ink-200 rounded-sm shadow-sh-1 text-ink-500 hover:text-ink-700"
         >
           <ChevronRight className="w-4 h-4" />
         </button>
@@ -82,7 +82,7 @@ export default function CategoryDock({ categories = [], active = null, onChange 
       {showScroll && (
         <button
           onClick={() => scroll("left")}
-          className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-7 h-7 flex items-center justify-center bg-white border border-ink-200 rounded-sm shadow-sm text-ink-500 hover:text-ink-700"
+          className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-7 h-7 flex items-center justify-center bg-white border border-ink-200 rounded-sm shadow-sh-1 text-ink-500 hover:text-ink-700"
         >
           <ChevronLeft className="w-4 h-4" />
         </button>

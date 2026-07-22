@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCurrency } from "../../hooks/useCurrency";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
+import { IconCash, IconPencil, IconTrash } from "@tabler/icons-react";
 
 interface DebtorRow {
   id: string;
@@ -187,7 +188,7 @@ export default function DebtPage() {
         className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
       />
 
-      <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+      <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-ink-200 text-ink-400 font-arabic">
@@ -211,9 +212,9 @@ export default function DebtPage() {
                 <td className="p-3 font-arabic text-ink-400 text-xs">{fmtDateTime(d.last_transaction_at)}</td>
                 <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center justify-center gap-1">
-                    <button onClick={() => { setPayModal(d); setPayAmount(""); setPayNotes(""); }} className="p-1.5 rounded-lg text-xs text-saffron-600 hover:bg-saffron-50 transition-colors" title="تسديد">💰</button>
-                    <button onClick={() => openEdit(d)} className="p-1.5 rounded-lg text-xs text-amber-600 hover:bg-amber-50 transition-colors" title="تعديل">✏️</button>
-                    <button onClick={() => setDeleteId(d.id)} className="p-1.5 rounded-lg text-xs text-red-500 hover:bg-red-50 transition-colors" title="حذف">🗑️</button>
+                    <button onClick={() => { setPayModal(d); setPayAmount(""); setPayNotes(""); }} className="p-1.5 rounded-lg text-xs text-saffron-600 hover:bg-saffron-50 transition-colors" title="تسديد"><IconCash className="w-4 h-4" /></button>
+                    <button onClick={() => openEdit(d)} className="p-1.5 rounded-lg text-xs text-amber-600 hover:bg-amber-50 transition-colors" title="تعديل"><IconPencil className="w-4 h-4" /></button>
+                    <button onClick={() => setDeleteId(d.id)} className="p-1.5 rounded-lg text-xs text-red-500 hover:bg-red-50 transition-colors" title="حذف"><IconTrash className="w-4 h-4" /></button>
                   </div>
                 </td>
               </tr>
@@ -312,7 +313,7 @@ export default function DebtPage() {
                 </div>
               </div>
 
-              <div className="bg-white rounded-2xl p-4 space-y-2 shadow-sm">
+              <div className="bg-white rounded-2xl p-4 space-y-2 shadow-sh-1">
                 <h3 className="font-bold font-arabic text-sm text-ink-900">سجل المعاملات</h3>
                 {detail.entries.length > 0 ? (
                   <div className="space-y-1">

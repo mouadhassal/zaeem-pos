@@ -37,16 +37,15 @@ export default function ManagerPinModal({
       // a client-side `app_settings` read via the old Kysely helper, trivially
       // bypassable by clearing local state) and audits a successful grant.
       const token = useAuthStore.getState().token;
-      const valid = await invoke<boolean>("verify_manager_override_v3", { sessionToken: token, passwordOrPin: pin }).catch(() => false);
-      if (!valid) {
-        setError("كلمة المرور غير صحيحة، أو تم قفل الإدخال بسبب كثرة المحاولات الخاطئة");
-        setLoading(false);
-        return;
-      }
-
+      await invoke<boolean>("verify_manager_override_v3", { sessionToken: token, passwordOrPin: pin });
       onSuccess(pin);
-    } catch {
-      setError("حدث خطأ");
+    } catch (err) {
+      const msg = typeof err === "string" ? err : (err as Error)?.message ?? "";
+      if (msg.includes("ECONNREFUSED") || msg.includes("network") || msg.includes("fetch")) {
+        setError("خطأ في الاتصال بالخادم");
+      } else {
+        setError("كلمة المرور غير صحيحة، أو تم قفل الإدخال بسبب كثرة المحاولات الخاطئة");
+      }
     } finally {
       setLoading(false);
     }
@@ -71,13 +70,14 @@ export default function ManagerPinModal({
             <input
               type="password"
               value={pin}
-              onChange={(e) => setPin(e.target.value)}
+              onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleVerify();
               }}
               className="w-full h-12 text-center font-mono text-lg bg-surface border-2 border-ink-200 rounded-xl outline-none focus:border-accent transition-all"
               autoFocus
               dir="ltr"
+              maxLength={6}
             />
           </div>
 
@@ -89,7 +89,7 @@ export default function ManagerPinModal({
             {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
               <button
                 key={n}
-                onClick={() => setPin((p) => p + n)}
+                onClick={() => setPin((p) => p.length < 6 ? p + n : p)}
                 className="h-12 rounded-xl bg-surface border border-ink-200 font-mono text-lg font-bold text-ink-900 hover:bg-ink-100 active:bg-ink-100 transition-colors"
               >
                 {n}
@@ -102,7 +102,7 @@ export default function ManagerPinModal({
               <IconBackspace className="w-5 h-5" stroke={1.75} />
             </button>
             <button
-              onClick={() => setPin((p) => p + "0")}
+              onClick={() => setPin((p) => p.length < 6 ? p + "0" : p)}
               className="h-12 rounded-xl bg-surface border border-ink-200 font-mono text-lg font-bold text-ink-900 hover:bg-ink-100 transition-colors"
             >
               0

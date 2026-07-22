@@ -709,7 +709,7 @@ export default function MenuPage() {
             onClick={() => setTab(t)}
             className={`px-5 py-2 rounded-t-lg font-arabic font-medium text-sm transition-colors ${
               tab === t
-                ? "bg-saffron-600 text-white shadow-sm"
+                ? "bg-saffron-600 text-white shadow-sh-1"
                 : "text-ink-500 hover:text-saffron-600 hover:bg-white"
             }`}
           >
@@ -743,7 +743,7 @@ export default function MenuPage() {
             </select>
           </div>
 
-          <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+          <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-ink-200 text-ink-400 font-arabic">
@@ -833,7 +833,7 @@ export default function MenuPage() {
             {categories.map((cat) => (
               <div
                 key={cat.id}
-                className="bg-white rounded-2xl shadow-sm p-4 flex items-center gap-4"
+                className="bg-white rounded-2xl shadow-sh-1 p-4 flex items-center gap-4"
               >
                 <div
                   className="w-10 h-10 rounded-full flex-shrink-0"
@@ -888,7 +888,7 @@ export default function MenuPage() {
                 onClick={() => setOfferSubTab(st)}
                 className={`px-4 py-2 rounded-lg font-arabic font-medium text-sm transition-colors ${
                   offerSubTab === st
-                    ? "bg-saffron-600 text-white shadow-sm"
+                    ? "bg-saffron-600 text-white shadow-sh-1"
                     : "text-ink-500 hover:text-saffron-600 hover:bg-white"
                 }`}
               >
@@ -911,7 +911,7 @@ export default function MenuPage() {
                 return (
                   <div
                     key={combo.id}
-                    className="bg-white rounded-2xl shadow-sm p-4 space-y-3"
+                    className="bg-white rounded-2xl shadow-sh-1 p-4 space-y-3"
                   >
                     <div className="flex items-center justify-between">
                       <h3 className="font-arabic font-bold text-ink-900">{combo.name}</h3>
@@ -976,7 +976,7 @@ export default function MenuPage() {
           )}
 
           {offerSubTab === "happyhour" && (
-            <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+            <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-ink-200 text-ink-400 font-arabic">

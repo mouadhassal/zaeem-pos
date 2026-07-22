@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { IconX } from "@tabler/icons-react";
 import { generateOnScreenReceiptHTML } from "../../lib/printer";
 import type { ReceiptData } from "../../lib/printer";
@@ -8,6 +9,12 @@ interface Props {
 }
 
 export default function OnScreenReceiptModal({ receiptData, onClose }: Props) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
   if (!receiptData) return null;
 
   const html = generateOnScreenReceiptHTML(receiptData);

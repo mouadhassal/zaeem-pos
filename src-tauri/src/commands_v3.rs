@@ -1116,20 +1116,64 @@ pub fn list_shift_orders_v3(state: State<Db>, session_token: String, shift_id: S
     Repo::new(&conn).list_shift_orders(&shift_id, &actor.scope()).map_err(|e| e.to_string())
 }
 
+/// Pure scope-resolution shared by every branch-scoped write that a
+/// Tenant-scoped Owner might issue (`open_shift_v3`, `create_table_v3`) --
+/// pulled out so it's unit testable without a `Db`/`State` at all.
+/// `tenant_branches` is the caller's already-looked-up `(id, name)` list for
+/// the actor's own tenant (empty slice is fine when `scope` isn't `Tenant`,
+/// since it's never read then).
+///
+/// `branch_id` is only consulted for a Tenant-scoped caller (Owner) -- an
+/// Owner has no home branch (`Actor::scope()` always maps Owner to
+/// `Scope::Tenant`, never `Scope::Branch`, regardless of any assigned
+/// `branch_id`), so without this they could never open a shift (or create a
+/// table) at all, which is exactly the bug this fixes for shifts: the
+/// frontend's "start shift" button silently failed for the seeded Owner
+/// account with "opening a shift requires a Branch-scoped actor" swallowed
+/// by a bare `catch {}`. A Branch-scoped caller (Manager/Cashier/Kitchen/
+/// Server) is forced to their own branch regardless of what `branch_id`
+/// says, same convention as `create_staff`'s `actor_branch_id`/
+/// `target_branch_id` forcing.
+fn resolve_branch_for_actor(
+    scope: Scope,
+    requested_branch_id: Option<String>,
+    tenant_branches: &[(String, String)],
+) -> Result<(String, String), String> {
+    match scope {
+        Scope::Branch { tenant_id, branch_id } => Ok((tenant_id, branch_id)),
+        Scope::Tenant { tenant_id } => {
+            let requested = requested_branch_id.filter(|b| !b.is_empty())
+                .ok_or_else(|| "select a branch first".to_string())?;
+            if !tenant_branches.iter().any(|(id, _)| id == &requested) {
+                return Err("that branch does not belong to your tenant".to_string());
+            }
+            Ok((tenant_id, requested))
+        }
+        Scope::Platform => Err("a platform account has no branch to act on".to_string()),
+    }
+}
+
 #[tauri::command]
-pub fn open_shift_v3(state: State<Db>, session_token: String, starting_cash_cents: i64) -> Result<String, String> {
+pub fn open_shift_v3(state: State<Db>, session_token: String, starting_cash_cents: i64, branch_id: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ManageShift).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("opening a shift requires a Branch-scoped actor".to_string());
-    };
     if starting_cash_cents < 0 {
         return Err("negative starting cash is not valid".to_string());
     }
+
+    let scope = actor.scope();
+    let tenant_branches = if let Scope::Tenant { tenant_id } = &scope {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        Repo::new(&conn).list_branches(tenant_id).map_err(|e| e.to_string())?
+    } else {
+        vec![]
+    };
+    let (tenant_id, resolved_branch_id) = resolve_branch_for_actor(scope, branch_id, &tenant_branches)?;
+
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let shift_id = Repo::new(&tx).open_shift(&tenant_id, &branch_id, &actor.id, starting_cash_cents).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::ShiftOpened, "shift", &shift_id, None, Some(&serde_json::json!({ "starting_cash_cents": starting_cash_cents }))).map_err(|e| e.to_string())?;
+    let shift_id = Repo::new(&tx).open_shift(&tenant_id, &resolved_branch_id, &actor.id, starting_cash_cents).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&resolved_branch_id), &actor.id, audit::Action::ShiftOpened, "shift", &shift_id, None, Some(&serde_json::json!({ "starting_cash_cents": starting_cash_cents }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(shift_id)
 }
@@ -1553,14 +1597,22 @@ pub fn resolve_menu_price_v3(state: State<Db>, session_token: String, branch_id:
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_customer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>, birthday: Option<String>) -> Result<String, String> {
+pub fn create_customer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>, birthday: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
+    // Loyalty card issuance needs to create a customer with just an email --
+    // phone used to be mandatory here, blocking that. At least one of the
+    // two is still required so a customer row always has a way to reach them.
+    let phone = phone.filter(|p| !p.trim().is_empty());
+    let email = email.filter(|e| !e.trim().is_empty());
+    if phone.is_none() && email.is_none() {
+        return Err("either a phone number or an email is required".to_string());
+    }
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let customer_id = Repo::new(&tx)
-        .create_customer(&actor.tenant_id, &name, &phone, email.as_deref(), address.as_deref(), notes.as_deref(), birthday.as_deref())
+        .create_customer(&actor.tenant_id, &name, phone.as_deref(), email.as_deref(), address.as_deref(), notes.as_deref(), birthday.as_deref())
         .map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
@@ -2422,10 +2474,60 @@ fn enforce_discount_cap(
 
 /// Simple list of all tables. No scope filter (tables has no tenant_id/branch_id).
 #[tauri::command]
-pub fn list_tables_v3(state: State<Db>, _session_token: String) -> Result<Vec<TableInfo>, String> {
-    let _actor = authenticate_actor(&state, &_session_token)?;
+pub fn list_tables_v3(state: State<Db>, session_token: String) -> Result<Vec<TableInfo>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_tables().map_err(|e| e.to_string())
+    Repo::new(&conn).list_tables(&actor.scope()).map_err(|e| e.to_string())
+}
+
+/// Lets a restaurant configure any number of physical tables (0, 1, 20, ...)
+/// -- previously the only ones that ever existed were 2 hardcoded dev-seed
+/// rows, with no way for a real install to add its own. Same Owner/Branch
+/// scope-resolution convention as `open_shift_v3`: a Branch-scoped caller
+/// (Manager/Cashier/...) is pinned to their own branch; an Owner (Tenant-
+/// scoped, no home branch) must pass an explicit `branch_id` naming one of
+/// their own tenant's branches.
+#[tauri::command]
+pub fn create_table_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, branch_id: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
+    if name.trim().is_empty() {
+        return Err("table name cannot be empty".to_string());
+    }
+
+    let scope = actor.scope();
+    let tenant_branches = if let Scope::Tenant { tenant_id } = &scope {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        Repo::new(&conn).list_branches(tenant_id).map_err(|e| e.to_string())?
+    } else {
+        vec![]
+    };
+    let (tenant_id, resolved_branch_id) = resolve_branch_for_actor(scope, branch_id, &tenant_branches)?;
+
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).create_table(&tenant_id, &resolved_branch_id, name.trim()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_table_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, table_id: String, name: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
+    if name.trim().is_empty() {
+        return Err("table name cannot be empty".to_string());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).rename_table(&actor.scope(), &table_id, name.trim()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_table_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, table_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).delete_table(&actor.scope(), &table_id).map_err(|e| e.to_string())
 }
 
 /// Atomic full order creation: order + items + modifiers + table→OCCUPIED.
@@ -3129,8 +3231,8 @@ mod tests {
     use crate::migrate;
     use crate::migrate_v3;
     use crate::repo::{NewOrder, Repo, RepoError, FullOrderInput, SplitBillInput};
-    use super::{verify_manager_override_impl, MANAGER_OVERRIDE_MAX_ATTEMPTS};
-    use crate::security::{self, authorize, Permission, Role};
+    use super::{verify_manager_override_impl, resolve_branch_for_actor, MANAGER_OVERRIDE_MAX_ATTEMPTS};
+    use crate::security::{self, authorize, Permission, Role, Scope};
     use rusqlite::{params, Connection};
     use std::fs;
     use std::path::PathBuf;
@@ -3157,9 +3259,16 @@ mod tests {
             conn.query_row("SELECT tenant_id, id FROM branch LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
 
         // A dining table row to satisfy orders.table_id's FK -- a fresh
-        // migration seeds no tables of its own.
+        // migration seeds no tables of its own. Scoped to the seeded
+        // tenant/branch from the start (tables.tenant_id/branch_id are
+        // real, non-legacy columns -- see list_tables/create_table's doc
+        // comments) so every test built on this helper works with the
+        // scoped table commands without each needing its own backfill.
         let table_id = "tbl-1".to_string();
-        conn.execute("INSERT INTO tables (id, name) VALUES (?1, 'Table 1')", params![table_id]).unwrap();
+        conn.execute(
+            "INSERT INTO tables (id, tenant_id, branch_id, name) VALUES (?1, ?2, ?3, 'Table 1')",
+            params![table_id, tenant_id, branch_id],
+        ).unwrap();
 
         security::ensure_security_schema(&conn).unwrap();
         (db_path, tenant_id, branch_id, table_id)
@@ -3245,7 +3354,7 @@ mod tests {
         assert!(t3.elapsed() < BUDGET, "list_combo_components x8 took {:?}", t3.elapsed());
 
         let t4 = std::time::Instant::now();
-        let _ = repo.list_tables().unwrap();
+        let _ = repo.list_tables(&Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() }).unwrap();
         assert!(t4.elapsed() < BUDGET, "list_tables took {:?}", t4.elapsed());
 
         let t5 = std::time::Instant::now();
@@ -4047,7 +4156,7 @@ mod tests {
         let repo = Repo::new(&conn);
 
         // customers (Finding #5): address/birthday/notes/loyalty_points now exist.
-        let customer_id = repo.create_customer(&tenant_id, "زبون تجريبي", "0999999999", None, Some("شارع الثورة"), Some("يفضل بدون بصل"), Some("1990-01-01")).unwrap();
+        let customer_id = repo.create_customer(&tenant_id, "زبون تجريبي", Some("0999999999"), None, Some("شارع الثورة"), Some("يفضل بدون بصل"), Some("1990-01-01")).unwrap();
         let customers = repo.list_customers(&tenant_id).unwrap();
         assert!(customers.iter().any(|c| c.id == customer_id && c.address.as_deref() == Some("شارع الثورة") && c.notes.is_some()));
         println!("[drift-groups] customer created and listed with address/notes/birthday -- Finding #5 columns round-trip");
@@ -4546,6 +4655,47 @@ mod tests {
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
+    /// The actual bug behind "start shift does nothing" for an Owner login:
+    /// `Actor::scope()` always maps Owner to `Scope::Tenant`, never
+    /// `Scope::Branch`, so `open_shift_v3`'s old unconditional
+    /// `let Scope::Branch { .. } = ... else { return Err(...) }` rejected
+    /// every Owner, every time -- and the frontend's bare `catch {}` threw
+    /// the real reason away, so it just looked like a dead button.
+    #[test]
+    fn resolve_branch_for_actor_lets_an_owner_pick_a_branch_but_never_a_foreign_one() {
+        let branches = vec![("branch-a".to_string(), "Branch A".to_string()), ("branch-b".to_string(), "Branch B".to_string())];
+
+        // Branch-scoped actor (Manager/Cashier/...): forced to their own
+        // branch, the passed branch_id is irrelevant.
+        let branch_scope = Scope::Branch { tenant_id: "t1".into(), branch_id: "branch-a".into() };
+        assert_eq!(
+            resolve_branch_for_actor(branch_scope, Some("branch-b".into()), &branches).unwrap(),
+            ("t1".to_string(), "branch-a".to_string()),
+        );
+
+        // Tenant-scoped actor (Owner) with no branch_id at all: this is the
+        // exact bug -- must now be a clear, actionable error, not silence.
+        let err = resolve_branch_for_actor(Scope::Tenant { tenant_id: "t1".into() }, None, &branches).unwrap_err();
+        assert_eq!(err, "select a branch first");
+
+        // Owner picks a real branch of their own tenant: succeeds.
+        assert_eq!(
+            resolve_branch_for_actor(Scope::Tenant { tenant_id: "t1".into() }, Some("branch-b".into()), &branches).unwrap(),
+            ("t1".to_string(), "branch-b".to_string()),
+        );
+
+        // Owner supplies a branch id that isn't in THEIR tenant's branch
+        // list (forged/foreign id): rejected, not silently accepted.
+        let err = resolve_branch_for_actor(Scope::Tenant { tenant_id: "t1".into() }, Some("branch-of-another-tenant".into()), &branches).unwrap_err();
+        assert_eq!(err, "that branch does not belong to your tenant");
+
+        // Platform accounts have no operational branch context at all.
+        let err = resolve_branch_for_actor(Scope::Platform, Some("branch-a".into()), &branches).unwrap_err();
+        assert_eq!(err, "a platform account has no branch to act on");
+
+        println!("[shifts] resolve_branch_for_actor: Branch-scoped forced to own branch, Tenant-scoped(Owner) requires+validates an explicit branch, Platform rejected");
+    }
+
     /// Batch 3b, slice 3, group 1: customer CRUD + order-history/favorites
     /// lookup, and loyalty card issuance via UID keyboard-entry (never a
     /// generated code) + transaction listing. Proves the duplicate-UID case
@@ -4558,7 +4708,7 @@ mod tests {
         let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Loyalty Cashier");
         let repo = Repo::new(&conn);
 
-        let cust_id = repo.create_customer(&tenant_id, "أحمد", "0991112233", None, None, None, None).unwrap();
+        let cust_id = repo.create_customer(&tenant_id, "أحمد", Some("0991112233"), None, None, None, None).unwrap();
         let list = repo.list_customers(&tenant_id).unwrap();
         assert!(list.iter().any(|c| c.id == cust_id && c.total_orders == 0));
         println!("[customers] customer created, total_orders defaults to 0");
@@ -4588,7 +4738,7 @@ mod tests {
         println!("[customers] customer deleted");
 
         // Loyalty: issue a card with a UID typed/scanned into card_number.
-        let cust2_id = repo.create_customer(&tenant_id, "سارة", "0997778899", None, None, None, None).unwrap();
+        let cust2_id = repo.create_customer(&tenant_id, "سارة", Some("0997778899"), None, None, None, None).unwrap();
         let card_id = repo.issue_loyalty_card(&tenant_id, &cust2_id, "UID-AA11BB22").unwrap();
         let cards = repo.list_loyalty_cards(&tenant_id).unwrap();
         let card = cards.iter().find(|c| c.id == card_id).unwrap();
@@ -5037,11 +5187,6 @@ mod tests {
     fn pos_flow_create_split_void_merge_transfer_and_finalize_payment() {
         let (db_path, tenant_id, branch_id, table_id) = seeded_db("pos_flow");
         let conn = Connection::open(&db_path).unwrap();
-        // `seeded_db`'s fixture table ("tbl-1") is inserted with no
-        // tenant_id/branch_id (it predates the scope checks this test
-        // exercises) -- scope it here rather than in the shared fixture,
-        // which many other tests also rely on staying as-is.
-        conn.execute("UPDATE tables SET tenant_id = ?1, branch_id = ?2 WHERE id = ?3", params![tenant_id, branch_id, table_id]).unwrap();
         let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "POS Cashier");
         let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
         let repo = Repo::new(&conn);
@@ -5062,7 +5207,7 @@ mod tests {
                 crate::repo::OrderItemInput { menu_item_id: item_b.clone(), name: None, quantity: 1, unit_price_cents: 700, notes: None, combo_id: None, modifiers: vec![] },
             ],
         }).unwrap();
-        let table: crate::repo::TableInfo = repo.list_tables().unwrap().into_iter().find(|t| t.id == table_id).unwrap();
+        let table: crate::repo::TableInfo = repo.list_tables(&scope).unwrap().into_iter().find(|t| t.id == table_id).unwrap();
         assert_eq!(table.status, "OCCUPIED");
         assert_eq!(table.current_order_id.as_deref(), Some(order_id.as_str()));
         println!("[pos-flow] create_full_order: order created with 2 items, no driver_id column referenced, table flipped OCCUPIED");
@@ -5216,7 +5361,7 @@ mod tests {
         let conn = Connection::open(&db_path).unwrap();
         let repo = Repo::new(&conn);
 
-        let customer_id = repo.create_customer(&tenant_id, "زبون وفي", "0999000111", None, None, None, None).unwrap();
+        let customer_id = repo.create_customer(&tenant_id, "زبون وفي", Some("0999000111"), None, None, None, None).unwrap();
         let card_id = repo.issue_loyalty_card(&tenant_id, &customer_id, "CARD-001").unwrap();
 
         let looked_up = repo.lookup_loyalty_card("CARD-001").unwrap().expect("card must be found by number alone, no is_active filter");
@@ -5812,7 +5957,7 @@ mod tests {
         let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
 
         // ---- 1/2: customers (update_customer, delete_customer) ----
-        let cust_id = repo.create_customer(&tenant_id, "زبون محلي", "0991110000", None, None, None, None).unwrap();
+        let cust_id = repo.create_customer(&tenant_id, "زبون محلي", Some("0991110000"), None, None, None, None).unwrap();
         repo.update_customer(&tenant_id, &cust_id, "زبون محلي محدث", "0991110000", None, None, None, None).unwrap();
         println!("[t1.9] update_customer succeeds for an in-scope customer");
         let other_cust = "other-tenant-customer";
@@ -6212,8 +6357,8 @@ mod tests {
         println!("[t1.9-matrix] list_orders: branch/tenant isolation confirmed across all 3 seeded orders -- 4/4 assertions pass");
 
         // ---- CUSTOMERS (tenant-only scope): seeded per tenant ----
-        let cust_1 = repo.create_customer(&fx.tenant1, "زبون تينانت1", "0910000001", None, None, None, None).unwrap();
-        let cust_2 = repo.create_customer(&fx.tenant2, "زبون تينانت2", "0920000002", None, None, None, None).unwrap();
+        let cust_1 = repo.create_customer(&fx.tenant1, "زبون تينانت1", Some("0910000001"), None, None, None, None).unwrap();
+        let cust_2 = repo.create_customer(&fx.tenant2, "زبون تينانت2", Some("0920000002"), None, None, None, None).unwrap();
         let customers_1 = repo.list_customers(&fx.tenant1).unwrap();
         assert!(customers_1.iter().any(|c| c.id == cust_1), "Tenant1's customer list must contain its own customer");
         assert!(!customers_1.iter().any(|c| c.id == cust_2), "Tenant1's customer list must NEVER contain Tenant2's customer");
@@ -6406,7 +6551,7 @@ mod tests {
 
         // ---- Attack 17: SQL-injection via item/customer name/void reason ----
         let injection = "'; DROP TABLE staff; --";
-        let inj_customer = repo.create_customer(&tenant_id, injection, "0999999999", None, None, None, None).unwrap();
+        let inj_customer = repo.create_customer(&tenant_id, injection, Some("0999999999"), None, None, None, None).unwrap();
         let stored_name: String = conn.query_row("SELECT name FROM customers WHERE id = ?1", params![inj_customer], |r| r.get(0)).unwrap();
         assert_eq!(stored_name, injection, "the injection string must be stored LITERALLY as data");
         let staff_still_exists: bool = conn.query_row("SELECT COUNT(*) > 0 FROM staff WHERE id = ?1", params![cashier_a], |r| r.get(0)).unwrap();
@@ -6858,6 +7003,7 @@ mod tests {
             "create_delivery_zone_v3", "update_delivery_zone_v3", "deactivate_delivery_zone_v3",
             "list_delivery_zones_v3", "list_delivery_history_v3",
             "list_orders_v3",
+            "create_table_v3", "rename_table_v3", "delete_table_v3",
         ];
 
         /// The selling path: order/table/payment/print, the menu reads the

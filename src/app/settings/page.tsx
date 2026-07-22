@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAuthStore } from "../../stores/authStore";
 import type { TaxMode } from "../../db/types";
 import { checkLicense, activateLicense, getDeviceId, backOfficeLocked, type LicenseStatus } from "../../lib/license";
+import { Pencil, Trash2 as Trash, ImagePlus } from "lucide-react";
 
 type SettingsTab = "general" | "printer" | "tax" | "branch" | "license" | "cloud" | "backup" | "about";
 
@@ -91,8 +92,6 @@ export default function SettingsPage() {
 
   const [, setConfig] = useState<ChainConfig | null>(null);
   const [currency, setCurrency] = useState("SAR");
-  const [language, setLanguage] = useState("ar");
-  const [timezone, setTimezone] = useState("Asia/Riyadh");
 
   const [printers, setPrinters] = useState<Printer[]>([]);
 
@@ -103,13 +102,34 @@ export default function SettingsPage() {
   const [branchName, setBranchName] = useState("");
   const [branchAddress, setBranchAddress] = useState("");
   const [branchPhone, setBranchPhone] = useState("");
-  const [branchMaxTables, setBranchMaxTables] = useState("20");
-  const [branchOpenTime, setBranchOpenTime] = useState("08:00");
-  const [branchCloseTime, setBranchCloseTime] = useState("23:00");
 
-  const [lastBackup, setLastBackup] = useState<string | null>(null);
-  const [autoBackup, setAutoBackup] = useState(false);
+  // Physical dining tables -- any count (0, 1, 20, ...), not the old
+  // disconnected `max_tables` number that never actually created/removed a
+  // row. See create_table_v3/rename_table_v3/delete_table_v3.
+  const [tables, setTables] = useState<{ id: string; name: string; status: string; current_order_id: string | null }[]>([]);
+  const [newTableName, setNewTableName] = useState("");
+  const [tableError, setTableError] = useState<string | null>(null);
+  const [tableBusy, setTableBusy] = useState(false);
+  const [editingTableId, setEditingTableId] = useState<string | null>(null);
+  const [editingTableName, setEditingTableName] = useState("");
+
+  const [branchLogo, setBranchLogo] = useState<string | null>(() => localStorage.getItem("zaeem_branch_logo"));
+
+  // Persisted to localStorage (not just component state) so the toggle and
+  // last-backup timestamp survive an app restart -- previously both were
+  // plain useState with no read/write anywhere, so "auto backup" did
+  // nothing and "last backup" reset to blank on every reload.
+  const [lastBackup, setLastBackup] = useState<string | null>(() => localStorage.getItem("zaeem_last_backup"));
+  const [autoBackup, setAutoBackup] = useState(() => localStorage.getItem("zaeem_auto_backup_enabled") === "1");
   const [backingUp, setBackingUp] = useState(false);
+
+  const toggleAutoBackup = () => {
+    const next = !autoBackup;
+    setAutoBackup(next);
+    localStorage.setItem("zaeem_auto_backup_enabled", next ? "1" : "0");
+  };
+
+  const AUTO_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -191,16 +211,65 @@ export default function SettingsPage() {
         setBranchName(branchRow.name);
         setBranchAddress(branchRow.address ?? "");
         setBranchPhone(branchRow.phone ?? "");
-        setBranchMaxTables(String(branchRow.max_tables));
       }
     } catch {
       showMsg("حدث خطأ في تحميل الإعدادات");
     }
   }, [token]);
 
+  const fetchTables = useCallback(async () => {
+    try {
+      const rows = await invoke<{ id: string; name: string; status: string; current_order_id: string | null }[]>(
+        "list_tables_v3", { sessionToken: token }
+      );
+      setTables(rows);
+    } catch {
+      showMsg("حدث خطأ في تحميل الطاولات");
+    }
+  }, [token]);
+
   useEffect(() => {
     fetchData();
-  }, [fetchData]);
+    fetchTables();
+  }, [fetchData, fetchTables]);
+
+  const handleAddTable = async () => {
+    if (!newTableName.trim()) return;
+    setTableError(null);
+    setTableBusy(true);
+    try {
+      await invoke("create_table_v3", { sessionToken: token, name: newTableName.trim(), branchId: branch?.id ?? null });
+      setNewTableName("");
+      await fetchTables();
+    } catch (err) {
+      setTableError(typeof err === "string" ? err : "حدث خطأ في إضافة الطاولة");
+    } finally {
+      setTableBusy(false);
+    }
+  };
+
+  const handleRenameTable = async (tableId: string) => {
+    if (!editingTableName.trim()) return;
+    setTableError(null);
+    try {
+      await invoke("rename_table_v3", { sessionToken: token, tableId, name: editingTableName.trim() });
+      setEditingTableId(null);
+      setEditingTableName("");
+      await fetchTables();
+    } catch (err) {
+      setTableError(typeof err === "string" ? err : "حدث خطأ في إعادة تسمية الطاولة");
+    }
+  };
+
+  const handleDeleteTable = async (tableId: string) => {
+    setTableError(null);
+    try {
+      await invoke("delete_table_v3", { sessionToken: token, tableId });
+      await fetchTables();
+    } catch (err) {
+      setTableError(typeof err === "string" ? err : "حدث خطأ في حذف الطاولة");
+    }
+  };
 
   const saveCurrency = async () => {
     setSaving(true);
@@ -237,7 +306,10 @@ export default function SettingsPage() {
         name: branchName,
         address: branchAddress || null,
         phone: branchPhone || null,
-        maxTables: parseInt(branchMaxTables, 10) || 20,
+        // The real table count now lives in the `tables` list below (see
+        // create_table_v3/delete_table_v3) -- this legacy capacity number
+        // is kept unchanged, not user-edited here anymore.
+        maxTables: branch?.max_tables ?? 20,
         currency,
       });
       showMsg("تم حفظ بيانات الفرع بنجاح");
@@ -249,19 +321,40 @@ export default function SettingsPage() {
     }
   };
 
-  const handleBackup = async () => {
+  const handleBackup = useCallback(async (silent = false) => {
     setBackingUp(true);
     try {
       const { createBackup } = await import("../../lib/backup");
       await createBackup();
-      setLastBackup(new Date().toISOString());
-      showMsg("تم إنشاء النسخة الاحتياطية بنجاح");
+      const now = new Date().toISOString();
+      setLastBackup(now);
+      localStorage.setItem("zaeem_last_backup", now);
+      if (!silent) showMsg("تم إنشاء النسخة الاحتياطية بنجاح");
     } catch {
-      showMsg("حدث خطأ في إنشاء النسخة الاحتياطية");
+      if (!silent) showMsg("حدث خطأ في إنشاء النسخة الاحتياطية");
     } finally {
       setBackingUp(false);
     }
-  };
+  }, []);
+
+  // Real scheduler: checked every 30 minutes while Settings is open, runs a
+  // silent backup once 24h have actually elapsed since the last one. Only
+  // fires while this page is mounted (no true background/OS-level
+  // scheduling exists in this app), but that covers the common case of the
+  // POS terminal staying logged into some screen all day.
+  useEffect(() => {
+    if (!autoBackup) return;
+    const checkAndRun = () => {
+      const last = localStorage.getItem("zaeem_last_backup");
+      const dueSince = last ? Date.now() - new Date(last).getTime() : Infinity;
+      if (dueSince >= AUTO_BACKUP_INTERVAL_MS) {
+        handleBackup(true);
+      }
+    };
+    checkAndRun();
+    const interval = setInterval(checkAndRun, 30 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [autoBackup, handleBackup]);
 
   const togglePrinterActive = async (printer: Printer) => {
     try {
@@ -313,18 +406,7 @@ export default function SettingsPage() {
         {tab === "general" && (
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">الإعدادات العامة</h2>
-            <div className="bg-white rounded-2xl p-5 shadow-sm space-y-4">
-              <div>
-                <label className="block text-sm font-arabic text-ink-900 mb-1">اللغة</label>
-                <select
-                  value={language}
-                  onChange={(e) => setLanguage(e.target.value)}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
-                >
-                  <option value="ar">العربية</option>
-                  <option value="en">English</option>
-                </select>
-              </div>
+            <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-4">
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">العملة</label>
                 <div className="flex gap-3">
@@ -346,19 +428,6 @@ export default function SettingsPage() {
                   </button>
                 </div>
               </div>
-              <div>
-                <label className="block text-sm font-arabic text-ink-900 mb-1">المنطقة الزمنية</label>
-                <select
-                  value={timezone}
-                  onChange={(e) => setTimezone(e.target.value)}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
-                >
-                  <option value="Asia/Riyadh">الرياض (UTC+3)</option>
-                  <option value="Asia/Baghdad">بغداد (UTC+3)</option>
-                  <option value="Asia/Amman">عمّان (UTC+3)</option>
-                  <option value="Asia/Dubai">دبي (UTC+4)</option>
-                </select>
-              </div>
             </div>
           </div>
         )}
@@ -367,12 +436,12 @@ export default function SettingsPage() {
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">إعدادات الطابعة</h2>
             {printers.length === 0 && (
-              <div className="bg-white rounded-2xl p-8 shadow-sm text-center text-ink-500 font-arabic">
+              <div className="bg-white rounded-2xl p-8 shadow-sh-1 text-center text-ink-500 font-arabic">
                 لا توجد طابعات مسجلة
               </div>
             )}
             {printers.map((printer) => (
-              <div key={printer.id} className="bg-white rounded-2xl p-5 shadow-sm space-y-3">
+              <div key={printer.id} className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-3">
                 <div className="flex items-center justify-between">
                   <h3 className="font-arabic font-bold text-ink-900">{printer.name}</h3>
                   <button
@@ -428,7 +497,7 @@ export default function SettingsPage() {
         {tab === "tax" && (
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">إعدادات الضرائب</h2>
-            <div className="bg-white rounded-2xl p-5 shadow-sm space-y-4">
+            <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-4">
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">نسبة الضريبة (%)</label>
                 <div className="flex items-center gap-4">
@@ -460,7 +529,7 @@ export default function SettingsPage() {
                     onClick={() => setTaxMode("exclusive")}
                     className={`flex-1 h-10 rounded-xl font-arabic text-sm transition-colors ${
                       taxMode === "exclusive"
-                        ? "bg-saffron-600 text-white shadow-sm"
+                        ? "bg-saffron-600 text-white shadow-sh-1"
                         : "bg-white text-ink-500 hover:bg-ink-200"
                     }`}
                   >
@@ -470,7 +539,7 @@ export default function SettingsPage() {
                     onClick={() => setTaxMode("inclusive")}
                     className={`flex-1 h-10 rounded-xl font-arabic text-sm transition-colors ${
                       taxMode === "inclusive"
-                        ? "bg-saffron-600 text-white shadow-sm"
+                        ? "bg-saffron-600 text-white shadow-sh-1"
                         : "bg-white text-ink-500 hover:bg-ink-200"
                     }`}
                   >
@@ -492,7 +561,7 @@ export default function SettingsPage() {
         {tab === "branch" && (
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">بيانات الفرع</h2>
-            <div className="bg-white rounded-2xl p-5 shadow-sm space-y-4">
+            <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-4">
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">اسم الفرع</label>
                 <input
@@ -522,32 +591,41 @@ export default function SettingsPage() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-arabic text-ink-900 mb-1">الحد الأقصى للطاولات</label>
-                <input
-                  type="number"
-                  min="1"
-                  value={branchMaxTables}
-                  onChange={(e) => setBranchMaxTables(e.target.value)}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
-                  dir="ltr"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-arabic text-ink-900 mb-1">ساعات العمل</label>
-                <div className="flex gap-3 items-center">
-                  <input
-                    type="time"
-                    value={branchOpenTime}
-                    onChange={(e) => setBranchOpenTime(e.target.value)}
-                    className="flex-1 h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
-                  />
-                  <span className="text-ink-500 font-arabic">إلى</span>
-                  <input
-                    type="time"
-                    value={branchCloseTime}
-                    onChange={(e) => setBranchCloseTime(e.target.value)}
-                    className="flex-1 h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
-                  />
+                <label className="block text-sm font-arabic text-ink-900 mb-1">شعار الفرع</label>
+                <div className="flex items-center gap-4">
+                  {branchLogo ? (
+                    <div className="relative">
+                      <img src={branchLogo} alt="شعار الفرع" className="w-16 h-16 rounded-lg object-cover border border-ink-200" />
+                      <button
+                        onClick={() => { setBranchLogo(null); localStorage.removeItem("zaeem_branch_logo"); }}
+                        className="absolute -top-2 -left-2 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center hover:bg-red-600"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ) : (
+                    <label className="w-16 h-16 rounded-lg border-2 border-dashed border-ink-300 flex flex-col items-center justify-center cursor-pointer hover:border-saffron-500 transition-colors">
+                      <ImagePlus className="w-5 h-5 text-ink-400" />
+                      <span className="text-[10px] text-ink-400 mt-0.5">شعار</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file || file.size > 2 * 1024 * 1024) return;
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            const dataUrl = reader.result as string;
+                            setBranchLogo(dataUrl);
+                            localStorage.setItem("zaeem_branch_logo", dataUrl);
+                          };
+                          reader.readAsDataURL(file);
+                        }}
+                        className="hidden"
+                      />
+                    </label>
+                  )}
+                  <p className="text-xs text-ink-400 font-arabic">يُعرض في الإيصالات والواجهة (أقل من 2 ميغابايت)</p>
                 </div>
               </div>
               <button
@@ -557,6 +635,95 @@ export default function SettingsPage() {
               >
                 حفظ بيانات الفرع
               </button>
+            </div>
+
+            <h2 className="text-lg font-bold text-ink-900 font-arabic">الطاولات</h2>
+            <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-3">
+              <p className="text-xs text-ink-400 font-arabic">
+                أضف أو أعد تسمية أو احذف أي عدد من الطاولات -- لا يوجد حد أدنى أو أقصى (يمكن أن يكون صفر، واحدة، أو عشرين).
+              </p>
+              {tableError && <p className="text-xs text-red-500 font-arabic">{tableError}</p>}
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newTableName}
+                  onChange={(e) => setNewTableName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && newTableName.trim()) handleAddTable(); }}
+                  placeholder="اسم الطاولة الجديدة (مثال: طاولة 5)"
+                  className="flex-1 h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                />
+                <button
+                  onClick={handleAddTable}
+                  disabled={tableBusy || !newTableName.trim()}
+                  className="h-10 px-5 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50 shrink-0"
+                >
+                  إضافة
+                </button>
+              </div>
+
+              {tables.length === 0 ? (
+                <div className="text-center text-ink-400 font-arabic text-sm py-6">
+                  لا توجد طاولات بعد
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {tables.map((t) => (
+                    <div key={t.id} className="flex items-center justify-between gap-2 p-2.5 rounded-xl border border-ink-100">
+                      {editingTableId === t.id ? (
+                        <input
+                          type="text"
+                          autoFocus
+                          value={editingTableName}
+                          onChange={(e) => setEditingTableName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") handleRenameTable(t.id); if (e.key === "Escape") setEditingTableId(null); }}
+                          className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                        />
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-arabic text-ink-900">{t.name}</span>
+                          <span
+                            className={`text-[11px] font-arabic px-2 py-0.5 rounded-full ${
+                              t.status === "FREE" ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"
+                            }`}
+                          >
+                            {t.status === "FREE" ? "شاغرة" : t.status === "OCCUPIED" ? "مشغولة" : "مدمجة"}
+                          </span>
+                        </div>
+                      )}
+                      <div className="flex items-center gap-1 shrink-0">
+                        {editingTableId === t.id ? (
+                          <>
+                            <button onClick={() => handleRenameTable(t.id)} className="h-8 px-3 rounded-lg bg-saffron-600 text-white text-xs font-bold hover:bg-saffron-700 transition-colors">حفظ</button>
+                            <button onClick={() => setEditingTableId(null)} className="h-8 px-3 rounded-lg text-ink-500 text-xs font-arabic hover:bg-ink-100 transition-colors">إلغاء</button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => { setEditingTableId(t.id); setEditingTableName(t.name); }}
+                              className="h-8 w-8 rounded-lg flex items-center justify-center text-ink-500 hover:bg-ink-100 transition-colors"
+                              title="إعادة تسمية"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (window.confirm("هل أنت متأكد من حذف هذه الطاولة؟")) {
+                                  handleDeleteTable(t.id);
+                                }
+                              }}
+                              disabled={t.status !== "FREE" || !!t.current_order_id}
+                              title={t.status !== "FREE" || t.current_order_id ? "لا يمكن حذف طاولة مشغولة أو مدمجة" : "حذف"}
+                              className="h-8 w-8 rounded-lg flex items-center justify-center text-ink-500 hover:bg-red-50 hover:text-red-600 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                            >
+                              <Trash className="w-3.5 h-3.5" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -571,7 +738,7 @@ export default function SettingsPage() {
             )}
 
             {isOwner && (
-              <div className="bg-white rounded-2xl p-5 shadow-sm space-y-2">
+              <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-2">
                 <p className="text-sm font-arabic text-ink-900 font-bold">معرّف الجهاز (Device ID)</p>
                 <p className="text-xs font-arabic text-ink-500">
                   أرسل هذا المعرّف إلى المورّد لإصدار ترخيص خاص بهذا الجهاز فقط.
@@ -594,7 +761,7 @@ export default function SettingsPage() {
               </div>
             )}
 
-            <div className="bg-white rounded-2xl p-5 shadow-sm space-y-3">
+            <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-3">
               {!licenseStatus && (
                 <p className="text-sm text-ink-400 font-arabic">جاري تحميل حالة الترخيص...</p>
               )}
@@ -670,7 +837,7 @@ export default function SettingsPage() {
             </div>
 
             {isOwner && (
-              <div className="bg-white rounded-2xl p-5 shadow-sm space-y-3">
+              <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-3">
                 <label className="block text-sm font-arabic text-ink-900 mb-1">مفتاح التفعيل</label>
                 <textarea
                   value={activationKey}
@@ -701,7 +868,7 @@ export default function SettingsPage() {
         {tab === "cloud" && (
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">المزامنة السحابية</h2>
-            <div className="bg-white rounded-2xl p-8 shadow-sm flex flex-col items-center justify-center text-center space-y-4">
+            <div className="bg-white rounded-2xl p-8 shadow-sh-1 flex flex-col items-center justify-center text-center space-y-4">
               <div className="w-16 h-16 rounded-full bg-ink-100 flex items-center justify-center">
                 <svg className="w-8 h-8 text-ink-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
               </div>
@@ -728,7 +895,7 @@ export default function SettingsPage() {
         {tab === "backup" && (
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">النسخ الاحتياطي</h2>
-            <div className="bg-white rounded-2xl p-5 shadow-sm space-y-4">
+            <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-4">
               <div className="flex justify-between items-center">
                 <span className="text-sm text-ink-400 font-arabic">آخر نسخة احتياطية</span>
                 <span className="text-sm font-mono text-ink-900">
@@ -738,16 +905,19 @@ export default function SettingsPage() {
                 </span>
               </div>
               <button
-                onClick={handleBackup}
+                onClick={() => handleBackup()}
                 disabled={backingUp}
                 className="w-full h-12 rounded-xl bg-saffron-600 text-white font-bold text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {backingUp ? "جاري..." : "نسخ احتياطي الآن"}
               </button>
               <div className="flex items-center justify-between pt-2 border-t border-ink-200">
-                <span className="text-sm font-arabic text-ink-900">النسخ الاحتياطي التلقائي</span>
+                <div>
+                  <span className="text-sm font-arabic text-ink-900 block">النسخ الاحتياطي التلقائي</span>
+                  <span className="text-xs font-arabic text-ink-400">نسخة كل 24 ساعة، طالما هذه الصفحة مفتوحة</span>
+                </div>
                 <button
-                  onClick={() => setAutoBackup(!autoBackup)}
+                  onClick={toggleAutoBackup}
                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
                     autoBackup ? "bg-saffron-600" : "bg-ink-300"
                   }`}
@@ -766,7 +936,7 @@ export default function SettingsPage() {
         {tab === "about" && (
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">عن النظام</h2>
-            <div className="bg-white rounded-2xl p-5 shadow-sm space-y-4">
+            <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-4">
               <div className="flex justify-between items-center">
                 <span className="text-sm text-ink-400 font-arabic">الإصدار</span>
                 <span className="font-mono font-bold text-ink-900">1.0.0</span>
@@ -801,7 +971,7 @@ export default function SettingsPage() {
       </div>
 
       {message && (
-        <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-saffron-600 text-white px-6 py-3 rounded-xl shadow-lg z-50 font-arabic">
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-saffron-600 text-white px-6 py-3 rounded-xl shadow-sh-3 z-50 font-arabic">
           {message}
         </div>
       )}

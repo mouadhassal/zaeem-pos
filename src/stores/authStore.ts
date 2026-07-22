@@ -22,10 +22,30 @@ export interface AuthUser {
   role: UserRole;
   photo_path?: string | null;
   restaurant_id: string;
+  /** null for Owner/Platform (tenant-scoped, no home branch) -- see open_shift_v3's doc comment. */
+  branchId: string | null;
 }
 
 function deviceInfo(): string {
   return `${navigator.platform} | ${navigator.userAgent.slice(0, 50)}`;
+}
+
+// Browser-preview mode: when the app is run with `pnpm dev` in a plain browser
+// (no Tauri runtime), every `invoke()` fails. To let the UI be inspected, we
+// auto-authenticate as a demo owner so the full POS renders. This is gated to
+// DEV and to the absence of the Tauri global, so it never runs in a real build.
+const isBrowserPreview = import.meta.env.DEV && !("__TAURI__" in window);
+
+function demoUser(): AuthUser {
+  return {
+    id: "demo-owner",
+    name: "معاينة",
+    username: "معاينة",
+    role: "owner" as UserRole,
+    photo_path: null,
+    restaurant_id: "demo-tenant",
+    branchId: null,
+  };
 }
 
 function toAuthUser(r: LoginV3Response): AuthUser {
@@ -36,6 +56,7 @@ function toAuthUser(r: LoginV3Response): AuthUser {
     role: r.role as UserRole,
     photo_path: null,
     restaurant_id: r.tenant_id,
+    branchId: r.branch_id,
   };
 }
 
@@ -81,10 +102,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
     localStorage.removeItem("zaeem_auth_token");
     localStorage.removeItem("zaeem_user");
+    // Clear all app state so the next user doesn't see stale data
+    const { clearCart } = await import("./cartStore").then((m) => m.useCartStore.getState());
+    const { resetOrderInfo } = await import("./orderTypeStore").then((m) => m.useOrderTypeStore.getState());
+    clearCart();
+    resetOrderInfo();
     set({ user: null, token: null, isAuthenticated: false });
   },
 
   checkSession: async () => {
+    if (isBrowserPreview) {
+      set({ user: demoUser(), token: "demo-token", isAuthenticated: true, isLoading: false });
+      return;
+    }
     const storedUser = localStorage.getItem("zaeem_user");
     const storedToken = localStorage.getItem("zaeem_auth_token");
     if (storedUser && storedToken) {
@@ -100,6 +130,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   checkNeedsSetup: async () => {
+    if (isBrowserPreview) {
+      set({ needsSetup: false, isLoading: false, isAuthenticated: true, user: demoUser(), token: "demo-token" });
+      return;
+    }
     try {
       const needs = await invoke<boolean>("needs_setup_v3");
       set({ needsSetup: needs, isLoading: false });
@@ -107,7 +141,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         set({ isAuthenticated: false, user: null, token: null });
       }
     } catch {
-      set({ needsSetup: false, isLoading: false });
+      // If we can't reach the backend at all, keep loading state so the
+      // user sees a spinner rather than being wrongly presented with the
+      // login or setup screen.
+      logger.error("needs_setup_v3 invoke failed", {});
+      set({ isLoading: true });
     }
   },
 

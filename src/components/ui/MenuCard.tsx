@@ -14,7 +14,7 @@ export default function MenuCard({
   onAdd,
 }: Props) {
   return (
-    <div className="bg-white rounded-2xl overflow-hidden shadow-sm hover:border-ink-600 hover:-translate-y-0.5 transition-all duration-200">
+    <div className="bg-white rounded-2xl overflow-hidden shadow-sh-1 hover:border-ink-600 hover:-translate-y-0.5 transition-all duration-200">
       <div
         className="h-28 bg-white flex items-center justify-center overflow-hidden"
         style={categoryColor ? { borderTop: `3px solid ${categoryColor}` } : undefined}

@@ -295,7 +295,7 @@ export default function BranchesPage() {
             <div
               key={b.id}
               onClick={() => openDetail(b)}
-              className="bg-white rounded-2xl shadow-sm p-5 space-y-4 cursor-pointer hover:shadow-lg transition-shadow"
+              className="bg-white rounded-2xl shadow-sh-1 p-5 space-y-4 cursor-pointer hover:shadow-sh-3 transition-shadow"
             >
               {/* Name & Status */}
               <div className="flex items-center justify-between">
@@ -572,13 +572,13 @@ export default function BranchesPage() {
               </div>
 
               {/* Staff Count */}
-              <div className="bg-white rounded-2xl p-4 flex items-center justify-between shadow-sm">
+              <div className="bg-white rounded-2xl p-4 flex items-center justify-between shadow-sh-1">
                 <span className="font-arabic text-ink-900">عدد الموظفين</span>
                 <span className="text-2xl font-bold text-ink-900 font-mono">{detailStaffCount}</span>
               </div>
 
               {/* Terminals */}
-              <div className="bg-white rounded-2xl p-4 space-y-3 shadow-sm">
+              <div className="bg-white rounded-2xl p-4 space-y-3 shadow-sh-1">
                 <h3 className="font-bold font-arabic text-sm text-ink-900">الأجهزة</h3>
                 {detailTerminals.length > 0 ? (
                   <div className="space-y-2">

@@ -3,7 +3,7 @@ import { useAuthStore } from "../stores/authStore";
 import type { DeliveryStatus } from "../db/types";
 
 function token() {
-  return useAuthStore.getState().token;
+  return useAuthStore.getState().token ?? "";
 }
 
 export interface DriverInput {

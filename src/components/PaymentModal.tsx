@@ -24,19 +24,22 @@ const QUICK_AMOUNTS = [1000, 5000, 10000, 25000, 50000, 60000, 75000, 100000];
 interface Props {
   onClose: () => void;
   onSuccess: (method: string, receivedCents: number, changeCents: number, debtorId?: string) => void;
+  initialMethod?: PaymentMethod | undefined;
+  initialDebtorId?: string | undefined;
+  initialDebtorName?: string | undefined;
 }
 
-export default function PaymentModal({ onClose, onSuccess }: Props) {
+export default function PaymentModal({ onClose, onSuccess, initialMethod, initialDebtorId, initialDebtorName }: Props) {
   const totalCents = useCartStore((s) => s.total());
   const { fmt, symbol } = useCurrency();
-  const [method, setMethod] = useState<PaymentMethod>("CASH");
+  const [method, setMethod] = useState<PaymentMethod>(initialMethod ?? "CASH");
   const [receivedStr, setReceivedStr] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
 
   const [debtorPhone, setDebtorPhone] = useState("");
-  const [debtorName, setDebtorName] = useState<string | null>(null);
-  const [debtorId, setDebtorId] = useState<string | null>(null);
+  const [debtorName, setDebtorName] = useState<string | null>(initialDebtorName ?? null);
+  const [debtorId, setDebtorId] = useState<string | null>(initialDebtorId ?? null);
   const [showNewDebtorForm, setShowNewDebtorForm] = useState(false);
   const [newDebtorName, setNewDebtorName] = useState("");
   const receivedCents = Math.round((parseFloat(receivedStr) || 0) * 100);
@@ -75,12 +78,17 @@ export default function PaymentModal({ onClose, onSuccess }: Props) {
 
   useEffect(() => {
     if (method === "CREDIT" && debtorPhone.trim().length >= 8) {
-      const token = useAuthStore.getState().token;
-      invoke<DebtorRow[]>("list_debtors_v3", { sessionToken: token }).then((debtors) => {
-        const d = debtors.find((row) => row.phone === debtorPhone.trim());
-        if (d) { setDebtorName(d.name); setDebtorId(d.id); setError(null); }
-        else { setDebtorName(null); setDebtorId(null); setError("رقم الهاتف غير موجود"); }
-      }).catch(() => {});
+      const timer = setTimeout(() => {
+        const token = useAuthStore.getState().token;
+        invoke<DebtorRow[]>("list_debtors_v3", { sessionToken: token }).then((debtors) => {
+          const d = debtors.find((row) => row.phone === debtorPhone.trim());
+          if (d) { setDebtorName(d.name); setDebtorId(d.id); setError(null); }
+          else { setDebtorName(null); setDebtorId(null); setError("رقم الهاتف غير موجود"); }
+        }).catch(() => {
+          setError("تعذر البحث عن المدين");
+        });
+      }, 300);
+      return () => clearTimeout(timer);
     } else if (method === "CREDIT") {
       setDebtorName(null); setDebtorId(null); setError(null);
     }
@@ -104,6 +112,7 @@ export default function PaymentModal({ onClose, onSuccess }: Props) {
       // drawer may not be connected
     }
     onSuccess(method, method === "CASH" ? receivedCents : totalCents, method === "CASH" ? changeCents : 0);
+    setProcessing(false);
   };
 
   return (
@@ -144,7 +153,7 @@ export default function PaymentModal({ onClose, onSuccess }: Props) {
                   onClick={() => setMethod(m)}
                   className={`flex-1 py-2.5 rounded-lg font-arabic font-medium text-sm transition-all flex items-center justify-center gap-1.5 ${
                     method === m
-                      ? "bg-surface text-ink-900 shadow-sm"
+                      ? "bg-surface text-ink-900 shadow-sh-1"
                       : "text-ink-400 hover:text-ink-900"
                   }`}
                 >

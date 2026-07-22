@@ -297,7 +297,7 @@ export default function FinancePage() {
             onClick={() => setTab(t)}
             className={`px-5 py-2 rounded-t-lg font-arabic font-medium text-sm transition-colors ${
               tab === t
-                ? "bg-saffron-600 text-white shadow-sm"
+                ? "bg-saffron-600 text-white shadow-sh-1"
                 : "text-ink-500 hover:text-saffron-600 hover:bg-white"
             }`}
           >
@@ -315,7 +315,7 @@ export default function FinancePage() {
                 onClick={() => setDateRange(r)}
                 className={`px-4 py-2 rounded-lg font-arabic text-sm transition-colors ${
                   dateRange === r
-                    ? "bg-saffron-600 text-white shadow-sm"
+                    ? "bg-saffron-600 text-white shadow-sh-1"
                     : "bg-white text-ink-500 hover:bg-ink-200"
                 }`}
               >
@@ -341,17 +341,17 @@ export default function FinancePage() {
           )}
 
           <div className="grid grid-cols-3 gap-4">
-            <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sm">
+            <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sh-1">
               <p className="text-ink-400 text-sm font-arabic">إجمالي الإيرادات</p>
               <p className="text-2xl font-bold text-saffron-600 font-mono">
                 {fmtCurrency(totalRevenue, currency)}
               </p>
             </div>
-            <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sm">
+            <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sh-1">
               <p className="text-ink-400 text-sm font-arabic">عدد الطلبات</p>
               <p className="text-2xl font-bold text-ink-900">{totalOrders}</p>
             </div>
-            <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sm">
+            <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sh-1">
               <p className="text-ink-400 text-sm font-arabic">متوسط قيمة الطلب</p>
               <p className="text-2xl font-bold text-ink-900 font-mono">
                 {fmtCurrency(avgOrder, currency)}
@@ -359,7 +359,7 @@ export default function FinancePage() {
             </div>
           </div>
 
-          <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+          <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-ink-200 text-ink-400 font-arabic">
@@ -398,7 +398,7 @@ export default function FinancePage() {
       {tab === "costs" && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <div className="bg-white rounded-2xl p-4 shadow-sm flex-1 max-w-xs">
+            <div className="bg-white rounded-2xl p-4 shadow-sh-1 flex-1 max-w-xs">
               <p className="text-ink-400 text-sm font-arabic">إجمالي التكاليف</p>
               <p className="text-2xl font-bold text-red-500 font-mono">
                 {fmtCurrency(totalCosts, currency)}
@@ -412,7 +412,7 @@ export default function FinancePage() {
             </button>
           </div>
 
-          <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+          <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-ink-200 text-ink-400 font-arabic">
@@ -451,7 +451,7 @@ export default function FinancePage() {
       {tab === "invoices" && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <div className="bg-white rounded-2xl p-4 shadow-sm flex-1 max-w-xs">
+            <div className="bg-white rounded-2xl p-4 shadow-sh-1 flex-1 max-w-xs">
               <p className="text-ink-400 text-sm font-arabic">إجمالي الفواتير المستحقة</p>
               <p className="text-2xl font-bold text-amber-600 font-mono">
                 {fmtCurrency(invoices.filter((i) => i.status === "PENDING" || i.status === "OVERDUE").reduce((a, i) => a + i.amount_cents, 0), currency)}
@@ -464,7 +464,7 @@ export default function FinancePage() {
               + إنشاء فاتورة
             </button>
           </div>
-          <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+          <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-ink-200 text-ink-400 font-arabic">
@@ -514,7 +514,7 @@ export default function FinancePage() {
       {tab === "taxes" && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
-            <div className="bg-white rounded-2xl p-4 shadow-sm space-y-2">
+            <div className="bg-white rounded-2xl p-4 shadow-sh-1 space-y-2">
               <h2 className="font-bold text-ink-900 font-arabic">إعدادات الضريبة</h2>
               <div className="flex justify-between text-sm">
                 <span className="text-ink-400 font-arabic">النظام</span>
@@ -529,7 +529,7 @@ export default function FinancePage() {
                 </span>
               </div>
             </div>
-            <div className="bg-white rounded-2xl p-4 shadow-sm space-y-2">
+            <div className="bg-white rounded-2xl p-4 shadow-sh-1 space-y-2">
               <h2 className="font-bold text-ink-900 font-arabic">الضريبة المحصلة اليوم</h2>
               <p className="text-2xl font-bold text-saffron-600 font-mono">
                 {fmtCurrency(taxCollectedToday, currency)}
@@ -670,7 +670,7 @@ export default function FinancePage() {
       )}
 
       {message && (
-        <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-saffron-600 text-white px-6 py-3 rounded-xl shadow-lg z-50 font-arabic">
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-saffron-600 text-white px-6 py-3 rounded-xl shadow-sh-3 z-50 font-arabic">
           {message}
         </div>
       )}

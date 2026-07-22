@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import type { OrderType } from "./orderTypeStore";
 import type { TaxConfig, TaxResult } from "../lib/taxCalculator";
 import { calculateTax } from "../lib/taxCalculator";
 import type { ComboComponent } from "./menuStore";
@@ -42,12 +41,7 @@ interface CartState {
   tableName: string | null;
   discountCents: number;
   discountReason: string;
-  taxConfig: TaxConfig;
-  orderType: OrderType;
-  customerName: string;
-  customerPhone: string;
-  deliveryAddress: string;
-  savingsCents: number;
+  taxConfig: TaxConfig | undefined;
   splits: SplitItem[];
 
   addItem: (item: Omit<CartItem, "id">) => void;
@@ -56,13 +50,11 @@ interface CartState {
   voidItem: (id: string, reason: string) => void;
   setDiscount: (cents: number, reason: string) => void;
   setTable: (id: string, name: string) => void;
-  setOrderType: (t: OrderType) => void;
-  setCustomerInfo: (name: string, phone: string, address: string) => void;
-  setSavingsCents: (cents: number) => void;
   setSplits: (splits: SplitItem[]) => void;
   setTaxConfig: (config: TaxConfig) => void;
   clearCart: () => void;
   subtotal: () => number;
+  savings: () => number;
   tax: () => TaxResult;
   total: () => number;
 }
@@ -76,11 +68,6 @@ export const useCartStore = create<CartState>((set, get) => ({
   discountCents: 0,
   discountReason: "",
   taxConfig: { mode: "exclusive", taxRateCents: 1500, secondaryTaxRateCents: 0, serviceChargeRateCents: 0 },
-  orderType: "DINE_IN",
-  customerName: "",
-  customerPhone: "",
-  deliveryAddress: "",
-  savingsCents: 0,
   splits: [],
 
   addItem: (item) =>
@@ -131,13 +118,6 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   setTable: (id, name) => set({ tableId: id, tableName: name }),
 
-  setOrderType: (t) => set({ orderType: t }),
-
-  setCustomerInfo: (name, phone, address) =>
-    set({ customerName: name, customerPhone: phone, deliveryAddress: address }),
-
-  setSavingsCents: (cents) => set({ savingsCents: cents }),
-
   setSplits: (splits) => set({ splits }),
 
   setTaxConfig: (config) => set({ taxConfig: config }),
@@ -149,12 +129,8 @@ export const useCartStore = create<CartState>((set, get) => ({
       tableName: null,
       discountCents: 0,
       discountReason: "",
-      orderType: "DINE_IN",
-      customerName: "",
-      customerPhone: "",
-      deliveryAddress: "",
-      savingsCents: 0,
       splits: [],
+      taxConfig: undefined,
     }),
 
   subtotal: () => {
@@ -168,10 +144,17 @@ export const useCartStore = create<CartState>((set, get) => ({
       );
   },
 
+  savings: () => {
+    const { items } = get();
+    return items
+      .filter((i) => !i.voided)
+      .reduce((sum, i) => sum + (i.savingsCents ?? 0) * i.quantity, 0);
+  },
+
   tax: () => {
     const s = get().subtotal();
     const d = get().discountCents;
-    const taxConfig = get().taxConfig;
+    const taxConfig = get().taxConfig ?? { mode: "exclusive" as const, taxRateCents: 0, secondaryTaxRateCents: 0, serviceChargeRateCents: 0 };
     return calculateTax(s, d, taxConfig);
   },
 

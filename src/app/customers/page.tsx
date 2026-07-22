@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAuthStore } from "../../stores/authStore";
 import { z } from "zod";
+import { IconEye, IconPencil, IconTrash } from "@tabler/icons-react";
 
 interface Customer {
   id: string;
@@ -236,12 +237,23 @@ export default function CustomersPage() {
   const closeDetail = () => {
     setDetailOpen(false);
     setDetailCustomer(null);
+    setDetailDraft({});
+    setDetailSaving(false);
   };
 
-  const updateDetailField = async (field: string, value: string) => {
-    if (!detailCustomer) return;
+  const [detailDraft, setDetailDraft] = useState<Record<string, string>>({});
+  const [detailSaving, setDetailSaving] = useState(false);
+  const detailDirty = Object.keys(detailDraft).length > 0;
+
+  const updateDetailDraft = (field: string, value: string) => {
+    setDetailDraft((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const saveDetailDraft = async () => {
+    if (!detailCustomer || !detailDirty) return;
+    setDetailSaving(true);
     try {
-      const updated = { ...detailCustomer.customer, [field]: value };
+      const updated = { ...detailCustomer.customer, ...detailDraft };
       await invoke("update_customer_v3", {
         sessionToken: token,
         customerId: updated.id,
@@ -253,9 +265,16 @@ export default function CustomersPage() {
         birthday: updated.birthday || null,
       });
       setDetailCustomer({ ...detailCustomer, customer: updated });
+      setDetailDraft({});
     } catch {
       setError("حدث خطأ في التحديث");
+    } finally {
+      setDetailSaving(false);
     }
+  };
+
+  const cancelDetailDraft = () => {
+    setDetailDraft({});
   };
 
   const exportCsv = () => {
@@ -314,7 +333,7 @@ export default function CustomersPage() {
             onClick={exportCsv}
             className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
-            📤 تصدير
+            تصدير
           </button>
         </div>
       </div>
@@ -329,7 +348,7 @@ export default function CustomersPage() {
       />
 
       {/* Table */}
-      <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+      <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-ink-200 text-ink-400 font-arabic">
@@ -368,21 +387,21 @@ export default function CustomersPage() {
                       className="p-1.5 rounded-lg text-xs text-saffron-600 hover:bg-saffron-50 transition-colors"
                       title="الطلبات"
                     >
-                      👁️
+                      <IconEye className="w-4 h-4" />
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); openEdit(c); }}
                       className="p-1.5 rounded-lg text-xs text-amber-600 hover:bg-amber-50 transition-colors"
                       title="تعديل"
                     >
-                      ✏️
+                      <IconPencil className="w-4 h-4" />
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); setDeleteId(c.id); }}
                       className="p-1.5 rounded-lg text-xs text-red-500 hover:bg-red-50 transition-colors"
                       title="حذف"
                     >
-                      🗑️
+                      <IconTrash className="w-4 h-4" />
                     </button>
                   </div>
                 </td>
@@ -549,8 +568,8 @@ export default function CustomersPage() {
                     <span className="text-xs text-ink-500 font-arabic w-20">الاسم</span>
                     <input
                       type="text"
-                      value={detailCustomer.customer.name}
-                      onChange={(e) => updateDetailField("name", e.target.value)}
+                      value={detailDraft.name ?? detailCustomer.customer.name}
+                      onChange={(e) => updateDetailDraft("name", e.target.value)}
                       className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                     />
                   </div>
@@ -558,8 +577,8 @@ export default function CustomersPage() {
                     <span className="text-xs text-ink-500 font-arabic w-20">الهاتف</span>
                     <input
                       type="text"
-                      value={detailCustomer.customer.phone}
-                      onChange={(e) => updateDetailField("phone", e.target.value)}
+                      value={detailDraft.phone ?? detailCustomer.customer.phone}
+                      onChange={(e) => updateDetailDraft("phone", e.target.value)}
                       className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                       dir="ltr"
                     />
@@ -568,8 +587,8 @@ export default function CustomersPage() {
                     <span className="text-xs text-ink-500 font-arabic w-20">البريد</span>
                     <input
                       type="email"
-                      value={detailCustomer.customer.email ?? ""}
-                      onChange={(e) => updateDetailField("email", e.target.value)}
+                      value={detailDraft.email ?? detailCustomer.customer.email ?? ""}
+                      onChange={(e) => updateDetailDraft("email", e.target.value)}
                       className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                       dir="ltr"
                     />
@@ -578,12 +597,29 @@ export default function CustomersPage() {
                     <span className="text-xs text-ink-500 font-arabic w-20">العنوان</span>
                     <input
                       type="text"
-                      value={detailCustomer.customer.address ?? ""}
-                      onChange={(e) => updateDetailField("address", e.target.value)}
+                      value={detailDraft.address ?? detailCustomer.customer.address ?? ""}
+                      onChange={(e) => updateDetailDraft("address", e.target.value)}
                       className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                     />
                   </div>
                 </div>
+                {detailDirty && (
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      onClick={saveDetailDraft}
+                      disabled={detailSaving}
+                      className="flex-1 h-8 rounded-lg bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                    >
+                      {detailSaving ? "جاري الحفظ..." : "حفظ"}
+                    </button>
+                    <button
+                      onClick={cancelDetailDraft}
+                      className="flex-1 h-8 rounded-lg border border-ink-200 text-ink-500 text-sm hover:bg-ink-100 transition-colors"
+                    >
+                      إلغاء
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Stats */}
@@ -609,7 +645,7 @@ export default function CustomersPage() {
               </div>
 
               {/* Favorite Items */}
-              <div className="bg-white rounded-2xl p-4 space-y-2 shadow-sm">
+              <div className="bg-white rounded-2xl p-4 space-y-2 shadow-sh-1">
                 <h3 className="font-bold font-arabic text-sm text-ink-900">الأصناف المفضلة</h3>
                 {detailCustomer.favoriteItems.length > 0 ? (
                   <div className="space-y-1">
@@ -626,7 +662,7 @@ export default function CustomersPage() {
               </div>
 
               {/* Order History */}
-              <div className="bg-white rounded-2xl p-4 space-y-2 shadow-sm">
+              <div className="bg-white rounded-2xl p-4 space-y-2 shadow-sh-1">
                 <h3 className="font-bold font-arabic text-sm text-ink-900">آخر الطلبات</h3>
                 {detailCustomer.orders.length > 0 ? (
                   <div className="space-y-1">

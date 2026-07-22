@@ -195,7 +195,7 @@ export default function AIPage() {
               {msg.role === "assistant" ? <Bot className="w-4 h-4" /> : <User className="w-4 h-4" />}
             </div>
             <div className={`max-w-[80%] rounded-2xl p-4 text-sm leading-relaxed ${
-              msg.role === "assistant" ? "bg-white shadow-sm text-ink-900" : "bg-saffron-600 text-white"
+              msg.role === "assistant" ? "bg-white shadow-sh-1 text-ink-900" : "bg-saffron-600 text-white"
             }`}>
               <div className="whitespace-pre-wrap font-arabic">{msg.content}</div>
               <p className={`text-xs mt-2 ${msg.role === "assistant" ? "text-ink-400" : "text-saffron-200"}`}>
@@ -210,7 +210,7 @@ export default function AIPage() {
             <div className="w-8 h-8 rounded-full bg-saffron-100 text-saffron-600 flex items-center justify-center">
               <Bot className="w-4 h-4" />
             </div>
-            <div className="bg-white rounded-2xl p-4 shadow-sm">
+            <div className="bg-white rounded-2xl p-4 shadow-sh-1">
               <div className="flex gap-1">
                 <span className="w-2 h-2 bg-saffron-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
                 <span className="w-2 h-2 bg-saffron-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
@@ -231,7 +231,7 @@ export default function AIPage() {
               <button
                 key={action.label}
                 onClick={() => handleSend(action.query)}
-                className="px-4 py-2 rounded-xl bg-white border border-ink-200 text-sm text-ink-700 font-arabic hover:border-saffron-300 hover:text-saffron-600 transition-colors shadow-sm"
+                className="px-4 py-2 rounded-xl bg-white border border-ink-200 text-sm text-ink-700 font-arabic hover:border-saffron-300 hover:text-saffron-600 transition-colors shadow-sh-1"
               >
                 {action.icon} {action.label}
               </button>

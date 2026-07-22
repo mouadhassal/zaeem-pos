@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+
 interface Table {
   id: string;
   name: string;
@@ -15,6 +17,12 @@ export default function TransferOrderModal({ currentTable, tables, onTransfer, o
   const freeTables = tables.filter(
     (t) => t.status === "FREE" && t.id !== currentTable?.id
   );
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onCancel(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onCancel]);
 
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">

@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAuthStore } from "../stores/authStore";
 
 function token() {
-  return useAuthStore.getState().token;
+  return useAuthStore.getState().token ?? "";
 }
 
 export interface ReceiptItem {

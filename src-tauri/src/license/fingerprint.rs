@@ -13,12 +13,28 @@
 pub use license_core::fingerprint::MachineFingerprint;
 
 use std::process::Command;
+use std::sync::OnceLock;
+
+/// Windows' `CREATE_NO_WINDOW` process creation flag. A windowed (GUI
+/// subsystem) process spawning a child still gets a console allocated for
+/// it by default unless this is set -- without it, every one of the 3
+/// `powershell.exe` calls below flashes a visible console window on top of
+/// the app. Found from the real symptom: CMD windows popping open on every
+/// click that happened to touch licensing (Settings -> License tab,
+/// startup, the 6-hourly background recheck), because each one recomputed
+/// the fingerprint from scratch.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 fn run_powershell(script: &str) -> Option<String> {
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -41,9 +57,21 @@ fn collect_raw() -> (Option<String>, Option<String>, Option<String>) {
     (None, None, None)
 }
 
+/// This machine's hardware never changes mid-process, so the 3 PowerShell
+/// spawns above only ever need to run once per app launch, not once per
+/// call site -- `current()`/`device_id()` used to each recompute it fresh,
+/// which is why opening Settings (or the 6-hourly background license
+/// recheck) paid the ~1-3s PowerShell-startup cost and console-flash all
+/// over again every single time.
+static RAW_FINGERPRINT: OnceLock<(Option<String>, Option<String>, Option<String>)> = OnceLock::new();
+
+fn collect_raw_cached() -> &'static (Option<String>, Option<String>, Option<String>) {
+    RAW_FINGERPRINT.get_or_init(collect_raw)
+}
+
 /// Reads this machine's current hardware identity.
 pub fn current() -> MachineFingerprint {
-    let (cpu, disk, mac) = collect_raw();
+    let (cpu, disk, mac) = collect_raw_cached();
     MachineFingerprint::from_raw(cpu.as_deref(), disk.as_deref(), mac.as_deref())
 }
 
@@ -58,7 +86,7 @@ pub fn current() -> MachineFingerprint {
 /// `license_core::fingerprint`), so this has to hand over the same raw
 /// inputs, not a hash of them.
 pub fn device_id() -> String {
-    let (cpu, disk, mac) = collect_raw();
+    let (cpu, disk, mac) = collect_raw_cached();
     let json = serde_json::json!({ "cpu": cpu, "disk": disk, "mac": mac });
     license_core::b64::encode(serde_json::to_string(&json).expect("device id json always serializes").as_bytes())
 }

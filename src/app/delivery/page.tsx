@@ -89,21 +89,21 @@ export default function DeliveryPage() {
     try {
       const data = await deliveryService.getActiveDeliveries();
       setActiveDeliveries(data as unknown as ActiveDeliveryRow[]);
-    } catch { setActiveDeliveries([]); }
+    } catch (err) { console.error("Failed to load active deliveries:", err); setActiveDeliveries([]); }
   }, []);
 
   const loadDrivers = useCallback(async () => {
     try {
       const data = await deliveryService.getDrivers(true);
       setDrivers(data as unknown as DriverRow[]);
-    } catch { setDrivers([]); }
+    } catch (err) { console.error("Failed to load drivers:", err); setDrivers([]); }
   }, []);
 
   const loadZones = useCallback(async () => {
     try {
       const data = await deliveryService.getZones();
       setZones(data as unknown as ZoneRow[]);
-    } catch { setZones([]); }
+    } catch (err) { console.error("Failed to load zones:", err); setZones([]); }
   }, []);
 
   const loadAll = useCallback(async () => {
@@ -148,7 +148,7 @@ export default function DeliveryPage() {
                 key={t.id}
                 onClick={() => setTab(t.id)}
                 className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-all ${
-                  tab === t.id ? "bg-white text-saffron-700 font-medium shadow-sm" : "text-ink-500 hover:text-ink-700"
+                  tab === t.id ? "bg-white text-saffron-700 font-medium shadow-sh-1" : "text-ink-500 hover:text-ink-700"
                 }`}
               >
                 <Icon className="w-4 h-4" />
@@ -389,10 +389,12 @@ function DriverForm({ editing, onClose, onSaved }: { editing: DriverRow | null; 
   const [vehiclePlate, setVehiclePlate] = useState(editing?.vehicle_plate || "");
   const [licenseNumber, setLicenseNumber] = useState("");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSave = async () => {
     if (!name.trim() || !phone.trim()) return;
     setSaving(true);
+    setError(null);
     try {
       const update: Record<string, unknown> = {
         name: name.trim(),
@@ -415,6 +417,7 @@ function DriverForm({ editing, onClose, onSaved }: { editing: DriverRow | null; 
       onSaved();
     } catch (err) {
       console.error("Failed to save driver:", err);
+      setError("تعذر حفظ بيانات السائق");
     } finally {
       setSaving(false);
     }
@@ -454,6 +457,7 @@ function DriverForm({ editing, onClose, onSaved }: { editing: DriverRow | null; 
         </div>
       </div>
       <div className="flex justify-end gap-2 pt-1">
+        {error && <p className="text-sm text-red-500 flex-1">{error}</p>}
         <button onClick={onClose} className="px-4 py-2 text-sm text-ink-500 hover:text-ink-700">إلغاء</button>
         <button onClick={handleSave} disabled={saving || !name.trim() || !phone.trim()} className="px-4 py-2 bg-saffron-500 text-white rounded-md text-sm font-medium hover:bg-saffron-600 disabled:opacity-50 transition-colors">
           {saving ? "جاري الحفظ..." : editing ? "حفظ التغييرات" : "إضافة"}
@@ -521,10 +525,12 @@ function ZoneForm({ editing, onClose, onSaved }: { editing: ZoneRow | null; onCl
   const [minOrderCents, setMinOrderCents] = useState(editing ? String(editing.min_order_cents / 100) : "0");
   const [estimatedMinutes, setEstimatedMinutes] = useState(editing ? String(editing.estimated_minutes) : "30");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSave = async () => {
     if (!name.trim()) return;
     setSaving(true);
+    setError(null);
     try {
       const input = {
         name: name.trim(),
@@ -540,6 +546,7 @@ function ZoneForm({ editing, onClose, onSaved }: { editing: ZoneRow | null; onCl
       onSaved();
     } catch (err) {
       console.error("Failed to save zone:", err);
+      setError("تعذر حفظ المنطقة");
     } finally {
       setSaving(false);
     }
@@ -570,6 +577,7 @@ function ZoneForm({ editing, onClose, onSaved }: { editing: ZoneRow | null; onCl
         </div>
       </div>
       <div className="flex justify-end gap-2 pt-1">
+        {error && <p className="text-sm text-red-500 flex-1">{error}</p>}
         <button onClick={onClose} className="px-4 py-2 text-sm text-ink-500 hover:text-ink-700">إلغاء</button>
         <button onClick={handleSave} disabled={saving || !name.trim()} className="px-4 py-2 bg-saffron-500 text-white rounded-md text-sm font-medium hover:bg-saffron-600 disabled:opacity-50 transition-colors">
           {saving ? "جاري الحفظ..." : editing ? "حفظ التغييرات" : "إضافة"}
@@ -582,15 +590,25 @@ function ZoneForm({ editing, onClose, onSaved }: { editing: ZoneRow | null; onCl
 function DeliveryHistoryView({ fmt }: { fmt: (c: number) => string }) {
   const [logs, setLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     deliveryService.getDeliveryHistory(100, 0).then((data) => {
       setLogs(data as any);
-    }).catch(() => {}).finally(() => setLoading(false));
+    }).catch((err) => { console.error("Failed to load delivery history:", err); setError("تعذر تحميل سجل التوصيل"); }).finally(() => setLoading(false));
   }, []);
 
   if (loading) {
     return <div className="flex justify-center py-10"><div className="w-6 h-6 border-2 border-saffron-500/30 border-t-saffron-500 rounded-full animate-spin" /></div>;
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-ink-400">
+        <History className="w-12 h-12 mb-3" />
+        <p className="text-lg font-medium text-red-500">{error}</p>
+      </div>
+    );
   }
 
   if (logs.length === 0) {

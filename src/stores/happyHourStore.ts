@@ -13,15 +13,11 @@ export interface HappyHourRule {
 interface HappyHourState {
   rules: HappyHourRule[];
   setRules: (rules: HappyHourRule[]) => void;
-  addRule: (rule: HappyHourRule) => void;
-  removeRule: (id: string) => void;
 }
 
 export const useHappyHourStore = create<HappyHourState>((set) => ({
   rules: [],
   setRules: (rules) => set({ rules }),
-  addRule: (rule) => set((s) => ({ rules: [...s.rules, rule] })),
-  removeRule: (id) => set((s) => ({ rules: s.rules.filter((r) => r.id !== id) })),
 }));
 
 export function getActiveHappyHourDiscount(

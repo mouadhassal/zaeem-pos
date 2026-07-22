@@ -66,7 +66,7 @@ export default function CartPanel({
         {items.map((item) => (
           <div
             key={item.id}
-            className="flex items-center gap-3 mx-4 p-4 bg-white rounded-xl shadow-sm"
+            className="flex items-center gap-3 mx-4 p-4 bg-white rounded-xl shadow-sh-1"
           >
             <div className="w-12 h-12 rounded-lg bg-white flex-shrink-0 flex items-center justify-center">
               <span className="text-lg">🍽</span>
@@ -162,7 +162,7 @@ export default function CartPanel({
           </button>
           <button
             onClick={onCheckout}
-            className="flex-1 h-14 rounded-xl bg-saffron-600 hover:bg-saffron-700 text-white font-arabic font-bold shadow-lg shadow-saffron-600\/20 transition-all active:scale-[0.98] text-sm"
+            className="flex-1 h-14 rounded-xl bg-saffron-600 hover:bg-saffron-700 text-white font-arabic font-bold shadow-sh-3 shadow-saffron-600\/20 transition-all active:scale-[0.98] text-sm"
           >
             دفع
           </button>

@@ -225,18 +225,17 @@ pub fn run() {
 
             // Cloud sync outbox worker (CLOUD_AND_LICENSING_PLAN.md §5,
             // Slice 2a): drains sync_outbox on its own timer, batched, with
-            // exponential backoff + jitter on failure. `send_batch_stub`
-            // (sync.rs) always fails in this slice -- there is no network
-            // path yet, only this scheduling loop, which Slice 2c plugs a
-            // real POST into without touching anything else here. Never on
-            // the sale path: this is the ONLY thing that ever reads
+            // exponential backoff + jitter on failure. Slice 2c plugs a real
+            // POST to `ingest_sales_facts` RPC into `send_batch` (sync.rs).
+            // Never on the sale path: this is the ONLY thing that ever reads
             // `sync_outbox`.
             let sync_timer_handle = app.handle().clone();
+            let sync_config_dir = db_path.parent().expect("db_path must have a parent dir").to_path_buf();
             tauri::async_runtime::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                     if let Some(db) = sync_timer_handle.try_state::<Db>() {
-                        let _ = sync::run_tick(&db.0, 500).await;
+                        let _ = sync::run_tick(&db.0, 500, &sync_config_dir).await;
                     }
                 }
             });
@@ -377,6 +376,9 @@ pub fn run() {
             commands_v3::deactivate_delivery_zone_v3,
             commands_v3::change_own_password_v3,
             commands_v3::list_tables_v3,
+            commands_v3::create_table_v3,
+            commands_v3::rename_table_v3,
+            commands_v3::delete_table_v3,
             commands_v3::create_full_order_v3,
             commands_v3::hold_order_v3,
             commands_v3::retrieve_held_order_v3,

@@ -11,6 +11,7 @@ interface Props {
 
 export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onCancel }: Props) {
   const [reason, setReason] = useState("");
+  const [customReason, setCustomReason] = useState("");
   const [showPin, setShowPin] = useState(false);
   const [pin, setPin] = useState("");
   const [pinError, setPinError] = useState<string | null>(null);
@@ -19,7 +20,8 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
   const needsManager = itemPriceCents > 2000;
 
   const handleConfirm = async () => {
-    if (!reason.trim()) return;
+    const finalReason = reason === "أخرى" ? customReason.trim() : reason.trim();
+    if (!finalReason) return;
     if (needsManager && !showPin) {
       setShowPin(true);
       return;
@@ -33,19 +35,20 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
         // Scoped to the requesting actor's own tenant/branch and audited on
         // grant (verify_manager_override_v3).
         const token = useAuthStore.getState().token;
-        const valid = await invoke<boolean>("verify_manager_override_v3", { sessionToken: token, passwordOrPin: pin }).catch(() => false);
-        if (!valid) {
-          setPinError("كلمة مرور المدير غير صحيحة");
-          return;
+        await invoke<boolean>("verify_manager_override_v3", { sessionToken: token, passwordOrPin: pin });
+      } catch (err) {
+        const msg = typeof err === "string" ? err : (err as Error)?.message ?? "";
+        if (msg.includes("ECONNREFUSED") || msg.includes("network") || msg.includes("fetch")) {
+          setPinError("خطأ في الاتصال بالخادم");
+        } else {
+          setPinError("كلمة المرور غير صحيحة");
         }
-      } catch {
-        setPinError("حدث خطأ أثناء التحقق");
         return;
       } finally {
         setVerifying(false);
       }
     }
-    onConfirm(reason.trim());
+    onConfirm(finalReason);
   };
 
   return (
@@ -60,8 +63,14 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
           <div>
             <label className="font-arabic text-sm text-ink-500 mb-1.5 block">سبب الإلغاء *</label>
             <select
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
+              value={reason === "أخرى" ? "أخرى" : reason}
+              onChange={(e) => {
+                if (e.target.value === "أخرى") {
+                  setReason("أخرى");
+                } else {
+                  setReason(e.target.value);
+                }
+              }}
               className="w-full h-12 rounded-xl border-2 border-ink-200 px-4 font-arabic text-sm focus:border-danger outline-none"
             >
               <option value="">اختر سبباً</option>
@@ -76,8 +85,8 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
           {reason === "أخرى" && (
             <input
               type="text"
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
+              value={customReason}
+              onChange={(e) => setCustomReason(e.target.value)}
               placeholder="اكتب سبب الإلغاء..."
               className="w-full h-12 rounded-xl border-2 border-ink-200 px-4 font-arabic text-sm outline-none focus:border-danger"
             />
@@ -112,7 +121,7 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
           </button>
           <button
             onClick={handleConfirm}
-            disabled={!reason.trim() || verifying || (needsManager && showPin && !pin)}
+            disabled={(!reason.trim() || (reason === "أخرى" && !customReason.trim())) || verifying || (needsManager && showPin && !pin)}
             className="flex-1 h-12 rounded-xl bg-danger text-white font-arabic font-bold hover:bg-danger disabled:opacity-50"
           >
             {verifying ? "جاري التحقق..." : "تأكيد الإلغاء"}

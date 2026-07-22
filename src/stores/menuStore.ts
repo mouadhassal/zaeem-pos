@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { useAuthStore } from "./authStore";
 import { logger } from "../lib/logger";
+import { useComboStore } from "./comboStore";
+import { useHappyHourStore, getActiveHappyHourDiscount } from "./happyHourStore";
 
 interface Category {
   id: string;
@@ -27,6 +29,10 @@ export interface MenuItem {
   combo_description: string | null;
   combo_components: ComboComponent[];
   barcode: string | null;
+  /** >0 when a happy-hour rule for this item is active right now (see happyHourStore.getActiveHappyHourDiscount). */
+  happyHourDiscountPercent: number;
+  /** price_cents with the active happy-hour discount already applied -- this, not price_cents, is what the cashier should charge/see right now. */
+  effectivePriceCents: number;
 }
 
 interface MenuState {
@@ -35,6 +41,7 @@ interface MenuState {
   selectedCategoryId: string | null;
   searchQuery: string;
   loading: boolean;
+  error: string | null;
   fetchMenu: () => Promise<void>;
   setSelectedCategory: (id: string | null) => void;
   setSearchQuery: (q: string) => void;
@@ -51,9 +58,10 @@ export const useMenuStore = create<MenuState>((set) => ({
   // false was exactly what let the UI render "no items" for the one frame
   // before the mount effect's set({ loading: true }) landed.
   loading: true,
+  error: null,
 
   fetchMenu: async () => {
-    set({ loading: true });
+    set({ loading: true, error: null });
     try {
       const token = useAuthStore.getState().token;
       // Perf fix (post-login load lag): these two reads have no data
@@ -61,7 +69,7 @@ export const useMenuStore = create<MenuState>((set) => ({
       // first, they're joined client-side by category_id) -- they used to
       // be sequential awaits, serializing two IPC round trips where one
       // would do. Fetched in parallel now.
-      const [allCategories, allMenuItems] = await Promise.all([
+      const [allCategories, allMenuItems, comboRows, comboItemRows, happyHourRows] = await Promise.all([
         invoke<{ id: string; name: string; color: string | null; sort_order: number; is_active: number }[]>(
           "list_categories_v3", { sessionToken: token }
         ),
@@ -70,7 +78,36 @@ export const useMenuStore = create<MenuState>((set) => ({
           is_combo: number; combo_original_price_cents: number | null; combo_description: string | null;
           barcode: string | null; is_active: number;
         }[]>("list_menu_items_v3", { sessionToken: token }),
+        // The offers built in Menu Management (combo_meals bundles + happy-hour
+        // rules) used to be fetched only by menu/page.tsx's admin screen --
+        // nothing on the POS order-taking side ever asked for them, so a
+        // cashier had no way to sell them and no discount ever applied even
+        // when adding the same items one by one. Fetched here too now, same
+        // shape as menu/page.tsx's own fetch.
+        invoke<{ id: string; name: string; bundle_price_cents: number }[]>("list_combo_meals_v3", { sessionToken: token }),
+        invoke<{ combo_id: string; menu_item_id: string; menu_item_name: string; quantity: number; price_cents: number }[]>(
+          "list_combo_meal_items_v3", { sessionToken: token }
+        ),
+        invoke<{ id: string; menu_item_id: string; menu_item_name: string; discount_percent: number; day_of_week: number; start_time: string; end_time: string; is_active: number }[]>(
+          "list_happy_hour_rules_v3", { sessionToken: token }
+        ),
       ]);
+
+      const combos = comboRows.map((c) => ({
+        id: c.id,
+        name: c.name,
+        bundlePriceCents: c.bundle_price_cents,
+        items: comboItemRows
+          .filter((ci) => ci.combo_id === c.id)
+          .map((ci) => ({ menuItemId: ci.menu_item_id, name: ci.menu_item_name, quantity: ci.quantity, priceCents: ci.price_cents })),
+      }));
+      useComboStore.getState().setCombos(combos);
+
+      const happyHourRules = happyHourRows.map((r) => ({
+        id: r.id, menuItemId: r.menu_item_id, discountPercent: r.discount_percent,
+        dayOfWeek: r.day_of_week, startTime: r.start_time, endTime: r.end_time, is_active: r.is_active,
+      }));
+      useHappyHourStore.getState().setRules(happyHourRules);
       const categories: Category[] = allCategories
         .filter((c) => c.is_active === 1)
         .sort((a, b) => a.sort_order - b.sort_order)
@@ -96,23 +133,30 @@ export const useMenuStore = create<MenuState>((set) => ({
         )
       );
 
-      const itemsWithCombo: MenuItem[] = activeItems.map((item, i) => ({
-        id: item.id,
-        name: item.name,
-        price_cents: item.price_cents,
-        category_id: item.category_id,
-        image_path: item.image_path,
-        is_combo: item.is_combo === 1,
-        combo_original_price_cents: item.combo_original_price_cents,
-        combo_description: item.combo_description,
-        combo_components: comboRowsByItem[i].map((r) => ({ menuItemId: r.menu_item_id, name: r.menu_item_name, qty: r.quantity })),
-        barcode: item.barcode,
-      }));
+      const itemsWithCombo: MenuItem[] = activeItems.map((item, i) => {
+        const happyHourDiscountPercent = getActiveHappyHourDiscount(item.id, happyHourRules);
+        return {
+          id: item.id,
+          name: item.name,
+          price_cents: item.price_cents,
+          category_id: item.category_id,
+          image_path: item.image_path,
+          is_combo: item.is_combo === 1,
+          combo_original_price_cents: item.combo_original_price_cents,
+          combo_description: item.combo_description,
+          combo_components: comboRowsByItem[i].map((r) => ({ menuItemId: r.menu_item_id, name: r.menu_item_name, qty: r.quantity })),
+          barcode: item.barcode,
+          happyHourDiscountPercent,
+          effectivePriceCents: happyHourDiscountPercent > 0
+            ? Math.round(item.price_cents * (1 - happyHourDiscountPercent / 100))
+            : item.price_cents,
+        };
+      });
 
-      set({ categories, menuItems: itemsWithCombo, loading: false });
+      set({ categories, menuItems: itemsWithCombo, loading: false, error: null });
     } catch (err) {
       logger.error("Failed to fetch menu", { error: String(err) });
-      set({ loading: false });
+      set({ loading: false, error: "تعذر تحميل القائمة. تحقق من اتصال الخادم." });
     }
   },
 

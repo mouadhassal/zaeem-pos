@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 interface Table {
   id: string;
@@ -17,6 +17,12 @@ export default function MergeTablesModal({ tables, selectedTableId, onMerge, onC
   const [selected, setSelected] = useState<string[]>(
     selectedTableId ? [selectedTableId] : []
   );
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onCancel(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onCancel]);
 
   const occupiedTables = tables.filter((t) => t.status === "OCCUPIED");
 

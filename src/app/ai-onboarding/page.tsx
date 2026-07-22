@@ -274,7 +274,7 @@ export default function AiOnboardingPage() {
                 onClick={() => selectUpload(i)}
                 className={`flex-shrink-0 w-16 h-16 rounded-xl border-2 transition-colors overflow-hidden relative ${
                   selectedIdx === i
-                    ? "border-saffron-500 shadow-sm"
+                    ? "border-saffron-500 shadow-sh-1"
                     : "border-ink-200 hover:border-ink-400"
                 }`}
               >
@@ -359,7 +359,7 @@ export default function AiOnboardingPage() {
                   const items = displayDraft.items.filter((i) => i.category_name === cat.name);
                   if (items.length === 0) return null;
                   return (
-                    <div key={cat.name} className="bg-white rounded-2xl shadow-sm overflow-hidden">
+                    <div key={cat.name} className="bg-white rounded-2xl shadow-sh-1 overflow-hidden">
                       <div className="bg-ink-50 px-4 py-2 flex items-center gap-2 border-b border-ink-200">
                         <span className={`inline-block w-2 h-2 rounded-full ${confidenceColor(cat.confidence)}`} />
                         <span className="font-bold text-ink-900 font-arabic text-sm">{cat.name}</span>

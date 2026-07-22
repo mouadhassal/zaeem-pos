@@ -20,13 +20,21 @@ interface Props {
 }
 
 export default function DriverSelectModal({ selectedId, onSelect, onClose }: Props) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
     deliveryService.getAvailableDrivers().then((data) => {
-      setDrivers(data as unknown as Driver[]);
-    }).catch(() => {}).finally(() => setLoading(false));
+      setDrivers((data ?? []) as Driver[]);
+    }).catch(() => {
+      setFetchError("تعذر تحميل قائمة السائقين");
+    }).finally(() => setLoading(false));
   }, []);
 
   return (
@@ -43,6 +51,8 @@ export default function DriverSelectModal({ selectedId, onSelect, onClose }: Pro
             <div className="flex justify-center py-8">
               <div className="w-6 h-6 border-2 border-ink-200 border-t-accent rounded-full animate-spin" />
             </div>
+          ) : fetchError ? (
+            <div className="text-center py-8 text-red-500 font-arabic text-sm">{fetchError}</div>
           ) : drivers.length === 0 ? (
             <div className="text-center py-8 text-ink-400">
               <Car className="w-10 h-10 mx-auto mb-2" />

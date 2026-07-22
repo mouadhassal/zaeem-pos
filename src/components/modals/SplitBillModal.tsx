@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { IconX, IconPlus } from "@tabler/icons-react";
 import { useCartStore } from "../../stores/cartStore";
 import type { SplitItem } from "../../stores/cartStore";
@@ -12,6 +12,12 @@ interface Props {
 export default function SplitBillModal({ onClose, onConfirm }: Props) {
   const items = useCartStore((s) => s.items);
   const { fmt } = useCurrency();
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
   const [splits, setSplits] = useState<SplitItem[]>([
     { id: "split-1", label: "الفاتورة ١", itemIds: [], amountCents: 0 },
     { id: "split-2", label: "الفاتورة ٢", itemIds: [], amountCents: 0 },

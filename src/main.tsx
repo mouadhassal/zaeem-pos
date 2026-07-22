@@ -14,6 +14,46 @@ import "@fontsource/ibm-plex-mono/600.css";
 import "@fontsource/ibm-plex-mono/700.css";
 import "./index.css";
 
+// In DEV without the Tauri runtime (plain browser), `invoke()` has no Rust
+// backend to talk to. To make the UI inspectable, we shim `invoke` with mock
+// data so components render instead of erroring. This only runs in DEV and
+// only when Tauri is absent, so production/Tauri behaviour is untouched.
+if (import.meta.env.DEV && !("__TAURI__" in window)) {
+  const mockInvoke = async (cmd: string): Promise<unknown> => {
+    const empty: Record<string, unknown> = {
+      needs_setup_v3: false,
+      get_chain_config_v3: { currency: "SAR", tax_mode: "exclusive", tax_rate_cents: 1500, secondary_tax_rate_cents: 0, service_charge_rate_cents: 0, chain_name: "Zaeem", branch_name: "Demo" },
+      get_receipt_config_v3: { currency: "SAR" },
+      get_discount_caps_v3: { caps: { cashier_percent: 10, manager_percent: 25, owner_percent: 100 }, your_cap_percent: 10 },
+      list_tables_v3: [],
+      list_menu_items_v3: [],
+      list_categories_v3: [],
+      list_ingredients_v3: [],
+      list_suppliers_v3: [],
+      list_purchase_orders_v3: [],
+      list_stock_movements_v3: [],
+      list_low_stock_alerts_v3: [],
+      list_loyalty_cards_v3: [],
+      list_customers_v3: [],
+      list_loyalty_transactions_v3: [],
+      list_kitchen_orders_v3: [],
+      list_employees_v3: [],
+      list_shifts_v3: [],
+      list_branches_v3: [],
+      list_delivery_drivers_v3: [],
+      list_delivery_zones_v3: [],
+      list_debtors_v3: [],
+      list_debt_records_v3: [],
+      get_tax_collected_v3: 0,
+      check_license_v3: { status: "active", tier: "standard" },
+    };
+    if (cmd in empty) return empty[cmd];
+    return null;
+  };
+  const core = await import("@tauri-apps/api/core");
+  core.invoke = mockInvoke as typeof core.invoke;
+}
+
 const startupEnd = measureStartup();
 
 function Root() {

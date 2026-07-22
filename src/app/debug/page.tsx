@@ -37,13 +37,13 @@ function DebugPageContent() {
       <h1 className="text-xl font-bold text-ink-900 font-arabic">التشخيص</h1>
 
       {diagnose && (
-        <div className="bg-white rounded-2xl p-4 shadow-sm space-y-1">
+        <div className="bg-white rounded-2xl p-4 shadow-sh-1 space-y-1">
           <h2 className="font-bold text-ink-900 font-arabic text-sm">تشخيص قاعدة البيانات</h2>
           <pre className="text-xs font-mono whitespace-pre-wrap text-ink-500">{diagnose}</pre>
         </div>
       )}
 
-      <div className="bg-white rounded-2xl p-4 shadow-sm space-y-2">
+      <div className="bg-white rounded-2xl p-4 shadow-sh-1 space-y-2">
         <h2 className="font-bold text-ink-900 font-arabic">الأداء</h2>
         <div className="space-y-1 text-sm">
           <div className="flex justify-between">

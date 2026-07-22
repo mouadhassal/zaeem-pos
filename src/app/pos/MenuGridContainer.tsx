@@ -3,6 +3,7 @@ import { IconSearch, IconLayoutGrid } from "@tabler/icons-react";
 import { useMenuStore, useFilteredMenuItems } from "../../stores/menuStore";
 import { useCartStore } from "../../stores/cartStore";
 import { useAuthStore } from "../../stores/authStore";
+import { useComboStore, type Combo } from "../../stores/comboStore";
 import { useMenuItemPhoto } from "../../hooks/useMenuItemPhoto";
 import { getCategoryStyle } from "../../components/ui/CategoryConfig";
 import SearchBar from "../../components/ui/SearchBar";
@@ -35,6 +36,7 @@ interface Props {
     comboOriginalPriceCents?: number;
     comboComponents?: any[];
     savingsCents?: number;
+    comboId?: string;
   }) => void;
   showNumpad: boolean;
 }
@@ -69,29 +71,59 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
   const getQty = (itemId: string) =>
     cartItems.reduce((sum, i) => sum + (i.menuItemId === itemId ? i.quantity : 0), 0);
 
+  const combos = useComboStore((s) => s.combos);
+
   useEffect(() => {
     fetchMenu();
   }, [fetchMenu]);
 
   const handleAdd = (item: (typeof allItems)[0]) => {
     const cat = categories.find((c) => c.id === item.category_id);
-    const savings = item.is_combo && item.combo_original_price_cents
+    const comboSavings = item.is_combo && item.combo_original_price_cents
       ? item.combo_original_price_cents - item.price_cents
       : 0;
+    // Happy-hour savings are on top of (not instead of) the legacy per-item
+    // combo savings above -- effectivePriceCents already has the happy-hour
+    // discount baked in, so the difference vs. price_cents is exactly what
+    // the customer is saving on this item right now.
+    const happyHourSavings = item.price_cents - item.effectivePriceCents;
     onAddItem({
       menuItemId: item.id,
       name: item.name,
       categoryName: cat?.name || "",
       quantity: 1,
-      unitPriceCents: item.price_cents,
+      unitPriceCents: item.effectivePriceCents,
       notes: "",
       isCombo: item.is_combo,
       ...(item.combo_original_price_cents != null
         ? { comboOriginalPriceCents: item.combo_original_price_cents }
         : {}),
       comboComponents: item.combo_components,
-      savingsCents: savings,
+      savingsCents: comboSavings + happyHourSavings,
     });
+  };
+
+  // A combo bundle (built in Menu Management, e.g. "3 for the price of 1")
+  // is sold as its component menu items, all tagged with one shared comboId,
+  // each priced down proportionally so the group's total equals
+  // combo.bundlePriceCents -- not as one opaque line item, so the kitchen
+  // ticket and receipt still show exactly what was ordered.
+  const handleAddCombo = (combo: Combo) => {
+    const normalTotalCents = combo.items.reduce((sum, ci) => sum + ci.priceCents * ci.quantity, 0);
+    const ratio = normalTotalCents > 0 ? combo.bundlePriceCents / normalTotalCents : 1;
+    const comboId = `combo-${combo.id}-${Date.now()}`;
+    for (const ci of combo.items) {
+      onAddItem({
+        menuItemId: ci.menuItemId,
+        name: ci.name,
+        categoryName: `عرض: ${combo.name}`,
+        quantity: ci.quantity,
+        unitPriceCents: Math.round(ci.priceCents * ratio),
+        notes: "",
+        comboId,
+        savingsCents: Math.max(0, ci.priceCents - Math.round(ci.priceCents * ratio)) * ci.quantity,
+      });
+    }
   };
 
   const handleRemove = (item: (typeof allItems)[0]) => {
@@ -157,6 +189,27 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
         </div>
       )}
 
+      {combos.length > 0 && (
+        <div className="px-3 pt-2 pb-1 shrink-0 border-b border-line">
+          <div className="text-[11px] font-semibold text-text-muted mb-1.5">العروض</div>
+          <div className="flex gap-2 overflow-x-auto no-scrollbar">
+            {combos.map((combo) => (
+              <button
+                key={combo.id}
+                onClick={() => handleAddCombo(combo)}
+                className="shrink-0 rounded-[10px] px-3 py-2 text-start transition-all active:scale-[0.98]"
+                style={{ background: "#FFF4EC", border: "1px solid #F04E23", minWidth: 160 }}
+              >
+                <div className="text-[12px] font-medium text-text truncate">{combo.name}</div>
+                <div className="tabular text-[12px] font-semibold" style={{ color: "#F04E23" }} dir="ltr">
+                  {(combo.bundlePriceCents / 100).toLocaleString("en-US")} {currencySymbol}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto p-3">
         {isInitialLoading ? (
           <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}>
@@ -178,7 +231,10 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
                   itemId={item.id}
                   hasPhoto={item.image_path === "HAS_PHOTO"}
                   name={item.name}
-                  priceCents={item.price_cents}
+                  priceCents={item.effectivePriceCents}
+                  {...(item.happyHourDiscountPercent > 0
+                    ? { originalPriceCents: item.price_cents, badge: `🕐 -${item.happyHourDiscountPercent}%` }
+                    : {})}
                   categoryName={cat?.name || ""}
                   quantity={getQty(item.id)}
                   currencySymbol={currencySymbol}

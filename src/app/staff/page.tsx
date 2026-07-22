@@ -395,7 +395,7 @@ export default function StaffPage() {
             onClick={() => setTab(t)}
             className={`px-5 py-2 rounded-t-lg font-arabic font-medium text-sm transition-colors ${
               tab === t
-                ? "bg-saffron-600 text-white shadow-sm"
+                ? "bg-saffron-600 text-white shadow-sh-1"
                 : "text-ink-500 hover:text-saffron-600 hover:bg-white"
             }`}
           >
@@ -411,7 +411,7 @@ export default function StaffPage() {
       {/* TAB: Employees */}
       {tab === "employees" && (
         <div className="space-y-4">
-          <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+          <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-ink-200 text-ink-400 font-arabic">
@@ -534,7 +534,7 @@ export default function StaffPage() {
             </select>
           </div>
 
-          <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+          <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-ink-200 text-ink-400 font-arabic">
@@ -631,7 +631,7 @@ export default function StaffPage() {
                 onClick={() => setAttendanceSubTab(st)}
                 className={`px-5 py-2 rounded-t-lg font-arabic font-medium text-sm transition-colors ${
                   attendanceSubTab === st
-                    ? "bg-saffron-600 text-white shadow-sm"
+                    ? "bg-saffron-600 text-white shadow-sh-1"
                     : "text-ink-500 hover:text-saffron-600 hover:bg-white"
                 }`}
               >
@@ -663,7 +663,7 @@ export default function StaffPage() {
                   return (
                     <div
                       key={emp.id}
-                      className="bg-white rounded-2xl shadow-sm p-5 space-y-3"
+                      className="bg-white rounded-2xl shadow-sh-1 p-5 space-y-3"
                     >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
@@ -729,7 +729,7 @@ export default function StaffPage() {
                 })}
               </div>
 
-              <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+              <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-ink-200 text-ink-400 font-arabic">
@@ -820,7 +820,7 @@ export default function StaffPage() {
                 </button>
               </div>
 
-              <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+              <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-ink-200 text-ink-400 font-arabic">

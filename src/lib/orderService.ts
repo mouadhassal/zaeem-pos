@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAuthStore } from "../stores/authStore";
 import { printReceipt, printKitchenTicket, queuePrintJob } from "./printer";
 import { logger } from "./logger";
+import { autoSyncOrder } from "./sync";
 import type { ReceiptData } from "./printer";
 import type { OrderType as OrderTypeEnum } from "../stores/orderTypeStore";
 
@@ -144,6 +145,19 @@ export async function createOrder(
     managerOverridePin: managerOverridePin ?? null,
   });
 
+  autoSyncOrder({
+    id: orderId,
+    type: orderType,
+    status: "PENDING",
+    totalCents: Math.max(0, totalWithTax),
+    taxCents: taxCents + secondaryTaxCents + serviceChargeCents,
+    items,
+    customerName,
+    customerPhone,
+    deliveryAddress,
+    tableId,
+  });
+
   const kitchenItems = items.map((i) => {
     const ki: { name: string; quantity: number; notes?: string; modifiers?: string[] } = {
       name: i.name ?? "", quantity: i.quantity,
@@ -188,6 +202,19 @@ export async function finalizeOrder(
     amountCents,
     changeCents,
     debtorId: debtorId ?? null,
+  });
+
+  autoSyncOrder({
+    id: orderId,
+    type: receiptData.orderType || "DINE_IN",
+    status: "paid",
+    totalCents: receiptData.totalCents || 0,
+    taxCents: receiptData.taxCents || 0,
+    items: (receiptData.items || []).map((i) => ({
+      name: i.name,
+      quantity: i.quantity,
+      unitPriceCents: i.priceCents,
+    })),
   });
 
   try {

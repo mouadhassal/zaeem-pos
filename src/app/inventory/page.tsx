@@ -183,7 +183,7 @@ export default function InventoryPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-ink-900">إدارة المخزون</h1>
         <div className="flex gap-2">
-          <button onClick={() => setShowAddIngredient(true)} className="h-10 px-5 rounded-lg bg-saffron-600 text-white text-sm font-medium shadow-sm shadow-200 hover:bg-saffron-700 hover:shadow-md hover:shadow-200 active:scale-[0.98] transition-all duration-150">
+          <button onClick={() => setShowAddIngredient(true)} className="h-10 px-5 rounded-lg bg-saffron-600 text-white text-sm font-medium shadow-sh-1 shadow-200 hover:bg-saffron-700 hover:shadow-sh-2 hover:shadow-200 active:scale-[0.98] transition-all duration-150">
             + إضافة مادة
           </button>
           <AddIngredientModal
@@ -228,7 +228,7 @@ function TabBar({
           onClick={() => onChange(t.key)}
           className={`px-5 py-2 rounded-lg text-sm font-bold transition-colors ${
             active === t.key
-              ? "bg-white text-saffron-600 shadow-sm"
+              ? "bg-white text-saffron-600 shadow-sh-1"
               : "text-ink-400 hover:text-ink-900"
           }`}
         >
@@ -246,6 +246,8 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
   const [filtered, setFiltered] = useState<Ingredient[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const [addTarget, setAddTarget] = useState<Ingredient | null>(null);
   const [removeTarget, setRemoveTarget] = useState<Ingredient | null>(null);
@@ -259,7 +261,7 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
       setIngredients(rows);
       setFiltered(rows);
     } catch {
-      // handled
+      setLoadError("حدث خطأ في تحميل البيانات");
     } finally {
       setLoading(false);
     }
@@ -290,7 +292,7 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
       await invoke("adjust_stock_v3", { sessionToken: token, ingredientId: ingredient.id, changeAmount: change, reason });
       await fetch();
     } catch {
-      // handled
+      setActionError("حدث خطأ في تعديل المخزون");
     }
   };
 
@@ -304,6 +306,12 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
 
   return (
     <div className="space-y-4">
+      {loadError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{loadError}</div>
+      )}
+      {actionError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{actionError}</div>
+      )}
       <div className="relative max-w-sm">
         <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-500" />
         <input
@@ -315,7 +323,7 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
         />
       </div>
 
-      <div className="bg-white rounded-xl border border-ink-200 shadow-sm overflow-hidden">
+      <div className="bg-white rounded-xl border border-ink-200 shadow-sh-1 overflow-hidden">
         <div className="grid grid-cols-7 gap-4 px-6 py-3 bg-white/80 border-b border-ink-200">
           <div className="text-xs font-semibold text-ink-400">المادة</div>
           <div className="text-xs font-semibold text-ink-400">الوحدة</div>
@@ -700,7 +708,7 @@ function EditIngredientModal({
       onSaved();
       onClose();
     } catch {
-      // handled
+      setErrors({ _form: "حدث خطأ في الحفظ" });
     }
   };
 
@@ -757,6 +765,7 @@ function EditIngredientModal({
             <p className="text-red-500 text-xs mt-1">{errors.min_stock}</p>
           )}
         </div>
+        {errors._form && <p className="text-sm text-red-500">{errors._form}</p>}
         <div className="flex gap-2 pt-2">
           <button
             onClick={handleSubmit}
@@ -782,6 +791,8 @@ function SuppliersTab() {
   const token = useAuthStore((s) => s.token);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [editTarget, setEditTarget] = useState<Supplier | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [showOrder, setShowOrder] = useState<Supplier | null>(null);
@@ -792,7 +803,7 @@ function SuppliersTab() {
       const rows = await invoke<Supplier[]>("list_suppliers_v3", { sessionToken: token });
       setSuppliers(rows);
     } catch {
-      // handled
+      setLoadError("حدث خطأ في تحميل البيانات");
     } finally {
       setLoading(false);
     }
@@ -807,7 +818,7 @@ function SuppliersTab() {
       await invoke("delete_supplier_v3", { sessionToken: token, supplierId: id });
       await fetch();
     } catch {
-      // handled
+      setActionError("حدث خطأ في حذف المورد");
     }
   };
 
@@ -821,6 +832,12 @@ function SuppliersTab() {
 
   return (
     <div className="space-y-4">
+      {loadError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{loadError}</div>
+      )}
+      {actionError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{actionError}</div>
+      )}
       <button
         onClick={() => setShowAdd(true)}
         className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
@@ -828,7 +845,7 @@ function SuppliersTab() {
         + إضافة مورد
       </button>
 
-      <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+      <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-ink-200 text-ink-400 font-arabic">
@@ -981,7 +998,7 @@ function SupplierModal({
       onSaved();
       onClose();
     } catch {
-      // handled
+      setErrors({ _form: "حدث خطأ في الحفظ" });
     }
   };
 
@@ -1015,6 +1032,7 @@ function SupplierModal({
           />
           {errors.email && <p className="text-red-500 text-xs mt-1">{errors.email}</p>}
         </div>
+        {errors._form && <p className="text-sm text-red-500">{errors._form}</p>}
         <div className="flex gap-2 pt-2">
           <button
             onClick={handleSubmit}
@@ -1044,6 +1062,7 @@ function NewOrderModal({
   onSaved: () => void;
 }) {
   const token = useAuthStore((s) => s.token);
+  const [error, setError] = useState<string | null>(null);
 
   if (!supplier) return null;
 
@@ -1057,7 +1076,7 @@ function NewOrderModal({
       onSaved();
       onClose();
     } catch {
-      // handled
+      setError("حدث خطأ في إنشاء الطلبية");
     }
   };
 
@@ -1069,6 +1088,7 @@ function NewOrderModal({
       <p className="text-xs text-ink-500">
         سيتم إنشاء طلبية بحالة "قيد الانتظار"
       </p>
+      {error && <p className="text-sm text-red-500 font-arabic">{error}</p>}
       <div className="flex gap-2 pt-2">
         <button
           onClick={handleCreate}
@@ -1093,6 +1113,8 @@ function PurchasesTab() {
   const token = useAuthStore((s) => s.token);
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [receiveTarget, setReceiveTarget] = useState<PurchaseOrder | null>(null);
   const [detailTarget, setDetailTarget] = useState<PurchaseOrder | null>(null);
@@ -1104,7 +1126,7 @@ function PurchasesTab() {
       const rows = await invoke<PurchaseOrder[]>("list_purchase_orders_v3", { sessionToken: token });
       setOrders(rows);
     } catch {
-      // handled
+      setLoadError("حدث خطأ في تحميل البيانات");
     } finally {
       setLoading(false);
     }
@@ -1117,7 +1139,9 @@ function PurchasesTab() {
       await invoke("cancel_purchase_order_v3", { sessionToken: token, poId: id });
       setCancelTarget(null);
       await fetch();
-    } catch { /* handled */ }
+    } catch {
+      setCancelError("حدث خطأ في إلغاء الطلبية");
+    }
   };
 
   const statusBadge = (s: string) => {
@@ -1142,13 +1166,19 @@ function PurchasesTab() {
 
   return (
     <div className="space-y-4">
+      {loadError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{loadError}</div>
+      )}
+      {cancelError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{cancelError}</div>
+      )}
       <div className="flex gap-2">
         <button onClick={() => setShowCreate(true)} className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">
           + طلبية شراء جديدة
         </button>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+      <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-ink-200 text-ink-400 font-arabic">
@@ -1219,6 +1249,7 @@ function CreatePOModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
   const [selectedSupplier, setSelectedSupplier] = useState("");
   const [items, setItems] = useState<{ ingredient_id: string; quantity_ordered: number; unit_cost_cents: number }[]>([]);
   const [notes, setNotes] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -1251,13 +1282,16 @@ function CreatePOModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
         items: items.map((item) => [item.ingredient_id, item.quantity_ordered, item.unit_cost_cents]),
       });
       onSaved();
-    } catch { /* handled */ }
+    } catch {
+      setError("حدث خطأ في إنشاء الطلبية");
+    }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
         <h2 className="text-lg font-bold text-ink-900 font-arabic">طلبية شراء جديدة</h2>
+        {error && <p className="text-sm text-red-500 font-arabic">{error}</p>}
         <div className="space-y-3">
           <div>
             <label className="block text-sm font-arabic text-ink-900 mb-1">المورد</label>
@@ -1309,13 +1343,17 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
   const token = useAuthStore((s) => s.token);
   const [items, setItems] = useState<PurchaseOrderItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [receiveError, setReceiveError] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
       try {
         const rows = await invoke<PurchaseOrderItem[]>("list_purchase_order_items_v3", { sessionToken: token, poId: po.id });
         setItems(rows);
-      } catch { /* handled */ }
+      } catch {
+        setLoadError("حدث خطأ في تحميل الأصناف");
+      }
       finally { setLoading(false); }
     })();
   }, [po.id, token]);
@@ -1332,7 +1370,9 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
         items: items.map((item) => [item.id, item.ingredient_id, item.quantity_received]),
       });
       onSaved();
-    } catch { /* handled */ }
+    } catch {
+      setReceiveError("حدث خطأ في الاستلام");
+    }
   };
 
   if (loading) {
@@ -1346,6 +1386,8 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
         <h2 className="text-lg font-bold text-ink-900 font-arabic">استلام طلبية - {po.id.slice(0, 8)}</h2>
         <p className="text-sm text-ink-500 font-arabic">المورد: {po.supplier_name}</p>
+        {loadError && <p className="text-sm text-red-500 font-arabic">{loadError}</p>}
+        {receiveError && <p className="text-sm text-red-500 font-arabic">{receiveError}</p>}
         <div className="space-y-3">
           {items.map((item, idx) => (
             <div key={item.id} className="bg-white rounded-xl border border-ink-200 p-3 space-y-2">
@@ -1375,13 +1417,16 @@ function PODetailModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void
   const token = useAuthStore((s) => s.token);
   const [items, setItems] = useState<PurchaseOrderItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
       try {
         const rows = await invoke<PurchaseOrderItem[]>("list_purchase_order_items_v3", { sessionToken: token, poId: po.id });
         setItems(rows);
-      } catch { /* handled */ }
+      } catch {
+        setLoadError("حدث خطأ في تحميل التفاصيل");
+      }
       finally { setLoading(false); }
     })();
   }, [po.id, token]);
@@ -1401,6 +1446,7 @@ function PODetailModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void
           <h2 className="text-lg font-bold text-ink-900 font-arabic">تفاصيل الطلبية</h2>
           <button onClick={onClose} className="text-ink-500 hover:text-ink-500 text-xl leading-none">✕</button>
         </div>
+        {loadError && <p className="text-sm text-red-500 font-arabic">{loadError}</p>}
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div><span className="text-ink-400 font-arabic">رقم الطلبية: </span><span className="font-mono text-ink-900">{po.id.slice(0, 8)}</span></div>
           <div><span className="text-ink-400 font-arabic">المورد: </span><span className="text-ink-900">{po.supplier_name}</span></div>
@@ -1457,6 +1503,7 @@ function MovementsTab() {
   const [logs, setLogs] = useState<InventoryLog[]>([]);
   const [filteredLogs, setFilteredLogs] = useState<InventoryLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [ingredients, setIngredients] = useState<{ id: string; name: string }[]>([]);
 
   const [dateFrom, setDateFrom] = useState("");
@@ -1473,7 +1520,7 @@ function MovementsTab() {
       const ingRows = await invoke<Ingredient[]>("list_ingredients_v3", { sessionToken: token });
       setIngredients(ingRows.map((i) => ({ id: i.id, name: i.name })));
     } catch {
-      // handled
+      setLoadError("حدث خطأ في تحميل البيانات");
     } finally {
       setLoading(false);
     }
@@ -1510,6 +1557,9 @@ function MovementsTab() {
 
   return (
     <div className="space-y-4">
+      {loadError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{loadError}</div>
+      )}
       <div className="flex gap-3 flex-wrap">
         <div>
           <label className="block text-xs text-ink-400 mb-1 font-arabic">من</label>
@@ -1560,7 +1610,7 @@ function MovementsTab() {
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+      <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-ink-200 text-ink-400 font-arabic">
@@ -1634,6 +1684,8 @@ function AlertsTab() {
   const [lowStock, setLowStock] = useState<Ingredient[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [orderError, setOrderError] = useState<string | null>(null);
   const [creating, setCreating] = useState<string | null>(null);
 
   const fetch = useCallback(async () => {
@@ -1645,7 +1697,7 @@ function AlertsTab() {
       const sup = await invoke<Supplier[]>("list_suppliers_v3", { sessionToken: token });
       setSuppliers(sup);
     } catch {
-      // handled
+      setLoadError("حدث خطأ في تحميل البيانات");
     } finally {
       setLoading(false);
     }
@@ -1671,7 +1723,7 @@ function AlertsTab() {
       });
       await fetch();
     } catch {
-      // handled
+      setOrderError("حدث خطأ في إنشاء الطلبية التلقائية");
     } finally {
       setCreating(null);
     }
@@ -1687,6 +1739,12 @@ function AlertsTab() {
 
   return (
     <div className="space-y-4">
+      {loadError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{loadError}</div>
+      )}
+      {orderError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{orderError}</div>
+      )}
       {suppliers.length === 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-700 font-arabic">
           لا يوجد موردون. يرجى إضافة مورد أولاً لاستخدام خاصية الطلبيات التلقائية.
@@ -1702,7 +1760,7 @@ function AlertsTab() {
       {lowStock.map((ing) => (
         <div
           key={ing.id}
-          className="bg-white rounded-2xl shadow-sm p-4 flex items-center justify-between"
+          className="bg-white rounded-2xl shadow-sh-1 p-4 flex items-center justify-between"
         >
           <div className="space-y-1">
             <h3 className="font-bold text-ink-900">{ing.name}</h3>

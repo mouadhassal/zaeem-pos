@@ -133,14 +133,172 @@ pub fn mark_failed(conn: &Connection, id: &str, attempt_count: i64) -> Result<()
     Ok(())
 }
 
-/// Slice 2c replaces this with a real POST to Supabase's `ingest_sales_facts`
-/// RPC. Always fails in this slice -- there is no network path yet, only the
-/// scheduling/backoff loop around where one will go. Kept as its own
-/// function (not inlined into `run_tick`) so swapping it is the entire
-/// Slice 2c diff at this call site.
-async fn send_batch_stub(_batch: &[OutboxRow]) -> Result<(), String> {
-    Err("network not wired yet (Slice 2c)".to_string())
+/// `orders.status` -> `pos_order.status`. Lossy: the Edge Function's
+/// `pos_order` table only recognizes `PENDING/COOKING/READY/SERVED/CANCELLED`
+/// (see `supabase/schema.sql`'s check constraint), narrower than the local
+/// POS vocabulary. `DRAFT`/`SCHEDULED` collapse to `PENDING` (nothing to show
+/// on a dashboard yet), `PAID` collapses to `SERVED` (money already settled,
+/// dashboard doesn't distinguish "served" from "served and paid"), `VOIDED`
+/// collapses to `CANCELLED`.
+fn map_status_to_pos_order(status: &str) -> &'static str {
+    match status {
+        "PREPARING" => "COOKING",
+        "READY" => "READY",
+        "SERVED" | "PAID" => "SERVED",
+        "CANCELLED" | "VOIDED" => "CANCELLED",
+        _ => "PENDING", // DRAFT, PENDING, SCHEDULED, anything unrecognized
+    }
 }
+
+/// `orders.order_type` -> `pos_order.order_type`. Lossy: `pos_order` doesn't
+/// have an `ONLINE` type (see schema check constraint), so it's folded into
+/// `DELIVERY` -- both are off-premise orders from the dashboard's point of
+/// view.
+fn map_order_type_to_pos_order(order_type: &str) -> &'static str {
+    match order_type {
+        "DINE_IN" => "DINE_IN",
+        "DELIVERY" | "ONLINE" => "DELIVERY",
+        _ => "TAKEAWAY",
+    }
+}
+
+/// Every `order_id` touched by this batch -- from `orders` rows directly, and
+/// from the `order_id` field embedded in `order_items`/`payments` payloads.
+fn order_ids_in_batch(batch: &[OutboxRow]) -> Vec<String> {
+    let mut ids = Vec::new();
+    for row in batch {
+        let order_id = if row.table_name == "orders" {
+            Some(row.row_id.clone())
+        } else {
+            serde_json::from_str::<serde_json::Value>(&row.payload_json)
+                .ok()
+                .and_then(|v| v.get("order_id").and_then(|s| s.as_str()).map(String::from))
+        };
+        if let Some(id) = order_id {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    ids
+}
+
+/// Re-reads each order's full CURRENT state straight from the local
+/// `orders`/`order_items`/`menu_items`/`tables` tables -- not reconstructed
+/// from the outbox's per-row-table payload snapshots, which are normalized
+/// facts (one per `orders`/`order_items`/`payments` row) and don't carry
+/// enough to build the Edge Function's one-object-per-order-with-embedded-
+/// items shape on their own. An order can legitimately be missing here (e.g.
+/// hard-deleted after being queued) -- skipped rather than erroring the whole
+/// batch.
+fn build_orders_payload(
+    conn: &Connection,
+    batch: &[OutboxRow],
+) -> Result<Vec<serde_json::Value>, rusqlite::Error> {
+    let mut orders = Vec::new();
+    for order_id in order_ids_in_batch(batch) {
+        let order_row: Option<(String, String, i64, i64, Option<String>, Option<String>, Option<String>, Option<String>, String)> = conn
+            .query_row(
+                "SELECT o.status, o.order_type, o.total_cents, o.tax_cents, \
+                        o.customer_name, o.customer_phone, o.delivery_address, t.name, o.created_at \
+                 FROM orders o LEFT JOIN tables t ON t.id = o.table_id \
+                 WHERE o.id = ?1",
+                params![order_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)),
+            )
+            .ok();
+        let Some((status, order_type, total_cents, tax_cents, customer_name, customer_phone, delivery_address, table_name, created_at)) = order_row else {
+            continue;
+        };
+
+        let mut item_stmt = conn.prepare(
+            "SELECT m.name, oi.quantity, oi.unit_price_cents, oi.voided \
+             FROM order_items oi JOIN menu_items m ON m.id = oi.menu_item_id \
+             WHERE oi.order_id = ?1",
+        )?;
+        let items: Vec<serde_json::Value> = item_stmt
+            .query_map(params![order_id], |r| {
+                let name: String = r.get(0)?;
+                let quantity: i64 = r.get(1)?;
+                let unit_price_cents: i64 = r.get(2)?;
+                let voided: i64 = r.get(3)?;
+                Ok(serde_json::json!({
+                    "name": name, "quantity": quantity,
+                    "unit_price_cents": unit_price_cents, "voided": voided != 0,
+                }))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        orders.push(serde_json::json!({
+            "pos_order_id": order_id,
+            "order_type": map_order_type_to_pos_order(&order_type),
+            "status": map_status_to_pos_order(&status),
+            "total_cents": total_cents,
+            "tax_cents": tax_cents,
+            "items": items,
+            "customer_name": customer_name,
+            "customer_phone": customer_phone,
+            "delivery_address": delivery_address,
+            "table_id": table_name,
+            "created_at": created_at,
+        }));
+    }
+    Ok(orders)
+}
+
+/// Slice 2c: real POST to the `sync-pos` Edge Function, the canonical POS
+/// ingestion path (`pos_device`/`pos_order`, one denormalized row per order
+/// with embedded `items` -- see `supabase/functions/sync-pos/index.ts`). The
+/// function validates `device_token` against the `license` table itself, so
+/// unlike the retired `ingest_sales_facts` RPC there's no separate
+/// `license_id` in the request body.
+async fn send_batch(orders: &[serde_json::Value], config_dir: &std::path::Path) -> Result<(), String> {
+    use crate::license::cloud::{load_config_from_file, supabase_anon_key, supabase_url};
+
+    if orders.is_empty() {
+        return Ok(());
+    }
+
+    let config = load_config_from_file(&config_dir.join("cloud_config.json"))
+        .ok_or_else(|| "cloud_config.json missing or unreadable".to_string())?;
+
+    let base = supabase_url();
+    let anon = supabase_anon_key();
+
+    let body = serde_json::json!({
+        "device_token": config.device_token,
+        "orders": orders,
+        "device_name": "Zaeem POS",
+        "version": env!("CARGO_PKG_VERSION"),
+    });
+
+    let url = format!("{}/functions/v1/sync-pos", base);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .post(&url)
+        .header("apikey", &anon)
+        .header("Authorization", format!("Bearer {}", &anon))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("network error: {e}"))?;
+
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        Err(format!("sync-pos returned {status}: {text}"))
+    }
+}
+
+
 
 /// One worker tick: pull whatever's due, attempt to send it, and either
 /// delete (success) or back off (failure) every row in the batch together.
@@ -149,21 +307,27 @@ async fn send_batch_stub(_batch: &[OutboxRow]) -> Result<(), String> {
 ///
 /// Takes the whole `Mutex`, not an already-locked `Connection`, and
 /// DELIBERATELY re-locks around the network call rather than holding one
-/// lock for the entire tick -- once Slice 2c replaces `send_batch_stub` with
+/// lock for the entire tick -- once Slice 2c replaces the send with
 /// a real network request, holding the connection mutex across that await
 /// would block every other command (including a sale in progress) for the
 /// duration of the request. Pull the batch, release the lock, await the
 /// send, then re-acquire only to record the result.
-pub async fn run_tick(db: &std::sync::Mutex<Connection>, batch_limit: i64) -> Result<usize, rusqlite::Error> {
-    let batch = {
+pub async fn run_tick(
+    db: &std::sync::Mutex<Connection>,
+    batch_limit: i64,
+    config_dir: &std::path::Path,
+) -> Result<usize, rusqlite::Error> {
+    let (batch, orders_payload) = {
         let conn = db.lock().unwrap();
-        due_batch(&conn, batch_limit)?
+        let batch = due_batch(&conn, batch_limit)?;
+        if batch.is_empty() {
+            return Ok(0);
+        }
+        let orders_payload = build_orders_payload(&conn, &batch)?;
+        (batch, orders_payload)
     };
-    if batch.is_empty() {
-        return Ok(0);
-    }
 
-    let result = send_batch_stub(&batch).await;
+    let result = send_batch(&orders_payload, config_dir).await;
 
     let conn = db.lock().unwrap();
     match result {
@@ -195,6 +359,18 @@ mod tests {
                 license_status_at_enqueue TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'QUEUED',
                 attempt_count INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE tables (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, table_id TEXT, status TEXT NOT NULL, order_type TEXT NOT NULL,
+                total_cents INTEGER NOT NULL, tax_cents INTEGER NOT NULL,
+                customer_name TEXT, customer_phone TEXT, delivery_address TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE menu_items (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+            CREATE TABLE order_items (
+                id TEXT PRIMARY KEY, order_id TEXT NOT NULL, menu_item_id TEXT NOT NULL,
+                quantity INTEGER NOT NULL, unit_price_cents INTEGER NOT NULL, voided INTEGER NOT NULL DEFAULT 0
             );",
         ).unwrap();
         conn
@@ -227,7 +403,8 @@ mod tests {
     async fn run_tick_is_a_no_op_on_an_empty_outbox() {
         let conn = setup_conn();
         let db = std::sync::Mutex::new(conn);
-        let sent = run_tick(&db, 10).await.unwrap();
+        let tmp = std::env::temp_dir();
+        let sent = run_tick(&db, 10, &tmp).await.unwrap();
         assert_eq!(sent, 0);
     }
 
@@ -239,12 +416,23 @@ mod tests {
     #[tokio::test]
     async fn run_tick_backs_off_every_row_in_the_batch_on_failure_without_dropping_any() {
         let conn = setup_conn();
+        conn.execute(
+            "INSERT INTO orders (id, table_id, status, order_type, total_cents, tax_cents, created_at) \
+             VALUES ('row-1', NULL, 'PENDING', 'DINE_IN', 1000, 0, datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO orders (id, table_id, status, order_type, total_cents, tax_cents, created_at) \
+             VALUES ('row-2', NULL, 'PENDING', 'DINE_IN', 1000, 0, datetime('now'))",
+            [],
+        ).unwrap();
         enqueue(&conn, "orders", "row-1", "t1", "b1", &serde_json::json!({}), 1, "device-1", &active_status()).unwrap();
         enqueue(&conn, "orders", "row-2", "t1", "b1", &serde_json::json!({}), 1, "device-1", &active_status()).unwrap();
 
         let db = std::sync::Mutex::new(conn);
-        let sent = run_tick(&db, 10).await.unwrap();
-        assert_eq!(sent, 0, "the stub always fails in this slice -- nothing should be marked sent");
+        let tmp = std::env::temp_dir();
+        let sent = run_tick(&db, 10, &tmp).await.unwrap();
+        assert_eq!(sent, 0, "should fail because cloud_config.json is missing -- nothing should be marked sent");
 
         let conn = db.into_inner().unwrap();
         let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM sync_outbox", [], |r| r.get(0)).unwrap();

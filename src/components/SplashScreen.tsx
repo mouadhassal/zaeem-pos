@@ -47,7 +47,7 @@ export default function SplashScreen({ onComplete }: Props) {
       dir="rtl"
     >
       <div className="flex flex-col items-center gap-8">
-        <div className="w-16 h-16 rounded-2xl bg-saffron-600 flex items-center justify-center shadow-lg shadow-saffron-600\/30">
+        <div className="w-16 h-16 rounded-2xl bg-saffron-600 flex items-center justify-center shadow-sh-3 shadow-saffron-600\/30">
           <span className="text-white text-3xl font-bold">ز</span>
         </div>
 

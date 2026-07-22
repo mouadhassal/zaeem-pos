@@ -35,6 +35,9 @@ pub enum RepoError {
     /// (categories, menu_items, combo_meals, happy_hour_rules) referenced
     /// by client-supplied id -- see `assert_tenant_owns_row`.
     TenantOwnershipViolation { table: String, id: String },
+    /// Refusing to delete a table that's still in active use -- deleting it
+    /// would orphan whatever order/merge it's currently part of.
+    TableNotDeletable { table_id: String, reason: String },
 }
 
 impl fmt::Display for RepoError {
@@ -56,6 +59,7 @@ impl fmt::Display for RepoError {
             Self::OrderItemOutOfScope { item_id } => write!(f, "order item {item_id} does not belong to the caller's tenant/branch"),
             Self::TableOutOfScope { table_id } => write!(f, "table {table_id} does not belong to the caller's tenant/branch"),
             Self::TenantOwnershipViolation { table, id } => write!(f, "{table} row {id} does not belong to the caller's tenant"),
+            Self::TableNotDeletable { table_id, reason } => write!(f, "table {table_id} cannot be deleted: {reason}"),
             Self::PaymentAmountMismatch { order_id, expected_cents, got_cents } => write!(
                 f, "order {order_id}: amount tendered minus change ({got_cents}) does not equal the order total ({expected_cents})"
             ),
@@ -1236,7 +1240,7 @@ impl<'a> Repo<'a> {
 
     /// `customers` is tenant-only (SCHEMA_V3.md §9), not branch-scoped.
     #[allow(clippy::too_many_arguments)]
-    pub fn create_customer(&self, tenant_id: &str, name: &str, phone: &str, email: Option<&str>, address: Option<&str>, notes: Option<&str>, birthday: Option<&str>) -> Result<String, RepoError> {
+    pub fn create_customer(&self, tenant_id: &str, name: &str, phone: Option<&str>, email: Option<&str>, address: Option<&str>, notes: Option<&str>, birthday: Option<&str>) -> Result<String, RepoError> {
         self.assert_scope_populated("customers", false)?;
         let id = uuid::Uuid::now_v7().to_string();
         self.conn.execute(
@@ -3099,13 +3103,20 @@ impl<'a> Repo<'a> {
     // checks are skipped there.
     // -----------------------------------------------------------------
 
-    /// Simple SELECT of all tables. No scope filter (tables has no
-    /// tenant_id/branch_id columns -- legacy table).
-    pub fn list_tables(&self) -> Result<Vec<TableInfo>, RepoError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, status, current_order_id FROM tables ORDER BY name ASC"
-        )?;
-        let rows = stmt.query_map([], |r| {
+    /// Scoped SELECT of tables -- `tables` DOES carry tenant_id/branch_id
+    /// (added by T1.1's EXPAND migration, same as orders/order_items; the
+    /// old doc comment here claiming otherwise was stale). Fixed alongside
+    /// adding create/rename/delete: those need a scope model regardless,
+    /// and leaving list_tables unscoped while the mutations were scoped
+    /// would have meant a Cashier in tenant A could see every table across
+    /// every tenant/branch in the database, even though they could not
+    /// touch any of them.
+    pub fn list_tables(&self, scope: &Scope) -> Result<Vec<TableInfo>, RepoError> {
+        let (predicate, args) = Self::scope_predicate(scope);
+        let sql = format!("SELECT id, name, status, current_order_id FROM tables WHERE {predicate} ORDER BY name ASC");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(bind_refs.as_slice(), |r| {
             Ok(TableInfo {
                 id: r.get(0)?,
                 name: r.get(1)?,
@@ -3114,6 +3125,53 @@ impl<'a> Repo<'a> {
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// A restaurant can have any number of physical tables (0, 1, 20, ...) --
+    /// previously the only ones that ever existed were 2 hardcoded rows from
+    /// the dev/test seed, with no command anywhere to add a real one. Every
+    /// new table starts FREE with no order on it.
+    pub fn create_table(&self, tenant_id: &str, branch_id: &str, name: &str) -> Result<String, RepoError> {
+        self.assert_scope_populated("tables", true)?;
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO tables (id, tenant_id, branch_id, name, status, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, 'FREE', ?5, 'pending')",
+            params![id, tenant_id, branch_id, name, now],
+        )?;
+        Ok(id)
+    }
+
+    pub fn rename_table(&self, scope: &Scope, table_id: &str, name: &str) -> Result<(), RepoError> {
+        self.assert_table_in_scope(table_id, scope)?;
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE tables SET name = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
+            params![name, now, table_id],
+        )?;
+        Ok(())
+    }
+
+    /// Refuses to delete a table that's OCCUPIED, has a live order on it, or
+    /// is part of an active merge group -- deleting it out from under an
+    /// in-progress sale would orphan the order (its `table_id` FK would
+    /// point at nothing) with no way for the cashier to find it again.
+    pub fn delete_table(&self, scope: &Scope, table_id: &str) -> Result<(), RepoError> {
+        self.assert_table_in_scope(table_id, scope)?;
+        let (status, current_order_id): (String, Option<String>) = self.conn.query_row(
+            "SELECT status, current_order_id FROM tables WHERE id = ?1",
+            params![table_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if status != "FREE" || current_order_id.is_some() {
+            return Err(RepoError::TableNotDeletable {
+                table_id: table_id.to_string(),
+                reason: "table has an active order or is part of a merge -- free it first".to_string(),
+            });
+        }
+        self.conn.execute("DELETE FROM tables WHERE id = ?1", params![table_id])?;
+        Ok(())
     }
 
     /// Atomic full order creation: order + items + modifiers + table→OCCUPIED.

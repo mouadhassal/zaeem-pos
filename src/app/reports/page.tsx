@@ -47,6 +47,7 @@ export default function ReportsPage() {
   const token = useAuthStore((s) => s.token);
   const [summary, setSummary] = useState<SalesSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [exportingPdf, setExportingPdf] = useState(false);
 
   const fetchReports = useCallback(async () => {
@@ -76,6 +77,7 @@ export default function ReportsPage() {
       });
     } catch (e) {
       console.error("Reports error:", e);
+      setLoadError("تعذر تحميل التقرير. تحقق من اتصال الخادم.");
     } finally {
       setLoading(false);
     }
@@ -177,8 +179,9 @@ export default function ReportsPage() {
 
   if (!summary) {
     return (
-      <div className="flex items-center justify-center h-full text-red-500 font-arabic">
-        حدث خطأ في تحميل التقرير
+      <div className="flex flex-col items-center justify-center h-full gap-2">
+        <p className="text-red-500 font-arabic">{loadError || "حدث خطأ في تحميل التقرير"}</p>
+        <button onClick={fetchReports} className="text-sm text-saffron-600 hover:text-saffron-700 font-bold font-arabic">إعادة المحاولة</button>
       </div>
     );
   }
@@ -197,17 +200,17 @@ export default function ReportsPage() {
       </div>
 
       <div className="grid grid-cols-3 gap-4">
-        <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sm">
+        <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sh-1">
           <p className="text-ink-400 text-sm font-arabic">إجمالي المبيعات اليوم</p>
           <p className="text-2xl font-bold text-saffron-600 font-mono">
             {fmt(Math.round(summary.totalSales * 100))}
           </p>
         </div>
-        <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sm">
+        <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sh-1">
           <p className="text-ink-400 text-sm font-arabic">عدد الطلبات</p>
           <p className="text-2xl font-bold text-ink-900">{summary.orderCount}</p>
         </div>
-        <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sm">
+        <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sh-1">
           <p className="text-ink-400 text-sm font-arabic">متوسط الفاتورة</p>
           <p className="text-2xl font-bold text-ink-900 font-mono">
             {fmt(Math.round(summary.avgTicket * 100))}
@@ -216,7 +219,7 @@ export default function ReportsPage() {
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        <div className="bg-white rounded-2xl p-4 space-y-3 shadow-sm">
+        <div className="bg-white rounded-2xl p-4 space-y-3 shadow-sh-1">
           <h2 className="font-bold text-ink-900 font-arabic">أفضل الأصناف</h2>
           {summary.topItems.map((item, i) => (
             <div key={i} className="flex justify-between text-sm">
@@ -226,7 +229,7 @@ export default function ReportsPage() {
           ))}
         </div>
 
-        <div className="bg-white rounded-2xl p-4 space-y-3 shadow-sm">
+        <div className="bg-white rounded-2xl p-4 space-y-3 shadow-sh-1">
           <h2 className="font-bold text-ink-900 font-arabic">أداء الموظفين</h2>
           {summary.staffPerformance.map((staff, i) => (
             <div key={i} className="flex justify-between text-sm">
@@ -237,7 +240,7 @@ export default function ReportsPage() {
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl p-4 space-y-3 shadow-sm">
+      <div className="bg-white rounded-2xl p-4 space-y-3 shadow-sh-1">
         <h2 className="font-bold text-ink-900 font-arabic">حالة المخزون</h2>
         {summary.inventoryStatus.map((inv, i) => (
           <div key={i} className="flex justify-between text-sm">

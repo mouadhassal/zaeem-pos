@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { IconPencil } from "@tabler/icons-react";
+import { IconChevronDown } from "@tabler/icons-react";
 import OrderLine from "./OrderLine";
 
 interface LineItem {
@@ -21,6 +21,9 @@ interface Props {
   currencySymbol: string;
   usdTotal?: string | undefined;
   onEditOrder?: (() => void) | undefined;
+  /** Icon for the current order type (DINE_IN/TAKEAWAY/DELIVERY/ONLINE) -- rendered inside the visible order-type pill, not just a bare edit pencil. */
+  orderTypeIcon?: ReactNode;
+  orderTypeLabel?: string;
   children?: ReactNode;
   toolbar?: ReactNode;
   onIncrementLine?: (id: string) => void;
@@ -30,7 +33,7 @@ interface Props {
 
 export default function OrderPanel({
   tableLabel, lines, subtotalCents, discountCents,
-  totalCents, currencySymbol, usdTotal, onEditOrder, children, toolbar,
+  totalCents, currencySymbol, usdTotal, onEditOrder, orderTypeIcon, orderTypeLabel, children, toolbar,
   onIncrementLine, onDecrementLine, onVoidLine,
 }: Props) {
   const fmt = (c: number) =>
@@ -44,13 +47,18 @@ export default function OrderPanel({
       <div className="h-14 shrink-0 flex items-center justify-between gap-2 px-4 border-b border-line">
         <span className="text-sm font-medium text-text truncate">{tableLabel}</span>
         {onEditOrder && (
+          // A labeled, colored pill -- not a bare pencil icon -- so it reads
+          // immediately as "this order's type, tap to change" instead of a
+          // generic unlabeled "edit" affordance nobody notices.
           <button
             type="button"
             onClick={onEditOrder}
-            aria-label="تعديل الطلب"
-            className="w-8 h-8 rounded-[9px] flex items-center justify-center text-text-muted hover:bg-surface-alt transition-colors shrink-0"
+            aria-label="تغيير نوع الطلب"
+            className="h-8 ps-2 pe-2.5 rounded-full flex items-center gap-1 bg-accent-soft text-accent-text hover:brightness-95 transition-all shrink-0 text-xs font-medium"
           >
-            <IconPencil className="w-4 h-4" stroke={1.75} />
+            {orderTypeIcon}
+            <span>{orderTypeLabel}</span>
+            <IconChevronDown className="w-3.5 h-3.5" stroke={2} />
           </button>
         )}
       </div>
