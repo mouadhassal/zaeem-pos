@@ -74,7 +74,7 @@ impl LicenseState {
 
         let current_machine = fingerprint::current();
         if !new_payload.machine_fingerprint.fuzzy_matches(&current_machine) {
-            return Err(LicenseError::WrongMachine);
+            return Err(LicenseError::WrongMachine { tenant_id: new_payload.tenant_id.clone(), branch_id: new_payload.branch_id.clone() });
         }
 
         if let Some(existing_file) = self.load_file() {
@@ -156,6 +156,6 @@ mod tests {
         let file = mint(&key, &sample_payload(someone_elses_machine, now, now + 30 * 86_400_000));
 
         let result = state.accept_renewal(file);
-        assert_eq!(result, Err(LicenseError::WrongMachine));
+        assert!(matches!(result, Err(LicenseError::WrongMachine { .. })));
     }
 }

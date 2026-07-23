@@ -104,6 +104,12 @@ export default function KDSPage() {
     return () => clearInterval(interval);
   }, [fetchOrders]);
 
+  // T2.0 per-terminal licensing (plan §2): fleet-visibility registration
+  // only -- free, best-effort, never blocks the display. Once per mount.
+  useEffect(() => {
+    invoke("register_kds_terminal_v3", { sessionToken: token }).catch(() => { /* fleet visibility only, never surfaced */ });
+  }, [token]);
+
   useEffect(() => {
     return () => {
       if (audioRef.current) {

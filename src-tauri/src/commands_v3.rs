@@ -413,6 +413,37 @@ pub fn list_kitchen_orders_v3(state: State<Db>, session_token: String) -> Result
     Repo::new(&conn).list_kitchen_orders(&actor.scope()).map_err(|e| e.to_string())
 }
 
+/// T2.0 per-terminal licensing (plan §2): registers this KDS terminal in
+/// the cloud for fleet visibility ONLY -- deliberately FREE. No license
+/// check (`require_license_not_locked` is never called here, same as
+/// `list_kitchen_orders_v3` above -- KDS is a display, not a till), no
+/// device_token, no billing row. Called once from `kds/page.tsx` on mount.
+///
+/// Still requires a real, authenticated staff session (not a bare
+/// unauthenticated endpoint) -- this reuses the actor's own tenant_id/
+/// branch_id rather than trusting client-supplied ids, even though the
+/// data behind this is low-stakes (fleet visibility, not money). The
+/// actual Supabase write is fire-and-forget on a spawned task: a
+/// kitchen with no internet, or a Supabase outage, must never delay or
+/// block the kitchen display from opening -- this command always returns
+/// `Ok(())` to the frontend immediately, logging (not surfacing) any
+/// eventual failure.
+#[tauri::command]
+pub fn register_kds_terminal_v3(state: State<Db>, session_token: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
+        return Ok(()); // Owner/Platform never run a KDS terminal.
+    };
+    let fingerprint = crate::license::fingerprint::current();
+    let device_name = format!("KDS - {}", actor.device_id);
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = crate::license::cloud::register_kds_device(&tenant_id, &branch_id, &device_name, &fingerprint).await {
+            crate::obslog::log_frontend_command_error("register_kds_terminal_v3", &e);
+        }
+    });
+    Ok(())
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn create_order_v3(
@@ -3527,11 +3558,34 @@ pub fn renew_license_v3(state: State<Db>, license: State<crate::license::cloud::
 /// device_token) so future hybrid cloud checks (Slice 1c) start working too,
 /// both in this running process and on the next boot.
 #[tauri::command]
-pub fn activate_license_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, activation_key: String) -> Result<crate::license::signed::LicenseStatus, String> {
+pub async fn activate_license_v3(state: State<'_, Db>, license: State<'_, crate::license::cloud::CloudLicenseState>, session_token: String, activation_key: String) -> Result<crate::license::signed::LicenseStatus, String> {
     authenticate_actor(&state, &session_token)?;
     let bundle = crate::license::cloud::decode_activation_key(&activation_key)?;
     let file = crate::license::signed::SignedLicenseFile { payload_json: bundle.payload_json, signature_b64: bundle.signature_b64 };
-    let status = license.accept_renewal(file).map_err(|e| e.to_string())?;
+    let status = match license.accept_renewal(file) {
+        Ok(status) => status,
+        // T2.0 (plan §2): "unpaid terminal #3, better UX" -- the signature
+        // already verified (that's the only way to reach WrongMachine at
+        // all), so `branch_id` is authentic. A best-effort cloud lookup
+        // turns "wrong machine" into either "this branch has N active
+        // seats already, get a new one for this device" or -- if the count
+        // comes back 0, or the cloud is unreachable -- the original,
+        // generic message. Never blocks or panics on a network failure.
+        Err(crate::license::signed::LicenseError::WrongMachine { branch_id, .. }) => {
+            match crate::license::cloud::count_active_licenses(&branch_id).await {
+                Ok(count) if count > 0 => {
+                    return Err(format!(
+                        "لم يتم العثور على ترخيص لهذا الجهاز. هذا الفرع لديه {count} ترخيص مفعّل — تواصل مع المندوب لإضافة جهاز جديد."
+                    ));
+                }
+                // Cloud unreachable, or the branch genuinely has zero other
+                // active seats -- fall back to the original generic message
+                // rather than claim a fact the cloud couldn't confirm.
+                _ => return Err("license was not issued for this machine".to_string()),
+            }
+        }
+        Err(e) => return Err(e.to_string()),
+    };
 
     // A bare, hand-signed blob (no license_id/device_token) has no cloud
     // identity to wire up -- that's fine, it just means this device stays
@@ -7876,7 +7930,7 @@ mod tests {
             "get_discount_caps_v3", "list_debtors_v3",
             "verify_manager_override_v3",
             "lookup_loyalty_card_v3", "earn_loyalty_points_v3", "redeem_loyalty_reward_v3",
-            "list_kitchen_orders_v3",
+            "list_kitchen_orders_v3", "register_kds_terminal_v3",
             "get_active_shift_v3", "open_shift_v3", "close_shift_v3", "get_shift_stats_v3",
             "list_shift_orders_v3", "clock_in_v3", "clock_out_v3",
             "assign_driver_to_delivery_v3", "update_delivery_status_v3",

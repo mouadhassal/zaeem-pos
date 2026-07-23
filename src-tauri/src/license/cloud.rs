@@ -384,6 +384,82 @@ impl CloudTransport for SupabaseCloudTransport {
     }
 }
 
+/// T2.0 per-terminal licensing (plan §2): registers a KDS terminal for
+/// fleet visibility ONLY -- no license row, no `device_token`, no billing
+/// implication whatsoever. "KDS is a display, not a till" -- unlike every
+/// other cloud call in this module, a failure here must never affect
+/// license status or block anything; the caller (`register_kds_terminal_v3`)
+/// treats this as fire-and-forget, same posture as `refresh_from_cloud`'s
+/// background timer. Calls a dedicated `register_kds_device` Postgres
+/// function (SECURITY DEFINER, granted to `anon`) rather than reusing
+/// `check_license` -- there is no license/device_token to validate here at
+/// all, by design.
+pub async fn register_kds_device(
+    tenant_id: &str,
+    branch_id: &str,
+    device_name: &str,
+    fingerprint: &license_core::fingerprint::MachineFingerprint,
+) -> Result<(), String> {
+    let base = supabase_url();
+    let anon = supabase_anon_key();
+    let client = reqwest::Client::builder()
+        .timeout(CLOUD_CHECK_TIMEOUT)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("{base}/rest/v1/rpc/register_kds_device");
+    let body = serde_json::json!({
+        "p_tenant_id": tenant_id,
+        "p_branch_id": branch_id,
+        "p_device_name": device_name,
+        "p_fingerprint": fingerprint,
+    });
+    let response = client
+        .post(&url)
+        .header("apikey", &anon)
+        .header("Authorization", format!("Bearer {anon}"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("register_kds_device returned HTTP {}", response.status()));
+    }
+    Ok(())
+}
+
+/// T2.0 per-terminal licensing (plan §2): "unpaid terminal #3, better UX".
+/// Called from `activate_license_v3` ONLY after a signature has already
+/// verified but the machine fingerprint didn't match -- at that point the
+/// pasted key's `branch_id` is authentic (it came from a validly-signed
+/// payload), so it's safe to ask the cloud "how many OTHER active seats does
+/// this real branch have" to distinguish "this branch is licensed, just not
+/// for this device" from "unknown/new branch". Calls a dedicated
+/// `count_active_licenses` Postgres function (SECURITY DEFINER, granted to
+/// `anon`), same pattern as `register_kds_device` above -- never touches the
+/// `license` table's row contents, only a count.
+pub async fn count_active_licenses(branch_id: &str) -> Result<i64, String> {
+    let base = supabase_url();
+    let anon = supabase_anon_key();
+    let client = reqwest::Client::builder()
+        .timeout(CLOUD_CHECK_TIMEOUT)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("{base}/rest/v1/rpc/count_active_licenses");
+    let body = serde_json::json!({ "p_branch_id": branch_id });
+    let response = client
+        .post(&url)
+        .header("apikey", &anon)
+        .header("Authorization", format!("Bearer {anon}"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("count_active_licenses returned HTTP {}", response.status()));
+    }
+    response.json::<i64>().await.map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -748,7 +824,7 @@ mod tests {
             let bundle = decode_activation_key(&bundle_key).unwrap();
             let file = SignedLicenseFile { payload_json: bundle.payload_json, signature_b64: bundle.signature_b64 };
             let err = cloud.accept_renewal(file).unwrap_err();
-            assert_eq!(err, license_core::signed::LicenseError::WrongMachine);
+            assert!(matches!(err, license_core::signed::LicenseError::WrongMachine { .. }));
         }
 
         #[test]

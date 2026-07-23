@@ -323,6 +323,7 @@ pub fn run() {
             commands_v3::set_staff_active_v3,
             commands_v3::list_orders_v3,
             commands_v3::list_kitchen_orders_v3,
+            commands_v3::register_kds_terminal_v3,
             commands_v3::create_order_v3,
             commands_v3::update_order_status_v3,
             commands_v3::take_payment_v3,

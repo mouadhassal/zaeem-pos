@@ -59,6 +59,14 @@ const TABS: { id: SettingsTab; label: string }[] = [
  * exact English wording is tweaked later.
  */
 function mapActivationError(raw: string): string {
+  // T2.0 per-terminal licensing (plan §2): when the backend could confirm
+  // this branch already has other active seats, it sends back the full,
+  // final Arabic message itself (built in activate_license_v3 after a
+  // count_active_licenses cloud lookup) -- passed through unchanged rather
+  // than re-matched, since it's not one of the fixed English strings below.
+  if (raw.includes("تواصل مع المندوب")) {
+    return raw;
+  }
   if (raw.includes("corrupted or not in the expected format")) {
     return "تعذر قراءة المفتاح — تأكد من نسخه بالكامل دون أي تعديل.";
   }
