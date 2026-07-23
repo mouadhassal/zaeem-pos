@@ -581,6 +581,10 @@ pub struct PurchaseOrderRow {
     pub received_at: Option<String>,
     pub supplier_name: String,
     pub creator_name: String,
+    /// T2.0 supplier ledger: cached from `supplier_payments`, same
+    /// maintenance discipline as `suppliers`'s three balance columns.
+    pub amount_paid_cents: i64,
+    pub payment_status: String,
 }
 
 /// `suppliers` has NO `address`/`notes` columns in the real schema
@@ -590,6 +594,11 @@ pub struct PurchaseOrderRow {
 /// Finding #1 (`driver_id`)/Finding #5 (`operational_costs.description`,
 /// `invoices.notes`, `loyalty_cards.is_active`). Dropped here, not carried
 /// forward.
+/// `total_owed_cents`/`total_paid_cents`/`balance_cents` (T2.0 supplier
+/// ledger): cached running-balance columns, same pattern and same
+/// maintenance discipline as `DebtorRow`'s three -- always a rollup of
+/// `supplier_payments`, updated transactionally alongside every insert
+/// into that table, never hand-edited.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SupplierRow {
     pub id: String,
@@ -598,6 +607,24 @@ pub struct SupplierRow {
     pub email: Option<String>,
     pub total_orders: i64,
     pub total_purchases_cents: i64,
+    pub total_owed_cents: i64,
+    pub total_paid_cents: i64,
+    pub balance_cents: i64,
+}
+
+/// Fact row for `supplier_payments` -- mirrors `DebtEntryRow` field-for-field
+/// (`entry_type` here is `type` in the DB, same rename-on-read as debt's).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SupplierPaymentRow {
+    pub id: String,
+    pub supplier_id: String,
+    pub purchase_order_id: Option<String>,
+    pub amount_cents: i64,
+    pub entry_type: String,
+    pub method: Option<String>,
+    pub notes: Option<String>,
+    pub created_by: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1978,7 +2005,7 @@ impl<'a> Repo<'a> {
         let sql = format!(
             "SELECT purchase_orders.id, purchase_orders.supplier_id, purchase_orders.status, purchase_orders.total_cents, \
                     purchase_orders.created_by, purchase_orders.notes, purchase_orders.created_at, purchase_orders.received_at, \
-                    suppliers.name, staff.name \
+                    suppliers.name, staff.name, purchase_orders.amount_paid_cents, purchase_orders.payment_status \
              FROM purchase_orders \
              INNER JOIN suppliers ON suppliers.id = purchase_orders.supplier_id \
              INNER JOIN staff ON staff.id = purchase_orders.created_by \
@@ -1990,7 +2017,7 @@ impl<'a> Repo<'a> {
             Ok(PurchaseOrderRow {
                 id: r.get(0)?, supplier_id: r.get(1)?, status: r.get(2)?, total_cents: r.get(3)?,
                 created_by: r.get(4)?, notes: r.get(5)?, created_at: r.get(6)?, received_at: r.get(7)?,
-                supplier_name: r.get(8)?, creator_name: r.get(9)?,
+                supplier_name: r.get(8)?, creator_name: r.get(9)?, amount_paid_cents: r.get(10)?, payment_status: r.get(11)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
@@ -2053,7 +2080,17 @@ impl<'a> Repo<'a> {
     /// sequence inside the ONE transaction the caller wraps this call in,
     /// same principle as `take_payment`/`adjust_stock`, just N items instead
     /// of one row.
-    pub fn receive_purchase_order(&self, tenant_id: &str, branch_id: &str, po_id: &str, actor_id: &str, scope: &Scope, items: &[(String, String, f64)]) -> Result<(), RepoError> {
+    ///
+    /// T2.0 supplier ledger: `amount_paid_cents` (0 = fully unpaid, matching
+    /// the pre-ledger behavior exactly) records what was actually paid at
+    /// receive time, in the SAME transaction. This writes a CHARGE fact for
+    /// the PO's `total_cents` (the business now owes the supplier that much)
+    /// and, if `amount_paid_cents > 0`, a PAYMENT fact for that amount --
+    /// same two-fact-types pattern as `debt_entries`, applied to the other
+    /// direction of money. Returns the new `supplier_payments` ids so the
+    /// caller (`receive_purchase_order_v3`) can put them in the audit entry.
+    #[allow(clippy::too_many_arguments)]
+    pub fn receive_purchase_order(&self, tenant_id: &str, branch_id: &str, po_id: &str, actor_id: &str, scope: &Scope, items: &[(String, String, f64)], amount_paid_cents: i64, method: Option<&str>) -> Result<(Vec<String>, Option<String>), RepoError> {
         let status = self.assert_purchase_order_in_scope(po_id, scope)?;
         if status != "PENDING" {
             return Err(RepoError::PurchaseOrderNotPending { po_id: po_id.to_string(), status });
@@ -2075,11 +2112,108 @@ impl<'a> Repo<'a> {
                 params![log_id, tenant_id, branch_id, ingredient_id, quantity_received, actor_id, now],
             )?;
         }
-        self.conn.execute(
-            "UPDATE purchase_orders SET status = 'RECEIVED', received_at = ?1, last_modified = ?1 WHERE id = ?2",
-            params![now, po_id],
+
+        let (supplier_id, total_cents): (String, i64) = self.conn.query_row(
+            "SELECT supplier_id, total_cents FROM purchase_orders WHERE id = ?1",
+            params![po_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        Ok(())
+
+        let mut payment_ids = Vec::new();
+        let mut cost_id: Option<String> = None;
+
+        let charge_id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO supplier_payments (id, tenant_id, branch_id, supplier_id, purchase_order_id, type, amount_cents, method, notes, created_by, created_at, updated_at_hlc, device_id, rev) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'CHARGE', ?6, NULL, NULL, ?7, ?8, ?8, '', 1)",
+            params![charge_id, tenant_id, branch_id, supplier_id, po_id, total_cents, actor_id, now],
+        )?;
+        payment_ids.push(charge_id);
+
+        if amount_paid_cents > 0 {
+            let payment_id = uuid::Uuid::now_v7().to_string();
+            self.conn.execute(
+                "INSERT INTO supplier_payments (id, tenant_id, branch_id, supplier_id, purchase_order_id, type, amount_cents, method, notes, created_by, created_at, updated_at_hlc, device_id, rev) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'PAYMENT', ?6, ?7, NULL, ?8, ?9, ?9, '', 1)",
+                params![payment_id, tenant_id, branch_id, supplier_id, po_id, amount_paid_cents, method, actor_id, now],
+            )?;
+            payment_ids.push(payment_id.clone());
+
+            // Mirror into operational_costs so Finance's existing costs tab
+            // shows supplier money-out with zero new query logic -- see T2.0
+            // plan §1. `reference_type`/`reference_id` make this row
+            // traceable back to the payment that generated it (and, later,
+            // excludable from any view that must not double-count).
+            let new_cost_id = uuid::Uuid::now_v7().to_string();
+            self.conn.execute(
+                "INSERT INTO operational_costs (id, tenant_id, branch_id, category, amount_cents, date, notes, user_id, reference_type, reference_id, last_modified, sync_status) \
+                 VALUES (?1, ?2, ?3, 'مشتريات من الموردين', ?4, ?5, NULL, ?6, 'supplier_payment', ?7, ?5, 'pending')",
+                params![new_cost_id, tenant_id, branch_id, amount_paid_cents, now, actor_id, payment_id],
+            )?;
+            cost_id = Some(new_cost_id);
+        }
+
+        self.conn.execute(
+            "UPDATE suppliers SET total_owed_cents = total_owed_cents + ?1, total_paid_cents = total_paid_cents + ?2, \
+             balance_cents = balance_cents + ?1 - ?2, total_purchases_cents = total_purchases_cents + ?1, last_modified = ?3 WHERE id = ?4",
+            params![total_cents, amount_paid_cents, now, supplier_id],
+        )?;
+
+        let payment_status = if amount_paid_cents <= 0 { "UNPAID" } else if amount_paid_cents < total_cents { "PARTIAL" } else if amount_paid_cents == total_cents { "PAID" } else { "ADVANCE" };
+        self.conn.execute(
+            "UPDATE purchase_orders SET status = 'RECEIVED', received_at = ?1, amount_paid_cents = ?2, payment_status = ?3, last_modified = ?1 WHERE id = ?4",
+            params![now, amount_paid_cents, payment_status, po_id],
+        )?;
+        Ok((payment_ids, cost_id))
+    }
+
+    /// Standalone supplier payment, not tied to a fresh receive -- settling
+    /// an old invoice, or a pure advance (no matching CHARGE yet, balance
+    /// goes negative and nets against the next PO automatically since it's
+    /// a running sum, not a per-PO ledger). Mirrors `record_debt_payment`
+    /// exactly: takes `scope`, looks up the SUPPLIER's own tenant_id/branch_id
+    /// rather than requiring the caller already have a Branch scope, so a
+    /// Tenant-scoped Owner can pay off any supplier in their own tenant.
+    pub fn record_supplier_payment(&self, scope: &Scope, supplier_id: &str, amount_cents: i64, method: Option<&str>, notes: Option<&str>, actor_id: &str) -> Result<(String, String), RepoError> {
+        self.assert_row_in_scope("suppliers", supplier_id, scope)?;
+        let (tenant_id, branch_id): (String, String) = self.conn.query_row(
+            "SELECT tenant_id, branch_id FROM suppliers WHERE id = ?1",
+            params![supplier_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO supplier_payments (id, tenant_id, branch_id, supplier_id, purchase_order_id, type, amount_cents, method, notes, created_by, created_at, updated_at_hlc, device_id, rev) \
+             VALUES (?1, ?2, ?3, ?4, NULL, 'PAYMENT', ?5, ?6, ?7, ?8, ?9, ?9, '', 1)",
+            params![id, tenant_id, branch_id, supplier_id, amount_cents, method, notes, actor_id, now],
+        )?;
+        self.conn.execute(
+            "UPDATE suppliers SET total_paid_cents = total_paid_cents + ?1, balance_cents = balance_cents - ?1, last_modified = ?2 WHERE id = ?3",
+            params![amount_cents, now, supplier_id],
+        )?;
+        let cost_id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO operational_costs (id, tenant_id, branch_id, category, amount_cents, date, notes, user_id, reference_type, reference_id, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, 'مشتريات من الموردين', ?4, ?5, NULL, ?6, 'supplier_payment', ?7, ?5, 'pending')",
+            params![cost_id, tenant_id, branch_id, amount_cents, now, actor_id, id],
+        )?;
+        Ok((id, cost_id))
+    }
+
+    pub fn list_supplier_payments(&self, scope: &Scope, supplier_id: &str) -> Result<Vec<SupplierPaymentRow>, RepoError> {
+        self.assert_row_in_scope("suppliers", supplier_id, scope)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, supplier_id, purchase_order_id, amount_cents, type, method, notes, created_by, created_at \
+             FROM supplier_payments WHERE supplier_id = ?1 ORDER BY created_at DESC LIMIT 50",
+        )?;
+        let rows = stmt.query_map(params![supplier_id], |r| {
+            Ok(SupplierPaymentRow {
+                id: r.get(0)?, supplier_id: r.get(1)?, purchase_order_id: r.get(2)?, amount_cents: r.get(3)?,
+                entry_type: r.get(4)?, method: r.get(5)?, notes: r.get(6)?, created_by: r.get(7)?, created_at: r.get(8)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
 
     // -----------------------------------------------------------------
@@ -2093,12 +2227,16 @@ impl<'a> Repo<'a> {
         self.assert_scope_populated("suppliers", true)?;
         let (predicate, args) = Self::scope_predicate(scope);
         let sql = format!(
-            "SELECT id, name, phone, email, total_orders, total_purchases_cents FROM suppliers WHERE {predicate} ORDER BY name ASC"
+            "SELECT id, name, phone, email, total_orders, total_purchases_cents, total_owed_cents, total_paid_cents, balance_cents \
+             FROM suppliers WHERE {predicate} ORDER BY name ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(params_refs.as_slice(), |r| {
-            Ok(SupplierRow { id: r.get(0)?, name: r.get(1)?, phone: r.get(2)?, email: r.get(3)?, total_orders: r.get(4)?, total_purchases_cents: r.get(5)? })
+            Ok(SupplierRow {
+                id: r.get(0)?, name: r.get(1)?, phone: r.get(2)?, email: r.get(3)?, total_orders: r.get(4)?, total_purchases_cents: r.get(5)?,
+                total_owed_cents: r.get(6)?, total_paid_cents: r.get(7)?, balance_cents: r.get(8)?,
+            })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }

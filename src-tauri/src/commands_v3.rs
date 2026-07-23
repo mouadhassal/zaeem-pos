@@ -1404,6 +1404,9 @@ pub fn create_operational_cost_v3(state: State<Db>, license: State<crate::licens
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let cost_id = Repo::new(&tx).create_operational_cost(&tenant_id, &branch_id, &category, amount_cents, &date, notes.as_deref(), &actor.id).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::OperationalCostRecorded, "operational_cost", &cost_id, None, Some(&serde_json::json!({ "category": category, "amount_cents": amount_cents }))).map_err(|e| e.to_string())?;
+    // T2.0 plan §0 flag #4: operational_costs' first-ever sync wire-up.
+    let license_status = license.cached_status();
+    sync_enqueue_operational_cost(&tx, &tenant_id, &branch_id, &cost_id, &actor.device_id, &license_status)?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(cost_id)
 }
@@ -1858,8 +1861,15 @@ pub fn list_purchase_order_items_v3(state: State<Db>, license: State<crate::lice
 /// The atomicity target for this group -- see `Repo::receive_purchase_order`.
 /// `items` is `(purchase_order_item_id, ingredient_id, quantity_received)`
 /// triples for however many line items the PO has.
+///
+/// T2.0 supplier ledger: `amount_paid_cents` (default 0 if the frontend
+/// sends nothing, preserving today's fully-unpaid-by-default behavior) and
+/// `method` are new, optional trailing arguments -- what the cashier/manager
+/// actually paid the driver/supplier at receive time. Zero validation
+/// ceiling on "paid more than total_cents" -- that's a legitimate advance,
+/// handled by `Repo::receive_purchase_order`'s payment_status logic.
 #[tauri::command]
-pub fn receive_purchase_order_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, po_id: String, items: Vec<(String, String, f64)>) -> Result<(), String> {
+pub fn receive_purchase_order_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, po_id: String, items: Vec<(String, String, f64)>, amount_paid_cents: Option<i64>, method: Option<String>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
@@ -1867,18 +1877,85 @@ pub fn receive_purchase_order_v3(state: State<Db>, license: State<crate::license
     let Scope::Branch { tenant_id, branch_id } = &scope else {
         return Err("purchase order receiving requires a Branch-scoped actor".to_string());
     };
+    let amount_paid_cents = amount_paid_cents.unwrap_or(0);
+    if amount_paid_cents < 0 {
+        return Err("amount paid cannot be negative".to_string());
+    }
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx)
-        .receive_purchase_order(tenant_id, branch_id, &po_id, &actor.id, &scope, &items)
+    let (payment_ids, cost_id) = Repo::new(&tx)
+        .receive_purchase_order(tenant_id, branch_id, &po_id, &actor.id, &scope, &items, amount_paid_cents, method.as_deref())
         .map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, tenant_id, Some(branch_id), &actor.id,
         audit::Action::PurchaseOrderReceived, "purchase_order", &po_id,
-        None, Some(&serde_json::json!({ "item_count": items.len() })),
+        None, Some(&serde_json::json!({ "item_count": items.len(), "amount_paid_cents": amount_paid_cents })),
     ).map_err(|e| e.to_string())?;
+    if amount_paid_cents > 0 {
+        audit::append(
+            &tx, &actor.device_id, tenant_id, Some(branch_id), &actor.id,
+            audit::Action::SupplierPaymentRecorded, "purchase_order", &po_id,
+            None, Some(&serde_json::json!({ "payment_ids": payment_ids, "amount_paid_cents": amount_paid_cents, "method": method })),
+        ).map_err(|e| e.to_string())?;
+    }
+
+    let license_status = license.cached_status();
+    for payment_id in &payment_ids {
+        sync_enqueue_supplier_payment(&tx, tenant_id, branch_id, payment_id, &actor.device_id, &license_status)?;
+    }
+    if let Some(cost_id) = &cost_id {
+        sync_enqueue_operational_cost(&tx, tenant_id, branch_id, cost_id, &actor.device_id, &license_status)?;
+    }
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Standalone supplier payment -- settling an old invoice or recording an
+/// advance, not tied to a fresh receive. Mirrors `record_debt_payment_v3`
+/// exactly, including the "no Branch-scope requirement" reasoning: the
+/// supplier's own tenant_id/branch_id is looked up by `Repo::record_supplier_payment`,
+/// so a Tenant-scoped Owner (no home branch) can still pay off any supplier
+/// in their own tenant.
+#[tauri::command]
+pub fn record_supplier_payment_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, amount_cents: i64, method: Option<String>, notes: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
+    if amount_cents <= 0 {
+        return Err("payment amount must be positive".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let (payment_id, cost_id) = Repo::new(&tx).record_supplier_payment(&actor.scope(), &supplier_id, amount_cents, method.as_deref(), notes.as_deref(), &actor.id).map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
+        audit::Action::SupplierPaymentRecorded, "supplier", &supplier_id,
+        None, Some(&serde_json::json!({ "payment_id": payment_id, "amount_cents": amount_cents, "type": "PAYMENT" })),
+    ).map_err(|e| e.to_string())?;
+
+    // The supplier's own tenant_id/branch_id (looked up by
+    // Repo::record_supplier_payment, not necessarily the actor's own scope
+    // -- see that function's doc comment) is what the fact must be enqueued
+    // under, same reasoning as `record_debt_payment_v3` if it synced.
+    let (tenant_id, branch_id): (String, String) = tx.query_row(
+        "SELECT tenant_id, branch_id FROM suppliers WHERE id = ?1", params![supplier_id], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).map_err(|e| e.to_string())?;
+    let license_status = license.cached_status();
+    sync_enqueue_supplier_payment(&tx, &tenant_id, &branch_id, &payment_id, &actor.device_id, &license_status)?;
+    sync_enqueue_operational_cost(&tx, &tenant_id, &branch_id, &cost_id, &actor.device_id, &license_status)?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(payment_id)
+}
+
+#[tauri::command]
+pub fn list_supplier_payments_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String) -> Result<Vec<crate::repo::SupplierPaymentRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_supplier_payments(&actor.scope(), &supplier_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3165,6 +3242,69 @@ fn sync_enqueue_payment(
     crate::sync::enqueue(tx, "payments", payment_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
 }
 
+/// T2.0 supplier ledger: first sync wire-up for `supplier_payments` -- a
+/// brand-new fact table, always at rev 1 when this runs (it's called once,
+/// right after the row is inserted, same as `sync_enqueue_single_order_item`
+/// for a freshly-created order item). Money paid to suppliers must reach
+/// the cloud for the owner dashboard's cross-branch cash-flow rollup
+/// (T2.0 plan §0 flag #4 / §3) to be possible at all.
+fn sync_enqueue_supplier_payment(
+    tx: &rusqlite::Transaction,
+    tenant_id: &str,
+    branch_id: &str,
+    payment_id: &str,
+    device_id: &str,
+    license_status: &crate::license::signed::LicenseStatus,
+) -> Result<(), String> {
+    tx.execute(
+        "UPDATE supplier_payments SET rev = COALESCE(rev, 0) + 1, updated_at_hlc = ?1, device_id = ?2 WHERE id = ?3",
+        params![crate::hlc::next(), device_id, payment_id],
+    ).map_err(|e| e.to_string())?;
+
+    let (supplier_id, purchase_order_id, entry_type, amount_cents, method, notes, created_at, rev): (String, Option<String>, String, i64, Option<String>, Option<String>, String, i64) = tx.query_row(
+        "SELECT supplier_id, purchase_order_id, type, amount_cents, method, notes, created_at, rev FROM supplier_payments WHERE id = ?1",
+        params![payment_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
+    ).map_err(|e| e.to_string())?;
+
+    let payload = serde_json::json!({
+        "id": payment_id, "supplier_id": supplier_id, "purchase_order_id": purchase_order_id,
+        "tenant_id": tenant_id, "branch_id": branch_id, "type": entry_type,
+        "amount_cents": amount_cents, "method": method, "notes": notes, "created_at": created_at,
+    });
+    crate::sync::enqueue(tx, "supplier_payments", payment_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
+}
+
+/// T2.0 plan §0 flag #4: `operational_costs` existed since day one but was
+/// never wired into the sync outbox at all -- this is its first sync
+/// wire-up, same pattern as every other enqueue function here.
+fn sync_enqueue_operational_cost(
+    tx: &rusqlite::Transaction,
+    tenant_id: &str,
+    branch_id: &str,
+    cost_id: &str,
+    device_id: &str,
+    license_status: &crate::license::signed::LicenseStatus,
+) -> Result<(), String> {
+    tx.execute(
+        "UPDATE operational_costs SET rev = COALESCE(rev, 0) + 1, updated_at_hlc = ?1, device_id = ?2 WHERE id = ?3",
+        params![crate::hlc::next(), device_id, cost_id],
+    ).map_err(|e| e.to_string())?;
+
+    let (category, amount_cents, date, notes, reference_type, reference_id, rev): (String, i64, String, Option<String>, Option<String>, Option<String>, i64) = tx.query_row(
+        "SELECT category, amount_cents, date, notes, reference_type, reference_id, rev FROM operational_costs WHERE id = ?1",
+        params![cost_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+    ).map_err(|e| e.to_string())?;
+
+    let payload = serde_json::json!({
+        "id": cost_id, "tenant_id": tenant_id, "branch_id": branch_id, "category": category,
+        "amount_cents": amount_cents, "date": date, "notes": notes,
+        "reference_type": reference_type, "reference_id": reference_id,
+    });
+    crate::sync::enqueue(tx, "operational_costs", cost_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Offline signed license -- see src-tauri/src/license/ for the actual
 // crypto/fingerprint/grace-period logic. These three commands are thin
@@ -3274,6 +3414,7 @@ mod tests {
         migrate_v3::run_index_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_discount_cap_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_sync_outbox_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_supplier_ledger_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -5124,7 +5265,7 @@ mod tests {
         // Receiving -- the atomicity target. Stock starts at 0 for both.
         assert_eq!(repo.list_ingredients(&scope).unwrap().iter().find(|i| i.id == ing1).unwrap().current_stock, 0.0);
         let receive_items: Vec<(String, String, f64)> = po2_items.iter().map(|i| (i.id.clone(), i.ingredient_id.clone(), i.quantity_ordered)).collect();
-        repo.receive_purchase_order(&tenant_id, &branch_id, &po2, &manager_id, &scope, &receive_items).unwrap();
+        repo.receive_purchase_order(&tenant_id, &branch_id, &po2, &manager_id, &scope, &receive_items, 0, None).unwrap();
 
         let ings = repo.list_ingredients(&scope).unwrap();
         assert_eq!(ings.iter().find(|i| i.id == ing1).unwrap().current_stock, 10.0, "receiving must bump current_stock by quantity_received");
@@ -5139,7 +5280,7 @@ mod tests {
         println!("[po] receiving atomically bumped stock for both items, wrote 2 inventory_logs rows, and flipped the PO to RECEIVED with a received_at timestamp");
 
         // Receiving an already-RECEIVED PO is a hard error.
-        match repo.receive_purchase_order(&tenant_id, &branch_id, &po2, &manager_id, &scope, &receive_items) {
+        match repo.receive_purchase_order(&tenant_id, &branch_id, &po2, &manager_id, &scope, &receive_items, 0, None) {
             Err(crate::repo::RepoError::PurchaseOrderNotPending { .. }) => println!("[po] re-receiving an already-RECEIVED PO correctly hard-errors"),
             other => panic!("expected PurchaseOrderNotPending, got {other:?}"),
         }
@@ -5196,7 +5337,7 @@ mod tests {
             let mut conn = Connection::open(&db_path).unwrap();
             let tx = conn.transaction().unwrap();
             Repo::new(&tx)
-                .receive_purchase_order(&tenant_id, &branch_id, &po_id, &manager_id, &scope, &[(item_id.clone(), ing_id.clone(), 15.0)])
+                .receive_purchase_order(&tenant_id, &branch_id, &po_id, &manager_id, &scope, &[(item_id.clone(), ing_id.clone(), 15.0)], 0, None)
                 .unwrap();
             // Deliberately drop `tx` here WITHOUT `.commit()` -- simulates a
             // crash mid-receive. `rusqlite::Transaction::drop` rolls back.
@@ -5217,6 +5358,160 @@ mod tests {
         let _ = supplier_id;
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// T2.0 supplier ledger: receiving a PO with a partial payment writes
+    /// BOTH facts (CHARGE for the full total, PAYMENT for what was actually
+    /// paid) in the same transaction as the stock bump, updates the
+    /// supplier's running balance correctly, sets the PO's payment_status,
+    /// and mirrors the payment into operational_costs so Finance's existing
+    /// costs tab picks it up with no new query logic.
+    #[test]
+    fn receiving_a_po_with_partial_payment_updates_the_supplier_ledger_atomically() {
+        let (db_path, tenant_id, branch_id, _table_id) = seeded_db("supplier_ledger_partial");
+        let conn = Connection::open(&db_path).unwrap();
+        let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Ledger Manager");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let repo = Repo::new(&conn);
+
+        let supplier_id = repo.create_supplier(&tenant_id, &branch_id, "مورد اللحوم", None, None).unwrap();
+        let ing_id = repo.create_ingredient(&tenant_id, &branch_id, "لحم", "kg", 100, 5.0).unwrap();
+        let po_id = repo.create_purchase_order_with_items(&tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), 10.0, 1000i64)]).unwrap();
+        let item_id = repo.list_purchase_order_items(&po_id, &scope).unwrap()[0].id.clone();
+
+        // total_cents = 10 * 1000 = 10000; pay only 4000 of it.
+        let (payment_ids, cost_id) = repo
+            .receive_purchase_order(&tenant_id, &branch_id, &po_id, &manager_id, &scope, &[(item_id, ing_id, 10.0)], 4000, Some("CASH"))
+            .unwrap();
+        assert_eq!(payment_ids.len(), 2, "must write both a CHARGE fact and a PAYMENT fact");
+        assert!(cost_id.is_some(), "a partial payment must mirror into operational_costs");
+
+        let supplier = repo.list_suppliers(&scope).unwrap().into_iter().find(|s| s.id == supplier_id).unwrap();
+        assert_eq!(supplier.total_owed_cents, 10000, "total_owed must be the PO's full total, regardless of what was paid");
+        assert_eq!(supplier.total_paid_cents, 4000);
+        assert_eq!(supplier.balance_cents, 6000, "balance = owed - paid");
+        println!("[supplier-ledger] partial receive: owed=10000 paid=4000 balance=6000");
+
+        let po = repo.list_purchase_orders(&scope).unwrap().into_iter().find(|p| p.id == po_id).unwrap();
+        assert_eq!(po.amount_paid_cents, 4000);
+        assert_eq!(po.payment_status, "PARTIAL");
+
+        let entries = repo.list_supplier_payments(&scope, &supplier_id).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|e| e.entry_type == "CHARGE" && e.amount_cents == 10000));
+        assert!(entries.iter().any(|e| e.entry_type == "PAYMENT" && e.amount_cents == 4000 && e.method.as_deref() == Some("CASH")));
+
+        // The auto-generated operational_costs row must be traceable back
+        // to the payment that created it, and Finance's existing costs list
+        // must include it with zero new query logic.
+        let costs = repo.list_operational_costs(&scope).unwrap();
+        assert_eq!(costs.len(), 1);
+        assert_eq!(costs[0].category, "مشتريات من الموردين");
+        assert_eq!(costs[0].amount_cents, 4000);
+        let (ref_type, ref_id): (Option<String>, Option<String>) = conn.query_row(
+            "SELECT reference_type, reference_id FROM operational_costs WHERE id = ?1", params![cost_id.unwrap()], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(ref_type.as_deref(), Some("supplier_payment"));
+        assert!(ref_id.is_some());
+        println!("[supplier-ledger] operational_costs mirror row present, traceable via reference_type/reference_id");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// T2.0 supplier ledger: the three `payment_status` transitions --
+    /// UNPAID (nothing paid, matches pre-ledger behavior exactly), PAID
+    /// (paid == total), ADVANCE (paid > total, a real overpayment/credit,
+    /// not an error).
+    #[test]
+    fn receive_payment_status_covers_unpaid_paid_and_advance() {
+        let (db_path, tenant_id, branch_id, _table_id) = seeded_db("supplier_ledger_statuses");
+        let conn = Connection::open(&db_path).unwrap();
+        let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Status Manager");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let repo = Repo::new(&conn);
+        let supplier_id = repo.create_supplier(&tenant_id, &branch_id, "مورد", None, None).unwrap();
+
+        // UNPAID: amount_paid_cents = 0, no PAYMENT fact, no operational_costs row.
+        let ing1 = repo.create_ingredient(&tenant_id, &branch_id, "مكون1", "kg", 100, 1.0).unwrap();
+        let po1 = repo.create_purchase_order_with_items(&tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing1.clone(), 1.0, 1000i64)]).unwrap();
+        let item1 = repo.list_purchase_order_items(&po1, &scope).unwrap()[0].id.clone();
+        let (ids1, cost1) = repo.receive_purchase_order(&tenant_id, &branch_id, &po1, &manager_id, &scope, &[(item1, ing1, 1.0)], 0, None).unwrap();
+        assert_eq!(ids1.len(), 1, "UNPAID: only the CHARGE fact, no PAYMENT fact");
+        assert!(cost1.is_none(), "UNPAID: no operational_costs mirror row");
+        assert_eq!(repo.list_purchase_orders(&scope).unwrap().into_iter().find(|p| p.id == po1).unwrap().payment_status, "UNPAID");
+
+        // PAID: amount_paid_cents == total_cents exactly.
+        let ing2 = repo.create_ingredient(&tenant_id, &branch_id, "مكون2", "kg", 100, 1.0).unwrap();
+        let po2 = repo.create_purchase_order_with_items(&tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing2.clone(), 1.0, 2000i64)]).unwrap();
+        let item2 = repo.list_purchase_order_items(&po2, &scope).unwrap()[0].id.clone();
+        repo.receive_purchase_order(&tenant_id, &branch_id, &po2, &manager_id, &scope, &[(item2, ing2, 1.0)], 2000, Some("CASH")).unwrap();
+        assert_eq!(repo.list_purchase_orders(&scope).unwrap().into_iter().find(|p| p.id == po2).unwrap().payment_status, "PAID");
+
+        // ADVANCE: amount_paid_cents > total_cents (a real overpayment).
+        let ing3 = repo.create_ingredient(&tenant_id, &branch_id, "مكون3", "kg", 100, 1.0).unwrap();
+        let po3 = repo.create_purchase_order_with_items(&tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing3.clone(), 1.0, 1000i64)]).unwrap();
+        let item3 = repo.list_purchase_order_items(&po3, &scope).unwrap()[0].id.clone();
+        repo.receive_purchase_order(&tenant_id, &branch_id, &po3, &manager_id, &scope, &[(item3, ing3, 1.0)], 1500, Some("CASH")).unwrap();
+        assert_eq!(repo.list_purchase_orders(&scope).unwrap().into_iter().find(|p| p.id == po3).unwrap().payment_status, "ADVANCE");
+
+        // Running balance across all three: owed = 1000+2000+1000 = 4000, paid = 0+2000+1500 = 3500, balance = 500.
+        let supplier = repo.list_suppliers(&scope).unwrap().into_iter().find(|s| s.id == supplier_id).unwrap();
+        assert_eq!(supplier.total_owed_cents, 4000);
+        assert_eq!(supplier.total_paid_cents, 3500);
+        assert_eq!(supplier.balance_cents, 500);
+        println!("[supplier-ledger] UNPAID/PAID/ADVANCE all correctly classified; running balance across 3 POs = 500");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// T2.0 supplier ledger: standalone payment (settling an old invoice,
+    /// not tied to a fresh receive) settles the balance correctly, and --
+    /// mirroring `record_debt_payment`'s Tenant-scope behavior exactly -- a
+    /// Tenant-scoped Owner (no home branch) can pay off a supplier that
+    /// belongs to ANY branch of their own tenant, while a supplier in a
+    /// DIFFERENT tenant is correctly rejected as out-of-scope.
+    #[test]
+    fn standalone_supplier_payment_settles_balance_and_respects_tenant_scope() {
+        let (db_path, tenant_id, branch_id, _table_id) = seeded_db("supplier_ledger_standalone");
+        let conn = Connection::open(&db_path).unwrap();
+        let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Standalone Manager");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let repo = Repo::new(&conn);
+
+        let supplier_id = repo.create_supplier(&tenant_id, &branch_id, "مورد قديم", None, None).unwrap();
+        // Give the supplier an outstanding balance via a receive with no payment.
+        let ing_id = repo.create_ingredient(&tenant_id, &branch_id, "مكون", "kg", 100, 1.0).unwrap();
+        let po_id = repo.create_purchase_order_with_items(&tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), 1.0, 5000i64)]).unwrap();
+        let item_id = repo.list_purchase_order_items(&po_id, &scope).unwrap()[0].id.clone();
+        repo.receive_purchase_order(&tenant_id, &branch_id, &po_id, &manager_id, &scope, &[(item_id, ing_id, 1.0)], 0, None).unwrap();
+        assert_eq!(repo.list_suppliers(&scope).unwrap()[0].balance_cents, 5000);
+
+        // Owner (Tenant scope, no home branch) settles it.
+        let tenant_scope = crate::security::Scope::Tenant { tenant_id: tenant_id.clone() };
+        let (payment_id, cost_id) = repo.record_supplier_payment(&tenant_scope, &supplier_id, 5000, Some("BANK"), Some("تسوية"), &manager_id).unwrap();
+        assert!(!payment_id.is_empty());
+        assert!(!cost_id.is_empty());
+
+        let supplier = repo.list_suppliers(&scope).unwrap().into_iter().find(|s| s.id == supplier_id).unwrap();
+        assert_eq!(supplier.balance_cents, 0, "standalone payment must fully settle the outstanding balance");
+        assert_eq!(supplier.total_paid_cents, 5000);
+        println!("[supplier-ledger] Tenant-scoped Owner settled a branch supplier's balance to 0");
+
+        // Cross-tenant: a supplier in a DIFFERENT tenant must be rejected.
+        let (other_db, other_tenant, other_branch, _) = seeded_db("supplier_ledger_other_tenant");
+        let other_conn = Connection::open(&other_db).unwrap();
+        let other_manager = seed_staff(&other_conn, &other_tenant, Some(&other_branch), Role::Manager, "Other Manager");
+        let other_repo = Repo::new(&other_conn);
+        let other_supplier = other_repo.create_supplier(&other_tenant, &other_branch, "مورد آخر", None, None).unwrap();
+        let _ = other_manager;
+
+        match repo.record_supplier_payment(&tenant_scope, &other_supplier, 100, None, None, &manager_id) {
+            Err(crate::repo::RepoError::TenantOwnershipViolation { .. }) => println!("[supplier-ledger] cross-tenant supplier payment correctly rejected"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        let _ = fs::remove_dir_all(other_db.parent().unwrap());
     }
 
     /// Batch 3b, final slice, group 2: driver CRUD (soft delete), zones,
@@ -7134,6 +7429,7 @@ mod tests {
             "create_purchase_order_with_items_v3", "list_purchase_orders_v3", "cancel_purchase_order_v3",
             "list_purchase_order_items_v3", "receive_purchase_order_v3",
             "list_suppliers_v3", "create_supplier_v3", "update_supplier_v3", "delete_supplier_v3",
+            "record_supplier_payment_v3", "list_supplier_payments_v3",
             "create_driver_v3", "update_driver_v3", "deactivate_driver_v3", "list_all_drivers_v3",
             "create_delivery_zone_v3", "update_delivery_zone_v3", "deactivate_delivery_zone_v3",
             "list_delivery_zones_v3", "list_delivery_history_v3",

@@ -1280,6 +1280,117 @@ pub fn run_sync_outbox_migration(conn: &mut Connection, _db_path: &Path) -> Resu
     Ok(())
 }
 
+pub const MIGRATION_H_VERSION: i64 = 12;
+
+/// Supplier ledger (T2.0 plan, docs/plans/T2.0_SUPPLIER_LICENSE_DASHBOARD_LOYALTY.md
+/// §1): today `receive_purchase_order` touches inventory only -- money paid
+/// to a supplier is completely untracked. This adds a `debtors`/`debt_entries`-
+/// shaped mini ledger for the other direction (money the business owes,
+/// not money owed to it).
+///
+/// Money columns here are plain `_cents INTEGER`, matching `debt_entries`'s
+/// REAL, live pattern -- not the wide `_minor/_currency/_scale/...` columns
+/// `MONEY_COLUMNS` (Migration A, above) adds to `debt_entries.amount`. Those
+/// wide columns are schema-only: no `Money`/`MoneySnapshot` Rust type exists
+/// anywhere in this codebase, and `record_debt_payment` (repo.rs) never
+/// reads or writes them -- they're populated once at migration time via a
+/// backfill UPDATE and never touched by any live command afterward. Adding
+/// a second money shape here that nothing else uses would be worse than
+/// matching the pattern every other command actually runs on.
+pub fn run_supplier_ledger_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_H_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+
+    if table_exists(&tx, "suppliers")? {
+        add_column_if_missing(&tx, "suppliers", "total_owed_cents", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column_if_missing(&tx, "suppliers", "total_paid_cents", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column_if_missing(&tx, "suppliers", "balance_cents", "INTEGER NOT NULL DEFAULT 0")?;
+    }
+
+    if table_exists(&tx, "purchase_orders")? {
+        add_column_if_missing(&tx, "purchase_orders", "amount_paid_cents", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column_if_missing(&tx, "purchase_orders", "payment_status", "TEXT NOT NULL DEFAULT 'UNPAID'")?;
+    }
+
+    if table_exists(&tx, "operational_costs")? {
+        add_column_if_missing(&tx, "operational_costs", "reference_type", "TEXT")?;
+        add_column_if_missing(&tx, "operational_costs", "reference_id", "TEXT")?;
+    }
+
+    // Append-only fact table, mirrors debt_entries exactly (see doc comment
+    // above for why bare `_cents`, not the wide Money columns).
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS supplier_payments (
+            id                 TEXT PRIMARY KEY,
+            tenant_id          TEXT NOT NULL,
+            branch_id          TEXT NOT NULL,
+            supplier_id        TEXT NOT NULL REFERENCES suppliers(id),
+            purchase_order_id  TEXT REFERENCES purchase_orders(id),
+            type               TEXT NOT NULL CHECK(type IN ('CHARGE','PAYMENT')),
+            amount_cents       INTEGER NOT NULL,
+            method             TEXT,
+            notes              TEXT,
+            created_by         TEXT NOT NULL REFERENCES staff(id),
+            created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at_hlc     TEXT NOT NULL DEFAULT '',
+            device_id          TEXT NOT NULL DEFAULT '',
+            deleted_at         TEXT,
+            rev                INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_supplier_payments_supplier_id ON supplier_payments(supplier_id);
+        CREATE INDEX IF NOT EXISTS idx_supplier_payments_po_id ON supplier_payments(purchase_order_id);
+        CREATE INDEX IF NOT EXISTS idx_supplier_payments_tenant ON supplier_payments(tenant_id, branch_id);"
+    )?;
+
+    // Widen sync_outbox's table_name CHECK to admit the two new syncable
+    // fact/config tables this ledger introduces -- SQLite can't ALTER a
+    // CHECK constraint in place, so this is a rebuild: new table, copy
+    // whatever's still queued, drop, rename. sync_outbox is a drain queue
+    // (T1.9/Slice 2a's worker empties it continuously), so there is normally
+    // very little to carry over, but a mid-flight row must not be dropped.
+    if table_exists(&tx, "sync_outbox")? {
+        tx.execute_batch(
+            "CREATE TABLE sync_outbox_v12 (
+                id TEXT PRIMARY KEY,
+                table_name TEXT NOT NULL CHECK(table_name IN ('orders','order_items','payments','supplier_payments','operational_costs')),
+                row_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                branch_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                rev INTEGER NOT NULL,
+                hlc TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                license_status_at_enqueue TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'QUEUED' CHECK(status IN ('QUEUED','FAILED')),
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO sync_outbox_v12 SELECT * FROM sync_outbox;
+            DROP TABLE sync_outbox;
+            ALTER TABLE sync_outbox_v12 RENAME TO sync_outbox;
+            CREATE INDEX IF NOT EXISTS idx_sync_outbox_due ON sync_outbox(status, next_attempt_at);
+            CREATE INDEX IF NOT EXISTS idx_sync_outbox_tenant ON sync_outbox(tenant_id);"
+        )?;
+    }
+
+    println!("v12_supplier_ledger: supplier_payments created; suppliers/purchase_orders/operational_costs widened; sync_outbox table_name CHECK admits supplier_payments/operational_costs");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_H_VERSION, "0012_supplier_ledger", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1761,6 +1872,74 @@ mod tests {
         ).unwrap();
         assert_eq!(scoped_count, 0); // no rows yet, but the query itself must not error
         println!("[drift-fix] a tenant-scoped query against attendance succeeds (Finding #3's predicted future failure does not happen)");
+
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(integrity, "ok");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// T2.0 supplier ledger migration: idempotent (running it twice does not
+    /// error or duplicate columns/tables -- the `schema_migrations` guard at
+    /// the top of the function must actually short-circuit), and every
+    /// column/table it's supposed to add is present afterward, including
+    /// the sync_outbox table_name CHECK constraint rebuild admitting the two
+    /// new table names.
+    #[test]
+    fn test_supplier_ledger_migration_is_idempotent_and_adds_expected_schema() {
+        let db_path = fresh_db_path("supplier_ledger_migration");
+        build_base_fixture(&db_path);
+        {
+            let mut conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+            run_expand_migration(&mut conn, &db_path).expect("Migration A failed");
+            run_remap_migration(&mut conn, &db_path).expect("Migration B failed");
+            run_identity_migration(&mut conn, &db_path).expect("Migration C failed");
+            run_drift_fix_migration(&mut conn, &db_path).expect("Migration D failed");
+            run_index_migration(&mut conn, &db_path).expect("Migration E failed");
+            run_discount_cap_migration(&mut conn, &db_path).expect("Migration F failed");
+            run_sync_outbox_migration(&mut conn, &db_path).expect("Migration G failed");
+            run_supplier_ledger_migration(&mut conn, &db_path).expect("Migration H failed (first run)");
+            // Second run must be a clean no-op, not an error.
+            run_supplier_ledger_migration(&mut conn, &db_path).expect("Migration H failed (second run -- must be idempotent)");
+        }
+        let conn = Connection::open(&db_path).unwrap();
+
+        let supplier_payments_exists: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='supplier_payments'", [], |r| r.get(0),
+        ).unwrap();
+        assert!(supplier_payments_exists, "supplier_payments table must exist");
+
+        for (table, col) in [
+            ("suppliers", "total_owed_cents"), ("suppliers", "total_paid_cents"), ("suppliers", "balance_cents"),
+            ("purchase_orders", "amount_paid_cents"), ("purchase_orders", "payment_status"),
+            ("operational_costs", "reference_type"), ("operational_costs", "reference_id"),
+        ] {
+            let cols: Vec<String> = {
+                let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})")).unwrap();
+                stmt.query_map([], |r| r.get::<_, String>(1)).unwrap().filter_map(|r| r.ok()).collect()
+            };
+            assert!(cols.contains(&col.to_string()), "{table}.{col} must exist after Migration H");
+        }
+        println!("[supplier-ledger-migration] supplier_payments table + all widened columns present after two runs");
+
+        // sync_outbox's table_name CHECK must now admit the two new names --
+        // proven by actually inserting a row of each, not just inspecting
+        // the CREATE TABLE text.
+        for table_name in ["supplier_payments", "operational_costs", "orders", "order_items", "payments"] {
+            conn.execute(
+                "INSERT INTO sync_outbox (id, table_name, row_id, tenant_id, branch_id, payload_json, rev, hlc, device_id, license_status_at_enqueue) \
+                 VALUES (?1, ?2, 'row-1', 'tenant-1', 'branch-1', '{}', 1, 'hlc-1', 'device-1', 'ACTIVE')",
+                params![format!("outbox-{table_name}"), table_name],
+            ).unwrap_or_else(|e| panic!("sync_outbox must accept table_name='{table_name}' after Migration H's CHECK rebuild: {e}"));
+        }
+        let rejected = conn.execute(
+            "INSERT INTO sync_outbox (id, table_name, row_id, tenant_id, branch_id, payload_json, rev, hlc, device_id, license_status_at_enqueue) \
+             VALUES ('outbox-bad', 'not_a_real_table', 'row-1', 'tenant-1', 'branch-1', '{}', 1, 'hlc-1', 'device-1', 'ACTIVE')",
+            [],
+        );
+        assert!(rejected.is_err(), "the CHECK constraint must still reject an unlisted table_name, not have been silently dropped");
+        println!("[supplier-ledger-migration] sync_outbox accepts all 5 known table_names and still rejects an unknown one");
 
         let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
         assert_eq!(integrity, "ok");

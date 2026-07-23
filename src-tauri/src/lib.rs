@@ -66,6 +66,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_index_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_discount_cap_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_sync_outbox_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_supplier_ledger_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -412,6 +413,8 @@ pub fn run() {
             commands_v3::create_supplier_v3,
             commands_v3::update_supplier_v3,
             commands_v3::delete_supplier_v3,
+            commands_v3::record_supplier_payment_v3,
+            commands_v3::list_supplier_payments_v3,
             commands_v3::list_inventory_logs_v3,
             commands_v3::list_low_stock_ingredients_v3,
             commands_v3::create_driver_v3,

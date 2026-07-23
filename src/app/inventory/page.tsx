@@ -4,7 +4,7 @@ import { realErrorText } from "../../lib/errors";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import { Package, Search, Edit3, ChevronDown, ChevronUp } from "lucide-react";
-import { IconPencil, IconTrash, IconClipboardList, IconEye, IconPackageImport, IconX } from "@tabler/icons-react";
+import { IconPencil, IconTrash, IconClipboardList, IconEye, IconPackageImport, IconX, IconCash } from "@tabler/icons-react";
 import EmptyState from "../../components/ui/EmptyState";
 
 const editSchema = z.object({
@@ -40,6 +40,9 @@ interface Supplier {
   email: string | null;
   total_orders: number;
   total_purchases_cents: number;
+  total_owed_cents: number;
+  total_paid_cents: number;
+  balance_cents: number;
 }
 
 interface InventoryLog {
@@ -153,6 +156,8 @@ interface PurchaseOrder {
   supplier_name: string;
   creator_name: string;
   items?: PurchaseOrderItem[];
+  amount_paid_cents: number;
+  payment_status: string;
 }
 
 interface PurchaseOrderItem {
@@ -798,6 +803,7 @@ function SuppliersTab() {
   const [editTarget, setEditTarget] = useState<Supplier | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [showOrder, setShowOrder] = useState<Supplier | null>(null);
+  const [payTarget, setPayTarget] = useState<Supplier | null>(null);
 
   const fetch = useCallback(async () => {
     setLoading(true);
@@ -856,6 +862,7 @@ function SuppliersTab() {
               <th className="text-right p-3">البريد</th>
               <th className="text-right p-3">عدد الطلبيات</th>
               <th className="text-right p-3">إجمالي المشتريات</th>
+              <th className="text-right p-3">الرصيد المستحق</th>
               <th className="text-right p-3">إجراءات</th>
             </tr>
           </thead>
@@ -876,8 +883,18 @@ function SuppliersTab() {
                 <td className="p-3 font-mono text-ink-900">
                   {formatCurrency(s.total_purchases_cents)}
                 </td>
+                <td className={`p-3 font-mono font-bold ${s.balance_cents > 0 ? "text-red-600" : "text-green-600"}`}>
+                  {formatCurrency(s.balance_cents)}
+                </td>
                 <td className="p-3">
                   <div className="flex gap-2">
+                    <button
+                      onClick={() => setPayTarget(s)}
+                      className="px-3 py-1.5 rounded-lg bg-saffron-100 text-saffron-700 text-xs font-bold hover:bg-saffron-200 transition-colors"
+                      title="تسديد دفعة"
+                    >
+                      <IconCash className="w-4 h-4" />
+                    </button>
                     <button
                       onClick={() => setShowOrder(s)}
                       className="px-3 py-1.5 rounded-lg bg-indigo-100 text-indigo-700 text-xs font-bold hover:bg-indigo-200 transition-colors"
@@ -905,7 +922,7 @@ function SuppliersTab() {
             ))}
             {suppliers.length === 0 && (
               <tr>
-                <td colSpan={6} className="text-center p-6 text-ink-500 font-arabic">
+                <td colSpan={7} className="text-center p-6 text-ink-500 font-arabic">
                   لا يوجد موردون
                 </td>
               </tr>
@@ -928,6 +945,66 @@ function SuppliersTab() {
         onClose={() => setShowOrder(null)}
         onSaved={fetch}
       />
+      {payTarget && (
+        <PaySupplierModal
+          supplier={payTarget}
+          onClose={() => setPayTarget(null)}
+          onSaved={() => { setPayTarget(null); fetch(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function PaySupplierModal({ supplier, onClose, onSaved }: { supplier: Supplier; onClose: () => void; onSaved: () => void }) {
+  const token = useAuthStore((s) => s.token);
+  const [amount, setAmount] = useState("");
+  const [method, setMethod] = useState<"CASH" | "BANK" | "CARD">("CASH");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handlePay = async () => {
+    const amountCents = Math.round(parseFloat(amount || "0") * 100);
+    if (amountCents <= 0) return;
+    setSaving(true);
+    try {
+      await invoke("record_supplier_payment_v3", {
+        sessionToken: token,
+        supplierId: supplier.id,
+        amountCents,
+        method,
+        notes: notes || null,
+      });
+      onSaved();
+    } catch (err) {
+      setError(`حدث خطأ في تسجيل الدفعة: ${realErrorText(err)}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
+        <h2 className="text-lg font-bold font-arabic text-ink-900">تسديد دفعة لمورد</h2>
+        <p className="text-sm font-arabic text-ink-500">المورد: <span className="font-bold">{supplier.name}</span></p>
+        <p className="text-sm font-arabic text-ink-400">الرصيد المستحق: <span className="font-mono font-bold text-red-600">{formatCurrency(supplier.balance_cents)}</span></p>
+        {error && <p className="text-sm text-red-500 font-arabic">{error}</p>}
+        <input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="المبلغ" className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-saffron-500" dir="ltr" />
+        <select value={method} onChange={(e) => setMethod(e.target.value as "CASH" | "BANK" | "CARD")} className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm font-arabic focus:outline-none focus:ring-2 focus:ring-saffron-500">
+          <option value="CASH">نقدي</option>
+          <option value="BANK">تحويل بنكي</option>
+          <option value="CARD">بطاقة</option>
+        </select>
+        <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="ملاحظات (اختياري)" className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm font-arabic focus:outline-none focus:ring-2 focus:ring-saffron-500" />
+        <div className="flex gap-2 pt-2">
+          <button onClick={handlePay} disabled={saving || !amount || parseFloat(amount) <= 0} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">
+            {saving ? "جاري..." : "تسديد"}
+          </button>
+          <button onClick={onClose} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1162,6 +1239,20 @@ function PurchasesTab() {
     return s;
   };
 
+  const paymentStatusBadge = (s: string) => {
+    if (s === "PAID") return "bg-green-100 text-green-700";
+    if (s === "PARTIAL") return "bg-amber-100 text-amber-700";
+    if (s === "ADVANCE") return "bg-blue-100 text-blue-700";
+    return "bg-red-100 text-red-700";
+  };
+
+  const paymentStatusLabel = (s: string) => {
+    if (s === "PAID") return "مدفوعة بالكامل";
+    if (s === "PARTIAL") return "مدفوعة جزئياً";
+    if (s === "ADVANCE") return "دفعة مسبقة";
+    return "غير مدفوعة";
+  };
+
   if (loading) {
     return <div className="flex items-center justify-center h-64 text-ink-500 font-arabic">جاري التحميل...</div>;
   }
@@ -1189,6 +1280,7 @@ function PurchasesTab() {
               <th className="text-right p-3 font-medium">التاريخ</th>
               <th className="text-right p-3 font-medium">الإجمالي</th>
               <th className="text-right p-3 font-medium">الحالة</th>
+              <th className="text-right p-3 font-medium">حالة الدفع</th>
               <th className="text-center p-3 font-medium">إجراءات</th>
             </tr>
           </thead>
@@ -1204,6 +1296,13 @@ function PurchasesTab() {
                     {statusLabel(po.status)}
                   </span>
                 </td>
+                <td className="p-3">
+                  {po.status === "RECEIVED" && (
+                    <span className={`inline-block px-3 py-1 rounded-full text-xs font-arabic font-medium ${paymentStatusBadge(po.payment_status)}`}>
+                      {paymentStatusLabel(po.payment_status)}
+                    </span>
+                  )}
+                </td>
                 <td className="p-3 text-center">
                   <div className="flex items-center justify-center gap-1">
                     <button onClick={() => setDetailTarget(po)} className="px-3 py-1.5 rounded-lg text-xs text-ink-400 hover:bg-white transition-colors" title="عرض التفاصيل"><IconEye className="w-4 h-4" /></button>
@@ -1218,7 +1317,7 @@ function PurchasesTab() {
               </tr>
             ))}
             {orders.length === 0 && (
-              <tr><td colSpan={6} className="p-6 text-center text-ink-500 font-arabic">لا توجد طلبيات شراء</td></tr>
+              <tr><td colSpan={7} className="p-6 text-center text-ink-500 font-arabic">لا توجد طلبيات شراء</td></tr>
             )}
           </tbody>
         </table>
@@ -1347,6 +1446,8 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [receiveError, setReceiveError] = useState<string | null>(null);
+  const [amountPaid, setAmountPaid] = useState("");
+  const [payMethod, setPayMethod] = useState<"CASH" | "BANK" | "CARD">("CASH");
 
   useEffect(() => {
     (async () => {
@@ -1366,14 +1467,17 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
 
   const handleReceive = async () => {
     try {
+      const amountPaidCents = Math.round(parseFloat(amountPaid || "0") * 100);
       await invoke("receive_purchase_order_v3", {
         sessionToken: token,
         poId: po.id,
         items: items.map((item) => [item.id, item.ingredient_id, item.quantity_received]),
+        amountPaidCents,
+        method: amountPaidCents > 0 ? payMethod : null,
       });
       onSaved();
-    } catch {
-      setReceiveError("حدث خطأ في الاستلام");
+    } catch (err) {
+      setReceiveError(`حدث خطأ في الاستلام: ${realErrorText(err)}`);
     }
   };
 
@@ -1404,6 +1508,28 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
               </div>
             </div>
           ))}
+
+          <div className="bg-white rounded-xl border border-ink-200 p-3 space-y-2">
+            <h3 className="font-bold text-ink-900 font-arabic text-sm">الدفع للمورد</h3>
+            <p className="text-xs text-ink-400 font-arabic">إجمالي الطلبية: <span className="font-mono font-bold text-ink-900">{formatCurrency(po.total_cents)}</span></p>
+            <div className="flex items-center gap-2">
+              <input
+                type="number" min="0" step="0.01" value={amountPaid} onChange={(e) => setAmountPaid(e.target.value)}
+                placeholder="المبلغ المدفوع الآن"
+                className="flex-1 h-10 px-3 rounded-xl border border-ink-200 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-saffron-500" dir="ltr"
+              />
+              <select value={payMethod} onChange={(e) => setPayMethod(e.target.value as "CASH" | "BANK" | "CARD")} className="h-10 px-3 rounded-xl border border-ink-200 text-sm font-arabic focus:outline-none focus:ring-2 focus:ring-saffron-500">
+                <option value="CASH">نقدي</option>
+                <option value="BANK">تحويل بنكي</option>
+                <option value="CARD">بطاقة</option>
+              </select>
+            </div>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setAmountPaid((po.total_cents / 100).toString())} className="text-xs font-arabic text-saffron-600 hover:underline">دفع كامل المبلغ</button>
+              <button type="button" onClick={() => setAmountPaid("")} className="text-xs font-arabic text-ink-400 hover:underline">بدون دفع الآن</button>
+            </div>
+          </div>
+
           <div className="flex gap-2 pt-2">
             <button onClick={handleReceive} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">تأكيد الاستلام</button>
             <button onClick={onClose} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
