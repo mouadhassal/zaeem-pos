@@ -6,6 +6,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { Package, Search, Edit3, ChevronDown, ChevronUp } from "lucide-react";
 import { IconPencil, IconTrash, IconClipboardList, IconEye, IconPackageImport, IconX, IconCash } from "@tabler/icons-react";
 import EmptyState from "../../components/ui/EmptyState";
+import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 
 const editSchema = z.object({
   name: z.string().min(1, "الاسم مطلوب"),
@@ -43,6 +44,18 @@ interface Supplier {
   total_owed_cents: number;
   total_paid_cents: number;
   balance_cents: number;
+}
+
+interface SupplierPayment {
+  id: string;
+  supplier_id: string;
+  purchase_order_id: string | null;
+  amount_cents: number;
+  entry_type: string;
+  method: string | null;
+  notes: string | null;
+  created_by: string;
+  created_at: string;
 }
 
 interface InventoryLog {
@@ -103,6 +116,13 @@ function formatCurrency(cents: number): string {
     currency: "SAR",
   }).format(cents / 100);
 }
+
+function fmtDateTime(iso: string | null): string {
+  if (!iso) return "-";
+  return new Date(iso).toLocaleString("ar-SA", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+const SUPPLIER_PAYMENT_METHOD_LABEL: Record<string, string> = { CASH: "نقداً", BANK: "تحويل بنكي", CARD: "بطاقة" };
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString("ar-SA", {
@@ -805,6 +825,11 @@ function SuppliersTab() {
   const [showOrder, setShowOrder] = useState<Supplier | null>(null);
   const [payTarget, setPayTarget] = useState<Supplier | null>(null);
 
+  const [detail, setDetail] = useState<{ supplier: Supplier; payments: SupplierPayment[] } | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [exportingPdf, setExportingPdf] = useState(false);
+
   const fetch = useCallback(async () => {
     setLoading(true);
     try {
@@ -830,6 +855,41 @@ function SuppliersTab() {
     }
   };
 
+  const openDetail = async (supplier: Supplier) => {
+    try {
+      const payments = await invoke<SupplierPayment[]>("list_supplier_payments_v3", { sessionToken: token, supplierId: supplier.id });
+      setDetail({ supplier, payments });
+      setDetailOpen(true);
+    } catch (err) {
+      setDetailError(`حدث خطأ في تحميل سجل الدفعات: ${realErrorText(err)}`);
+    }
+  };
+
+  const exportPdf = async () => {
+    if (exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      const bodyHtml = `
+        <h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 4px">الموردون</h1>
+        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${new Date().toLocaleDateString("ar-SA")}</p>
+        ${pdfTableHtml(
+          "الموردون",
+          ["اسم المورد", "الهاتف", "إجمالي المشتريات", "المدفوع", "الرصيد المستحق"],
+          suppliers.map((s) => [
+            s.name,
+            s.phone || "-",
+            formatCurrency(s.total_purchases_cents),
+            formatCurrency(s.total_paid_cents),
+            formatCurrency(s.balance_cents),
+          ])
+        )}
+      `;
+      await exportHtmlToPdf(`الموردون-${new Date().toISOString().slice(0, 10)}.pdf`, bodyHtml);
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64 text-ink-500 font-arabic">
@@ -846,12 +906,24 @@ function SuppliersTab() {
       {actionError && (
         <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{actionError}</div>
       )}
-      <button
-        onClick={() => setShowAdd(true)}
-        className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
-      >
-        + إضافة مورد
-      </button>
+      {detailError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{detailError}</div>
+      )}
+      <div className="flex gap-2">
+        <button
+          onClick={() => setShowAdd(true)}
+          className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+        >
+          + إضافة مورد
+        </button>
+        <button
+          onClick={exportPdf}
+          disabled={exportingPdf}
+          className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+        >
+          {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
+        </button>
+      </div>
 
       <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
         <table className="w-full text-sm">
@@ -870,7 +942,8 @@ function SuppliersTab() {
             {suppliers.map((s) => (
               <tr
                 key={s.id}
-                className="border-b border-ink-200 hover:bg-white transition-colors"
+                className="border-b border-ink-200 hover:bg-white transition-colors cursor-pointer"
+                onClick={() => openDetail(s)}
               >
                 <td className="p-3 font-medium text-ink-900">{s.name}</td>
                 <td className="p-3 text-ink-400 font-mono" dir="ltr">
@@ -886,7 +959,7 @@ function SuppliersTab() {
                 <td className={`p-3 font-mono font-bold ${s.balance_cents > 0 ? "text-red-600" : "text-green-600"}`}>
                   {formatCurrency(s.balance_cents)}
                 </td>
-                <td className="p-3">
+                <td className="p-3" onClick={(e) => e.stopPropagation()}>
                   <div className="flex gap-2">
                     <button
                       onClick={() => setPayTarget(s)}
@@ -952,6 +1025,75 @@ function SuppliersTab() {
           onSaved={() => { setPayTarget(null); fetch(); }}
         />
       )}
+
+      {detailOpen && detail && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div className="bg-black/30 flex-1" onClick={() => setDetailOpen(false)} />
+          <div className="w-full max-w-lg bg-white shadow-2xl h-full overflow-y-auto animate-slide-in-left">
+            <div className="p-6 space-y-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-bold font-arabic text-ink-900">{detail.supplier.name}</h2>
+                <button onClick={() => setDetailOpen(false)} className="p-2 rounded-lg text-ink-500 hover:bg-white transition-colors">
+                  <IconX className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-ink-50 rounded-xl p-3 text-center">
+                  <p className="text-2xl font-bold text-ink-900 font-mono">{formatCurrency(detail.supplier.total_purchases_cents)}</p>
+                  <p className="text-xs text-ink-500 font-arabic mt-1">إجمالي المشتريات</p>
+                </div>
+                <div className="bg-saffron-50 rounded-xl p-3 text-center">
+                  <p className="text-2xl font-bold text-saffron-600 font-mono">{formatCurrency(detail.supplier.total_paid_cents)}</p>
+                  <p className="text-xs text-saffron-600 font-arabic mt-1">المدفوع</p>
+                </div>
+                <div className={`rounded-xl p-3 text-center ${detail.supplier.balance_cents > 0 ? "bg-red-50" : "bg-saffron-50"}`}>
+                  <p className={`text-2xl font-bold font-mono ${detail.supplier.balance_cents > 0 ? "text-red-600" : "text-saffron-600"}`}>{formatCurrency(detail.supplier.balance_cents)}</p>
+                  <p className="text-xs font-arabic mt-1">الرصيد المستحق</p>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl p-4 space-y-2 shadow-sh-1">
+                <h3 className="font-bold font-arabic text-sm text-ink-900">سجل الدفعات</h3>
+                {detail.payments.length > 0 ? (
+                  <div className="space-y-1">
+                    {detail.payments.map((p) => (
+                      <div key={p.id} className="flex justify-between items-center text-xs py-1.5 border-b border-ink-200 last:border-0">
+                        <div className="flex items-center gap-2">
+                          <span className={`inline-block w-2 h-2 rounded-full ${p.entry_type === "CHARGE" ? "bg-ink-400" : "bg-saffron-400"}`} />
+                          <span className="font-arabic text-ink-400">
+                            {p.entry_type === "CHARGE" ? "طلبية" : "دفعة"}
+                            {p.method ? ` — ${SUPPLIER_PAYMENT_METHOD_LABEL[p.method] ?? p.method}` : ""}
+                          </span>
+                          <span className="font-arabic text-ink-500">{fmtDateTime(p.created_at)}</span>
+                        </div>
+                        <span className={`font-mono font-bold ${p.entry_type === "CHARGE" ? "text-ink-500" : "text-saffron-600"}`}>
+                          {p.entry_type === "CHARGE" ? "+" : "-"}{formatCurrency(p.amount_cents)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-ink-500 font-arabic">لا توجد دفعات</p>
+                )}
+              </div>
+
+              <div className="bg-white rounded-2xl p-4 space-y-2">
+                <h3 className="font-bold font-arabic text-sm text-ink-900">معلومات الاتصال</h3>
+                <div className="space-y-1 text-sm">
+                  <div className="flex justify-between"><span className="text-ink-400 font-arabic">الهاتف</span><span className="font-mono text-ink-900" dir="ltr">{detail.supplier.phone || "-"}</span></div>
+                  <div className="flex justify-between"><span className="text-ink-400 font-arabic">البريد</span><span className="text-ink-900">{detail.supplier.email || "-"}</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes slideInLeft { from { transform: translateX(100%); } to { transform: translateX(0); } }
+        .animate-slide-in-left { animation: slideInLeft 0.2s ease-out; }
+      `}</style>
     </div>
   );
 }
