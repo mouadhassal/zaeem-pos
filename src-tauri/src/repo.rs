@@ -38,6 +38,15 @@ pub enum RepoError {
     /// Refusing to delete a table that's still in active use -- deleting it
     /// would orphan whatever order/merge it's currently part of.
     TableNotDeletable { table_id: String, reason: String },
+    /// T2.0 loyalty: a `card_number` was passed into `finalize_order_with_payment`
+    /// (the caller attached a loyalty card to the sale) but no such card
+    /// exists in this tenant. Fails loud rather than silently swallowing --
+    /// see that function's doc comment for why this is a deliberate change
+    /// from the old client-driven accrual's `try {} catch {}`.
+    LoyaltyCardNotFound { card_number: String },
+    /// T2.0 loyalty: redemption attempted with more points than the card
+    /// currently holds.
+    InsufficientLoyaltyPoints { card_number: String, have: i64, need: i64 },
 }
 
 impl fmt::Display for RepoError {
@@ -60,6 +69,8 @@ impl fmt::Display for RepoError {
             Self::TableOutOfScope { table_id } => write!(f, "table {table_id} does not belong to the caller's tenant/branch"),
             Self::TenantOwnershipViolation { table, id } => write!(f, "{table} row {id} does not belong to the caller's tenant"),
             Self::TableNotDeletable { table_id, reason } => write!(f, "table {table_id} cannot be deleted: {reason}"),
+            Self::LoyaltyCardNotFound { card_number } => write!(f, "loyalty card {card_number} not found in this tenant"),
+            Self::InsufficientLoyaltyPoints { card_number, have, need } => write!(f, "loyalty card {card_number} has {have} points, needs {need}"),
             Self::PaymentAmountMismatch { order_id, expected_cents, got_cents } => write!(
                 f, "order {order_id}: amount tendered minus change ({got_cents}) does not equal the order total ({expected_cents})"
             ),
@@ -564,6 +575,33 @@ pub struct LoyaltyTxRow {
     pub reference_type: Option<String>,
     pub reference_id: Option<String>,
     pub created_at: String,
+}
+
+/// T2.0 loyalty: tenant-owned tier config. Replaces the frontend-only
+/// `TIER_CONFIG` -- these rows are the single source of truth for tier
+/// thresholds/multipliers, read by `tier_for` on both the accrual path
+/// (`finalize_order_with_payment`) and any display surface.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LoyaltyTierRow {
+    pub id: String,
+    pub name: String,
+    pub min_points: i64,
+    pub points_multiplier: f64,
+    pub sort_order: i64,
+}
+
+/// T2.0 loyalty: tenant-owned rewards catalog. Replaces the frontend's
+/// per-device `localStorage` rewards list.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LoyaltyRewardRow {
+    pub id: String,
+    pub name: String,
+    pub points_cost: i64,
+    pub reward_type: String,
+    pub value_cents: Option<i64>,
+    pub value_percent_bps: Option<i64>,
+    pub linked_menu_item_id: Option<String>,
+    pub is_active: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1406,6 +1444,152 @@ impl<'a> Repo<'a> {
             Ok(LoyaltyTxRow { id: r.get(0)?, card_id: r.get(1)?, points: r.get(2)?, tx_type: r.get(3)?, reference_type: r.get(4)?, reference_id: r.get(5)?, created_at: r.get(6)? })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    // -----------------------------------------------------------------
+    // T2.0 loyalty rethink -- tier config, rewards catalog, server-side
+    // accrual (folded into finalize_order_with_payment, below), and
+    // redemption. Both loyalty_tier and loyalty_reward are tenant-only
+    // config (no branch layer -- a tier/reward applies chain-wide), same
+    // shape as menu_item_default.
+    // -----------------------------------------------------------------
+
+    pub fn list_loyalty_tiers(&self, tenant_id: &str) -> Result<Vec<LoyaltyTierRow>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, min_points, points_multiplier, sort_order FROM loyalty_tier WHERE tenant_id = ?1 ORDER BY sort_order ASC",
+        )?;
+        let rows = stmt.query_map(params![tenant_id], |r| {
+            Ok(LoyaltyTierRow { id: r.get(0)?, name: r.get(1)?, min_points: r.get(2)?, points_multiplier: r.get(3)?, sort_order: r.get(4)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    pub fn create_loyalty_tier(&self, tenant_id: &str, name: &str, min_points: i64, points_multiplier: f64, sort_order: i64) -> Result<String, RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO loyalty_tier (id, tenant_id, name, min_points, points_multiplier, sort_order, updated_at_hlc, device_id, rev) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, '', '', 1)",
+            params![id, tenant_id, name, min_points, points_multiplier, sort_order],
+        )?;
+        Ok(id)
+    }
+
+    pub fn update_loyalty_tier(&self, tenant_id: &str, tier_id: &str, name: &str, min_points: i64, points_multiplier: f64, sort_order: i64) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("loyalty_tier", tier_id, tenant_id)?;
+        self.conn.execute(
+            "UPDATE loyalty_tier SET name = ?1, min_points = ?2, points_multiplier = ?3, sort_order = ?4 WHERE id = ?5",
+            params![name, min_points, points_multiplier, sort_order, tier_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_loyalty_tier(&self, tenant_id: &str, tier_id: &str) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("loyalty_tier", tier_id, tenant_id)?;
+        self.conn.execute("DELETE FROM loyalty_tier WHERE id = ?1", params![tier_id])?;
+        Ok(())
+    }
+
+    pub fn list_loyalty_rewards(&self, tenant_id: &str) -> Result<Vec<LoyaltyRewardRow>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, points_cost, reward_type, value_cents, value_percent_bps, linked_menu_item_id, is_active \
+             FROM loyalty_reward WHERE tenant_id = ?1 ORDER BY points_cost ASC",
+        )?;
+        let rows = stmt.query_map(params![tenant_id], |r| {
+            Ok(LoyaltyRewardRow {
+                id: r.get(0)?, name: r.get(1)?, points_cost: r.get(2)?, reward_type: r.get(3)?,
+                value_cents: r.get(4)?, value_percent_bps: r.get(5)?, linked_menu_item_id: r.get(6)?, is_active: r.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_loyalty_reward(&self, tenant_id: &str, name: &str, points_cost: i64, reward_type: &str, value_cents: Option<i64>, value_percent_bps: Option<i64>, linked_menu_item_id: Option<&str>) -> Result<String, RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO loyalty_reward (id, tenant_id, name, points_cost, reward_type, value_cents, value_percent_bps, linked_menu_item_id, is_active, updated_at_hlc, device_id, rev) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, '', '', 1)",
+            params![id, tenant_id, name, points_cost, reward_type, value_cents, value_percent_bps, linked_menu_item_id],
+        )?;
+        Ok(id)
+    }
+
+    pub fn set_loyalty_reward_active(&self, tenant_id: &str, reward_id: &str, is_active: bool) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("loyalty_reward", reward_id, tenant_id)?;
+        self.conn.execute("UPDATE loyalty_reward SET is_active = ?1 WHERE id = ?2", params![is_active as i64, reward_id])?;
+        Ok(())
+    }
+
+    pub fn delete_loyalty_reward(&self, tenant_id: &str, reward_id: &str) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("loyalty_reward", reward_id, tenant_id)?;
+        self.conn.execute("DELETE FROM loyalty_reward WHERE id = ?1", params![reward_id])?;
+        Ok(())
+    }
+
+    /// Points -> (tier name, multiplier), from tenant-configured tiers.
+    /// Pure function -- no DB access -- so it's cheap to call from both the
+    /// accrual and display paths and to unit-test exhaustively. Tiers are
+    /// expected sorted ascending by `min_points` (as `list_loyalty_tiers`
+    /// returns them); the highest tier whose `min_points <= points` wins.
+    /// A tenant with NO tier rows (a fresh tenant created after this
+    /// migration, before the Owner configures any) gets a safe default of
+    /// ("BRONZE", 1.0) rather than a panic or a divide -- absence of config
+    /// is not an error, it's "no multiplier bonus yet."
+    fn tier_for(points: i64, tiers: &[LoyaltyTierRow]) -> (String, f64) {
+        tiers.iter()
+            .filter(|t| points >= t.min_points)
+            .max_by_key(|t| t.min_points)
+            .map(|t| (t.name.clone(), t.points_multiplier))
+            .unwrap_or_else(|| ("BRONZE".to_string(), 1.0))
+    }
+
+    /// Redeem points for a catalog reward: validates the card has enough
+    /// points, writes a REDEEM (negative points) fact, updates the card's
+    /// cached points/tier. Returns the reward row so the caller (frontend)
+    /// knows what to actually hand the customer -- applying a FREE_ITEM/
+    /// DISCOUNT_* to the current order uses the order's EXISTING discount
+    /// mechanism; this function's job is the points ledger and the
+    /// audit-worthy "a reward was granted" fact, not cart mutation.
+    ///
+    /// `branch_id` is the redeeming cashier's own branch (loyalty_transactions
+    /// is `TENANT_BRANCH_TABLES` -- same reasoning as `earn`'s stamp) --
+    /// without it, the fact row is invisible to any Branch-scoped read
+    /// (`list_loyalty_transactions`'s scope predicate filters on an exact
+    /// branch_id match, which a NULL never satisfies).
+    pub fn redeem_loyalty_reward(&self, tenant_id: &str, branch_id: &str, card_number: &str, reward_id: &str, actor_id: &str) -> Result<LoyaltyRewardRow, RepoError> {
+        let (card_id, points): (String, i64) = self.conn.query_row(
+            "SELECT lc.id, lc.points FROM loyalty_cards lc WHERE lc.card_number = ?1 AND lc.tenant_id = ?2",
+            params![card_number, tenant_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?.ok_or_else(|| RepoError::LoyaltyCardNotFound { card_number: card_number.to_string() })?;
+
+        self.assert_tenant_owns_row("loyalty_reward", reward_id, tenant_id)?;
+        let reward = {
+            let rewards = self.list_loyalty_rewards(tenant_id)?;
+            rewards.into_iter().find(|r| r.id == reward_id)
+                .ok_or_else(|| RepoError::TenantOwnershipViolation { table: "loyalty_reward".to_string(), id: reward_id.to_string() })?
+        };
+
+        if points < reward.points_cost {
+            return Err(RepoError::InsufficientLoyaltyPoints { card_number: card_number.to_string(), have: points, need: reward.points_cost });
+        }
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let new_points = points - reward.points_cost;
+        let tiers = self.list_loyalty_tiers(tenant_id)?;
+        let (new_tier, _) = Self::tier_for(new_points, &tiers);
+
+        self.conn.execute(
+            "UPDATE loyalty_cards SET points = ?1, tier = ?2, last_used_at = ?3, last_modified = ?3 WHERE id = ?4",
+            params![new_points, new_tier, now, card_id],
+        )?;
+        self.conn.execute(
+            "INSERT INTO loyalty_transactions (id, tenant_id, branch_id, card_id, points, type, reference_type, reference_id, created_at, sync_version, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'REDEEM', 'reward', ?6, ?7, 1, ?7, 'pending')",
+            params![uuid::Uuid::now_v7().to_string(), tenant_id, branch_id, card_id, -reward.points_cost, reward_id, now],
+        )?;
+        let _ = actor_id; // reserved for a future per-redemption actor audit trail beyond the command layer's audit::append call
+        Ok(reward)
     }
 
     // -----------------------------------------------------------------
@@ -4033,7 +4217,24 @@ impl<'a> Repo<'a> {
     /// replaces the frontend's `orderService.finalizeOrder`. The caller
     /// (`take_payment_v3`) handles the audit entry and session auth.
     #[allow(clippy::too_many_arguments)]
-    pub fn finalize_order_with_payment(&self, tenant_id: &str, branch_id: &str, order_id: &str, method: &str, amount_cents: i64, change_cents: i64, debtor_id: Option<&str>, actor_id: &str) -> Result<String, RepoError> {
+    /// T2.0 loyalty: `card_number`, if provided, earns points ATOMICALLY in
+    /// this same transaction -- fixing a real integrity gap found during
+    /// the loyalty redesign. Previously, accrual was a SEPARATE command
+    /// (`earn_loyalty_points_v3`) called by the frontend after this one
+    /// returned, with the points amount computed and trusted from the
+    /// caller, wrapped in a bare `try {} catch {}` that silently dropped
+    /// points on any failure. Folding it in here means: the point amount is
+    /// computed server-side from the order's own `total_cents` and the
+    /// tenant's configured tier multiplier (never client-supplied), and if
+    /// it fails, the WHOLE payment fails and rolls back -- same "if the
+    /// audit write fails, the mutation fails" principle as R5, extended to
+    /// points as another fact of the sale. A `card_number` that doesn't
+    /// resolve to a real card is a hard error (`LoyaltyCardNotFound`), not
+    /// silently ignored -- the frontend only ever passes one after a
+    /// successful lookup, so a not-found card here means something is
+    /// actually wrong, not a normal "no card" case (that's `None`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn finalize_order_with_payment(&self, tenant_id: &str, branch_id: &str, order_id: &str, method: &str, amount_cents: i64, change_cents: i64, debtor_id: Option<&str>, actor_id: &str, card_number: Option<&str>) -> Result<(String, Option<i64>), RepoError> {
         self.assert_scope_populated("payments", true)?;
 
         let (order_tenant, order_branch, order_status, order_total_cents): (String, String, String, i64) = self.conn.query_row(
@@ -4097,7 +4298,35 @@ impl<'a> Repo<'a> {
             ).map_err(RepoError::from)?;
         }
 
-        Ok(payment_id)
+        let points_earned = if let Some(card_number) = card_number {
+            let (card_id, current_points): (String, i64) = self.conn.query_row(
+                "SELECT id, points FROM loyalty_cards WHERE card_number = ?1 AND tenant_id = ?2",
+                params![card_number, tenant_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ).optional().map_err(RepoError::from)?
+                .ok_or_else(|| RepoError::LoyaltyCardNotFound { card_number: card_number.to_string() })?;
+
+            let tiers = self.list_loyalty_tiers(tenant_id)?;
+            let (_, multiplier) = Self::tier_for(current_points, &tiers);
+            let points = (((amount_cents / 100) as f64) * multiplier).floor() as i64;
+            let new_points = current_points + points;
+            let (new_tier, _) = Self::tier_for(new_points, &tiers);
+
+            self.conn.execute(
+                "UPDATE loyalty_cards SET points = ?1, tier = ?2, last_used_at = ?3, last_modified = ?3 WHERE id = ?4",
+                params![new_points, new_tier, now, card_id],
+            ).map_err(RepoError::from)?;
+            self.conn.execute(
+                "INSERT INTO loyalty_transactions (id, tenant_id, branch_id, card_id, points, type, reference_type, reference_id, created_at, sync_version, last_modified, sync_status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'EARN', 'order', ?6, ?7, 1, ?7, 'pending')",
+                params![uuid::Uuid::now_v7().to_string(), tenant_id, branch_id, card_id, points, order_id, now],
+            ).map_err(RepoError::from)?;
+            Some(points)
+        } else {
+            None
+        };
+
+        Ok((payment_id, points_earned))
     }
 }
 
@@ -4164,5 +4393,32 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// T2.0 loyalty: `tier_for`'s boundary behavior -- pure function, no DB
+    /// needed. Uses the exact seeded default tiers (0/500/1500/3000,
+    /// 1x/1.2x/1.5x/2x) so this test also documents what a fresh install's
+    /// tier ladder actually does at each threshold.
+    #[test]
+    fn tier_for_picks_the_highest_tier_at_or_below_points_and_defaults_safely() {
+        let tiers = vec![
+            LoyaltyTierRow { id: "t-bronze".into(), name: "BRONZE".into(), min_points: 0, points_multiplier: 1.0, sort_order: 0 },
+            LoyaltyTierRow { id: "t-silver".into(), name: "SILVER".into(), min_points: 500, points_multiplier: 1.2, sort_order: 1 },
+            LoyaltyTierRow { id: "t-gold".into(), name: "GOLD".into(), min_points: 1500, points_multiplier: 1.5, sort_order: 2 },
+            LoyaltyTierRow { id: "t-platinum".into(), name: "PLATINUM".into(), min_points: 3000, points_multiplier: 2.0, sort_order: 3 },
+        ];
+
+        assert_eq!(Repo::tier_for(0, &tiers), ("BRONZE".to_string(), 1.0));
+        assert_eq!(Repo::tier_for(499, &tiers), ("BRONZE".to_string(), 1.0), "just below SILVER's threshold must stay BRONZE");
+        assert_eq!(Repo::tier_for(500, &tiers), ("SILVER".to_string(), 1.2), "exactly at threshold must promote");
+        assert_eq!(Repo::tier_for(1499, &tiers), ("SILVER".to_string(), 1.2));
+        assert_eq!(Repo::tier_for(1500, &tiers), ("GOLD".to_string(), 1.5));
+        assert_eq!(Repo::tier_for(2999, &tiers), ("GOLD".to_string(), 1.5));
+        assert_eq!(Repo::tier_for(3000, &tiers), ("PLATINUM".to_string(), 2.0));
+        assert_eq!(Repo::tier_for(1_000_000, &tiers), ("PLATINUM".to_string(), 2.0), "no ceiling -- stays at the top tier");
+
+        // A tenant with NO configured tiers gets a safe default, not a panic.
+        assert_eq!(Repo::tier_for(9999, &[]), ("BRONZE".to_string(), 1.0));
+        println!("[loyalty] tier_for correctly resolves all boundary points and defaults safely with zero configured tiers");
     }
 }

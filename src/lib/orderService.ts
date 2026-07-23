@@ -68,6 +68,17 @@ interface SplitBillInput {
   label: string;
 }
 
+export interface LoyaltyRewardOption {
+  id: string;
+  name: string;
+  points_cost: number;
+  reward_type: "FREE_ITEM" | "DISCOUNT_FIXED" | "DISCOUNT_PERCENT";
+  value_cents: number | null;
+  value_percent_bps: number | null;
+  linked_menu_item_id: string | null;
+  is_active: number;
+}
+
 export async function listTables(): Promise<TableInfo[]> {
   return invoke<TableInfo[]>("list_tables_v3", { sessionToken: token() });
 }
@@ -80,8 +91,18 @@ export async function lookupLoyaltyCard(cardNumber: string): Promise<LoyaltyCard
   return invoke<LoyaltyCardLookup | null>("lookup_loyalty_card_v3", { sessionToken: token(), cardNumber });
 }
 
-export async function earnLoyaltyPoints(cardNumber: string, points: number, orderId: string): Promise<void> {
-  return invoke("earn_loyalty_points_v3", { sessionToken: token(), cardNumber, points, orderId });
+export async function listActiveLoyaltyRewards(): Promise<LoyaltyRewardOption[]> {
+  const rows = await invoke<LoyaltyRewardOption[]>("list_loyalty_rewards_v3", { sessionToken: token() });
+  return rows.filter((r) => r.is_active);
+}
+
+/// T2.0 loyalty: redeem points for a catalog reward at POS checkout.
+/// Returns the applied reward so the caller can apply a matching manual
+/// discount to the cart via the EXISTING discount mechanism -- redemption
+/// itself is just the points ledger, not a cart mutation (see
+/// `Repo::redeem_loyalty_reward`'s doc comment).
+export async function redeemLoyaltyReward(cardNumber: string, rewardId: string): Promise<LoyaltyRewardOption> {
+  return invoke<LoyaltyRewardOption>("redeem_loyalty_reward_v3", { sessionToken: token(), cardNumber, rewardId });
 }
 
 export async function createOrder(
@@ -187,21 +208,34 @@ export async function createOrder(
   return orderId;
 }
 
+interface FinalizePaymentResult {
+  payment_id: string;
+  points_earned: number | null;
+}
+
+/// T2.0 loyalty: `cardNumber`, when passed, earns points ATOMICALLY inside
+/// the same Rust transaction as the payment -- see
+/// `Repo::finalize_order_with_payment`'s doc comment for why this replaced
+/// a separate post-payment `earnLoyaltyPoints` call. Returns the points
+/// earned (or `null` if no card was attached) so the caller can show it
+/// without a second round trip.
 export async function finalizeOrder(
   orderId: string,
   paymentMethod: string,
   amountCents: number,
   changeCents: number,
   receiptData: ReceiptData,
-  debtorId?: string
-): Promise<void> {
-  await invoke("finalize_order_with_payment_v3", {
+  debtorId?: string,
+  cardNumber?: string
+): Promise<number | null> {
+  const result = await invoke<FinalizePaymentResult>("finalize_order_with_payment_v3", {
     sessionToken: token(),
     orderId,
     method: paymentMethod,
     amountCents,
     changeCents,
     debtorId: debtorId ?? null,
+    cardNumber: cardNumber ?? null,
   });
 
   autoSyncOrder({
@@ -223,6 +257,8 @@ export async function finalizeOrder(
     logger.error("Receipt print failed, queued for retry", { error: String(err) });
     queuePrintJob(receiptData, "receipt");
   }
+
+  return result.points_earned;
 }
 
 export async function holdOrder(

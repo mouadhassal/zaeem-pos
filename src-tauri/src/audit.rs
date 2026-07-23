@@ -103,6 +103,12 @@ pub enum Action {
     /// business through the supplier side gets the same audit rigor as a
     /// debt payment or a discount (AGENTS.md prime directive #4).
     SupplierPaymentRecorded,
+    /// T2.0 loyalty: tier threshold/multiplier config changed (create/update/delete).
+    LoyaltyTierChanged,
+    /// T2.0 loyalty: rewards catalog changed (create/activate/deactivate/delete).
+    LoyaltyRewardChanged,
+    /// T2.0 loyalty: points redeemed for a reward at checkout.
+    LoyaltyPointsRedeemed,
 }
 
 impl Action {
@@ -138,6 +144,9 @@ impl Action {
             Action::BranchChanged => "BranchChanged",
             Action::DiscountApplied => "DiscountApplied",
             Action::SupplierPaymentRecorded => "SupplierPaymentRecorded",
+            Action::LoyaltyTierChanged => "LoyaltyTierChanged",
+            Action::LoyaltyRewardChanged => "LoyaltyRewardChanged",
+            Action::LoyaltyPointsRedeemed => "LoyaltyPointsRedeemed",
         }
     }
 }

@@ -35,7 +35,8 @@ import { useOrderTypeStore } from "../../stores/orderTypeStore";
 import { useMenuStore } from "../../stores/menuStore";
 import { CURRENCY_SYMBOLS } from "../../hooks/useCurrency";
 import { useDiscountCap } from "../../hooks/useDiscountCap";
-import { createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, lookupLoyaltyCard, earnLoyaltyPoints } from "../../lib/orderService";
+import { createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, lookupLoyaltyCard, listActiveLoyaltyRewards, redeemLoyaltyReward } from "../../lib/orderService";
+import type { LoyaltyRewardOption } from "../../lib/orderService";
 import { enableBarcodeScanner, disableBarcodeScanner } from "../../lib/barcodeScanner";
 import { retryPrintQueue, printReceipt } from "../../lib/printer";
 import type { ReceiptData } from "../../lib/printer";
@@ -70,6 +71,9 @@ export default function POSPage() {
   const [showLoyaltyScan, setShowLoyaltyScan] = useState(false);
   const [showDebtSelect, setShowDebtSelect] = useState(false);
   const [loyaltyCard, setLoyaltyCard] = useState<{ card_number: string; customer_name: string; points: number; tier: string } | null>(null);
+  const [loyaltyRewards, setLoyaltyRewards] = useState<LoyaltyRewardOption[]>([]);
+  const [redeemingReward, setRedeemingReward] = useState(false);
+  const [redeemError, setRedeemError] = useState<string | null>(null);
   const [receiptData, setReceiptData] = useState<ReceiptData | null>(null);
   const [pinAction, setPinAction] = useState<string>("");
   const [discountOverridePin, setDiscountOverridePin] = useState<string | null>(null);
@@ -256,8 +260,9 @@ export default function POSPage() {
         ...(orderType !== "DINE_IN" && orderType !== "DEBT" && customerPhone ? { customerPhone } : {}),
         ...(orderType === "DELIVERY" && deliveryAddress ? { deliveryAddress } : {}),
       };
+      let pointsEarned: number | null = null;
       try {
-        await finalizeOrder(orderId, effectiveMethod, receivedCents, changeCents, receipt, effectiveDebtorId ?? undefined);
+        pointsEarned = await finalizeOrder(orderId, effectiveMethod, receivedCents, changeCents, receipt, effectiveDebtorId ?? undefined, loyaltyCard?.card_number);
       } catch {
         setReceiptData(receipt);
         setShowOnScreenReceipt(true);
@@ -271,15 +276,8 @@ export default function POSPage() {
         return;
       }
       setShowPayment(false);
-      setSuccessMsg("تم الدفع ✓");
+      setSuccessMsg(pointsEarned ? `تم الدفع ✓ (+${pointsEarned} نقطة ولاء)` : "تم الدفع ✓");
       setTimeout(() => setSuccessMsg(null), 3000);
-      if (loyaltyCard) {
-        try {
-          const totalCents = useCartStore.getState().total();
-          const pointsEarned = Math.floor(totalCents / 100);
-          await earnLoyaltyPoints(loyaltyCard.card_number, pointsEarned, orderId);
-        } catch { /* silent */ }
-      }
       clearCart();
       resetOrderInfo();
       setLoyaltyCard(null);
@@ -644,28 +642,88 @@ export default function POSPage() {
       {showLoyaltyScan && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
           <div className="bg-surface rounded-[13px] shadow-sh-3 w-full max-w-sm mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold text-text">ربط بطاقة ولاء</h2>
-            <p className="text-sm text-text-3">أدخل رقم بطاقة الولاء أو امسحها ضوئياً</p>
-            <input
-              type="text"
-              placeholder="رقم البطاقة"
-              className="w-full h-10 px-4 rounded-[10px] border border-line text-sm tabular focus:outline-none focus:border-accent"
-              dir="ltr"
-              autoFocus
-              onKeyDown={async (e) => {
-                if (e.key === "Enter") {
-                  const val = (e.target as HTMLInputElement).value.trim();
-                  if (!val) return;
-                  try {
-                    const card = await lookupLoyaltyCard(val);
-                    if (card) { setLoyaltyCard(card); useOrderTypeStore.getState().setCustomerName(card.customer_name); setShowLoyaltyScan(false); }
-                  } catch { /* silent */ }
-                }
-              }}
-            />
-            <div className="flex justify-center">
-              <button onClick={() => setShowLoyaltyScan(false)} className="px-6 h-10 rounded-[10px] border border-line text-text-3 text-sm font-medium hover:bg-surface-alt transition-colors">إلغاء</button>
-            </div>
+            {!loyaltyCard ? (
+              <>
+                <h2 className="text-lg font-bold text-text">ربط بطاقة ولاء</h2>
+                <p className="text-sm text-text-3">أدخل رقم بطاقة الولاء أو امسحها ضوئياً</p>
+                <input
+                  type="text"
+                  placeholder="رقم البطاقة"
+                  className="w-full h-10 px-4 rounded-[10px] border border-line text-sm tabular focus:outline-none focus:border-accent"
+                  dir="ltr"
+                  autoFocus
+                  onKeyDown={async (e) => {
+                    if (e.key === "Enter") {
+                      const val = (e.target as HTMLInputElement).value.trim();
+                      if (!val) return;
+                      try {
+                        const card = await lookupLoyaltyCard(val);
+                        if (card) {
+                          setLoyaltyCard(card);
+                          useOrderTypeStore.getState().setCustomerName(card.customer_name);
+                          listActiveLoyaltyRewards().then(setLoyaltyRewards).catch(() => setLoyaltyRewards([]));
+                        }
+                      } catch { /* silent */ }
+                    }
+                  }}
+                />
+                <div className="flex justify-center">
+                  <button onClick={() => setShowLoyaltyScan(false)} className="px-6 h-10 rounded-[10px] border border-line text-text-3 text-sm font-medium hover:bg-surface-alt transition-colors">إلغاء</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h2 className="text-lg font-bold text-text">{loyaltyCard.customer_name}</h2>
+                <p className="text-sm text-text-3">الرصيد: <span className="font-bold text-accent-text">{loyaltyCard.points}</span> نقطة -- {loyaltyCard.tier}</p>
+                {redeemError && <p className="text-xs text-red-500">{redeemError}</p>}
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {loyaltyRewards.length === 0 && (
+                    <p className="text-xs text-text-3 text-center py-4">لا توجد مكافآت متاحة حالياً</p>
+                  )}
+                  {loyaltyRewards.map((r) => {
+                    const affordable = loyaltyCard.points >= r.points_cost;
+                    return (
+                      <button
+                        key={r.id}
+                        disabled={!affordable || redeemingReward}
+                        onClick={async () => {
+                          setRedeemError(null);
+                          setRedeemingReward(true);
+                          try {
+                            const applied = await redeemLoyaltyReward(loyaltyCard.card_number, r.id);
+                            setLoyaltyCard({ ...loyaltyCard, points: loyaltyCard.points - applied.points_cost });
+                            if (applied.reward_type === "DISCOUNT_FIXED" && applied.value_cents) {
+                              useCartStore.getState().setDiscount(applied.value_cents, `مكافأة ولاء: ${applied.name}`);
+                            } else if (applied.reward_type === "DISCOUNT_PERCENT" && applied.value_percent_bps) {
+                              const subtotal = useCartStore.getState().subtotal();
+                              useCartStore.getState().setDiscount(Math.round((subtotal * applied.value_percent_bps) / 10000), `مكافأة ولاء: ${applied.name}`);
+                            } else {
+                              setSuccessMsg(`امنح العميل: ${applied.name}`);
+                              setTimeout(() => setSuccessMsg(null), 5000);
+                            }
+                            setShowLoyaltyScan(false);
+                          } catch (err) {
+                            setRedeemError(realErrorText(err));
+                          } finally {
+                            setRedeemingReward(false);
+                          }
+                        }}
+                        className={`w-full flex items-center justify-between p-3 rounded-[10px] border text-sm text-right transition-colors ${
+                          affordable ? "border-line hover:border-accent hover:bg-accent-soft" : "border-line opacity-40 cursor-not-allowed"
+                        }`}
+                      >
+                        <span className="font-medium text-text">{r.name}</span>
+                        <span className="font-mono font-bold text-accent-text">{r.points_cost} نقطة</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex justify-between gap-2">
+                  <button onClick={() => { setLoyaltyCard(null); setLoyaltyRewards([]); }} className="px-4 h-10 rounded-[10px] border border-line text-text-3 text-sm font-medium hover:bg-surface-alt transition-colors">إلغاء الربط</button>
+                  <button onClick={() => setShowLoyaltyScan(false)} className="px-6 h-10 rounded-[10px] bg-accent text-white text-sm font-bold hover:bg-accent-text transition-colors">إغلاق</button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

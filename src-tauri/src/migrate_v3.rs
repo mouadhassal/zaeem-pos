@@ -1391,6 +1391,103 @@ pub fn run_supplier_ledger_migration(conn: &mut Connection, _db_path: &Path) -> 
     Ok(())
 }
 
+pub const MIGRATION_I_VERSION: i64 = 13;
+
+/// Loyalty rethink (T2.0 plan, docs/plans/T2.0_SUPPLIER_LICENSE_DASHBOARD_LOYALTY.md
+/// §4): tier thresholds/multipliers and the rewards catalog move from being
+/// frontend-only constants (`TIER_CONFIG`) / per-device `localStorage` junk
+/// into real, tenant-scoped, owner-configurable tables. Neither is a fact
+/// table -- both are small, owner-edited config, same shape as
+/// `menu_item_default`.
+///
+/// Seeds the CURRENT frontend `TIER_CONFIG` values (0/500/1500/3000 points,
+/// 1x/1.2x/1.5x/2x multipliers) as the initial tier rows for the single
+/// tenant this migration's install already has, so switching from
+/// frontend-derived to backend-derived tiers is not a silent behavior
+/// change for any existing install -- day 1 after this migration, a
+/// customer with 600 points is still SILVER, exactly as before.
+pub fn run_loyalty_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_I_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS loyalty_tier (
+            id                 TEXT PRIMARY KEY,
+            tenant_id          TEXT NOT NULL,
+            name               TEXT NOT NULL,
+            min_points         INTEGER NOT NULL,
+            points_multiplier  REAL NOT NULL DEFAULT 1.0,
+            sort_order         INTEGER NOT NULL,
+            updated_at_hlc TEXT NOT NULL DEFAULT '', device_id TEXT NOT NULL DEFAULT '', deleted_at TEXT, rev INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_loyalty_tier_tenant ON loyalty_tier(tenant_id);
+
+        CREATE TABLE IF NOT EXISTS loyalty_reward (
+            id                   TEXT PRIMARY KEY,
+            tenant_id            TEXT NOT NULL,
+            name                 TEXT NOT NULL,
+            points_cost          INTEGER NOT NULL,
+            reward_type          TEXT NOT NULL CHECK(reward_type IN ('FREE_ITEM','DISCOUNT_FIXED','DISCOUNT_PERCENT')),
+            value_cents          INTEGER,
+            value_percent_bps    INTEGER,
+            linked_menu_item_id  TEXT,
+            is_active            INTEGER NOT NULL DEFAULT 1,
+            updated_at_hlc TEXT NOT NULL DEFAULT '', device_id TEXT NOT NULL DEFAULT '', deleted_at TEXT, rev INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_loyalty_reward_tenant ON loyalty_reward(tenant_id);"
+    )?;
+
+    // Seed TIER_CONFIG's exact current values for every existing tenant, so
+    // no install's customers silently change tier the moment this migration
+    // runs. A brand-new tenant created AFTER this migration gets no default
+    // rows -- Owner sets their own tiers via the new settings UI; seeding
+    // only protects installs that already have customers accruing points
+    // under the old frontend-only rule.
+    if table_exists(&tx, "tenant")? {
+        let tenant_ids: Vec<String> = {
+            let mut stmt = tx.prepare("SELECT id FROM tenant")?;
+            let ids = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            ids.collect::<Result<Vec<_>, _>>()?
+        };
+        for tenant_id in tenant_ids {
+            let already_has_tiers: bool = tx.query_row(
+                "SELECT COUNT(*) > 0 FROM loyalty_tier WHERE tenant_id = ?1", params![tenant_id], |r| r.get(0),
+            )?;
+            if already_has_tiers {
+                continue;
+            }
+            for (name, min_points, multiplier, sort_order) in [
+                ("BRONZE", 0i64, 1.0f64, 0i64),
+                ("SILVER", 500, 1.2, 1),
+                ("GOLD", 1500, 1.5, 2),
+                ("PLATINUM", 3000, 2.0, 3),
+            ] {
+                tx.execute(
+                    "INSERT INTO loyalty_tier (id, tenant_id, name, min_points, points_multiplier, sort_order, updated_at_hlc, device_id, rev) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, '', '', 1)",
+                    params![uuid::Uuid::now_v7().to_string(), tenant_id, name, min_points, multiplier, sort_order],
+                )?;
+            }
+        }
+    }
+
+    println!("v13_loyalty: loyalty_tier/loyalty_reward created; existing tenant(s) seeded with the current frontend TIER_CONFIG values (0/500/1500/3000, 1x/1.2x/1.5x/2x) so no install's customer silently changes tier");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_I_VERSION, "0013_loyalty", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1940,6 +2037,58 @@ mod tests {
         );
         assert!(rejected.is_err(), "the CHECK constraint must still reject an unlisted table_name, not have been silently dropped");
         println!("[supplier-ledger-migration] sync_outbox accepts all 5 known table_names and still rejects an unknown one");
+
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(integrity, "ok");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// T2.0 loyalty migration: idempotent, creates both new tables, and
+    /// seeds the existing tenant with the exact current frontend
+    /// `TIER_CONFIG` values -- proving day-1-after-migration tier
+    /// resolution is unchanged for any existing customer.
+    #[test]
+    fn test_loyalty_migration_is_idempotent_and_seeds_current_tier_config() {
+        let db_path = fresh_db_path("loyalty_migration");
+        build_base_fixture(&db_path);
+        {
+            let mut conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+            run_expand_migration(&mut conn, &db_path).expect("Migration A failed");
+            run_remap_migration(&mut conn, &db_path).expect("Migration B failed");
+            run_identity_migration(&mut conn, &db_path).expect("Migration C failed");
+            run_drift_fix_migration(&mut conn, &db_path).expect("Migration D failed");
+            run_index_migration(&mut conn, &db_path).expect("Migration E failed");
+            run_discount_cap_migration(&mut conn, &db_path).expect("Migration F failed");
+            run_sync_outbox_migration(&mut conn, &db_path).expect("Migration G failed");
+            run_supplier_ledger_migration(&mut conn, &db_path).expect("Migration H failed");
+            run_loyalty_migration(&mut conn, &db_path).expect("Migration I failed (first run)");
+            // Second run must be a clean no-op, not an error, and must NOT duplicate the seeded tiers.
+            run_loyalty_migration(&mut conn, &db_path).expect("Migration I failed (second run -- must be idempotent)");
+        }
+        let conn = Connection::open(&db_path).unwrap();
+
+        for table in ["loyalty_tier", "loyalty_reward"] {
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1", params![table], |r| r.get(0),
+            ).unwrap();
+            assert!(exists, "{table} must exist after Migration I");
+        }
+
+        let tenant_id: String = conn.query_row("SELECT id FROM tenant LIMIT 1", [], |r| r.get(0)).unwrap();
+        let tier_count: i64 = conn.query_row("SELECT COUNT(*) FROM loyalty_tier WHERE tenant_id = ?1", params![tenant_id], |r| r.get(0)).unwrap();
+        assert_eq!(tier_count, 4, "exactly 4 seeded tiers, not 8 -- the second run must not have duplicated them");
+
+        let mut stmt = conn.prepare("SELECT name, min_points, points_multiplier FROM loyalty_tier WHERE tenant_id = ?1 ORDER BY sort_order ASC").unwrap();
+        let rows: Vec<(String, i64, f64)> = stmt.query_map(params![tenant_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(rows, vec![
+            ("BRONZE".to_string(), 0, 1.0),
+            ("SILVER".to_string(), 500, 1.2),
+            ("GOLD".to_string(), 1500, 1.5),
+            ("PLATINUM".to_string(), 3000, 2.0),
+        ], "seeded tiers must exactly match the current frontend TIER_CONFIG values -- a mismatch here means an existing install's customers would silently change tier the moment this migration runs");
+        println!("[loyalty-migration] loyalty_tier/loyalty_reward created; existing tenant seeded with exactly the 4 current TIER_CONFIG values, idempotent across two runs");
 
         let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
         assert_eq!(integrity, "ok");

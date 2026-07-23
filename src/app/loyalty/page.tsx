@@ -2,86 +2,80 @@ import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
+import { useCurrency } from "../../hooks/useCurrency";
 import { CreditCard, Plus, Search } from "lucide-react";
-import { IconGift, IconTag, IconEdit, IconTrash } from "@tabler/icons-react";
+import { IconGift, IconTag, IconPencil, IconTrash } from "@tabler/icons-react";
 
 interface Customer { id: string; name: string; phone: string; loyalty_points: number; total_orders: number; total_spent_cents: number; }
 interface LoyaltyCard { id: string; customer_id: string; card_number: string; points: number; tier: string; issued_at: string; last_used_at: string | null; customer_name: string; customer_phone: string | null; }
 interface LoyaltyTx { id: string; card_id: string; points: number; tx_type: string; reference_type: string | null; reference_id: string | null; created_at: string; }
 
-export interface LoyaltyReward {
+interface LoyaltyTier {
   id: string;
-  tier: string;
   name: string;
-  description: string;
-  type: "discount_percent" | "free_item" | "fixed_discount" | "points_multiplier";
-  value: number;
-  menuItemName?: string;
-  active: boolean;
-  startsAt?: string;
-  endsAt?: string;
+  min_points: number;
+  points_multiplier: number;
+  sort_order: number;
 }
 
-const REWARDS_KEY = "zaeem_loyalty_rewards";
-
-export function loadRewards(): LoyaltyReward[] {
-  try {
-    const raw = localStorage.getItem(REWARDS_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-export function saveRewards(rewards: LoyaltyReward[]) {
-  localStorage.setItem(REWARDS_KEY, JSON.stringify(rewards));
+interface LoyaltyReward {
+  id: string;
+  name: string;
+  points_cost: number;
+  reward_type: "FREE_ITEM" | "DISCOUNT_FIXED" | "DISCOUNT_PERCENT";
+  value_cents: number | null;
+  value_percent_bps: number | null;
+  linked_menu_item_id: string | null;
+  is_active: number;
 }
 
 function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString("ar-SA", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-const TIER_CONFIG: Record<string, { label: string; color: string; icon: string; min_points: number; multiplier: number }> = {
-  BRONZE: { label: "برونزي", color: "text-amber-700 bg-amber-50 border-amber-200", icon: "B", min_points: 0, multiplier: 1 },
-  SILVER: { label: "فضي", color: "text-ink-600 bg-ink-100 border-ink-300", icon: "S", min_points: 500, multiplier: 1.2 },
-  GOLD: { label: "ذهبي", color: "text-yellow-600 bg-yellow-50 border-yellow-300", icon: "G", min_points: 1500, multiplier: 1.5 },
-  PLATINUM: { label: "بلاتيني", color: "text-purple-600 bg-purple-50 border-purple-300", icon: "P", min_points: 3000, multiplier: 2 },
+// Owner-configured tier NAMES are free text (T2.0: real backend config, no
+// longer a hardcoded frontend enum) -- this map is presentational only, for
+// the 4 default seeded names; an unrecognized/custom tier name still works,
+// it just gets the neutral fallback style below.
+const TIER_STYLE: Record<string, { color: string; icon: string }> = {
+  BRONZE: { color: "text-amber-700 bg-amber-50 border-amber-200", icon: "B" },
+  SILVER: { color: "text-ink-600 bg-ink-100 border-ink-300", icon: "S" },
+  GOLD: { color: "text-yellow-600 bg-yellow-50 border-yellow-300", icon: "G" },
+  PLATINUM: { color: "text-purple-600 bg-purple-50 border-purple-300", icon: "P" },
 };
-
-const TIERS = ["BRONZE", "SILVER", "GOLD", "PLATINUM"];
+const DEFAULT_TIER_STYLE = { color: "text-saffron-700 bg-saffron-50 border-saffron-200", icon: "•" };
 
 const REWARD_TYPE_OPTIONS = [
-  { value: "discount_percent", label: "خصم %" },
-  { value: "free_item", label: "عنصر مجاني" },
-  { value: "fixed_discount", label: "خصم ثابت" },
-  { value: "points_multiplier", label: "مضاعف نقاط" },
+  { value: "FREE_ITEM", label: "عنصر مجاني" },
+  { value: "DISCOUNT_FIXED", label: "خصم ثابت" },
+  { value: "DISCOUNT_PERCENT", label: "خصم %" },
 ] as const;
 
 const REWARD_TYPE_LABELS: Record<string, string> = {
-  discount_percent: "خصم %",
-  free_item: "عنصر مجاني",
-  fixed_discount: "خصم ثابت",
-  points_multiplier: "مضاعف نقاط",
+  FREE_ITEM: "عنصر مجاني",
+  DISCOUNT_FIXED: "خصم ثابت",
+  DISCOUNT_PERCENT: "خصم %",
 };
 
 const emptyRewardForm = () => ({
-  tier: "BRONZE",
   name: "",
-  description: "",
-  type: "discount_percent" as LoyaltyReward["type"],
-  value: 0,
-  menuItemName: "",
-  active: true,
-  startsAt: "",
-  endsAt: "",
+  pointsCost: "",
+  rewardType: "FREE_ITEM" as LoyaltyReward["reward_type"],
+  value: "",
+  linkedMenuItemId: "",
 });
+
+const emptyTierForm = () => ({ name: "", minPoints: "", multiplier: "1", sortOrder: "0" });
 
 export default function LoyaltyPage() {
   const token = useAuthStore((s) => s.token);
-  const [tab, setTab] = useState<"cards" | "transactions" | "rewards">("cards");
+  const { fmt } = useCurrency();
+  const [tab, setTab] = useState<"cards" | "transactions" | "rewards" | "tiers">("cards");
   const [cards, setCards] = useState<LoyaltyCard[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [transactions, setTransactions] = useState<LoyaltyTx[]>([]);
+  const [tiers, setTiers] = useState<LoyaltyTier[]>([]);
+  const [rewards, setRewards] = useState<LoyaltyReward[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showIssue, setShowIssue] = useState(false);
@@ -89,11 +83,16 @@ export default function LoyaltyPage() {
   const [search, setSearch] = useState("");
   const [txCardFilter, setTxCardFilter] = useState("");
 
-  const [rewards, setRewards] = useState<LoyaltyReward[]>(() => loadRewards());
   const [showRewardModal, setShowRewardModal] = useState(false);
-  const [editingReward, setEditingReward] = useState<LoyaltyReward | null>(null);
   const [rewardForm, setRewardForm] = useState(emptyRewardForm());
   const [rewardFormError, setRewardFormError] = useState<string | null>(null);
+  const [savingReward, setSavingReward] = useState(false);
+
+  const [showTierModal, setShowTierModal] = useState(false);
+  const [editingTier, setEditingTier] = useState<LoyaltyTier | null>(null);
+  const [tierForm, setTierForm] = useState(emptyTierForm());
+  const [tierFormError, setTierFormError] = useState<string | null>(null);
+  const [savingTier, setSavingTier] = useState(false);
 
   const fetchCards = useCallback(async () => {
     try {
@@ -116,7 +115,24 @@ export default function LoyaltyPage() {
     } catch (err) { setLoadError(`حدث خطأ في تحميل حركات النقاط: ${realErrorText(err)}`); }
   }, [token, txCardFilter]);
 
-  useEffect(() => { setLoading(true); setLoadError(null); Promise.all([fetchCards(), fetchCustomers(), fetchTransactions()]).finally(() => setLoading(false)); }, [fetchCards, fetchCustomers, fetchTransactions]);
+  const fetchTiers = useCallback(async () => {
+    try {
+      const rows = await invoke<LoyaltyTier[]>("list_loyalty_tiers_v3", { sessionToken: token });
+      setTiers(rows);
+    } catch (err) { setLoadError(`حدث خطأ في تحميل الدرجات: ${realErrorText(err)}`); }
+  }, [token]);
+
+  const fetchRewards = useCallback(async () => {
+    try {
+      const rows = await invoke<LoyaltyReward[]>("list_loyalty_rewards_v3", { sessionToken: token });
+      setRewards(rows);
+    } catch (err) { setLoadError(`حدث خطأ في تحميل المكافآت: ${realErrorText(err)}`); }
+  }, [token]);
+
+  useEffect(() => {
+    setLoading(true); setLoadError(null);
+    Promise.all([fetchCards(), fetchCustomers(), fetchTransactions(), fetchTiers(), fetchRewards()]).finally(() => setLoading(false));
+  }, [fetchCards, fetchCustomers, fetchTransactions, fetchTiers, fetchRewards]);
 
   const [issueError, setIssueError] = useState<string | null>(null);
   const [cardUid, setCardUid] = useState("");
@@ -182,115 +198,136 @@ export default function LoyaltyPage() {
     !search || c.customer_name.toLowerCase().includes(search.toLowerCase()) || c.card_number.toLowerCase().includes(search.toLowerCase()) || (c.customer_phone ?? "").includes(search)
   );
 
+  // Mirrors Repo::tier_for exactly: highest tier whose min_points <= points.
+  // Sourced from the REAL backend config now, not a hardcoded frontend enum.
+  const sortedTiers = [...tiers].sort((a, b) => a.sort_order - b.sort_order);
   const getTierInfo = (points: number) => {
-    for (let i = TIERS.length - 1; i >= 0; i--) {
-      if (points >= TIER_CONFIG[TIERS[i]].min_points) return TIER_CONFIG[TIERS[i]];
+    let best: LoyaltyTier | null = null;
+    for (const t of sortedTiers) {
+      if (points >= t.min_points && (!best || t.min_points > best.min_points)) best = t;
     }
-    return TIER_CONFIG.BRONZE;
+    return best;
+  };
+  const nextTierFor = (points: number) => {
+    const candidates = sortedTiers.filter((t) => t.min_points > points).sort((a, b) => a.min_points - b.min_points);
+    return candidates[0] ?? null;
   };
 
   const openAddReward = () => {
-    setEditingReward(null);
     setRewardForm(emptyRewardForm());
     setRewardFormError(null);
     setShowRewardModal(true);
   };
 
-  const openEditReward = (reward: LoyaltyReward) => {
-    setEditingReward(reward);
-    setRewardForm({
-      tier: reward.tier,
-      name: reward.name,
-      description: reward.description,
-      type: reward.type,
-      value: reward.value,
-      menuItemName: reward.menuItemName ?? "",
-      active: reward.active,
-      startsAt: reward.startsAt ?? "",
-      endsAt: reward.endsAt ?? "",
-    });
+  const handleSaveReward = async () => {
     setRewardFormError(null);
-    setShowRewardModal(true);
-  };
+    const pointsCost = parseInt(rewardForm.pointsCost, 10);
+    if (!rewardForm.name.trim()) { setRewardFormError("اسم المكافأة مطلوب"); return; }
+    if (!pointsCost || pointsCost <= 0) { setRewardFormError("تكلفة النقاط يجب أن تكون أكبر من صفر"); return; }
 
-  const handleSaveReward = () => {
-    setRewardFormError(null);
-    if (!rewardForm.name.trim()) {
-      setRewardFormError("اسم المكافأة مطلوب");
-      return;
-    }
-    if (rewardForm.value <= 0) {
-      setRewardFormError("القيمة يجب أن تكون أكبر من صفر");
-      return;
-    }
-    if (rewardForm.type === "free_item" && !rewardForm.menuItemName.trim()) {
-      setRewardFormError("اسم العنصر مطلوب للعنصر المجاني");
-      return;
+    let valueCents: number | null = null;
+    let valuePercentBps: number | null = null;
+    if (rewardForm.rewardType === "DISCOUNT_FIXED") {
+      valueCents = Math.round(parseFloat(rewardForm.value || "0") * 100);
+      if (valueCents <= 0) { setRewardFormError("قيمة الخصم يجب أن تكون أكبر من صفر"); return; }
+    } else if (rewardForm.rewardType === "DISCOUNT_PERCENT") {
+      valuePercentBps = Math.round(parseFloat(rewardForm.value || "0") * 100);
+      if (valuePercentBps <= 0) { setRewardFormError("نسبة الخصم يجب أن تكون أكبر من صفر"); return; }
     }
 
-    if (editingReward) {
-      const updated = rewards.map((r) =>
-        r.id === editingReward.id
-          ? {
-              ...r,
-              tier: rewardForm.tier,
-              name: rewardForm.name.trim(),
-              description: rewardForm.description.trim(),
-              type: rewardForm.type,
-              value: rewardForm.value,
-              active: rewardForm.active,
-              ...(rewardForm.menuItemName.trim() ? { menuItemName: rewardForm.menuItemName.trim() } : {}),
-              ...(rewardForm.startsAt ? { startsAt: rewardForm.startsAt } : {}),
-              ...(rewardForm.endsAt ? { endsAt: rewardForm.endsAt } : {}),
-            }
-          : r
-      );
-      setRewards(updated);
-      saveRewards(updated);
-    } else {
-      const newReward: LoyaltyReward = {
-        id: crypto.randomUUID(),
-        tier: rewardForm.tier,
+    setSavingReward(true);
+    try {
+      await invoke("create_loyalty_reward_v3", {
+        sessionToken: token,
         name: rewardForm.name.trim(),
-        description: rewardForm.description.trim(),
-        type: rewardForm.type,
-        value: rewardForm.value,
-        active: rewardForm.active,
-        ...(rewardForm.menuItemName.trim() ? { menuItemName: rewardForm.menuItemName.trim() } : {}),
-        ...(rewardForm.startsAt ? { startsAt: rewardForm.startsAt } : {}),
-        ...(rewardForm.endsAt ? { endsAt: rewardForm.endsAt } : {}),
-      };
-      const updated = [...rewards, newReward];
-      setRewards(updated);
-      saveRewards(updated);
+        pointsCost,
+        rewardType: rewardForm.rewardType,
+        valueCents,
+        valuePercentBps,
+        linkedMenuItemId: rewardForm.linkedMenuItemId.trim() || null,
+      });
+      await fetchRewards();
+      setShowRewardModal(false);
+    } catch (err) {
+      setRewardFormError(realErrorText(err));
+    } finally {
+      setSavingReward(false);
     }
-    setShowRewardModal(false);
   };
 
-  const handleDeleteReward = (id: string) => {
+  const handleDeleteReward = async (id: string) => {
     if (!window.confirm("هل أنت متأكد من حذف هذه المكافأة؟")) return;
-    const updated = rewards.filter((r) => r.id !== id);
-    setRewards(updated);
-    saveRewards(updated);
+    try {
+      await invoke("delete_loyalty_reward_v3", { sessionToken: token, rewardId: id });
+      await fetchRewards();
+    } catch (err) {
+      setLoadError(`حدث خطأ في حذف المكافأة: ${realErrorText(err)}`);
+    }
   };
 
-  const handleToggleRewardActive = (id: string) => {
-    const updated = rewards.map((r) => (r.id === id ? { ...r, active: !r.active } : r));
-    setRewards(updated);
-    saveRewards(updated);
+  const handleToggleRewardActive = async (reward: LoyaltyReward) => {
+    try {
+      await invoke("set_loyalty_reward_active_v3", { sessionToken: token, rewardId: reward.id, isActive: !reward.is_active });
+      await fetchRewards();
+    } catch (err) {
+      setLoadError(`حدث خطأ في تحديث المكافأة: ${realErrorText(err)}`);
+    }
   };
 
-  const rewardsByTier = TIERS.map((t) => ({
-    tier: t,
-    label: TIER_CONFIG[t].label,
-    rewards: rewards.filter((r) => r.tier === t),
-  }));
+  const openAddTier = () => {
+    setEditingTier(null);
+    setTierForm(emptyTierForm());
+    setTierFormError(null);
+    setShowTierModal(true);
+  };
+
+  const openEditTier = (t: LoyaltyTier) => {
+    setEditingTier(t);
+    setTierForm({ name: t.name, minPoints: String(t.min_points), multiplier: String(t.points_multiplier), sortOrder: String(t.sort_order) });
+    setTierFormError(null);
+    setShowTierModal(true);
+  };
+
+  const handleSaveTier = async () => {
+    setTierFormError(null);
+    const minPoints = parseInt(tierForm.minPoints, 10);
+    const multiplier = parseFloat(tierForm.multiplier);
+    const sortOrder = parseInt(tierForm.sortOrder, 10) || 0;
+    if (!tierForm.name.trim()) { setTierFormError("اسم الدرجة مطلوب"); return; }
+    if (isNaN(minPoints) || minPoints < 0) { setTierFormError("الحد الأدنى للنقاط يجب أن يكون صفراً أو أكبر"); return; }
+    if (isNaN(multiplier) || multiplier <= 0) { setTierFormError("مضاعف النقاط يجب أن يكون أكبر من صفر"); return; }
+
+    setSavingTier(true);
+    try {
+      if (editingTier) {
+        await invoke("update_loyalty_tier_v3", { sessionToken: token, tierId: editingTier.id, name: tierForm.name.trim(), minPoints, pointsMultiplier: multiplier, sortOrder });
+      } else {
+        await invoke("create_loyalty_tier_v3", { sessionToken: token, name: tierForm.name.trim(), minPoints, pointsMultiplier: multiplier, sortOrder });
+      }
+      await fetchTiers();
+      setShowTierModal(false);
+    } catch (err) {
+      setTierFormError(realErrorText(err));
+    } finally {
+      setSavingTier(false);
+    }
+  };
+
+  const handleDeleteTier = async (id: string) => {
+    if (!window.confirm("هل أنت متأكد من حذف هذه الدرجة؟")) return;
+    try {
+      await invoke("delete_loyalty_tier_v3", { sessionToken: token, tierId: id });
+      await fetchTiers();
+    } catch (err) {
+      setLoadError(`حدث خطأ في حذف الدرجة: ${realErrorText(err)}`);
+    }
+  };
 
   if (loading) {
     return <div className="flex items-center justify-center h-full text-ink-500 font-arabic">جاري التحميل...</div>;
   }
 
-  if (loadError && cards.length === 0) {
+  if (loadError && cards.length === 0 && tiers.length === 0) {
     return <div className="flex items-center justify-center h-full text-red-500 font-arabic">{loadError}</div>;
   }
 
@@ -304,24 +341,32 @@ export default function LoyaltyPage() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        {TIERS.map((t) => (
-          <div key={t} className={`bg-white rounded-2xl p-4 shadow-sh-1 border ${TIER_CONFIG[t].color} border-opacity-30`}>
-            <div className="flex items-center justify-between">
-              <span className="w-8 h-8 rounded-lg bg-current/10 flex items-center justify-center text-sm font-bold font-mono">{TIER_CONFIG[t].icon}</span>
-              <span className="text-sm font-bold text-ink-900">{TIER_CONFIG[t].label}</span>
+        {sortedTiers.map((t) => {
+          const style = TIER_STYLE[t.name] ?? DEFAULT_TIER_STYLE;
+          return (
+            <div key={t.id} className={`bg-white rounded-2xl p-4 shadow-sh-1 border ${style.color} border-opacity-30`}>
+              <div className="flex items-center justify-between">
+                <span className="w-8 h-8 rounded-lg bg-current/10 flex items-center justify-center text-sm font-bold font-mono">{style.icon}</span>
+                <span className="text-sm font-bold text-ink-900">{t.name}</span>
+              </div>
+              <p className="text-xs text-ink-400 mt-2">من {t.min_points} نقطة</p>
+              <p className="text-xs text-ink-400">مضاعف: x{t.points_multiplier}</p>
             </div>
-            <p className="text-xs text-ink-400 mt-2">من {TIER_CONFIG[t].min_points} نقطة</p>
-            <p className="text-xs text-ink-400">مضاعف: x{TIER_CONFIG[t].multiplier}</p>
+          );
+        })}
+        {sortedTiers.length === 0 && (
+          <div className="col-span-full text-center py-6 text-ink-500 font-arabic bg-white rounded-2xl shadow-sh-1">
+            لا توجد درجات ولاء بعد -- أضف واحدة من تبويب "الدرجات"
           </div>
-        ))}
+        )}
       </div>
 
       <div className="flex gap-2 border-b border-ink-200 pb-2">
-        {(["cards", "transactions", "rewards"] as const).map((t) => (
+        {(["cards", "transactions", "rewards", "tiers"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)} className={`px-5 py-2 rounded-t-lg font-arabic font-medium text-sm transition-colors ${
             tab === t ? "bg-saffron-600 text-white shadow-sh-1" : "text-ink-500 hover:text-saffron-600 hover:bg-white"
           }`}>
-            {t === "cards" ? "بطاقات الولاء" : t === "transactions" ? "حركات النقاط" : "المكافآت"}
+            {t === "cards" ? "بطاقات الولاء" : t === "transactions" ? "حركات النقاط" : t === "rewards" ? "المكافآت" : "الدرجات"}
           </button>
         ))}
       </div>
@@ -336,6 +381,8 @@ export default function LoyaltyPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredCards.map((card) => {
               const tier = getTierInfo(card.points);
+              const style = tier ? (TIER_STYLE[tier.name] ?? DEFAULT_TIER_STYLE) : DEFAULT_TIER_STYLE;
+              const next = nextTierFor(card.points);
               return (
                 <div key={card.id} className="bg-white rounded-sm border border-ink-200">
                   <div className="bg-saffron-600 p-4 text-white">
@@ -345,8 +392,8 @@ export default function LoyaltyPage() {
                     </div>
                     <p className="text-lg font-bold mt-3">{card.customer_name}</p>
                     <div className="flex items-center gap-2 mt-2">
-                      <span className="w-6 h-6 rounded-md bg-white/20 flex items-center justify-center text-xs font-bold font-mono">{tier.icon}</span>
-                      <span className="text-sm">{tier.label}</span>
+                      <span className="w-6 h-6 rounded-md bg-white/20 flex items-center justify-center text-xs font-bold font-mono">{style.icon}</span>
+                      <span className="text-sm">{tier?.name ?? card.tier}</span>
                     </div>
                   </div>
                   <div className="p-4 space-y-2">
@@ -368,14 +415,9 @@ export default function LoyaltyPage() {
                         <span className="text-ink-500">{card.last_used_at.slice(0, 10)}</span>
                       </div>
                     )}
-                    {card.points >= 500 && card.points < 1500 && (
+                    {next && (
                       <div className="bg-amber-50 text-amber-700 text-xs p-2 rounded-lg font-arabic text-center">
-                        يحتاج {1500 - card.points} نقطة للوصول للدرجة الذهبية
-                      </div>
-                    )}
-                    {card.points >= 1500 && card.points < 3000 && (
-                      <div className="bg-purple-50 text-purple-700 text-xs p-2 rounded-lg font-arabic text-center">
-                        يحتاج {3000 - card.points} نقطة للوصول للدرجة البلاتينية
+                        يحتاج {next.min_points - card.points} نقطة للوصول لدرجة {next.name}
                       </div>
                     )}
                   </div>
@@ -450,80 +492,103 @@ export default function LoyaltyPage() {
             </button>
           </div>
 
-          {rewardsByTier.map(({ tier, label, rewards: tierRewards }) => (
-            <div key={tier} className="space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="w-7 h-7 rounded-lg bg-current/10 flex items-center justify-center text-xs font-bold font-mono" style={{ color: TIER_CONFIG[tier].color.split(" ")[0] }}>
-                  {TIER_CONFIG[tier].icon}
-                </span>
-                <h3 className="text-sm font-bold text-ink-900 font-arabic">{label}</h3>
-                <span className="text-xs text-ink-400 font-arabic">({tierRewards.length})</span>
-              </div>
-              {tierRewards.length === 0 ? (
-                <div className="bg-white rounded-2xl shadow-sh-1 p-4 text-center text-ink-400 text-sm font-arabic">
-                  لا توجد مكافآت لهذه الدرجة
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {tierRewards.map((reward) => (
-                    <div key={reward.id} className={`bg-white rounded-2xl shadow-sh-1 border border-ink-200 p-4 flex items-center gap-4 ${!reward.active ? "opacity-50" : ""}`}>
-                      <div className="w-10 h-10 rounded-xl bg-saffron-100 flex items-center justify-center flex-shrink-0">
-                        <IconTag className="w-5 h-5 text-saffron-600" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-bold text-ink-900 font-arabic truncate">{reward.name}</span>
-                          <span className="text-xs px-2 py-0.5 rounded-full bg-saffron-100 text-saffron-600 font-arabic font-medium">
-                            {REWARD_TYPE_LABELS[reward.type]}
-                          </span>
-                        </div>
-                        {reward.description && (
-                          <p className="text-xs text-ink-400 font-arabic mt-1 truncate">{reward.description}</p>
-                        )}
-                        <div className="flex items-center gap-3 mt-1 text-xs text-ink-400">
-                          <span className="font-mono font-bold text-saffron-600">
-                            {reward.type === "discount_percent" ? `${reward.value}%` : reward.type === "points_multiplier" ? `x${reward.value}` : `${reward.value}`}
-                          </span>
-                          {reward.menuItemName && (
-                            <span className="font-arabic">العنصر: {reward.menuItemName}</span>
-                          )}
-                          {reward.startsAt && (
-                            <span className="font-arabic">من {reward.startsAt}</span>
-                          )}
-                          {reward.endsAt && (
-                            <span className="font-arabic">إلى {reward.endsAt}</span>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        <button
-                          onClick={() => handleToggleRewardActive(reward.id)}
-                          className={`relative w-10 h-6 rounded-full transition-colors ${reward.active ? "bg-saffron-600" : "bg-ink-300"}`}
-                          title={reward.active ? "تعطيل" : "تفعيل"}
-                        >
-                          <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${reward.active ? "right-0.5" : "right-[18px]"}`} />
-                        </button>
-                        <button onClick={() => openEditReward(reward)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center transition-colors" title="تعديل">
-                          <IconEdit className="w-4 h-4 text-ink-500" />
-                        </button>
-                        <button onClick={() => handleDeleteReward(reward.id)} className="w-8 h-8 rounded-lg hover:bg-red-50 flex items-center justify-center transition-colors" title="حذف">
-                          <IconTrash className="w-4 h-4 text-red-500" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-
-          {rewards.length === 0 && (
-            <div className="text-center py-12 text-ink-500 font-arabic space-y-2">
+          {rewards.length === 0 ? (
+            <div className="text-center py-12 text-ink-500 font-arabic space-y-2 bg-white rounded-2xl shadow-sh-1">
               <IconGift className="w-10 h-10 mx-auto text-ink-300" />
               <p>لا توجد مكافآت بعد</p>
-              <p className="text-xs text-ink-400">أضف مكافآت لكل درجة ولاء</p>
+              <p className="text-xs text-ink-400">أضف مكافآت يستبدلها العملاء بنقاطهم</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {rewards.map((reward) => (
+                <div key={reward.id} className={`bg-white rounded-2xl shadow-sh-1 border border-ink-200 p-4 flex items-center gap-4 ${!reward.is_active ? "opacity-50" : ""}`}>
+                  <div className="w-10 h-10 rounded-xl bg-saffron-100 flex items-center justify-center flex-shrink-0">
+                    <IconTag className="w-5 h-5 text-saffron-600" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold text-ink-900 font-arabic truncate">{reward.name}</span>
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-saffron-100 text-saffron-600 font-arabic font-medium">
+                        {REWARD_TYPE_LABELS[reward.reward_type]}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3 mt-1 text-xs text-ink-400">
+                      <span className="font-mono font-bold text-saffron-600">{reward.points_cost} نقطة</span>
+                      {reward.reward_type === "DISCOUNT_FIXED" && reward.value_cents != null && (
+                        <span className="font-arabic">خصم {fmt(reward.value_cents)}</span>
+                      )}
+                      {reward.reward_type === "DISCOUNT_PERCENT" && reward.value_percent_bps != null && (
+                        <span className="font-arabic">خصم {(reward.value_percent_bps / 100).toFixed(1)}%</span>
+                      )}
+                      {reward.linked_menu_item_id && (
+                        <span className="font-arabic">صنف: {reward.linked_menu_item_id}</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <button
+                      onClick={() => handleToggleRewardActive(reward)}
+                      role="switch"
+                      aria-checked={!!reward.is_active}
+                      dir="ltr"
+                      className={`relative w-10 h-6 rounded-full transition-colors ${reward.is_active ? "bg-saffron-600" : "bg-ink-300"}`}
+                      title={reward.is_active ? "تعطيل" : "تفعيل"}
+                    >
+                      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${reward.is_active ? "translate-x-4" : "translate-x-0.5"}`} />
+                    </button>
+                    <button onClick={() => handleDeleteReward(reward.id)} className="w-8 h-8 rounded-lg hover:bg-red-50 flex items-center justify-center transition-colors" title="حذف">
+                      <IconTrash className="w-4 h-4 text-red-500" />
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
+        </div>
+      )}
+
+      {tab === "tiers" && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-ink-500 font-arabic">{tiers.length} درجة</span>
+            <button onClick={openAddTier} className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors flex items-center gap-2">
+              <Plus className="w-4 h-4" /> إضافة درجة
+            </button>
+          </div>
+          <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-ink-200 text-ink-400 font-arabic">
+                  <th className="text-right p-3 font-medium">الاسم</th>
+                  <th className="text-right p-3 font-medium">الحد الأدنى للنقاط</th>
+                  <th className="text-right p-3 font-medium">مضاعف النقاط</th>
+                  <th className="text-center p-3 font-medium">إجراءات</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedTiers.map((t) => (
+                  <tr key={t.id} className="border-b border-ink-200 hover:bg-white">
+                    <td className="p-3 font-arabic text-ink-900 font-medium">{t.name}</td>
+                    <td className="p-3 font-mono text-ink-900">{t.min_points}</td>
+                    <td className="p-3 font-mono text-ink-900">x{t.points_multiplier}</td>
+                    <td className="p-3 text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        <button onClick={() => openEditTier(t)} className="p-1.5 rounded-lg text-xs text-saffron-600 hover:bg-saffron-50 transition-colors" title="تعديل">
+                          <IconPencil className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => handleDeleteTier(t.id)} className="p-1.5 rounded-lg text-xs text-red-500 hover:bg-red-50 transition-colors" title="حذف">
+                          <IconTrash className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {sortedTiers.length === 0 && (
+                  <tr><td colSpan={4} className="p-6 text-center text-ink-500 font-arabic">لا توجد درجات</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -631,29 +696,36 @@ export default function LoyaltyPage() {
       {showRewardModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold text-ink-900 font-arabic">
-              {editingReward ? "تعديل المكافأة" : "إضافة مكافأة جديدة"}
-            </h2>
+            <h2 className="text-lg font-bold text-ink-900 font-arabic">إضافة مكافأة جديدة</h2>
+
+            <div>
+              <label className="block text-sm font-arabic text-ink-900 mb-1">الاسم</label>
+              <input
+                type="text"
+                value={rewardForm.name}
+                onChange={(e) => setRewardForm((f) => ({ ...f, name: e.target.value }))}
+                placeholder="مثال: قهوة مجانية"
+                className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500 font-arabic"
+              />
+            </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-arabic text-ink-900 mb-1">الدرجة</label>
-                <select
-                  value={rewardForm.tier}
-                  onChange={(e) => setRewardForm((f) => ({ ...f, tier: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500 font-arabic"
-                >
-                  {TIERS.map((t) => (
-                    <option key={t} value={t}>{TIER_CONFIG[t].label}</option>
-                  ))}
-                </select>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">تكلفة النقاط</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={rewardForm.pointsCost}
+                  onChange={(e) => setRewardForm((f) => ({ ...f, pointsCost: e.target.value }))}
+                  className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500 font-mono"
+                  dir="ltr"
+                />
               </div>
-
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">النوع</label>
                 <select
-                  value={rewardForm.type}
-                  onChange={(e) => setRewardForm((f) => ({ ...f, type: e.target.value as LoyaltyReward["type"] }))}
+                  value={rewardForm.rewardType}
+                  onChange={(e) => setRewardForm((f) => ({ ...f, rewardType: e.target.value as LoyaltyReward["reward_type"] }))}
                   className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500 font-arabic"
                 >
                   {REWARD_TYPE_OPTIONS.map((opt) => (
@@ -663,98 +735,78 @@ export default function LoyaltyPage() {
               </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-arabic text-ink-900 mb-1">الاسم</label>
-              <input
-                type="text"
-                value={rewardForm.name}
-                onChange={(e) => setRewardForm((f) => ({ ...f, name: e.target.value }))}
-                placeholder="مثال: خصم 20% للبلاتيني"
-                className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500 font-arabic"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-arabic text-ink-900 mb-1">الوصف</label>
-              <input
-                type="text"
-                value={rewardForm.description}
-                onChange={(e) => setRewardForm((f) => ({ ...f, description: e.target.value }))}
-                placeholder="وصف اختياري"
-                className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500 font-arabic"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
+            {rewardForm.rewardType !== "FREE_ITEM" && (
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">
-                  {rewardForm.type === "discount_percent" ? "النسبة %" : rewardForm.type === "points_multiplier" ? "المضاعف" : "القيمة"}
+                  {rewardForm.rewardType === "DISCOUNT_PERCENT" ? "نسبة الخصم %" : "قيمة الخصم"}
                 </label>
                 <input
                   type="number"
                   min={0}
-                  step={rewardForm.type === "discount_percent" || rewardForm.type === "points_multiplier" ? 0.1 : 1}
+                  step={0.01}
                   value={rewardForm.value}
-                  onChange={(e) => setRewardForm((f) => ({ ...f, value: parseFloat(e.target.value) || 0 }))}
+                  onChange={(e) => setRewardForm((f) => ({ ...f, value: e.target.value }))}
                   className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500 font-mono"
+                  dir="ltr"
                 />
               </div>
+            )}
 
-              {rewardForm.type === "free_item" && (
-                <div>
-                  <label className="block text-sm font-arabic text-ink-900 mb-1">اسم العنصر</label>
-                  <input
-                    type="text"
-                    value={rewardForm.menuItemName}
-                    onChange={(e) => setRewardForm((f) => ({ ...f, menuItemName: e.target.value }))}
-                    placeholder="مثال: مشروب غازي"
-                    className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500 font-arabic"
-                  />
-                </div>
-              )}
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
+            {rewardForm.rewardType === "FREE_ITEM" && (
               <div>
-                <label className="block text-sm font-arabic text-ink-900 mb-1">تاريخ البداية</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">معرّف الصنف (اختياري)</label>
                 <input
-                  type="date"
-                  value={rewardForm.startsAt}
-                  onChange={(e) => setRewardForm((f) => ({ ...f, startsAt: e.target.value }))}
+                  type="text"
+                  value={rewardForm.linkedMenuItemId}
+                  onChange={(e) => setRewardForm((f) => ({ ...f, linkedMenuItemId: e.target.value }))}
                   className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500 font-mono"
+                  dir="ltr"
                 />
               </div>
-              <div>
-                <label className="block text-sm font-arabic text-ink-900 mb-1">تاريخ النهاية</label>
-                <input
-                  type="date"
-                  value={rewardForm.endsAt}
-                  onChange={(e) => setRewardForm((f) => ({ ...f, endsAt: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500 font-mono"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setRewardForm((f) => ({ ...f, active: !f.active }))}
-                className={`relative w-10 h-6 rounded-full transition-colors ${rewardForm.active ? "bg-saffron-600" : "bg-ink-300"}`}
-              >
-                <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${rewardForm.active ? "right-0.5" : "right-[18px]"}`} />
-              </button>
-              <span className="text-sm font-arabic text-ink-700">{rewardForm.active ? "نشط" : "معطل"}</span>
-            </div>
+            )}
 
             {rewardFormError && <p className="text-xs text-red-500 font-arabic">{rewardFormError}</p>}
 
             <div className="flex gap-2 pt-2">
-              <button onClick={handleSaveReward} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">
-                {editingReward ? "حفظ التعديلات" : "إضافة المكافأة"}
+              <button onClick={handleSaveReward} disabled={savingReward} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50">
+                {savingReward ? "جاري الحفظ..." : "إضافة المكافأة"}
               </button>
               <button onClick={() => setShowRewardModal(false)} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">
                 إلغاء
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showTierModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6 space-y-4">
+            <h2 className="text-lg font-bold text-ink-900 font-arabic">{editingTier ? "تعديل درجة" : "إضافة درجة جديدة"}</h2>
+            <div>
+              <label className="block text-sm font-arabic text-ink-900 mb-1">الاسم</label>
+              <input type="text" value={tierForm.name} onChange={(e) => setTierForm((f) => ({ ...f, name: e.target.value }))} className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500 font-arabic" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">الحد الأدنى للنقاط</label>
+                <input type="number" min={0} value={tierForm.minPoints} onChange={(e) => setTierForm((f) => ({ ...f, minPoints: e.target.value }))} className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500 font-mono" dir="ltr" />
+              </div>
+              <div>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">مضاعف النقاط</label>
+                <input type="number" min={0.1} step={0.1} value={tierForm.multiplier} onChange={(e) => setTierForm((f) => ({ ...f, multiplier: e.target.value }))} className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500 font-mono" dir="ltr" />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-arabic text-ink-900 mb-1">ترتيب العرض</label>
+              <input type="number" value={tierForm.sortOrder} onChange={(e) => setTierForm((f) => ({ ...f, sortOrder: e.target.value }))} className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500 font-mono" dir="ltr" />
+            </div>
+            {tierFormError && <p className="text-xs text-red-500 font-arabic">{tierFormError}</p>}
+            <div className="flex gap-2 pt-2">
+              <button onClick={handleSaveTier} disabled={savingTier} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50">
+                {savingTier ? "جاري الحفظ..." : editingTier ? "حفظ التعديلات" : "إضافة الدرجة"}
+              </button>
+              <button onClick={() => setShowTierModal(false)} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
             </div>
           </div>
         </div>

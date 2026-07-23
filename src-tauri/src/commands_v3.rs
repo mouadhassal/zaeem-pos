@@ -1748,6 +1748,144 @@ pub fn list_loyalty_transactions_v3(state: State<Db>, license: State<crate::lice
     Repo::new(&conn).list_loyalty_transactions(&actor.scope(), card_id.as_deref()).map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// T2.0 loyalty rethink -- tier config, rewards catalog, redemption. Tier/
+// reward config is tenant-only (chain-wide), same Owner-configurable
+// pattern as menu defaults; back-office gated same as the rest of loyalty.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_loyalty_tiers_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::LoyaltyTierRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_loyalty_tiers(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_loyalty_tier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, min_points: i64, points_multiplier: f64, sort_order: i64) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
+    if min_points < 0 || points_multiplier <= 0.0 {
+        return Err("الحد الأدنى للنقاط ومضاعف النقاط يجب أن يكونا موجبين".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tier_id = Repo::new(&tx).create_loyalty_tier(&actor.tenant_id, &name, min_points, points_multiplier, sort_order).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::LoyaltyTierChanged, "loyalty_tier", &tier_id, None, Some(&serde_json::json!({ "name": name, "min_points": min_points, "points_multiplier": points_multiplier }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(tier_id)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn update_loyalty_tier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, tier_id: String, name: String, min_points: i64, points_multiplier: f64, sort_order: i64) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
+    if min_points < 0 || points_multiplier <= 0.0 {
+        return Err("الحد الأدنى للنقاط ومضاعف النقاط يجب أن يكونا موجبين".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_loyalty_tier(&actor.tenant_id, &tier_id, &name, min_points, points_multiplier, sort_order).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::LoyaltyTierChanged, "loyalty_tier", &tier_id, None, Some(&serde_json::json!({ "name": name, "min_points": min_points, "points_multiplier": points_multiplier }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_loyalty_tier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, tier_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).delete_loyalty_tier(&actor.tenant_id, &tier_id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::LoyaltyTierChanged, "loyalty_tier", &tier_id, None, Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_loyalty_rewards_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::LoyaltyRewardRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_loyalty_rewards(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn create_loyalty_reward_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, points_cost: i64, reward_type: String, value_cents: Option<i64>, value_percent_bps: Option<i64>, linked_menu_item_id: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
+    if points_cost <= 0 {
+        return Err("تكلفة المكافأة بالنقاط يجب أن تكون موجبة".to_string());
+    }
+    if !["FREE_ITEM", "DISCOUNT_FIXED", "DISCOUNT_PERCENT"].contains(&reward_type.as_str()) {
+        return Err("نوع مكافأة غير صالح".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let reward_id = Repo::new(&tx).create_loyalty_reward(&actor.tenant_id, &name, points_cost, &reward_type, value_cents, value_percent_bps, linked_menu_item_id.as_deref()).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::LoyaltyRewardChanged, "loyalty_reward", &reward_id, None, Some(&serde_json::json!({ "name": name, "points_cost": points_cost, "reward_type": reward_type }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(reward_id)
+}
+
+#[tauri::command]
+pub fn set_loyalty_reward_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, reward_id: String, is_active: bool) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).set_loyalty_reward_active(&actor.tenant_id, &reward_id, is_active).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::LoyaltyRewardChanged, "loyalty_reward", &reward_id, None, Some(&serde_json::json!({ "is_active": is_active }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_loyalty_reward_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, reward_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).delete_loyalty_reward(&actor.tenant_id, &reward_id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::LoyaltyRewardChanged, "loyalty_reward", &reward_id, None, Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Redeem points for a catalog reward at checkout. Cashier-facing (selling
+/// path), NOT gated by `require_license_not_locked` -- a dinner service
+/// redemption is exactly the kind of thing that must keep working even
+/// with a lapsed back-office license, same reasoning as `earn_loyalty_points_v3`.
+/// Per AGENTS.md prime directive #4 (the threat model is the employee): a
+/// redemption is money leaving through a side door exactly like a manual
+/// discount, so it gets the same audit rigor, non-negotiably.
+#[tauri::command]
+pub fn redeem_loyalty_reward_v3(state: State<Db>, session_token: String, card_number: String, reward_id: String) -> Result<crate::repo::LoyaltyRewardRow, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
+    let Scope::Branch { branch_id, .. } = actor.scope() else {
+        return Err("redeeming a loyalty reward requires a Branch-scoped actor".to_string());
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let reward = Repo::new(&tx).redeem_loyalty_reward(&actor.tenant_id, &branch_id, &card_number, &reward_id, &actor.id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::LoyaltyPointsRedeemed, "loyalty_card", &card_number, None, Some(&serde_json::json!({ "reward_id": reward_id, "reward_name": reward.name, "points_cost": reward.points_cost }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(reward)
+}
+
 #[tauri::command]
 pub fn create_purchase_order_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, notes: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
@@ -3151,9 +3289,20 @@ pub fn earn_loyalty_points_v3(state: State<Db>, session_token: String, card_numb
     Ok(())
 }
 
+/// Return shape for `finalize_order_with_payment_v3` -- `points_earned` is
+/// `Some` only when a `card_number` was passed and accrual actually ran, so
+/// the frontend can show "earned N points" without a second round trip.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FinalizePaymentResult {
+    pub payment_id: String,
+    pub points_earned: Option<i64>,
+}
+
 /// Finalize a PENDING order: status→PAID, insert payment, free table,
-/// optional debt entry. Replaces `orderService.finalizeOrder` (the DB
-/// part). Receipt printing stays on the frontend.
+/// optional debt entry, optional atomic loyalty accrual (see
+/// `Repo::finalize_order_with_payment`'s doc comment). Replaces
+/// `orderService.finalizeOrder` (the DB part). Receipt printing stays on
+/// the frontend.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn finalize_order_with_payment_v3(
@@ -3165,8 +3314,9 @@ pub fn finalize_order_with_payment_v3(
     amount_cents: i64,
     change_cents: i64,
     debtor_id: Option<String>,
-) -> Result<String, String> {
-    finalize_order_with_payment_v3_impl(&state, &license, session_token, order_id, method, amount_cents, change_cents, debtor_id)
+    card_number: Option<String>,
+) -> Result<FinalizePaymentResult, String> {
+    finalize_order_with_payment_v3_impl(&state, &license, session_token, order_id, method, amount_cents, change_cents, debtor_id, card_number)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3179,7 +3329,8 @@ fn finalize_order_with_payment_v3_impl(
     amount_cents: i64,
     change_cents: i64,
     debtor_id: Option<String>,
-) -> Result<String, String> {
+    card_number: Option<String>,
+) -> Result<FinalizePaymentResult, String> {
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::TakePayment).map_err(|e| e.to_string())?;
     let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
@@ -3191,15 +3342,15 @@ fn finalize_order_with_payment_v3_impl(
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let payment_id = Repo::new(&tx).finalize_order_with_payment(
+    let (payment_id, points_earned) = Repo::new(&tx).finalize_order_with_payment(
         &tenant_id, &branch_id, &order_id, &method, amount_cents, change_cents,
-        debtor_id.as_deref(), &actor.id,
+        debtor_id.as_deref(), &actor.id, card_number.as_deref(),
     ).map_err(|e| e.to_string())?;
 
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
         audit::Action::PaymentTaken, "order", &order_id,
-        None, Some(&serde_json::json!({ "payment_id": payment_id, "method": method, "amount_cents": amount_cents, "change_cents": change_cents, "debtor_id": debtor_id })),
+        None, Some(&serde_json::json!({ "payment_id": payment_id, "method": method, "amount_cents": amount_cents, "change_cents": change_cents, "debtor_id": debtor_id, "loyalty_points_earned": points_earned })),
     ).map_err(|e| e.to_string())?;
 
     // Sync: the payment is a brand-new fact (rev 1); the order's own row
@@ -3210,7 +3361,7 @@ fn finalize_order_with_payment_v3_impl(
     sync_enqueue_order(&tx, &tenant_id, &branch_id, &order_id, &actor.device_id, &license_status)?;
 
     tx.commit().map_err(|e| e.to_string())?;
-    Ok(payment_id)
+    Ok(FinalizePaymentResult { payment_id, points_earned })
 }
 
 /// Stamps `payments.rev`/`updated_at_hlc`/`device_id` and queues the row --
@@ -3415,6 +3566,7 @@ mod tests {
         migrate_v3::run_discount_cap_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_sync_outbox_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_supplier_ledger_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_loyalty_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -3934,15 +4086,15 @@ mod tests {
             let license = never_checked_license(&db_path);
             let order_id = create_order_v3_impl(&db, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None).unwrap();
 
-            let payment_id = finalize_order_with_payment_v3_impl(
+            let result = finalize_order_with_payment_v3_impl(
                 &db, &license,
-                session, order_id.clone(), "CASH".to_string(), 1000, 0, None,
+                session, order_id.clone(), "CASH".to_string(), 1000, 0, None, None,
             ).expect("finalize_order_with_payment_v3 must succeed through the real wrapper body");
 
             let conn = Connection::open(&db_path).unwrap();
             let status: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
             assert_eq!(status, "PAID");
-            let payment_exists: bool = conn.query_row("SELECT COUNT(*) > 0 FROM payments WHERE id = ?1", params![payment_id], |r| r.get(0)).unwrap();
+            let payment_exists: bool = conn.query_row("SELECT COUNT(*) > 0 FROM payments WHERE id = ?1", params![result.payment_id], |r| r.get(0)).unwrap();
             assert!(payment_exists);
             let outbox_count: i64 = conn.query_row("SELECT COUNT(*) FROM sync_outbox WHERE tenant_id = ?1", params![tenant_id], |r| r.get(0)).unwrap();
             assert_eq!(outbox_count, 2, "one payments row + one re-stamped orders row must have been enqueued");
@@ -5514,6 +5666,148 @@ mod tests {
         let _ = fs::remove_dir_all(other_db.parent().unwrap());
     }
 
+    /// T2.0 loyalty: `finalize_order_with_payment` with a `card_number`
+    /// computes points server-side from the order total and the tenant's
+    /// tier multiplier (never trusting a caller-supplied point amount),
+    /// writes the EARN fact, and updates the card's points/tier -- all
+    /// atomically in the same transaction as the payment itself. This is
+    /// the seeded default tier ladder (0/500/1500/3000, 1x/1.2x/1.5x/2x).
+    #[test]
+    fn finalize_order_with_payment_earns_tier_aware_points_atomically() {
+        let (db_path, tenant_id, branch_id, table_id) = seeded_db("loyalty_accrual");
+        let conn = Connection::open(&db_path).unwrap();
+        let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Loyalty Cashier");
+        let repo = Repo::new(&conn);
+
+        let customer_id = repo.create_customer(&tenant_id, "عميل ولاء", Some("0501112222"), None, None, None, None).unwrap();
+        let card_id = repo.issue_loyalty_card(&tenant_id, &customer_id, "CARD-001").unwrap();
+        let _ = card_id;
+
+        // First order: 4000 cents at BRONZE (1x) -> floor(4000/100)*1 = 40 points.
+        let order1 = repo.create_order(
+            &crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() },
+            &tenant_id, &branch_id,
+            crate::repo::NewOrder { table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".to_string(), subtotal_cents: 4000, tax_cents: 0, total_cents: 4000, discount_cents: 0 },
+        ).unwrap();
+        let (_, points1) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &order1, "CASH", 4000, 0, None, &cashier_id, Some("CARD-001")).unwrap();
+        assert_eq!(points1, Some(40), "BRONZE tier: floor(4000/100) * 1.0 = 40");
+
+        let card = repo.lookup_loyalty_card("CARD-001").unwrap().unwrap();
+        assert_eq!(card.points, 40);
+        assert_eq!(card.tier, "BRONZE");
+
+        // Bump the card to SILVER (>=500) directly to test the multiplier applies going forward.
+        conn.execute("UPDATE loyalty_cards SET points = 500, tier = 'SILVER' WHERE card_number = 'CARD-001'", []).unwrap();
+
+        // Second order: 4000 cents at SILVER (1.2x) -> floor(4000/100 * 1.2) = 48 points.
+        let order2 = repo.create_order(
+            &crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() },
+            &tenant_id, &branch_id,
+            crate::repo::NewOrder { table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".to_string(), subtotal_cents: 4000, tax_cents: 0, total_cents: 4000, discount_cents: 0 },
+        ).unwrap();
+        let (_, points2) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &order2, "CASH", 4000, 0, None, &cashier_id, Some("CARD-001")).unwrap();
+        assert_eq!(points2, Some(48), "SILVER tier: floor(4000/100 * 1.2) = 48");
+        let card_after = repo.lookup_loyalty_card("CARD-001").unwrap().unwrap();
+        assert_eq!(card_after.points, 500 + 48);
+        println!("[loyalty] tier-aware accrual: BRONZE order earned 40 (1x), SILVER order earned 48 (1.2x), atomically with payment");
+
+        // A card_number with no matching card fails LOUD, not silently --
+        // the old bug this replaces was a bare try{}catch{} that dropped
+        // points with zero visible error.
+        let order3 = repo.create_order(
+            &crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() },
+            &tenant_id, &branch_id,
+            crate::repo::NewOrder { table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".to_string(), subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0 },
+        ).unwrap();
+        match repo.finalize_order_with_payment(&tenant_id, &branch_id, &order3, "CASH", 1000, 0, None, &cashier_id, Some("NO-SUCH-CARD")) {
+            Err(crate::repo::RepoError::LoyaltyCardNotFound { .. }) => println!("[loyalty] a bad card_number fails loud (LoyaltyCardNotFound), not silently"),
+            other => panic!("expected LoyaltyCardNotFound, got {other:?}"),
+        }
+
+        // Atomicity itself is the CALLER's responsibility (the command
+        // wrapper owns the one transaction boundary -- see this function's
+        // doc comment), same as every other repo method here. Prove it the
+        // same way `kill_9_mid_receive_never_leaves_a_partial_stock_bump`
+        // does: wrap the call in an explicit transaction and drop it
+        // without committing (simulating the wrapper's rollback-on-error),
+        // then confirm nothing persisted from a fresh connection.
+        let order4 = repo.create_order(
+            &crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() },
+            &tenant_id, &branch_id,
+            crate::repo::NewOrder { table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".to_string(), subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0 },
+        ).unwrap();
+        drop(repo);
+        drop(conn);
+        {
+            let mut conn2 = Connection::open(&db_path).unwrap();
+            let tx = conn2.transaction().unwrap();
+            let result = Repo::new(&tx).finalize_order_with_payment(&tenant_id, &branch_id, &order4, "CASH", 1000, 0, None, &cashier_id, Some("NO-SUCH-CARD"));
+            assert!(result.is_err());
+            // tx dropped here WITHOUT commit -- rolls back, simulating the
+            // command wrapper's `?`-propagated error before `tx.commit()`.
+        }
+        let conn3 = Connection::open(&db_path).unwrap();
+        let order4_status: String = conn3.query_row("SELECT status FROM orders WHERE id = ?1", params![order4], |r| r.get(0)).unwrap();
+        assert_eq!(order4_status, "PENDING", "when the CALLER wraps this in one transaction (as finalize_order_with_payment_v3_impl does) and the loyalty lookup fails, the payment must roll back too -- no partial apply");
+        println!("[loyalty] within a caller-managed transaction, a failed accrual correctly rolls back the payment too");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// T2.0 loyalty: redemption -- sufficient points succeeds and decrements
+    /// correctly (recomputing tier if it drops), insufficient points is
+    /// rejected without touching the balance, and a reward belonging to a
+    /// different tenant is rejected as out-of-scope.
+    #[test]
+    fn redeem_loyalty_reward_decrements_points_and_rejects_insufficient_or_cross_tenant() {
+        let (db_path, tenant_id, branch_id, _table_id) = seeded_db("loyalty_redeem");
+        let conn = Connection::open(&db_path).unwrap();
+        let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Redeem Manager");
+        let repo = Repo::new(&conn);
+
+        let customer_id = repo.create_customer(&tenant_id, "عميل استبدال", Some("0503334444"), None, None, None, None).unwrap();
+        repo.issue_loyalty_card(&tenant_id, &customer_id, "CARD-REDEEM").unwrap();
+        conn.execute("UPDATE loyalty_cards SET points = 600, tier = 'SILVER' WHERE card_number = 'CARD-REDEEM'", []).unwrap();
+
+        let reward_id = repo.create_loyalty_reward(&tenant_id, "قهوة مجانية", 500, "FREE_ITEM", None, None, None).unwrap();
+
+        // Insufficient points: a reward costing more than the balance.
+        let expensive_reward = repo.create_loyalty_reward(&tenant_id, "وجبة كاملة", 10000, "FREE_ITEM", None, None, None).unwrap();
+        match repo.redeem_loyalty_reward(&tenant_id, &branch_id, "CARD-REDEEM", &expensive_reward, &manager_id) {
+            Err(crate::repo::RepoError::InsufficientLoyaltyPoints { have, need, .. }) => {
+                assert_eq!(have, 600); assert_eq!(need, 10000);
+                println!("[loyalty] insufficient-points redemption correctly rejected (have=600, need=10000)");
+            }
+            other => panic!("expected InsufficientLoyaltyPoints, got {other:?}"),
+        }
+        let card_unchanged = repo.lookup_loyalty_card("CARD-REDEEM").unwrap().unwrap();
+        assert_eq!(card_unchanged.points, 600, "a rejected redemption must not touch the balance");
+
+        // Sufficient points: succeeds, decrements, tier recomputed (600-500=100, drops to BRONZE).
+        let applied = repo.redeem_loyalty_reward(&tenant_id, &branch_id, "CARD-REDEEM", &reward_id, &manager_id).unwrap();
+        assert_eq!(applied.name, "قهوة مجانية");
+        let card_after = repo.lookup_loyalty_card("CARD-REDEEM").unwrap().unwrap();
+        assert_eq!(card_after.points, 100);
+        assert_eq!(card_after.tier, "BRONZE", "100 points is below SILVER's 500 threshold -- tier must drop back down");
+        println!("[loyalty] successful redemption decremented 600->100 and recomputed tier SILVER->BRONZE");
+
+        let entries = repo.list_loyalty_transactions(&crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() }, None).unwrap();
+        assert!(entries.iter().any(|e| e.tx_type == "REDEEM" && e.points == -500), "a REDEEM fact with negative points must be recorded");
+
+        // Cross-tenant: a reward from a different tenant must be rejected.
+        let (other_db, other_tenant, _other_branch, _) = seeded_db("loyalty_redeem_other_tenant");
+        let other_conn = Connection::open(&other_db).unwrap();
+        let other_repo = Repo::new(&other_conn);
+        let other_reward = other_repo.create_loyalty_reward(&other_tenant, "مكافأة أخرى", 100, "FREE_ITEM", None, None, None).unwrap();
+        match repo.redeem_loyalty_reward(&tenant_id, &branch_id, "CARD-REDEEM", &other_reward, &manager_id) {
+            Err(_) => println!("[loyalty] cross-tenant reward redemption correctly rejected"),
+            Ok(_) => panic!("a reward belonging to a different tenant must never be redeemable"),
+        }
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        let _ = fs::remove_dir_all(other_db.parent().unwrap());
+    }
+
     /// Batch 3b, final slice, group 2: driver CRUD (soft delete), zones,
     /// and the two atomicity pairs -- assignment (delivery_log + driver
     /// BUSY) and terminal status (delivery_log transition + driver
@@ -5691,7 +5985,7 @@ mod tests {
         println!("[pos-flow] transfer_order: split order moved to table_2, table_2 now OCCUPIED");
 
         // finalize_order_with_payment -- the actual payment path.
-        let payment_id = repo.finalize_order_with_payment(&tenant_id, &branch_id, &split_ids[0], "CASH", 700, 0, None, &cashier_id).unwrap();
+        let (payment_id, _points_earned) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &split_ids[0], "CASH", 700, 0, None, &cashier_id, None).unwrap();
         let paid_status: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![split_ids[0]], |r| r.get(0)).unwrap();
         assert_eq!(paid_status, "PAID");
         let payment_amount: i64 = conn.query_row("SELECT amount_cents FROM payments WHERE id = ?1", params![payment_id], |r| r.get(0)).unwrap();
@@ -6333,7 +6627,7 @@ mod tests {
             delivery_fee_cents: 0, driver_id: None, shift_id: None,
             items: vec![crate::repo::OrderItemInput { menu_item_id: burger_id.clone(), name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] }],
         }).unwrap();
-        repo.finalize_order_with_payment(&tenant_id, &branch_a, &order_a_paid, "CASH", 1000, 0, None, &cashier_a).unwrap();
+        repo.finalize_order_with_payment(&tenant_id, &branch_a, &order_a_paid, "CASH", 1000, 0, None, &cashier_a, None).unwrap();
 
         // Branch B: its own PENDING order.
         repo.create_full_order(&scope_b, &tenant_id, &branch_b, FullOrderInput {
@@ -7425,6 +7719,8 @@ mod tests {
             "create_customer_v3", "list_customers_v3", "update_customer_v3", "delete_customer_v3",
             "get_customer_detail_v3",
             "list_loyalty_cards_v3", "issue_loyalty_card_v3", "list_loyalty_transactions_v3",
+            "list_loyalty_tiers_v3", "create_loyalty_tier_v3", "update_loyalty_tier_v3", "delete_loyalty_tier_v3",
+            "list_loyalty_rewards_v3", "create_loyalty_reward_v3", "set_loyalty_reward_active_v3", "delete_loyalty_reward_v3",
             "create_purchase_order_v3", "create_purchase_order_and_bump_supplier_v3",
             "create_purchase_order_with_items_v3", "list_purchase_orders_v3", "cancel_purchase_order_v3",
             "list_purchase_order_items_v3", "receive_purchase_order_v3",
@@ -7459,7 +7755,7 @@ mod tests {
             "get_receipt_config_v3", "get_chain_config_v3", "list_active_printers_v3",
             "get_discount_caps_v3", "list_debtors_v3",
             "verify_manager_override_v3",
-            "lookup_loyalty_card_v3", "earn_loyalty_points_v3",
+            "lookup_loyalty_card_v3", "earn_loyalty_points_v3", "redeem_loyalty_reward_v3",
             "list_kitchen_orders_v3",
             "get_active_shift_v3", "open_shift_v3", "close_shift_v3", "get_shift_stats_v3",
             "list_shift_orders_v3", "clock_in_v3", "clock_out_v3",

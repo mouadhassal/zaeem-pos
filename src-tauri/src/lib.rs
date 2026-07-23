@@ -67,6 +67,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_discount_cap_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_sync_outbox_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_supplier_ledger_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_loyalty_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -379,6 +380,15 @@ pub fn run() {
             commands_v3::list_loyalty_cards_v3,
             commands_v3::issue_loyalty_card_v3,
             commands_v3::list_loyalty_transactions_v3,
+            commands_v3::list_loyalty_tiers_v3,
+            commands_v3::create_loyalty_tier_v3,
+            commands_v3::update_loyalty_tier_v3,
+            commands_v3::delete_loyalty_tier_v3,
+            commands_v3::list_loyalty_rewards_v3,
+            commands_v3::create_loyalty_reward_v3,
+            commands_v3::set_loyalty_reward_active_v3,
+            commands_v3::delete_loyalty_reward_v3,
+            commands_v3::redeem_loyalty_reward_v3,
             commands_v3::list_debtors_v3,
             commands_v3::create_debtor_v3,
             commands_v3::update_debtor_v3,
