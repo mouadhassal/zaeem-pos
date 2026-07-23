@@ -303,7 +303,7 @@ export default function CustomersPage() {
           ])
         )}
       `;
-      await exportHtmlToPdf(`العملاء-${new Date().toISOString().slice(0, 10)}.pdf`, bodyHtml);
+      await exportHtmlToPdf(`العملاء-${new Date().toISOString().slice(0, 10)}.pdf`, bodyHtml, token ?? "");
     } finally {
       setExportingPdf(false);
     }

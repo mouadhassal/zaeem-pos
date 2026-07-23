@@ -767,6 +767,35 @@ pub fn delete_menu_item_photo_v3(app: tauri::AppHandle, state: State<Db>, licens
     Ok(())
 }
 
+/// Every "تصدير PDF" button (customers, debt, finance, suppliers, reports)
+/// renders a PDF client-side (html2canvas + jsPDF) then hands the raw bytes
+/// here to actually reach disk. jsPDF's own `doc.save()` -- a blob URL plus
+/// a synthetic `<a download>` click -- relies on a browser's download
+/// manager to catch that click; Tauri's webview has none, and the app's CSP
+/// has no `blob:` allowance either, so every export button silently
+/// generated a PDF in memory and then did nothing with it. Writes straight
+/// to the OS Downloads folder (no save dialog/new plugin: a well-known,
+/// predictable destination is enough for a desktop POS's periodic reports)
+/// and returns the full path so the UI can tell the user where it landed.
+/// NOT_GATED: exports must keep working even with a locked license, same
+/// posture as printing.
+#[tauri::command]
+pub fn export_pdf_v3(app: tauri::AppHandle, state: State<Db>, session_token: String, filename: String, bytes: Vec<u8>) -> Result<String, String> {
+    authenticate_actor(&state, &session_token)?;
+    // No path traversal from a caller-controlled filename -- keep only the
+    // leaf name, strip any ".." segments.
+    let leaf = filename.rsplit(['/', '\\']).next().unwrap_or(&filename);
+    let safe_name = leaf.replace("..", "");
+    if safe_name.is_empty() {
+        return Err("invalid export filename".to_string());
+    }
+    let dir = app.path().download_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(safe_name);
+    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 pub fn list_combo_components_v3(state: State<Db>, session_token: String, menu_item_id: String) -> Result<Vec<crate::repo::ComboComponentRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
@@ -7931,6 +7960,7 @@ mod tests {
             "verify_manager_override_v3",
             "lookup_loyalty_card_v3", "earn_loyalty_points_v3", "redeem_loyalty_reward_v3",
             "list_kitchen_orders_v3", "register_kds_terminal_v3",
+            "export_pdf_v3",
             "get_active_shift_v3", "open_shift_v3", "close_shift_v3", "get_shift_stats_v3",
             "list_shift_orders_v3", "clock_in_v3", "clock_out_v3",
             "assign_driver_to_delivery_v3", "update_delivery_status_v3",

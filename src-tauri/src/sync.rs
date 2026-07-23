@@ -246,16 +246,93 @@ fn build_orders_payload(
     Ok(orders)
 }
 
+/// "Supply movement" on the web owner dashboard (T2.0 follow-up): until
+/// this, `supplier_payments` rows WERE enqueued (see
+/// `commands_v3::sync_enqueue_supplier_payment`) but `build_orders_payload`
+/// is the only thing `run_tick` ever called -- a supplier_payments row
+/// contributed nothing to the request body and still got `mark_sent`,
+/// vacuously. Builds two arrays from a batch's `supplier_payments` rows:
+/// the payment/charge facts themselves (from each row's own outbox
+/// payload, already complete -- no local table re-read needed), and a
+/// CURRENT balance snapshot per supplier touched (re-read from `suppliers`,
+/// same "always send the live state, not the snapshot at enqueue time"
+/// reasoning as `build_orders_payload`). A supplier can legitimately be
+/// missing (hard-deleted after being queued) -- skipped, not an error.
+fn build_supplier_payload(
+    conn: &Connection,
+    batch: &[OutboxRow],
+) -> Result<(Vec<serde_json::Value>, Vec<serde_json::Value>), rusqlite::Error> {
+    let mut payments = Vec::new();
+    let mut supplier_ids: Vec<String> = Vec::new();
+
+    for row in batch {
+        if row.table_name != "supplier_payments" {
+            continue;
+        }
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(&row.payload_json) else { continue };
+        let Some(supplier_id) = payload.get("supplier_id").and_then(|v| v.as_str()).map(String::from) else { continue };
+
+        let supplier_name: Option<String> = conn
+            .query_row("SELECT name FROM suppliers WHERE id = ?1", params![supplier_id], |r| r.get(0))
+            .ok();
+        let Some(supplier_name) = supplier_name else { continue };
+
+        payments.push(serde_json::json!({
+            "local_payment_id": row.row_id,
+            "local_supplier_id": supplier_id,
+            "supplier_name": supplier_name,
+            "entry_type": payload.get("type").and_then(|v| v.as_str()),
+            "amount_cents": payload.get("amount_cents"),
+            "method": payload.get("method"),
+            "notes": payload.get("notes"),
+            "created_at": payload.get("created_at"),
+        }));
+
+        if !supplier_ids.contains(&supplier_id) {
+            supplier_ids.push(supplier_id);
+        }
+    }
+
+    let mut suppliers = Vec::new();
+    for supplier_id in supplier_ids {
+        let row: Option<(String, Option<String>, Option<String>, i64, i64, i64)> = conn
+            .query_row(
+                "SELECT name, phone, email, total_purchases_cents, total_paid_cents, balance_cents FROM suppliers WHERE id = ?1",
+                params![supplier_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .ok();
+        let Some((name, phone, email, total_purchases_cents, total_paid_cents, balance_cents)) = row else { continue };
+        suppliers.push(serde_json::json!({
+            "local_supplier_id": supplier_id,
+            "name": name, "phone": phone, "email": email,
+            "total_purchases_cents": total_purchases_cents,
+            "total_paid_cents": total_paid_cents,
+            "balance_cents": balance_cents,
+        }));
+    }
+
+    Ok((payments, suppliers))
+}
+
 /// Slice 2c: real POST to the `sync-pos` Edge Function, the canonical POS
 /// ingestion path (`pos_device`/`pos_order`, one denormalized row per order
 /// with embedded `items` -- see `supabase/functions/sync-pos/index.ts`). The
 /// function validates `device_token` against the `license` table itself, so
 /// unlike the retired `ingest_sales_facts` RPC there's no separate
-/// `license_id` in the request body.
-async fn send_batch(orders: &[serde_json::Value], config_dir: &std::path::Path) -> Result<(), String> {
+/// `license_id` in the request body. `suppliers`/`supplier_payments` ride
+/// along in the same request -- one heartbeat, one auth check, same as
+/// orders (see `build_supplier_payload`'s doc comment for why these two
+/// arrays exist).
+async fn send_batch(
+    orders: &[serde_json::Value],
+    suppliers: &[serde_json::Value],
+    supplier_payments: &[serde_json::Value],
+    config_dir: &std::path::Path,
+) -> Result<(), String> {
     use crate::license::cloud::{load_config_from_file, supabase_anon_key, supabase_url};
 
-    if orders.is_empty() {
+    if orders.is_empty() && suppliers.is_empty() && supplier_payments.is_empty() {
         return Ok(());
     }
 
@@ -268,6 +345,8 @@ async fn send_batch(orders: &[serde_json::Value], config_dir: &std::path::Path) 
     let body = serde_json::json!({
         "device_token": config.device_token,
         "orders": orders,
+        "suppliers": suppliers,
+        "supplier_payments": supplier_payments,
         "device_name": "Zaeem POS",
         "version": env!("CARGO_PKG_VERSION"),
     });
@@ -317,17 +396,18 @@ pub async fn run_tick(
     batch_limit: i64,
     config_dir: &std::path::Path,
 ) -> Result<usize, rusqlite::Error> {
-    let (batch, orders_payload) = {
+    let (batch, orders_payload, suppliers_payload, supplier_payments_payload) = {
         let conn = db.lock().unwrap();
         let batch = due_batch(&conn, batch_limit)?;
         if batch.is_empty() {
             return Ok(0);
         }
         let orders_payload = build_orders_payload(&conn, &batch)?;
-        (batch, orders_payload)
+        let (supplier_payments_payload, suppliers_payload) = build_supplier_payload(&conn, &batch)?;
+        (batch, orders_payload, suppliers_payload, supplier_payments_payload)
     };
 
-    let result = send_batch(&orders_payload, config_dir).await;
+    let result = send_batch(&orders_payload, &suppliers_payload, &supplier_payments_payload, config_dir).await;
 
     let conn = db.lock().unwrap();
     match result {

@@ -219,7 +219,7 @@ export default function FinancePage() {
         <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${new Date().toLocaleDateString("ar-SA")}</p>
         ${tableHtml}
       `;
-      await exportHtmlToPdf(`تقرير-${tab}-${new Date().toISOString().slice(0, 10)}.pdf`, bodyHtml);
+      await exportHtmlToPdf(`تقرير-${tab}-${new Date().toISOString().slice(0, 10)}.pdf`, bodyHtml, token ?? "");
     } finally {
       setExportingPdf(false);
     }

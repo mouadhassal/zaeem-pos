@@ -189,7 +189,7 @@ export default function DebtPage() {
           ])
         )}
       `;
-      await exportHtmlToPdf(`الديون-${new Date().toISOString().slice(0, 10)}.pdf`, bodyHtml);
+      await exportHtmlToPdf(`الديون-${new Date().toISOString().slice(0, 10)}.pdf`, bodyHtml, token ?? "");
     } finally {
       setExportingPdf(false);
     }

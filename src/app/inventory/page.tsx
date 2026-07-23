@@ -884,7 +884,7 @@ function SuppliersTab() {
           ])
         )}
       `;
-      await exportHtmlToPdf(`الموردون-${new Date().toISOString().slice(0, 10)}.pdf`, bodyHtml);
+      await exportHtmlToPdf(`الموردون-${new Date().toISOString().slice(0, 10)}.pdf`, bodyHtml, token ?? "");
     } finally {
       setExportingPdf(false);
     }

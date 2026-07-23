@@ -1,5 +1,6 @@
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
+import { invoke } from "./invoke";
 
 // Item/customer/staff names come from DB data and are interpolated into
 // innerHTML to build the PDF-source DOM -- must be escaped, same "never
@@ -32,8 +33,8 @@ export function pdfTableHtml(title: string, headers: string[], rows: string[][])
 /**
  * Arabic PDF export, done right -- extracted from reports/page.tsx (the
  * page this was originally built and verified for) so every other export
- * button in the app (customers, finance, debt -- previously CSV, or
- * missing entirely) uses the exact same proven mechanism instead of each
+ * button in the app (customers, finance, debt, suppliers -- previously CSV,
+ * or missing entirely) uses the exact same proven mechanism instead of each
  * reinventing it.
  *
  * jsPDF's own text renderer has no Arabic shaping/bidi support at all (its
@@ -44,8 +45,18 @@ export function pdfTableHtml(title: string, headers: string[], rows: string[][])
  * guarantees jsPDF never touches the Arabic text itself; it's a picture of
  * what the browser's own text engine drew (the same Tajawal rendering
  * already correct everywhere else in this app).
+ *
+ * Getting the finished PDF to disk does NOT use jsPDF's own `doc.save()`.
+ * That method is a blob URL plus a synthetic `<a download>` click -- it
+ * depends on a browser's download manager to catch that click, and Tauri's
+ * webview has none (the app's CSP also has no `blob:` allowance). Every
+ * export button was silently generating a correct PDF in memory and then
+ * doing nothing with it. Fixed by handing the raw bytes to `export_pdf_v3`
+ * (Rust), which writes them straight to the OS Downloads folder and
+ * returns the path -- shown here as a brief on-screen confirmation so the
+ * "did it actually work" question has an answer.
  */
-export async function exportHtmlToPdf(filename: string, bodyHtml: string): Promise<void> {
+export async function exportHtmlToPdf(filename: string, bodyHtml: string, sessionToken: string): Promise<void> {
   await document.fonts.ready; // Tajawal must be loaded before html2canvas captures it
 
   // Positioned in-flow (not off-screen with a huge negative offset) --
@@ -83,5 +94,17 @@ export async function exportHtmlToPdf(filename: string, bodyHtml: string): Promi
     heightLeft -= usableHeight;
   }
 
-  doc.save(filename);
+  const bytes = Array.from(new Uint8Array(doc.output("arraybuffer")));
+  const savedPath = await invoke<string>("export_pdf_v3", { sessionToken, filename, bytes });
+  showSavedToast(savedPath);
+}
+
+function showSavedToast(path: string): void {
+  const toast = document.createElement("div");
+  toast.dir = "rtl";
+  toast.style.cssText =
+    "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#101828;color:#fff;padding:10px 18px;border-radius:12px;font-family:Tajawal,sans-serif;font-size:13px;z-index:99999;box-shadow:0 4px 12px rgba(0,0,0,.2);max-width:90vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+  toast.textContent = `تم الحفظ في: ${path}`;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 4000);
 }
