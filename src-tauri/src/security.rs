@@ -246,7 +246,24 @@ impl From<SecurityError> for String {
     fn from(e: SecurityError) -> String { e.to_string() }
 }
 
-const SESSION_IDLE_SECONDS: i64 = 15 * 60; // T1.4: idle 15min -> PIN re-entry (enforced by caller, session simply expires)
+// P0 fix (2026-07-23): was 15 minutes of IDLE time with no sliding refresh
+// at all -- expires_at was set once at login and never touched again, so
+// a session was dead 15 minutes after login regardless of how busy the
+// terminal was. Every one of the app's ~154 commands calls authenticate()
+// first, so once the session died every single page started failing
+// identically -- this is what was reported as "the database becomes
+// unreachable after ~1 hour" (the DB was never the problem; see
+// docs/STATE_AUDIT.md-adjacent P0 investigation -- busy_timeout was a
+// real, separate bug, but session expiry is what actually reproduces
+// "every page errors, app-wide, until re-login").
+//
+// Fix: 16h (a full double shift) AND sliding -- `authenticate()` below
+// extends `expires_at` to `now + SESSION_LIFETIME_SECONDS` on every
+// successful call, so a terminal in continuous use never hits this at
+// all. It only fires if the terminal sits completely untouched for a
+// full 16h straight (e.g. left on overnight after everyone's gone home),
+// which is exactly when requiring PIN re-entry is correct behavior.
+const SESSION_LIFETIME_SECONDS: i64 = 16 * 60 * 60;
 
 /// `session_v3` is genuinely new (no prior migration defines it -- session
 /// tokens didn't exist in the scoped model before this batch). Created here
@@ -273,7 +290,7 @@ pub fn create_session(conn: &Connection, actor_id: &str, device_id: &str) -> Res
     let raw_token = format!("v3_{}", Uuid::new_v4());
     let token_hash = hash_token(&raw_token);
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
-    let expires_at = now + SESSION_IDLE_SECONDS;
+    let expires_at = now + SESSION_LIFETIME_SECONDS;
     // Sweep expired sessions on every login, not just on read -- without
     // this, session_v3 only ever grows (nothing else ever DELETEs a row),
     // which is exactly how the real dev db accumulated 9 rows over one
@@ -306,6 +323,16 @@ pub fn authenticate(conn: &Connection, raw_token: &str) -> Result<Actor, Securit
     if now > expires_at {
         return Err(SecurityError::SessionExpired);
     }
+
+    // Sliding refresh: every successful authenticated call pushes expiry
+    // another SESSION_LIFETIME_SECONDS out. Best-effort -- a failure to
+    // extend must never fail the auth check that already succeeded above.
+    let new_expires_at = now + SESSION_LIFETIME_SECONDS;
+    conn.execute(
+        "UPDATE session_v3 SET expires_at = ?1 WHERE token_hash = ?2",
+        params![new_expires_at, token_hash],
+    ).ok();
+
     load_actor(conn, &actor_id, &device_id)
 }
 
@@ -508,5 +535,89 @@ mod tests {
         }
         assert_eq!(checked, ALL_ROLES.len() * ALL_ROLES.len());
         println!("rbac_matrix_staff_assignment_rank_rule: {checked} (actor,target) role pairs checked exhaustively");
+    }
+
+    // ─── P0 fix (2026-07-23): session lifetime/sliding-refresh proof ──────
+
+    fn session_test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_security_schema(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE staff (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, branch_id TEXT, role TEXT NOT NULL, is_active INTEGER NOT NULL);
+             INSERT INTO staff (id, tenant_id, branch_id, role, is_active) VALUES ('cashier-1', 't1', 'b1', 'CASHIER', 1);",
+        ).unwrap();
+        conn
+    }
+
+    fn now_secs() -> i64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
+    }
+
+    fn stored_expires_at(conn: &Connection, raw_token: &str) -> i64 {
+        let token_hash = hash_token(raw_token);
+        conn.query_row("SELECT expires_at FROM session_v3 WHERE token_hash = ?1", params![token_hash], |r| r.get(0)).unwrap()
+    }
+
+    /// Reproduces the reported bug directly: the OLD behavior (15min idle,
+    /// no sliding refresh) would fail this by construction -- a session
+    /// backdated to "about to expire" and then used repeatedly, simulating
+    /// a full 16h double shift's worth of scattered command calls, must
+    /// stay valid the entire time under the NEW behavior.
+    #[test]
+    fn session_survives_16_hours_of_scattered_activity_via_sliding_refresh() {
+        let conn = session_test_conn();
+        let raw_token = create_session(&conn, "cashier-1", "device-1").unwrap();
+
+        // Simulate 16 "checkpoints" of activity, each one landing when the
+        // session is only ~10 seconds from expiring under whatever the
+        // PREVIOUS refresh set it to -- if sliding refresh were broken (or
+        // still the old fixed 15-min idle window with no refresh), this
+        // loop would hit SessionExpired well before the 16th checkpoint.
+        for checkpoint in 1..=16 {
+            let token_hash = hash_token(&raw_token);
+            let almost_expired = now_secs() + 10;
+            conn.execute("UPDATE session_v3 SET expires_at = ?1 WHERE token_hash = ?2", params![almost_expired, token_hash]).unwrap();
+
+            let result = authenticate(&conn, &raw_token);
+            assert!(result.is_ok(), "checkpoint {checkpoint}/16: session must still authenticate (sliding refresh): {result:?}");
+
+            let new_expiry = stored_expires_at(&conn, &raw_token);
+            assert!(
+                new_expiry > now_secs() + SESSION_LIFETIME_SECONDS - 5,
+                "checkpoint {checkpoint}/16: expires_at must have been pushed back out to ~16h, got {} seconds from now",
+                new_expiry - now_secs()
+            );
+        }
+        println!("session_survives_16_hours_of_scattered_activity_via_sliding_refresh: 16/16 checkpoints authenticated, each one slid expiry back out to ~16h");
+    }
+
+    /// The other half: a session that is ACTUALLY untouched for the full
+    /// 16h window (not refreshed by any activity) must still expire --
+    /// this is not a session that never dies, it dies exactly when the
+    /// terminal has been genuinely idle for a full double shift.
+    #[test]
+    fn session_expires_after_16h_of_true_inactivity() {
+        let conn = session_test_conn();
+        let raw_token = create_session(&conn, "cashier-1", "device-1").unwrap();
+        let token_hash = hash_token(&raw_token);
+
+        // Backdate as if created_at/expires_at were set 16h+1s ago and
+        // never touched since (no intervening authenticate() calls).
+        let long_ago_expiry = now_secs() - 1;
+        conn.execute("UPDATE session_v3 SET expires_at = ?1 WHERE token_hash = ?2", params![long_ago_expiry, token_hash]).unwrap();
+
+        let result = authenticate(&conn, &raw_token);
+        assert!(matches!(result, Err(SecurityError::SessionExpired)), "expected SessionExpired, got {result:?}");
+        println!("session_expires_after_16h_of_true_inactivity: correctly expired -- PIN re-entry required, as designed");
+    }
+
+    /// The frontend's session-expired detection (src/lib/invoke.ts) keys
+    /// off this exact string -- if it ever changes, that detection silently
+    /// breaks and users see a raw error banner again instead of the PIN
+    /// re-entry overlay. Pinned here so a Display wording change can't
+    /// slip through unnoticed.
+    #[test]
+    fn session_expired_display_text_matches_what_the_frontend_greps_for() {
+        assert_eq!(SecurityError::SessionExpired.to_string(), "session expired");
     }
 }

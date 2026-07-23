@@ -2,6 +2,7 @@ import { useState, lazy, Suspense, useEffect } from "react";
 import { useAuthStore } from "./stores/authStore";
 import LoginPage from "./components/LoginPage";
 import SetupWizard from "./components/SetupWizard";
+import SessionExpiredOverlay from "./components/SessionExpiredOverlay";
 import Sidebar from "./components/layout/Sidebar";
 import TopBar from "./components/layout/TopBar";
 import LicenseBanner from "./components/LicenseBanner";
@@ -149,8 +150,11 @@ export default function App() {
   }
 
   return (
-    <PosLayout>
-      <POSPage />
-    </PosLayout>
+    <>
+      <SessionExpiredOverlay />
+      <PosLayout>
+        <POSPage />
+      </PosLayout>
+    </>
   );
 }
