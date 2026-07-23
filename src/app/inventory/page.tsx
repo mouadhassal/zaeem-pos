@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../lib/invoke";
+import { realErrorText } from "../../lib/errors";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import { Package, Search, Edit3, ChevronDown, ChevronUp } from "lucide-react";
@@ -260,8 +261,8 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
       const rows = await invoke<Ingredient[]>("list_ingredients_v3", { sessionToken: token });
       setIngredients(rows);
       setFiltered(rows);
-    } catch {
-      setLoadError("حدث خطأ في تحميل البيانات");
+    } catch (err) {
+      setLoadError(`حدث خطأ في تحميل البيانات: ${realErrorText(err)}`);
     } finally {
       setLoading(false);
     }
@@ -802,8 +803,8 @@ function SuppliersTab() {
     try {
       const rows = await invoke<Supplier[]>("list_suppliers_v3", { sessionToken: token });
       setSuppliers(rows);
-    } catch {
-      setLoadError("حدث خطأ في تحميل البيانات");
+    } catch (err) {
+      setLoadError(`حدث خطأ في تحميل البيانات: ${realErrorText(err)}`);
     } finally {
       setLoading(false);
     }
@@ -1125,8 +1126,8 @@ function PurchasesTab() {
     try {
       const rows = await invoke<PurchaseOrder[]>("list_purchase_orders_v3", { sessionToken: token });
       setOrders(rows);
-    } catch {
-      setLoadError("حدث خطأ في تحميل البيانات");
+    } catch (err) {
+      setLoadError(`حدث خطأ في تحميل البيانات: ${realErrorText(err)}`);
     } finally {
       setLoading(false);
     }
@@ -1351,8 +1352,8 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
       try {
         const rows = await invoke<PurchaseOrderItem[]>("list_purchase_order_items_v3", { sessionToken: token, poId: po.id });
         setItems(rows);
-      } catch {
-        setLoadError("حدث خطأ في تحميل الأصناف");
+      } catch (err) {
+        setLoadError(`حدث خطأ في تحميل الأصناف: ${realErrorText(err)}`);
       }
       finally { setLoading(false); }
     })();
@@ -1424,8 +1425,8 @@ function PODetailModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void
       try {
         const rows = await invoke<PurchaseOrderItem[]>("list_purchase_order_items_v3", { sessionToken: token, poId: po.id });
         setItems(rows);
-      } catch {
-        setLoadError("حدث خطأ في تحميل التفاصيل");
+      } catch (err) {
+        setLoadError(`حدث خطأ في تحميل التفاصيل: ${realErrorText(err)}`);
       }
       finally { setLoading(false); }
     })();
@@ -1519,8 +1520,8 @@ function MovementsTab() {
 
       const ingRows = await invoke<Ingredient[]>("list_ingredients_v3", { sessionToken: token });
       setIngredients(ingRows.map((i) => ({ id: i.id, name: i.name })));
-    } catch {
-      setLoadError("حدث خطأ في تحميل البيانات");
+    } catch (err) {
+      setLoadError(`حدث خطأ في تحميل البيانات: ${realErrorText(err)}`);
     } finally {
       setLoading(false);
     }
@@ -1696,8 +1697,8 @@ function AlertsTab() {
 
       const sup = await invoke<Supplier[]>("list_suppliers_v3", { sessionToken: token });
       setSuppliers(sup);
-    } catch {
-      setLoadError("حدث خطأ في تحميل البيانات");
+    } catch (err) {
+      setLoadError(`حدث خطأ في تحميل البيانات: ${realErrorText(err)}`);
     } finally {
       setLoading(false);
     }

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
 import { Bot, Send, User, Sparkles } from "lucide-react";
 

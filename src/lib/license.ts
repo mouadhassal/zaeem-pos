@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./invoke";
 
 // Mirrors license/signed.rs's `LicenseStatus` (#[serde(tag = "kind")]) --
 // the trust decision is made in Rust against the compiled-in Ed25519

@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, lazy, Suspense } from "react";
+import { realErrorText } from "../../lib/errors";
 import TableBar from "../../components/layout/TableBar";
 // Perf fix (post-login load lag): these 8 components are only ever needed
 // once the cashier actually opens them (payment, split, merge, void,
@@ -104,8 +105,8 @@ export default function POSPage() {
       const rows = await listTables();
       setTables(rows as TableData[]);
       setDbError(null);
-    } catch {
-      setDbError("تعذر تحميل الطاولات من قاعدة البيانات");
+    } catch (err) {
+      setDbError(`تعذر تحميل الطاولات من قاعدة البيانات: ${realErrorText(err)}`);
     }
   }, []);
 

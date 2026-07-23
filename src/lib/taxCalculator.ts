@@ -61,7 +61,7 @@ export function calculateComboSavings(
 
 export async function getDefaultTaxConfig(): Promise<TaxConfig> {
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
+    const { invoke } = await import("./invoke");
     const { useAuthStore } = await import("../stores/authStore");
     const token = useAuthStore.getState().token;
     const config = await invoke<{ tax_mode: string; tax_rate_cents: number; secondary_tax_rate_cents: number; service_charge_rate_cents: number }>(

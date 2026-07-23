@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../lib/invoke";
+import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 import { z } from "zod";
 
@@ -144,8 +145,8 @@ export default function BranchesPage() {
 
       setBranches(rows);
       setStats(statsMap);
-    } catch {
-      setError("حدث خطأ في تحميل الفروع");
+    } catch (err) {
+      setError(`حدث خطأ في تحميل الفروع: ${realErrorText(err)}`);
     } finally {
       setLoading(false);
     }
@@ -237,8 +238,8 @@ export default function BranchesPage() {
       setDetailStaffCount(todayData.staff_count);
       setDetailTodaySales(todayData.revenue_cents / 100);
       setDetailOpen(true);
-    } catch {
-      setError("حدث خطأ في تحميل التفاصيل");
+    } catch (err) {
+      setError(`حدث خطأ في تحميل التفاصيل: ${realErrorText(err)}`);
     }
   };
 

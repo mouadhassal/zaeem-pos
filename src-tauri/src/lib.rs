@@ -15,6 +15,7 @@ mod photos;
 pub mod license;
 mod hlc;
 mod sync;
+mod obslog;
 
 use bcrypt::{hash, DEFAULT_COST};
 
@@ -155,6 +156,19 @@ fn diagnose_db(_state: State<Db>) -> Result<String, String> {
     Err("diagnose_db is not available in release builds".to_string())
 }
 
+/// The frontend's `invoke` wrapper (`src/lib/invoke.ts`) calls this,
+/// fire-and-forget, whenever any command call rejects. The frontend is the
+/// one place that already knows the exact command name for every call, so
+/// this is where "which command failed" gets attached to the log file the
+/// SQLite/sync/license lines land in. No auth required -- this can't read
+/// or write anything, it only writes a log line, and the error state it's
+/// reporting on may itself be pre-login (the whole point of this bug class
+/// is that ANY page can start failing).
+#[tauri::command]
+fn log_frontend_command_error(command: String, error: String) {
+    obslog::log_frontend_command_error(&command, &error);
+}
+
 // `verify_manager_override` (unscoped, unaudited, arbitrary-LIMIT-1-row)
 // removed -- replaced by `commands_v3::verify_manager_override_v3`
 // (Batch 3b, Slice B verification), which is session-scoped to the
@@ -166,13 +180,26 @@ fn diagnose_db(_state: State<Db>) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            // P0 follow-up (2026-07-23): a rotating, persisted log file in
+            // every build (not just debug) -- the "database is not there
+            // anymore after ~1h" report was never diagnosable after the
+            // fact because nothing was ever written down. LogDir target
+            // writes to the OS app-log directory; size-based rotation
+            // keeps it from growing unbounded over a long-lived install.
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info)
+                    .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: None }))
+                    .max_file_size(5_000_000)
+                    .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepAll)
+                    .build(),
+            )?;
+
+            // Must run before ANY Connection::open in this process (rusqlite's
+            // own safety contract for config_log) -- see obslog.rs.
+            obslog::install_sqlite_error_log();
+            obslog::log_app_start(app.package_info().version.to_string().as_str());
+
             let db_path = db_path(app.handle());
             let mut conn = Connection::open(&db_path).expect("Failed to open database");
             set_busy_timeout(&conn);
@@ -229,7 +256,8 @@ pub fn run() {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(6 * 60 * 60)).await;
                     if let Some(state) = offline_timer_handle.try_state::<license::cloud::CloudLicenseState>() {
-                        state.recheck_offline();
+                        let status = state.recheck_offline();
+                        obslog::log_license_refresh("offline", &format!("{status:?}"));
                     }
                 }
             });
@@ -244,11 +272,13 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 if let Some(state) = cloud_timer_handle.try_state::<license::cloud::CloudLicenseState>() {
                     state.refresh_from_cloud().await;
+                    obslog::log_license_refresh("cloud", &format!("{:?}", state.cached_status()));
                 }
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(5 * 60)).await;
                     if let Some(state) = cloud_timer_handle.try_state::<license::cloud::CloudLicenseState>() {
                         state.refresh_from_cloud().await;
+                        obslog::log_license_refresh("cloud", &format!("{:?}", state.cached_status()));
                     }
                 }
             });
@@ -265,7 +295,8 @@ pub fn run() {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                     if let Some(db) = sync_timer_handle.try_state::<Db>() {
-                        let _ = sync::run_tick(&db.0, 500, &sync_config_dir).await;
+                        let result = sync::run_tick(&db.0, 500, &sync_config_dir).await;
+                        obslog::log_sync_tick_result(&result);
                     }
                 }
             });
@@ -274,6 +305,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             diagnose_db,
+            log_frontend_command_error,
             commands_v3::verify_manager_override_v3,
             commands_v3::login_v3,
             commands_v3::login_pin_v3,

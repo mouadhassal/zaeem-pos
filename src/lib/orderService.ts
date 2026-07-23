@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./invoke";
 import { useAuthStore } from "../stores/authStore";
 import { printReceipt, printKitchenTicket, queuePrintJob } from "./printer";
 import { logger } from "./logger";

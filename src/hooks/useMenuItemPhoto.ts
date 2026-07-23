@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../lib/invoke";
 
 // P0 fix (2026-07-18): list_menu_items_v3 used to embed every item's photo
 // as a full base64 data: URI in the list response -- 5 items with 2MB

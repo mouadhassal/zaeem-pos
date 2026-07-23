@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../lib/invoke";
+import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 import { CreditCard, Plus, Search } from "lucide-react";
 import { IconGift, IconTag, IconEdit, IconTrash } from "@tabler/icons-react";
@@ -98,21 +99,21 @@ export default function LoyaltyPage() {
     try {
       const rows = await invoke<LoyaltyCard[]>("list_loyalty_cards_v3", { sessionToken: token });
       setCards(rows);
-    } catch { setLoadError("حدث خطأ في تحميل البطاقات"); }
+    } catch (err) { setLoadError(`حدث خطأ في تحميل البطاقات: ${realErrorText(err)}`); }
   }, [token]);
 
   const fetchCustomers = useCallback(async () => {
     try {
       const rows = await invoke<Customer[]>("list_customers_v3", { sessionToken: token });
       setCustomers(rows);
-    } catch { setLoadError("حدث خطأ في تحميل العملاء"); }
+    } catch (err) { setLoadError(`حدث خطأ في تحميل العملاء: ${realErrorText(err)}`); }
   }, [token]);
 
   const fetchTransactions = useCallback(async () => {
     try {
       const rows = await invoke<LoyaltyTx[]>("list_loyalty_transactions_v3", { sessionToken: token, cardId: txCardFilter || null });
       setTransactions(rows);
-    } catch { setLoadError("حدث خطأ في تحميل حركات النقاط"); }
+    } catch (err) { setLoadError(`حدث خطأ في تحميل حركات النقاط: ${realErrorText(err)}`); }
   }, [token, txCardFilter]);
 
   useEffect(() => { setLoading(true); setLoadError(null); Promise.all([fetchCards(), fetchCustomers(), fetchTransactions()]).finally(() => setLoading(false)); }, [fetchCards, fetchCustomers, fetchTransactions]);

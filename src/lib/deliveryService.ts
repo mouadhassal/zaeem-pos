@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./invoke";
 import { useAuthStore } from "../stores/authStore";
 import type { DeliveryStatus } from "../db/types";
 

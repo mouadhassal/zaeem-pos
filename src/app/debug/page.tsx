@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getMemoryUsage, getAverageFps } from "../../lib/performance";
 import { useCartStore } from "../../stores/cartStore";
 import { useAuthStore } from "../../stores/authStore";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../lib/invoke";
 
 // The database section (integrity/WAL/order count/sync queue) used to read
 // via the old Kysely helper -- a second SQLite connection through the SQL plugin,

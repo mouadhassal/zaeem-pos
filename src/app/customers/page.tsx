@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../lib/invoke";
+import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 import { z } from "zod";
 import { IconEye, IconPencil, IconTrash } from "@tabler/icons-react";
@@ -129,8 +130,8 @@ export default function CustomersPage() {
     try {
       const rows = await invoke<Customer[]>("list_customers_v3", { sessionToken: token });
       setCustomers(rows);
-    } catch {
-      setError("حدث خطأ في تحميل العملاء");
+    } catch (err) {
+      setError(`حدث خطأ في تحميل العملاء: ${realErrorText(err)}`);
     } finally {
       setLoading(false);
     }
@@ -229,8 +230,8 @@ export default function CustomersPage() {
         avgOrderValue: avgValue,
       });
       setDetailOpen(true);
-    } catch {
-      setError("حدث خطأ في تحميل التفاصيل");
+    } catch (err) {
+      setError(`حدث خطأ في تحميل التفاصيل: ${realErrorText(err)}`);
     }
   };
 

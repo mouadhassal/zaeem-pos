@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useAuthStore } from "../stores/authStore";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../lib/invoke";
 import { UtensilsCrossed, AlertCircle, Eye, EyeOff, ImagePlus } from "lucide-react";
 
 const CURRENCIES = [

@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { IconChefHat, IconNote } from "@tabler/icons-react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../lib/invoke";
+import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 
 interface KDSItem {
@@ -90,8 +91,8 @@ export default function KDSPage() {
         if (currCount > prevCountVal) playAlert();
         return kdsOrders;
       });
-    } catch {
-      setError("حدث خطأ في تحميل الطلبات");
+    } catch (err) {
+      setError(`حدث خطأ في تحميل الطلبات: ${realErrorText(err)}`);
     } finally {
       setLoading(false);
     }

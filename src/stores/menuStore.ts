@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../lib/invoke";
 import { useAuthStore } from "./authStore";
 import { logger } from "../lib/logger";
 import { useComboStore } from "./comboStore";

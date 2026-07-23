@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../lib/invoke";
 import { logger } from "../lib/logger";
 import type { UserRole } from "../db/types";
 

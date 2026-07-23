@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
 import { IconSearch, IconUserPlus } from "@tabler/icons-react";
 

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../lib/invoke";
+import { realErrorText } from "../../lib/errors";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import type { UserRole } from "../../db/types";
@@ -165,8 +166,8 @@ export default function StaffPage() {
           }).catch(() => {});
         }
       }
-    } catch {
-      setError("حدث خطأ في تحميل الموظفين");
+    } catch (err) {
+      setError(`حدث خطأ في تحميل الموظفين: ${realErrorText(err)}`);
     }
   }, [token]);
 
@@ -179,8 +180,8 @@ export default function StaffPage() {
         userId: shiftEmployeeFilter || null,
       });
       setShifts(rows);
-    } catch {
-      setError("حدث خطأ في تحميل الورديات");
+    } catch (err) {
+      setError(`حدث خطأ في تحميل الورديات: ${realErrorText(err)}`);
     }
   }, [token, shiftDateFrom, shiftDateTo, shiftEmployeeFilter]);
 
@@ -196,8 +197,8 @@ export default function StaffPage() {
         userId: attendanceEmployeeFilter || null,
       });
       setAttendance(rows);
-    } catch {
-      setError("حدث خطأ في تحميل الحضور");
+    } catch (err) {
+      setError(`حدث خطأ في تحميل الحضور: ${realErrorText(err)}`);
     }
   }, [token, attendanceEmployeeFilter]);
 

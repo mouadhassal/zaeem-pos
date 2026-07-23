@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../lib/invoke";
 import {
   IconClockHour3, IconReceipt2, IconCash, IconCreditCard,
   IconPlayerPlayFilled, IconLogout2, IconAlertTriangle, IconX,

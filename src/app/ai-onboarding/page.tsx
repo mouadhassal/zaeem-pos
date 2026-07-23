@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../lib/invoke";
 import { Camera, Upload, Mic, Check, X, ChevronUp, RotateCcw, Plus, Trash2 } from "lucide-react";
 import { useAuthStore } from "../../stores/authStore";
 

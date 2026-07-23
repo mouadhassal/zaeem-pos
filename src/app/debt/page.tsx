@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../lib/invoke";
+import { realErrorText } from "../../lib/errors";
 import { useCurrency } from "../../hooks/useCurrency";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
@@ -87,8 +88,8 @@ export default function DebtPage() {
     try {
       const rows = await invoke<DebtorRow[]>("list_debtors_v3", { sessionToken: token });
       setDebtors(rows);
-    } catch {
-      setError("حدث خطأ في تحميل الديون");
+    } catch (err) {
+      setError(`حدث خطأ في تحميل الديون: ${realErrorText(err)}`);
     } finally {
       setLoading(false);
     }
@@ -146,7 +147,7 @@ export default function DebtPage() {
       const entries = await invoke<DebtEntryRow[]>("list_debt_entries_v3", { sessionToken: token, debtorId: debtor.id });
       setDetail({ debtor, entries });
       setDetailOpen(true);
-    } catch { setError("حدث خطأ في تحميل التفاصيل"); }
+    } catch (err) { setError(`حدث خطأ في تحميل التفاصيل: ${realErrorText(err)}`); }
   };
 
   const handlePay = async () => {
