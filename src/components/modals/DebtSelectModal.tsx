@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
+import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 import { IconSearch, IconUserPlus } from "@tabler/icons-react";
 
@@ -34,8 +35,8 @@ export default function DebtSelectModal({ onClose, onSelect }: Props) {
     try {
       const rows = await invoke<DebtorRow[]>("list_debtors_v3", { sessionToken: token });
       setDebtors(rows.filter((d) => d.is_active !== 0));
-    } catch {
-      setFetchError("تعذر تحميل قائمة المدينين");
+    } catch (err) {
+      setFetchError(`تعذر تحميل قائمة المدينين: ${realErrorText(err)}`);
     } finally { setLoading(false); }
   }, [token]);
 
@@ -64,7 +65,7 @@ export default function DebtSelectModal({ onClose, onSelect }: Props) {
         address: null, notes: null,
       });
       onSelect(id, newName.trim());
-    } catch { setNewError("حدث خطأ"); } finally { setCreating(false); }
+    } catch (err) { setNewError(realErrorText(err)); } finally { setCreating(false); }
   };
 
   return (

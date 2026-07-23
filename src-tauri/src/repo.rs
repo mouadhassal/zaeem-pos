@@ -1253,8 +1253,16 @@ impl<'a> Repo<'a> {
 
     pub fn list_customers(&self, tenant_id: &str) -> Result<Vec<CustomerRow>, RepoError> {
         self.assert_scope_populated("customers", false)?;
+        // COALESCE(phone, '') -- P0 fix (2026-07-23): CustomerRow.phone is a
+        // non-optional String (loyalty/reports code reads it as such
+        // throughout), but the column itself is nullable and
+        // create_customer_v3 has long allowed email-only customers ("at
+        // least one of phone/email"). A plain `r.get(2)?` against a NULL
+        // phone value threw InvalidColumnType, failing the query_map
+        // closure and taking down the ENTIRE customer list (not just the
+        // one row) for any tenant with even one email-only customer.
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, phone, email, address, notes, birthday, loyalty_points, total_orders, total_spent_cents, last_order_at, last_modified \
+            "SELECT id, name, COALESCE(phone, ''), email, address, notes, birthday, loyalty_points, total_orders, total_spent_cents, last_order_at, last_modified \
              FROM customers WHERE tenant_id = ?1 ORDER BY name ASC",
         )?;
         let rows = stmt.query_map(params![tenant_id], |r| {
@@ -1384,8 +1392,11 @@ impl<'a> Repo<'a> {
     pub fn list_debtors(&self, scope: &Scope) -> Result<Vec<DebtorRow>, RepoError> {
         self.assert_scope_populated("debtors", true)?;
         let (predicate, args) = Self::scope_predicate(scope);
+        // COALESCE(phone, '') -- same P0 fix as list_customers, same
+        // reason: DebtorRow.phone is non-optional String but the column is
+        // nullable and create_debtor now allows email-only debtors.
         let sql = format!(
-            "SELECT id, name, phone, email, address, notes, total_debt_cents, total_paid_cents, balance_cents, last_transaction_at, is_active \
+            "SELECT id, name, COALESCE(phone, ''), email, address, notes, total_debt_cents, total_paid_cents, balance_cents, last_transaction_at, is_active \
              FROM debtors WHERE {predicate} AND is_active = 1 ORDER BY name ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -1399,8 +1410,15 @@ impl<'a> Repo<'a> {
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
 
+    // `phone` is optional (schema column is nullable) so a debtor can be
+    // created with only an email -- DebtSelectModal's inline "new debtor"
+    // form (the POS debt flow) allows exactly that. Was `&str` (required)
+    // until this fix, which meant the frontend's `phone: null` for an
+    // email-only debtor failed to deserialize at the Tauri IPC boundary
+    // before this function was ever called -- the debtor was silently
+    // never created, so the debtor list looked permanently empty.
     #[allow(clippy::too_many_arguments)]
-    pub fn create_debtor(&self, tenant_id: &str, branch_id: &str, name: &str, phone: &str, email: Option<&str>, address: Option<&str>, notes: Option<&str>) -> Result<String, RepoError> {
+    pub fn create_debtor(&self, tenant_id: &str, branch_id: &str, name: &str, phone: Option<&str>, email: Option<&str>, address: Option<&str>, notes: Option<&str>) -> Result<String, RepoError> {
         let id = uuid::Uuid::now_v7().to_string();
         self.conn.execute(
             "INSERT INTO debtors (id, tenant_id, branch_id, name, phone, email, address, notes, total_debt_cents, total_paid_cents, balance_cents, is_active, last_modified, sync_status) \
@@ -1442,9 +1460,22 @@ impl<'a> Repo<'a> {
 
     /// One transaction: the PAYMENT fact + the running-balance update on
     /// `debtors` -- same atomicity principle as `take_payment`/`adjust_stock`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn record_debt_payment(&self, scope: &Scope, tenant_id: &str, branch_id: &str, debtor_id: &str, amount_cents: i64, notes: Option<&str>, actor_id: &str) -> Result<String, RepoError> {
+    ///
+    /// Takes `scope` (not a separate `tenant_id`/`branch_id` pair) and looks
+    /// up the DEBTOR's own tenant_id/branch_id rather than requiring the
+    /// caller to already have a Branch-scoped one -- a Tenant-scoped actor
+    /// (Owner, who has no home branch) can pay off any debtor in their own
+    /// tenant, exactly like they can already list/view every debtor in
+    /// their tenant. The entry is stamped with the debtor's branch (where
+    /// the debt actually lives), not the acting staff member's, which is
+    /// also the more correct bookkeeping regardless of who's paying.
+    pub fn record_debt_payment(&self, scope: &Scope, debtor_id: &str, amount_cents: i64, notes: Option<&str>, actor_id: &str) -> Result<String, RepoError> {
         self.assert_row_in_scope("debtors", debtor_id, scope)?;
+        let (tenant_id, branch_id): (String, String) = self.conn.query_row(
+            "SELECT tenant_id, branch_id FROM debtors WHERE id = ?1",
+            params![debtor_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
         let id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(

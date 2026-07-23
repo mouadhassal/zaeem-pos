@@ -128,8 +128,8 @@ export default function DebtPage() {
       }
       setShowModal(false);
       await fetchAll();
-    } catch {
-      setFormErrors({ _form: "حدث خطأ في الحفظ" });
+    } catch (err) {
+      setFormErrors({ _form: `حدث خطأ في الحفظ: ${realErrorText(err)}` });
     } finally { setSaving(false); }
   };
 
@@ -163,7 +163,7 @@ export default function DebtPage() {
       if (detail && detail.debtor.id === payModal.id) {
         openDetail(payModal);
       }
-    } catch { setError("حدث خطأ في تسجيل الدفعة"); }
+    } catch (err) { setError(`حدث خطأ في تسجيل الدفعة: ${realErrorText(err)}`); }
   };
 
   if (loading) {
