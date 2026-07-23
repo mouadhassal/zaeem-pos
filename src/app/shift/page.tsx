@@ -68,13 +68,6 @@ export default function ShiftPage() {
   const [startingCash, setStartingCash] = useState("");
   const [startingShift, setStartingShift] = useState(false);
 
-  // Owner accounts have no home branch (tenant-scoped, see open_shift_v3's
-  // doc comment) -- they must pick which branch they're opening a till for.
-  // Branch-scoped staff (Manager/Cashier/Kitchen/Server) never see this.
-  const [branches, setBranches] = useState<[string, string][]>([]);
-  const [selectedBranchId, setSelectedBranchId] = useState<string>("");
-  const needsBranchPicker = user?.branchId == null;
-
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [actualCash, setActualCash] = useState("");
   const [managerPassword, setManagerPassword] = useState("");
@@ -131,20 +124,6 @@ export default function ShiftPage() {
   }, [fetchShiftData]);
 
   useEffect(() => {
-    if (!needsBranchPicker) return;
-    (async () => {
-      try {
-        const token = useAuthStore.getState().token;
-        const rows = await invoke<[string, string][]>("list_branches_v3", { sessionToken: token });
-        setBranches(rows);
-        if (rows.length === 1) setSelectedBranchId(rows[0][0]);
-      } catch (err) {
-        showMsg(errText(err, "تعذر تحميل قائمة الفروع"), true);
-      }
-    })();
-  }, [needsBranchPicker]);
-
-  useEffect(() => {
     if (activeShift) {
       timerRef.current = setInterval(() => {
         setElapsed(formatElapsed(activeShift.opened_at));
@@ -158,10 +137,6 @@ export default function ShiftPage() {
 
   const handleStartShift = async () => {
     if (!user) return;
-    if (needsBranchPicker && !selectedBranchId) {
-      showMsg("الرجاء اختيار الفرع أولاً", true);
-      return;
-    }
     const cents = Math.round(parseFloat(startingCash || "0") * 100);
     setStartingShift(true);
     try {
@@ -169,7 +144,7 @@ export default function ShiftPage() {
       const id = await invoke<string>("open_shift_v3", {
         sessionToken: token,
         startingCashCents: cents,
-        branchId: needsBranchPicker ? selectedBranchId : null,
+        branchId: null,
       });
       setActiveShiftId(id);
       showMsg("تم بدء الوردية بنجاح");
@@ -314,23 +289,6 @@ export default function ShiftPage() {
             <p className="text-sm text-text-3">أدخل الرصيد الافتتاحي لبدء الوردية</p>
           </div>
 
-          {needsBranchPicker && (
-            <div className="space-y-2">
-              <label className="text-text-3 text-sm">الفرع</label>
-              <select
-                value={selectedBranchId}
-                onChange={(e) => setSelectedBranchId(e.target.value)}
-                className="w-full h-14 bg-surface rounded-xl px-4 text-text outline-none focus:border-accent border border-line transition-all"
-                dir="rtl"
-              >
-                <option value="" disabled>اختر الفرع</option>
-                {branches.map(([id, name]) => (
-                  <option key={id} value={id}>{name}</option>
-                ))}
-              </select>
-            </div>
-          )}
-
           <div className="space-y-2">
             <label className="text-text-3 text-sm">الرصيد الافتتاحي</label>
             <input
@@ -347,7 +305,7 @@ export default function ShiftPage() {
 
           <button
             onClick={handleStartShift}
-            disabled={startingShift || (needsBranchPicker && !selectedBranchId)}
+            disabled={startingShift}
             className="w-full h-14 rounded-xl bg-accent text-white font-bold text-lg flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-accent-text shadow-sh-3 active:scale-[0.98] transition-all"
           >
             {startingShift ? (

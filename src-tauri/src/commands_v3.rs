@@ -12,7 +12,7 @@ use crate::repo::{NewOrder, OrderRow, Repo, FullOrderInput, SplitBillInput, Tabl
 use crate::security::{self, authorize, authorize_scope, Actor, Permission, Role, Scope};
 use crate::Db;
 use bcrypt::{hash, verify, DEFAULT_COST};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use tauri::{Manager, State};
 
@@ -1107,8 +1107,9 @@ pub fn create_ingredient_v3(state: State<Db>, license: State<crate::license::clo
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageIngredients).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("ingredient creation requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1140,8 +1141,9 @@ pub fn adjust_stock_v3(state: State<Db>, license: State<crate::license::cloud::C
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::AdjustStock).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("stock adjustment requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1213,22 +1215,61 @@ fn resolve_branch_for_actor(
     }
 }
 
+/// The single source of truth for "which branch does THIS write act on."
+/// Branch-scoped actors (Manager/Cashier/Kitchen/Server) are unambiguous --
+/// their own branch, always (`resolve_branch_for_actor`'s original
+/// behavior, unchanged). Owner accounts are Tenant-scoped by role design
+/// (`Actor::scope()` gives them every branch, since they oversee the whole
+/// tenant) -- but the PHYSICAL TERMINAL they're sitting at was licensed for
+/// exactly one branch when it was activated, and that doesn't change based
+/// on who's currently logged into it. Prefers the device's own license
+/// binding (`CloudLicenseState::licensed_branch`) over asking the Owner to
+/// pick one from a dropdown every time -- this is what removes the
+/// "select a branch" step that was pure friction for the overwhelmingly
+/// common one-branch-per-device case, and is also what makes
+/// create_debtor_v3/create_supplier_v3/create_ingredient_v3/etc. work for
+/// an Owner testing or running the POS directly instead of hard-failing
+/// with "requires a Branch-scoped actor." Only falls back to
+/// `resolve_branch_for_actor`'s explicit-picker behavior if this terminal
+/// has no branch-bound license yet (pre-activation) -- Platform accounts
+/// still have no branch to act on, ever.
+fn resolve_operating_branch(
+    conn: &Connection,
+    actor: &Actor,
+    license: &crate::license::cloud::CloudLicenseState,
+    requested_branch_id: Option<String>,
+) -> Result<(String, String), String> {
+    let scope = actor.scope();
+    if let Scope::Branch { tenant_id, branch_id } = &scope {
+        return Ok((tenant_id.clone(), branch_id.clone()));
+    }
+    if let Scope::Tenant { tenant_id } = &scope {
+        if let Some((lic_tenant, lic_branch)) = license.licensed_branch() {
+            if &lic_tenant == tenant_id {
+                return Ok((lic_tenant, lic_branch));
+            }
+        }
+    }
+    let tenant_branches = if let Scope::Tenant { tenant_id } = &scope {
+        Repo::new(conn).list_branches(tenant_id).map_err(|e| e.to_string())?
+    } else {
+        vec![]
+    };
+    resolve_branch_for_actor(scope, requested_branch_id, &tenant_branches)
+}
+
 #[tauri::command]
-pub fn open_shift_v3(state: State<Db>, session_token: String, starting_cash_cents: i64, branch_id: Option<String>) -> Result<String, String> {
+pub fn open_shift_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, starting_cash_cents: i64, branch_id: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ManageShift).map_err(|e| e.to_string())?;
     if starting_cash_cents < 0 {
         return Err("negative starting cash is not valid".to_string());
     }
 
-    let scope = actor.scope();
-    let tenant_branches = if let Scope::Tenant { tenant_id } = &scope {
+    let (tenant_id, resolved_branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        Repo::new(&conn).list_branches(tenant_id).map_err(|e| e.to_string())?
-    } else {
-        vec![]
+        resolve_operating_branch(&conn, &actor, &license, branch_id)?
     };
-    let (tenant_id, resolved_branch_id) = resolve_branch_for_actor(scope, branch_id, &tenant_branches)?;
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1284,11 +1325,12 @@ pub fn list_attendance_v3(state: State<Db>, license: State<crate::license::cloud
 }
 
 #[tauri::command]
-pub fn clock_in_v3(state: State<Db>, session_token: String, user_id: String) -> Result<(), String> {
+pub fn clock_in_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("clock-in requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1333,7 +1375,7 @@ pub fn list_debtors_v3(state: State<Db>, session_token: String) -> Result<Vec<cr
 /// been added to it.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>) -> Result<String, String> {
+pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>, initial_debt_cents: Option<i64>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
@@ -1342,13 +1384,21 @@ pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::cloud::
     if phone.is_none() && email.is_none() {
         return Err("either a phone number or an email is required".to_string());
     }
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("creating a debtor requires a Branch-scoped actor".to_string());
+    let initial_debt_cents = initial_debt_cents.unwrap_or(0);
+    if initial_debt_cents < 0 {
+        return Err("initial debt amount cannot be negative".to_string());
+    }
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let debtor_id = Repo::new(&tx).create_debtor(&tenant_id, &branch_id, &name, phone.as_deref(), email.as_deref(), address.as_deref(), notes.as_deref()).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "name": name, "created": true }))).map_err(|e| e.to_string())?;
+    if initial_debt_cents > 0 {
+        Repo::new(&tx).record_initial_debt(&tenant_id, &branch_id, &debtor_id, initial_debt_cents, &actor.id).map_err(|e| e.to_string())?;
+    }
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "name": name, "created": true, "initial_debt_cents": initial_debt_cents }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(debtor_id)
 }
@@ -1470,8 +1520,9 @@ pub fn create_operational_cost_v3(state: State<Db>, license: State<crate::licens
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("recording a cost requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
     if amount_cents <= 0 {
         return Err("cost amount must be positive".to_string());
@@ -1501,8 +1552,9 @@ pub fn create_invoice_v3(state: State<Db>, license: State<crate::license::cloud:
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("creating an invoice requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
     if amount_cents <= 0 {
         return Err("invoice amount must be positive".to_string());
@@ -1948,11 +2000,12 @@ pub fn delete_loyalty_reward_v3(state: State<Db>, license: State<crate::license:
 /// redemption is money leaving through a side door exactly like a manual
 /// discount, so it gets the same audit rigor, non-negotiably.
 #[tauri::command]
-pub fn redeem_loyalty_reward_v3(state: State<Db>, session_token: String, card_number: String, reward_id: String) -> Result<crate::repo::LoyaltyRewardRow, String> {
+pub fn redeem_loyalty_reward_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, card_number: String, reward_id: String) -> Result<crate::repo::LoyaltyRewardRow, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
-    let Scope::Branch { branch_id, .. } = actor.scope() else {
-        return Err("redeeming a loyalty reward requires a Branch-scoped actor".to_string());
+    let (_, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1967,8 +2020,9 @@ pub fn create_purchase_order_v3(state: State<Db>, license: State<crate::license:
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("purchase order creation requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1990,8 +2044,9 @@ pub fn create_purchase_order_and_bump_supplier_v3(state: State<Db>, license: Sta
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("purchase order creation requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -2016,8 +2071,9 @@ pub fn create_purchase_order_with_items_v3(state: State<Db>, license: State<crat
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("purchase order creation requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -2047,15 +2103,16 @@ pub fn cancel_purchase_order_v3(state: State<Db>, license: State<crate::license:
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let scope = actor.scope();
-    let Scope::Branch { tenant_id, branch_id } = &scope else {
-        return Err("purchase order cancellation requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
+    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     Repo::new(&tx).cancel_purchase_order(&po_id, &scope).map_err(|e| e.to_string())?;
     audit::append(
-        &tx, &actor.device_id, tenant_id, Some(branch_id), &actor.id,
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
         audit::Action::PurchaseOrderChanged, "purchase_order", &po_id,
         None, Some(&serde_json::json!({ "status": "CANCELLED" })),
     ).map_err(|e| e.to_string())?;
@@ -2087,10 +2144,11 @@ pub fn receive_purchase_order_v3(state: State<Db>, license: State<crate::license
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let scope = actor.scope();
-    let Scope::Branch { tenant_id, branch_id } = &scope else {
-        return Err("purchase order receiving requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
+    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let amount_paid_cents = amount_paid_cents.unwrap_or(0);
     if amount_paid_cents < 0 {
         return Err("amount paid cannot be negative".to_string());
@@ -2098,16 +2156,16 @@ pub fn receive_purchase_order_v3(state: State<Db>, license: State<crate::license
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let (payment_ids, cost_id) = Repo::new(&tx)
-        .receive_purchase_order(tenant_id, branch_id, &po_id, &actor.id, &scope, &items, amount_paid_cents, method.as_deref())
+        .receive_purchase_order(&tenant_id, &branch_id, &po_id, &actor.id, &scope, &items, amount_paid_cents, method.as_deref())
         .map_err(|e| e.to_string())?;
     audit::append(
-        &tx, &actor.device_id, tenant_id, Some(branch_id), &actor.id,
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
         audit::Action::PurchaseOrderReceived, "purchase_order", &po_id,
         None, Some(&serde_json::json!({ "item_count": items.len(), "amount_paid_cents": amount_paid_cents })),
     ).map_err(|e| e.to_string())?;
     if amount_paid_cents > 0 {
         audit::append(
-            &tx, &actor.device_id, tenant_id, Some(branch_id), &actor.id,
+            &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
             audit::Action::SupplierPaymentRecorded, "purchase_order", &po_id,
             None, Some(&serde_json::json!({ "payment_ids": payment_ids, "amount_paid_cents": amount_paid_cents, "method": method })),
         ).map_err(|e| e.to_string())?;
@@ -2115,10 +2173,10 @@ pub fn receive_purchase_order_v3(state: State<Db>, license: State<crate::license
 
     let license_status = license.cached_status();
     for payment_id in &payment_ids {
-        sync_enqueue_supplier_payment(&tx, tenant_id, branch_id, payment_id, &actor.device_id, &license_status)?;
+        sync_enqueue_supplier_payment(&tx, &tenant_id, &branch_id, payment_id, &actor.device_id, &license_status)?;
     }
     if let Some(cost_id) = &cost_id {
-        sync_enqueue_operational_cost(&tx, tenant_id, branch_id, cost_id, &actor.device_id, &license_status)?;
+        sync_enqueue_operational_cost(&tx, &tenant_id, &branch_id, cost_id, &actor.device_id, &license_status)?;
     }
 
     tx.commit().map_err(|e| e.to_string())?;
@@ -2186,8 +2244,9 @@ pub fn create_supplier_v3(state: State<Db>, license: State<crate::license::cloud
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("supplier creation requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -2208,12 +2267,14 @@ pub fn update_supplier_v3(state: State<Db>, license: State<crate::license::cloud
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("supplier updates require a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
+    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_supplier(&actor.scope(), &supplier_id, &name, phone.as_deref(), email.as_deref()).map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_supplier(&scope, &supplier_id, &name, phone.as_deref(), email.as_deref()).map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
         audit::Action::SupplierChanged, "supplier", &supplier_id,
@@ -2228,12 +2289,14 @@ pub fn delete_supplier_v3(state: State<Db>, license: State<crate::license::cloud
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("supplier deletion requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
+    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).delete_supplier(&actor.scope(), &supplier_id).map_err(|e| e.to_string())?;
+    Repo::new(&tx).delete_supplier(&scope, &supplier_id).map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
         audit::Action::SupplierChanged, "supplier", &supplier_id,
@@ -2267,8 +2330,9 @@ pub fn create_driver_v3(state: State<Db>, license: State<crate::license::cloud::
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("driver creation requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -2326,12 +2390,14 @@ pub fn update_driver_v3(state: State<Db>, license: State<crate::license::cloud::
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("driver updates require a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
+    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_driver(&actor.scope(), &driver_id, &name, phone.as_deref(), &vehicle_type, vehicle_plate.as_deref(), license_number.as_deref()).map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_driver(&scope, &driver_id, &name, phone.as_deref(), &vehicle_type, vehicle_plate.as_deref(), license_number.as_deref()).map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
         audit::Action::DriverChanged, "driver", &driver_id,
@@ -2346,12 +2412,14 @@ pub fn deactivate_driver_v3(state: State<Db>, license: State<crate::license::clo
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("driver deactivation requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
+    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).deactivate_driver(&actor.scope(), &driver_id).map_err(|e| e.to_string())?;
+    Repo::new(&tx).deactivate_driver(&scope, &driver_id).map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
         audit::Action::DriverChanged, "driver", &driver_id,
@@ -2367,8 +2435,9 @@ pub fn create_printer_v3(state: State<Db>, license: State<crate::license::cloud:
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("printer creation requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -2415,16 +2484,18 @@ pub fn list_delivery_logs_v3(state: State<Db>, session_token: String) -> Result<
 }
 
 #[tauri::command]
-pub fn create_delivery_log_v3(state: State<Db>, session_token: String, order_id: String, driver_id: String) -> Result<String, String> {
+pub fn create_delivery_log_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, order_id: String, driver_id: String) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("delivery assignment requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
+    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let log_id = Repo::new(&tx)
-        .create_delivery_log(&actor.scope(), &tenant_id, &branch_id, &order_id, &driver_id)
+        .create_delivery_log(&scope, &tenant_id, &branch_id, &order_id, &driver_id)
         .map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
@@ -2437,16 +2508,18 @@ pub fn create_delivery_log_v3(state: State<Db>, session_token: String, order_id:
 
 /// The atomicity target for assignment -- see `Repo::assign_driver_to_delivery`.
 #[tauri::command]
-pub fn assign_driver_to_delivery_v3(state: State<Db>, session_token: String, order_id: String, driver_id: String) -> Result<String, String> {
+pub fn assign_driver_to_delivery_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, order_id: String, driver_id: String) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("delivery assignment requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
+    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let log_id = Repo::new(&tx)
-        .assign_driver_to_delivery(&actor.scope(), &tenant_id, &branch_id, &order_id, &driver_id)
+        .assign_driver_to_delivery(&scope, &tenant_id, &branch_id, &order_id, &driver_id)
         .map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
@@ -2458,15 +2531,17 @@ pub fn assign_driver_to_delivery_v3(state: State<Db>, session_token: String, ord
 }
 
 #[tauri::command]
-pub fn update_delivery_status_v3(state: State<Db>, session_token: String, delivery_log_id: String, new_status: String) -> Result<(), String> {
+pub fn update_delivery_status_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, delivery_log_id: String, new_status: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("delivery status updates require a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
+    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_delivery_status(&actor.scope(), &delivery_log_id, &new_status).map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_delivery_status(&scope, &delivery_log_id, &new_status).map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
         audit::Action::DeliveryStatusChanged, "delivery_log", &delivery_log_id,
@@ -2481,15 +2556,17 @@ pub fn update_delivery_status_v3(state: State<Db>, session_token: String, delive
 /// (0001_init.sql); the old frontend's `notes` field on this same call is
 /// NOT a real `delivery_logs` column and is dropped, not carried forward.
 #[tauri::command]
-pub fn update_delivery_status_and_driver_v3(state: State<Db>, session_token: String, delivery_log_id: String, new_status: String, failure_reason: Option<String>) -> Result<(), String> {
+pub fn update_delivery_status_and_driver_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, delivery_log_id: String, new_status: String, failure_reason: Option<String>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("delivery status updates require a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
+    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_delivery_status_and_driver(&actor.scope(), &delivery_log_id, &new_status, failure_reason.as_deref()).map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_delivery_status_and_driver(&scope, &delivery_log_id, &new_status, failure_reason.as_deref()).map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
         audit::Action::DeliveryStatusChanged, "delivery_log", &delivery_log_id,
@@ -2539,8 +2616,9 @@ pub fn create_delivery_zone_v3(state: State<Db>, license: State<crate::license::
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("delivery zone creation requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -2562,12 +2640,14 @@ pub fn update_delivery_zone_v3(state: State<Db>, license: State<crate::license::
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("delivery zone updates require a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
+    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_delivery_zone(&actor.scope(), &zone_id, &name, fee_cents, min_order_cents, estimated_minutes).map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_delivery_zone(&scope, &zone_id, &name, fee_cents, min_order_cents, estimated_minutes).map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
         audit::Action::DeliveryZoneChanged, "delivery_zone", &zone_id,
@@ -2582,12 +2662,14 @@ pub fn deactivate_delivery_zone_v3(state: State<Db>, license: State<crate::licen
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("delivery zone deactivation requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
+    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).deactivate_delivery_zone(&actor.scope(), &zone_id).map_err(|e| e.to_string())?;
+    Repo::new(&tx).deactivate_delivery_zone(&scope, &zone_id).map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
         audit::Action::DeliveryZoneChanged, "delivery_zone", &zone_id,
@@ -3325,10 +3407,11 @@ pub fn activate_delayed_orders_v3(state: State<Db>, _session_token: String) -> R
 
 /// Get receipt config: chain_name, currency from chain_config + branch name.
 #[tauri::command]
-pub fn get_receipt_config_v3(state: State<Db>, session_token: String) -> Result<ReceiptConfig, String> {
+pub fn get_receipt_config_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<ReceiptConfig, String> {
     let actor = authenticate_actor(&state, &session_token)?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("receipt config requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).get_receipt_config(&tenant_id, &branch_id).map_err(|e| e.to_string())
@@ -3344,11 +3427,12 @@ pub fn lookup_loyalty_card_v3(state: State<Db>, _session_token: String, card_num
 
 /// Earn loyalty points after an order.
 #[tauri::command]
-pub fn earn_loyalty_points_v3(state: State<Db>, session_token: String, card_number: String, points: i64, order_id: String) -> Result<(), String> {
+pub fn earn_loyalty_points_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, card_number: String, points: i64, order_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("earning loyalty points requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
     };
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -3642,8 +3726,8 @@ mod tests {
     use crate::migrate;
     use crate::migrate_v3;
     use crate::repo::{NewOrder, Repo, RepoError, FullOrderInput, SplitBillInput};
-    use super::{verify_manager_override_impl, resolve_branch_for_actor, MANAGER_OVERRIDE_MAX_ATTEMPTS};
-    use crate::security::{self, authorize, Permission, Role, Scope};
+    use super::{verify_manager_override_impl, resolve_branch_for_actor, resolve_operating_branch, MANAGER_OVERRIDE_MAX_ATTEMPTS};
+    use crate::security::{self, authorize, Actor, Permission, Role, Scope};
     use rusqlite::{params, Connection};
     use std::fs;
     use std::path::PathBuf;
@@ -5138,6 +5222,73 @@ mod tests {
         assert_eq!(err, "a platform account has no branch to act on");
 
         println!("[shifts] resolve_branch_for_actor: Branch-scoped forced to own branch, Tenant-scoped(Owner) requires+validates an explicit branch, Platform rejected");
+    }
+
+    /// The actual bug behind "add debtor/supplier/ingredient/etc. always
+    /// fails" for an Owner login (a much bigger blast radius than shifts --
+    /// ~20 commands hard-failed with "requires a Branch-scoped actor" and
+    /// no fallback at all, since only `open_shift_v3` had ever been patched
+    /// with `resolve_branch_for_actor`). Fixed by preferring the physical
+    /// terminal's OWN license binding over asking the Owner to pick a
+    /// branch from a dropdown every time -- this is also what removes the
+    /// "select a branch" step from `open_shift_v3` itself.
+    #[test]
+    fn resolve_operating_branch_prefers_the_devices_licensed_branch_over_a_manual_picker() {
+        let dir = std::env::temp_dir().join(format!("resolve_operating_branch_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("test.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("CREATE TABLE branch (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT NOT NULL)").unwrap();
+        conn.execute("INSERT INTO branch (id, tenant_id, name) VALUES ('branch-a', 't1', 'Branch A')", []).unwrap();
+
+        struct NeverCalledTransport;
+        #[async_trait::async_trait]
+        impl crate::license::cloud::CloudTransport for NeverCalledTransport {
+            async fn check(&self, _license_id: &str, _device_token: &str) -> crate::license::cloud::CloudCheckOutcome {
+                panic!("this test never triggers a cloud check");
+            }
+        }
+        let key = license_core::signed::test_support::test_keypair();
+        let offline = crate::license::store::LicenseState::init(dir.clone(), key.verifying_key());
+        let license = crate::license::cloud::CloudLicenseState::new(offline, dir.clone(), None, Box::new(NeverCalledTransport));
+
+        let owner = Actor { id: "owner-1".into(), tenant_id: "t1".into(), branch_id: None, role: Role::Owner, device_id: "dev-1".into() };
+
+        // Pre-activation: this terminal has no license yet, so there's
+        // nothing to auto-resolve from -- falls back to the original
+        // explicit-picker error, unchanged from before this fix.
+        let err = resolve_operating_branch(&conn, &owner, &license, None).unwrap_err();
+        assert_eq!(err, "select a branch first");
+
+        // Install a real signed license identifying THIS device as
+        // branch-a's terminal.
+        let machine = crate::license::fingerprint::current();
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut payload = license_core::signed::test_support::sample_payload(machine, now - 1000, now + 30 * 86_400_000);
+        payload.tenant_id = "t1".into();
+        payload.branch_id = "branch-a".into();
+        let file = license_core::signed::test_support::mint(&key, &payload);
+        license.accept_renewal(file).unwrap();
+
+        // The Owner never picked anything -- the device's own license is
+        // enough. This is the fix: what used to be a hard failure is now a
+        // silent, correct auto-resolution.
+        assert_eq!(
+            resolve_operating_branch(&conn, &owner, &license, None).unwrap(),
+            ("t1".to_string(), "branch-a".to_string()),
+        );
+
+        // A Branch-scoped actor (Manager/Cashier/Kitchen/Server) is
+        // unaffected -- always their own branch, the device's license is
+        // never even consulted for them.
+        let cashier = Actor { id: "c1".into(), tenant_id: "t1".into(), branch_id: Some("branch-b".into()), role: Role::Cashier, device_id: "dev-1".into() };
+        assert_eq!(
+            resolve_operating_branch(&conn, &cashier, &license, None).unwrap(),
+            ("t1".to_string(), "branch-b".to_string()),
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Batch 3b, slice 3, group 1: customer CRUD + order-history/favorites

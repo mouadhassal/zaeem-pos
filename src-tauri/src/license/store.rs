@@ -65,6 +65,24 @@ impl LicenseState {
         self.cached.lock().unwrap().clone()
     }
 
+    /// This device's licensed (tenant_id, branch_id), if a validly signed,
+    /// machine-matched license is on disk -- regardless of expiry/grace
+    /// (even a lapsed license still identifies which physical branch this
+    /// terminal belongs to; that's an identity fact, not a validity one).
+    /// Used to auto-resolve which branch a write command should act on
+    /// instead of asking an Owner to pick one every time: "which branch
+    /// this terminal is for" is a property of the device's license, not
+    /// something that should depend on who happens to be logged in.
+    pub fn licensed_branch(&self) -> Option<(String, String)> {
+        let file = self.load_file()?;
+        let payload = verify_signature(&file, &self.pubkey).ok()?;
+        let current_machine = fingerprint::current();
+        if !payload.machine_fingerprint.fuzzy_matches(&current_machine) {
+            return None;
+        }
+        Some((payload.tenant_id, payload.branch_id))
+    }
+
     /// Installs a new signed blob (pasted/scanned/dropped in by the
     /// collector). Fully offline: no server call, just re-running the same
     /// verification the boot check does, plus a downgrade guard so an old

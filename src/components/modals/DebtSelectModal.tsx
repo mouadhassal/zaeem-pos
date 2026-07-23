@@ -62,7 +62,7 @@ export default function DebtSelectModal({ onClose, onSelect }: Props) {
       const id = await invoke<string>("create_debtor_v3", {
         sessionToken: token, name: newName.trim(),
         phone: newPhone.trim() || null, email: newEmail.trim() || null,
-        address: null, notes: null,
+        address: null, notes: null, initialDebtCents: null,
       });
       onSelect(id, newName.trim());
     } catch (err) { setNewError(realErrorText(err)); } finally { setCreating(false); }

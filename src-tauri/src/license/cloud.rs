@@ -182,6 +182,14 @@ impl CloudLicenseState {
         self.offline.recheck()
     }
 
+    /// Passthrough to `LicenseState::licensed_branch` -- see its doc
+    /// comment. Cloud-aware callers only ever need the offline blob's
+    /// identity here, not a network call: the branch a device is licensed
+    /// for doesn't change based on whether the cloud is reachable.
+    pub fn licensed_branch(&self) -> Option<(String, String)> {
+        self.offline.licensed_branch()
+    }
+
     /// `check_license_v3`'s "check now" passthrough -- re-evaluates the
     /// offline blob, then returns the combined (cloud-aware) status, so a
     /// manual check reflects the same precedence `cached_status()` always

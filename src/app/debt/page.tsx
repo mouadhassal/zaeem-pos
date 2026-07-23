@@ -43,11 +43,12 @@ const debtorSchema = z.object({
   email: z.string().email("بريد غير صالح").optional().or(z.literal("")),
   address: z.string().optional().default(""),
   notes: z.string().optional().default(""),
+  initialDebt: z.string().optional().default(""),
 });
 
 type DebtorForm = z.infer<typeof debtorSchema>;
 
-const emptyForm: DebtorForm = { name: "", phone: "", email: "", address: "", notes: "" };
+const emptyForm: DebtorForm = { name: "", phone: "", email: "", address: "", notes: "", initialDebt: "" };
 
 function fmtDateTime(iso: string | null): string {
   if (!iso) return "-";
@@ -104,7 +105,7 @@ export default function DebtPage() {
 
   const openEdit = (d: DebtorRow) => {
     setEditId(d.id);
-    setForm({ name: d.name, phone: d.phone, email: d.email ?? "", address: d.address ?? "", notes: d.notes ?? "" });
+    setForm({ name: d.name, phone: d.phone, email: d.email ?? "", address: d.address ?? "", notes: d.notes ?? "", initialDebt: "" });
     setFormErrors({});
     setShowModal(true);
   };
@@ -127,7 +128,8 @@ export default function DebtPage() {
       if (editId) {
         await invoke("update_debtor_v3", { ...args, debtorId: editId });
       } else {
-        await invoke("create_debtor_v3", args);
+        const initialDebtCents = Math.round(parseFloat(parsed.data.initialDebt || "0") * 100) || null;
+        await invoke("create_debtor_v3", { ...args, initialDebtCents });
       }
       setShowModal(false);
       await fetchAll();
@@ -282,6 +284,19 @@ export default function DebtPage() {
                   {formErrors[field] && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors[field]}</p>}
                 </div>
               ))}
+              {!editId && (
+                <div>
+                  <label className="block text-sm font-arabic text-ink-900 mb-1">المبلغ الذي يدين به (اختياري)</label>
+                  <input
+                    type="number" min="0" step="0.01"
+                    value={form.initialDebt}
+                    onChange={(e) => setForm((p) => ({ ...p, initialDebt: e.target.value }))}
+                    placeholder="0.00"
+                    className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                    dir="ltr"
+                  />
+                </div>
+              )}
               {formErrors._form && <p className="text-sm text-red-500 font-arabic">{formErrors._form}</p>}
             </div>
             <div className="flex gap-3 justify-end pt-2">

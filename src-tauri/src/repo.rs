@@ -1675,6 +1675,28 @@ impl<'a> Repo<'a> {
         Ok(id)
     }
 
+    /// Optional initial balance at debtor-creation time -- same DEBT-entry
+    /// shape `finalize_order_with_payment`'s debt path writes, just with no
+    /// `order_id` (this debt isn't tied to any order, e.g. a pre-existing
+    /// tab being entered into the system for the first time). Caller
+    /// (`create_debtor_v3`) runs this in the SAME transaction as
+    /// `create_debtor` -- a debtor with a stated opening balance and no
+    /// corresponding entry would be a silently wrong number on day one.
+    pub fn record_initial_debt(&self, tenant_id: &str, branch_id: &str, debtor_id: &str, amount_cents: i64, actor_id: &str) -> Result<String, RepoError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO debt_entries (id, tenant_id, branch_id, debtor_id, order_id, amount_cents, type, notes, created_by, created_at, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5, 'DEBT', 'رصيد افتتاحي', ?6, ?7, ?7, 'pending')",
+            params![id, tenant_id, branch_id, debtor_id, amount_cents, actor_id, now],
+        )?;
+        self.conn.execute(
+            "UPDATE debtors SET total_debt_cents = total_debt_cents + ?1, balance_cents = balance_cents + ?1, last_transaction_at = ?2, last_modified = ?2 WHERE id = ?3",
+            params![amount_cents, now, debtor_id],
+        )?;
+        Ok(id)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn update_debtor(&self, scope: &Scope, debtor_id: &str, name: &str, phone: &str, email: Option<&str>, address: Option<&str>, notes: Option<&str>) -> Result<(), RepoError> {
         self.assert_row_in_scope("debtors", debtor_id, scope)?;
