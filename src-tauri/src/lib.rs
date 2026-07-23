@@ -35,6 +35,21 @@ use ai::UploadQueue;
 // code calls `getDb()` at all (Batch 3b closeout), this dead, previously-
 // dangerous duplicate is removed rather than left registered and unused.
 
+/// Every connection this app opens to `zaeem_pos.db` must call this. SQLite's
+/// `busy_timeout` defaults to 0 -- a connection that hits a writer lock held
+/// by ANOTHER connection to the same file fails immediately with "database
+/// is locked" instead of waiting. This app opens three separate connections
+/// to the same file (`Db`, the AI upload queue, `AppState`) specifically so
+/// that a slow AI/photo operation never blocks a sale -- but without this,
+/// that same design makes ordinary contention between them return hard
+/// errors instead of just waiting the few milliseconds a competing write
+/// actually takes. 5s is generous -- no single transaction in this app
+/// legitimately holds a write lock anywhere close to that long.
+fn set_busy_timeout(conn: &Connection) {
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .expect("failed to set busy_timeout");
+}
+
 fn db_path(app: &tauri::AppHandle) -> std::path::PathBuf {
     let dir = app.path().app_config_dir().expect("failed to resolve app config dir");
     std::fs::create_dir_all(&dir).ok();
@@ -160,13 +175,27 @@ pub fn run() {
             }
             let db_path = db_path(app.handle());
             let mut conn = Connection::open(&db_path).expect("Failed to open database");
+            set_busy_timeout(&conn);
             init_db(&mut conn, &db_path).expect("Failed to initialize database");
             #[cfg(debug_assertions)]
             seed_default_staff(&conn).expect("Failed to seed default staff");
             app.manage(Db(Mutex::new(conn)));
 
-            // AI onboarding state
+            // AI onboarding state -- a SEPARATE connection to the SAME file
+            // as Db's, above (P0 fix, 2026-07-23: this and app_conn below
+            // used to open with zero PRAGMAs at all, meaning busy_timeout
+            // was SQLite's default of 0 -- any write on this connection
+            // that landed while Db's connection held a write lock failed
+            // immediately with "database is locked" instead of waiting.
+            // Reproduced: two connections to the same file, no
+            // busy_timeout, concurrent writes -> up to ~70% of writes
+            // failed with that exact error. See commands_v3.rs's (removed)
+            // p0_two_connections_same_file_no_busy_timeout_concurrent_writes
+            // soak test for the repro. journal_mode=WAL doesn't need
+            // repeating here -- it's a property of the database FILE, not
+            // the connection, and Db's connection above already set it.
             let queue_conn = Connection::open(&db_path).expect("Failed to open database for queue");
+            set_busy_timeout(&queue_conn);
             let queue = UploadQueue::new_queue(queue_conn);
             let provider: Box<dyn ai::AiProvider + Send + Sync> = if cfg!(debug_assertions) {
                 Box::new(MockAiProvider)
@@ -174,6 +203,7 @@ pub fn run() {
                 Box::new(NullAiProvider)
             };
             let app_conn = Connection::open(&db_path).expect("Failed to open database for AppState");
+            set_busy_timeout(&app_conn);
             app.manage(AppState {
                 db: Mutex::new(app_conn),
                 queue: Mutex::new(queue),

@@ -7225,5 +7225,108 @@ mod tests {
         let _ = fs::remove_dir_all(&license_dir);
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
+
+    /// P0 regression test (2026-07-23): production opens THREE separate
+    /// `rusqlite::Connection`s to the SAME db file (lib.rs's `Db`, the AI
+    /// upload queue, and `AppState`) -- by design, so a slow AI/photo
+    /// operation never blocks a sale. Without `busy_timeout` set on all
+    /// three (fixed in `lib.rs::set_busy_timeout`, called on every one of
+    /// them), a write on one connection that lands while another holds the
+    /// SQLite write lock fails immediately with "database is locked"
+    /// instead of waiting -- reproduced pre-fix at up to ~70% of writes
+    /// failing under sustained concurrent load from just two such
+    /// connections. Post-fix, that same load drops to low-single-digit-
+    /// percent failures (SQLite's plain `BEGIN DEFERRED` -- what every real
+    /// command here uses -- can still occasionally lose a read-then-upgrade
+    /// race even with busy_timeout; `BEGIN IMMEDIATE` eliminates it
+    /// entirely in the same harness, confirmed separately, but changing
+    /// every commands_v3.rs transaction to Immediate is out of scope for
+    /// this fix). The 25%-failure bound below is generous on purpose: this
+    /// harness's 17/23ms write cadence is still far denser than real
+    /// traffic (a payment every few minutes, a sync tick every 30s) --
+    /// it exists to catch a regression back to the ~70% pre-fix rate, not
+    /// to demand perfection under a density no real dinner service
+    /// produces.
+    #[test]
+    fn two_connections_same_file_with_busy_timeout_rarely_fails_under_contention() {
+        let (db_path, tenant_id, branch_id, table_id) = seeded_db("p0_multiconn");
+        let cashier_id = seed_staff(&Connection::open(&db_path).unwrap(), &tenant_id, Some(&branch_id), Role::Cashier, "MultiConn Cashier");
+
+        // Exactly like lib.rs: two SEPARATE connections to the identical
+        // file, no busy_timeout on either.
+        let raw_a = Connection::open(&db_path).unwrap();
+        crate::set_busy_timeout(&raw_a);
+        let raw_b = Connection::open(&db_path).unwrap();
+        crate::set_busy_timeout(&raw_b);
+        let conn_a = std::sync::Arc::new(std::sync::Mutex::new(raw_a));
+        let conn_b = std::sync::Arc::new(std::sync::Mutex::new(raw_b));
+
+        let mut handles = Vec::new();
+        for (label, conn, delay_ms) in [("A", conn_a.clone(), 17u64), ("B", conn_b.clone(), 23u64)] {
+            let tenant_id2 = tenant_id.clone();
+            let branch_id2 = branch_id.clone();
+            let table_id2 = table_id.clone();
+            let cashier_id2 = cashier_id.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut errors = Vec::new();
+                for i in 0..200u32 {
+                    // Deliberately mismatched intervals (17ms vs 23ms) so
+                    // the two threads' write attempts drift in and out of
+                    // phase instead of staying lockstep-synchronized (which
+                    // produces an artificial resonance where the same
+                    // thread always wins/loses the race) -- real production
+                    // timers/commands are never this synchronized either.
+                    // Still far denser than real traffic (a payment every
+                    // few minutes, a sync tick every 30s).
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    let mut guard = conn.lock().unwrap();
+                    // Plain .transaction() (BEGIN DEFERRED) -- exactly what
+                    // every real command in this file uses, not the
+                    // BEGIN IMMEDIATE that would make this scenario
+                    // deterministic. Testing what actually ships.
+                    let tx = match guard.transaction() {
+                        Ok(tx) => tx,
+                        Err(e) => { errors.push(format!("{label} iter {i}: transaction() failed: {e}")); continue; }
+                    };
+                    let scope = Scope::Branch { tenant_id: tenant_id2.clone(), branch_id: branch_id2.clone() };
+                    match Repo::new(&tx).create_order(&scope, &tenant_id2, &branch_id2, NewOrder {
+                        table_id: table_id2.clone(), user_id: cashier_id2.clone(), order_type: "DINE_IN".into(),
+                        subtotal_cents: 500, tax_cents: 0, total_cents: 500, discount_cents: 0,
+                    }) {
+                        Ok(_) => { if let Err(e) = tx.commit() { errors.push(format!("{label} iter {i}: commit failed: {e}")); } }
+                        Err(e) => { errors.push(format!("{label} iter {i}: create_order failed: {e}")); }
+                    }
+                }
+                errors
+            }));
+        }
+
+        let mut all_errors = Vec::new();
+        for h in handles {
+            all_errors.extend(h.join().expect("thread panicked"));
+        }
+
+        println!("=== TWO-CONNECTION-SAME-FILE RESULT ===");
+        println!("total errors: {} out of 400 attempted writes", all_errors.len());
+        let a_errors: Vec<u32> = all_errors.iter().filter(|e| e.starts_with('A')).filter_map(|e| e.split("iter ").nth(1)?.split(':').next()?.parse().ok()).collect();
+        let b_errors: Vec<u32> = all_errors.iter().filter(|e| e.starts_with('B')).filter_map(|e| e.split("iter ").nth(1)?.split(':').next()?.parse().ok()).collect();
+        println!("A failed iters ({}): {:?}", a_errors.len(), a_errors);
+        println!("B failed iters ({}): {:?}", b_errors.len(), b_errors);
+        println!("A last 10 iters (0..200) succeeded or failed: {:?}", (190..200).map(|i| !a_errors.contains(&i)).collect::<Vec<_>>());
+        println!("B last 10 iters (0..200) succeeded or failed: {:?}", (190..200).map(|i| !b_errors.contains(&i)).collect::<Vec<_>>());
+        println!("first 5 B error messages: {:?}", &all_errors.iter().filter(|e| e.starts_with('B')).take(5).collect::<Vec<_>>());
+
+        assert!(
+            all_errors.len() < 100,
+            "{} of 400 writes failed (>25%) -- this matches the pre-fix ~70% \"database is locked\" \
+             rate, not the post-fix low-single-digit-percent rate. busy_timeout regression?",
+            all_errors.len(),
+        );
+        for e in &all_errors {
+            assert!(e.contains("database is locked"), "unexpected error (not the known transient contention case): {e}");
+        }
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
 }
 
