@@ -396,6 +396,7 @@ pub fn run() {
             commands_v3::list_debt_entries_v3,
             commands_v3::record_debt_payment_v3,
             commands_v3::get_finance_revenue_v3,
+            commands_v3::get_dashboard_summary_v3,
             commands_v3::get_tax_collected_v3,
             commands_v3::list_operational_costs_v3,
             commands_v3::create_operational_cost_v3,

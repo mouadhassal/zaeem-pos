@@ -10,6 +10,7 @@ import { backOfficeLocked, type LicenseStatus } from "./lib/license";
 import { IconLock } from "@tabler/icons-react";
 import { usePermissions } from "./hooks/usePermissions";
 
+const DashboardPage = lazy(() => import("./app/dashboard/page"));
 const POSPage = lazy(() => import("./app/pos/page"));
 const ReportsPage = lazy(() => import("./app/reports/page"));
 const ShiftPage = lazy(() => import("./app/shift/page"));
@@ -40,7 +41,14 @@ function LoadingFallback() {
 }
 
 function PosLayout({ children }: { children: React.ReactNode }) {
-  const [activeView, setActiveView] = useState("pos");
+  // T2.0 owner dashboard: OWNER lands on the money-first dashboard, not the
+  // order-taking screen -- "orders are a manager-level detail, not an
+  // owner headline" (plan §3). Every other role's landing view is
+  // unchanged. Computed once at mount (lazy initializer), not re-derived
+  // on every render -- the role doesn't change mid-session.
+  const [activeView, setActiveView] = useState(() =>
+    useAuthStore.getState().user?.role === "OWNER" ? "dashboard" : "pos"
+  );
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
   const { navItems } = usePermissions();
 
@@ -79,6 +87,7 @@ function PosLayout({ children }: { children: React.ReactNode }) {
       );
     }
     switch (activeView) {
+      case "dashboard": return <DashboardPage />;
       case "pos": return children;
       case "reports": return <ReportsPage />;
       case "shift": return <ShiftPage />;

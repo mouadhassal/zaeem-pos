@@ -39,6 +39,7 @@ const ACCOUNTANT_NAV: SidebarNavItem[] = [
 ];
 
 const OWNER_NAV: SidebarNavItem[] = [
+  { id: "dashboard", label: "لوحة التحكم", icon: "layout-dashboard", allowed: true },
   { id: "pos", label: "نقاط البيع", icon: "calculator", allowed: true },
   { id: "shift", label: "الوردية", icon: "clock", allowed: true },
   { id: "debt", label: "الديون", icon: "wallet", allowed: true },

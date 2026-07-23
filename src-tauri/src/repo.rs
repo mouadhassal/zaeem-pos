@@ -47,6 +47,10 @@ pub enum RepoError {
     /// T2.0 loyalty: redemption attempted with more points than the card
     /// currently holds.
     InsufficientLoyaltyPoints { card_number: String, have: i64, need: i64 },
+    /// T2.0 owner dashboard: `dashboard_summary` is meaningless for
+    /// `Scope::Platform` -- the platform vendor has no branches of its own
+    /// to summarize (that's apps/control's job, not this app's).
+    DashboardRequiresTenantOrBranchScope,
 }
 
 impl fmt::Display for RepoError {
@@ -71,6 +75,7 @@ impl fmt::Display for RepoError {
             Self::TableNotDeletable { table_id, reason } => write!(f, "table {table_id} cannot be deleted: {reason}"),
             Self::LoyaltyCardNotFound { card_number } => write!(f, "loyalty card {card_number} not found in this tenant"),
             Self::InsufficientLoyaltyPoints { card_number, have, need } => write!(f, "loyalty card {card_number} has {have} points, needs {need}"),
+            Self::DashboardRequiresTenantOrBranchScope => write!(f, "the dashboard summary requires a Tenant or Branch scope, not Platform"),
             Self::PaymentAmountMismatch { order_id, expected_cents, got_cents } => write!(
                 f, "order {order_id}: amount tendered minus change ({got_cents}) does not equal the order total ({expected_cents})"
             ),
@@ -495,6 +500,37 @@ pub struct RevenueSummaryRow {
     pub cash: i64,
     pub card: i64,
     pub wallet: i64,
+}
+
+/// T2.0 owner dashboard: one branch's money picture for the requested date
+/// range, plus its running (not date-ranged) outstanding balances.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DashboardBranchRow {
+    pub branch_id: String,
+    pub branch_name: String,
+    pub revenue_cents: i64,
+    pub order_count: i64,
+    pub costs_cents: i64,
+    pub profit_cents: i64,
+    pub avg_ticket_cents: i64,
+    pub outstanding_debt_cents: i64,
+    pub outstanding_supplier_balance_cents: i64,
+}
+
+/// `branches` has one row for a Manager (`Scope::Branch`, always their own
+/// branch) or N rows for an Owner (`Scope::Tenant`, every branch of that
+/// tenant) -- the frontend renders a single KPI row either way and, only
+/// when there's more than one branch, a branch-comparison table underneath.
+/// See `Repo::dashboard_summary`'s doc comment for the local-vs-cloud
+/// scoping this implies.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DashboardSummaryRow {
+    pub branches: Vec<DashboardBranchRow>,
+    pub total_revenue_cents: i64,
+    pub total_costs_cents: i64,
+    pub total_profit_cents: i64,
+    pub total_outstanding_debt_cents: i64,
+    pub total_outstanding_supplier_balance_cents: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1756,6 +1792,79 @@ impl<'a> Repo<'a> {
             }
         }
         Ok(RevenueSummaryRow { order_count, total, cash, card, wallet })
+    }
+
+    /// T2.0 owner dashboard: money-first summary, one row per branch in
+    /// scope. `Scope::Tenant` (Owner) gets every branch of that tenant --
+    /// this is LOCAL SQLite, so it only ever sees branches whose facts
+    /// happen to already be in this device's own database (per
+    /// ARCHITECTURE_V3 §5/§7: local SQLite is authoritative for this
+    /// BRANCH's own sales, the cloud aggregates ACROSS branches). A
+    /// single-branch tenant or an Owner sitting at one branch's own
+    /// terminal gets a fully correct, fully offline answer from this alone.
+    /// A genuinely multi-branch Owner wanting branch-vs-branch numbers for
+    /// branches OTHER than the one this device belongs to needs the cloud
+    /// aggregation layer (apps/control) -- not built here, this command is
+    /// the local-first half of T2.0 plan §3, not the cross-device half.
+    /// `Scope::Branch` (Manager) gets exactly their one branch -- same
+    /// query, same struct shape, just one row.
+    pub fn dashboard_summary(&self, scope: &Scope, start_iso: &str, end_iso: &str) -> Result<DashboardSummaryRow, RepoError> {
+        let branch_ids: Vec<(String, String)> = match scope {
+            Scope::Platform => return Err(RepoError::DashboardRequiresTenantOrBranchScope),
+            Scope::Tenant { tenant_id } => self.list_branches(tenant_id)?,
+            Scope::Branch { branch_id, .. } => {
+                let name: String = self.conn.query_row("SELECT name FROM branch WHERE id = ?1", params![branch_id], |r| r.get(0))?;
+                vec![(branch_id.clone(), name)]
+            }
+        };
+
+        let mut branches = Vec::with_capacity(branch_ids.len());
+        let (mut total_revenue, mut total_costs, mut total_debt, mut total_supplier_balance) = (0i64, 0i64, 0i64, 0i64);
+
+        for (branch_id, branch_name) in branch_ids {
+            let (order_count, revenue_cents): (i64, i64) = self.conn.query_row(
+                "SELECT COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders WHERE branch_id = ?1 AND status = 'PAID' AND created_at >= ?2 AND created_at <= ?3",
+                params![branch_id, start_iso, end_iso],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let costs_cents: i64 = self.conn.query_row(
+                "SELECT COALESCE(SUM(amount_cents), 0) FROM operational_costs WHERE branch_id = ?1 AND date >= ?2 AND date <= ?3",
+                params![branch_id, start_iso, end_iso],
+                |r| r.get(0),
+            )?;
+            // Running balances, NOT date-ranged -- "who owes us / who do we
+            // owe right now," same as the debt/supplier ledger pages.
+            let debt_cents: i64 = self.conn.query_row(
+                "SELECT COALESCE(SUM(balance_cents), 0) FROM debtors WHERE branch_id = ?1 AND is_active = 1",
+                params![branch_id], |r| r.get(0),
+            )?;
+            let supplier_balance_cents: i64 = self.conn.query_row(
+                "SELECT COALESCE(SUM(balance_cents), 0) FROM suppliers WHERE branch_id = ?1",
+                params![branch_id], |r| r.get(0),
+            )?;
+
+            let profit_cents = revenue_cents - costs_cents;
+            let avg_ticket_cents = if order_count > 0 { revenue_cents / order_count } else { 0 };
+
+            total_revenue += revenue_cents;
+            total_costs += costs_cents;
+            total_debt += debt_cents;
+            total_supplier_balance += supplier_balance_cents;
+
+            branches.push(DashboardBranchRow {
+                branch_id, branch_name, revenue_cents, order_count, costs_cents, profit_cents, avg_ticket_cents,
+                outstanding_debt_cents: debt_cents, outstanding_supplier_balance_cents: supplier_balance_cents,
+            });
+        }
+
+        Ok(DashboardSummaryRow {
+            branches,
+            total_revenue_cents: total_revenue,
+            total_costs_cents: total_costs,
+            total_profit_cents: total_revenue - total_costs,
+            total_outstanding_debt_cents: total_debt,
+            total_outstanding_supplier_balance_cents: total_supplier_balance,
+        })
     }
 
     pub fn tax_collected_since(&self, scope: &Scope, since_iso: &str) -> Result<i64, RepoError> {

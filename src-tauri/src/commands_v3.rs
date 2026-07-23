@@ -1371,6 +1371,22 @@ pub fn get_finance_revenue_v3(state: State<Db>, license: State<crate::license::c
     Repo::new(&conn).finance_revenue_summary(&actor.scope(), &start_iso, &end_iso).map_err(|e| e.to_string())
 }
 
+/// T2.0 owner dashboard (plan §3): a single command, parameterized by the
+/// caller's OWN scope -- `Scope::Tenant` (Owner) gets every branch of the
+/// tenant, `Scope::Branch` (Manager, if ever nav-exposed to them) gets
+/// exactly their one branch. Same query, same struct, no second command.
+/// Gated the same as the rest of Finance (`Permission::ManageFinance`) --
+/// today that's reachable from `OWNER_NAV` only, matching "OWNER: all
+/// branches, money" vs "MANAGER: own branch, operations" from the plan.
+#[tauri::command]
+pub fn get_dashboard_summary_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String) -> Result<crate::repo::DashboardSummaryRow, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).dashboard_summary(&actor.scope(), &start_iso, &end_iso).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_tax_collected_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, since_iso: String) -> Result<i64, String> {
     let actor = authenticate_actor(&state, &session_token)?;
@@ -7006,6 +7022,110 @@ mod tests {
         (PathBuf::new(), tenant_id, branch_id, table_id)
     }
 
+    /// T2.0 owner dashboard: an Owner (Tenant scope) sees BOTH of their own
+    /// branches broken out, correctly summed; a Manager (Branch scope) sees
+    /// only their own one branch; neither ever sees a number that belongs
+    /// to the other tenant's branches -- same isolation discipline as
+    /// T1.9's matrix, applied to the new aggregate.
+    #[test]
+    fn dashboard_summary_breaks_down_by_branch_and_respects_tenant_isolation() {
+        let temp = std::env::temp_dir().join(format!("commands_v3_test_dashboard_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir_all(&temp).unwrap();
+        let db_path = temp.join("test.db");
+        let mut conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        migrate::run_migrations(&mut conn, &db_path).unwrap();
+        migrate_v3::run_expand_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_remap_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_identity_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_drift_fix_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_index_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_supplier_ledger_migration(&mut conn, &db_path).unwrap();
+        security::ensure_security_schema(&conn).unwrap();
+
+        let fx = seed_two_tenant_two_branch("dashboard", &conn);
+        let staff_1a = seed_staff(&conn, &fx.tenant1, Some(&fx.branch1a), Role::Manager, "Manager 1A");
+        let staff_1b = seed_staff(&conn, &fx.tenant1, Some(&fx.branch1b), Role::Manager, "Manager 1B");
+        let staff_2a = seed_staff(&conn, &fx.tenant2, Some(&fx.branch2a), Role::Manager, "Manager 2A");
+        let repo = Repo::new(&conn);
+
+        // Branch 1A: 2 PAID orders (1000 + 2000 = 3000 revenue), 1 cost (500).
+        conn.execute(
+            "INSERT INTO orders (id, tenant_id, branch_id, table_id, user_id, status, order_type, subtotal_cents, tax_cents, total_cents, discount_cents, created_at) \
+             VALUES ('o-1a-1', ?1, ?2, ?3, ?4, 'PAID', 'DINE_IN', 1000, 0, 1000, 0, '2026-06-15T10:00:00Z')",
+            params![fx.tenant1, fx.branch1a, fx.table1a, staff_1a],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO orders (id, tenant_id, branch_id, table_id, user_id, status, order_type, subtotal_cents, tax_cents, total_cents, discount_cents, created_at) \
+             VALUES ('o-1a-2', ?1, ?2, ?3, ?4, 'PAID', 'DINE_IN', 2000, 0, 2000, 0, '2026-06-16T10:00:00Z')",
+            params![fx.tenant1, fx.branch1a, fx.table1a, staff_1a],
+        ).unwrap();
+        repo.create_operational_cost(&fx.tenant1, &fx.branch1a, "إيجار", 500, "2026-06-15", None, &staff_1a).unwrap();
+
+        // Branch 1B: 1 PAID order (5000 revenue), no costs.
+        conn.execute(
+            "INSERT INTO orders (id, tenant_id, branch_id, table_id, user_id, status, order_type, subtotal_cents, tax_cents, total_cents, discount_cents, created_at) \
+             VALUES ('o-1b-1', ?1, ?2, ?3, ?4, 'PAID', 'DINE_IN', 5000, 0, 5000, 0, '2026-06-20T10:00:00Z')",
+            params![fx.tenant1, fx.branch1b, fx.table1b, staff_1b],
+        ).unwrap();
+
+        // Outstanding debt/supplier balances, one per branch (running totals, not date-ranged).
+        let debtor_1a = repo.create_debtor(&fx.tenant1, &fx.branch1a, "مدين 1A", Some("0501"), None, None, None).unwrap();
+        conn.execute("UPDATE debtors SET balance_cents = 700 WHERE id = ?1", params![debtor_1a]).unwrap();
+        let supplier_1a = repo.create_supplier(&fx.tenant1, &fx.branch1a, "مورد 1A", None, None).unwrap();
+        conn.execute("UPDATE suppliers SET balance_cents = 300 WHERE id = ?1", params![supplier_1a]).unwrap();
+
+        // Tenant2/Branch2A: a completely separate order that must NEVER leak into tenant1's numbers.
+        conn.execute(
+            "INSERT INTO orders (id, tenant_id, branch_id, table_id, user_id, status, order_type, subtotal_cents, tax_cents, total_cents, discount_cents, created_at) \
+             VALUES ('o-2a-1', ?1, ?2, ?3, ?4, 'PAID', 'DINE_IN', 999999, 0, 999999, 0, '2026-06-15T10:00:00Z')",
+            params![fx.tenant2, fx.branch2a, fx.table2a, staff_2a],
+        ).unwrap();
+
+        let range_start = "2026-06-01T00:00:00Z";
+        let range_end = "2026-06-30T23:59:59Z";
+
+        // Owner (Tenant scope): both branches, correctly broken down and summed.
+        let owner_scope = crate::security::Scope::Tenant { tenant_id: fx.tenant1.clone() };
+        let summary = repo.dashboard_summary(&owner_scope, range_start, range_end).unwrap();
+        assert_eq!(summary.branches.len(), 2, "Owner must see exactly Tenant1's 2 branches, never Tenant2's");
+        let b1a = summary.branches.iter().find(|b| b.branch_id == fx.branch1a).unwrap();
+        assert_eq!(b1a.revenue_cents, 3000);
+        assert_eq!(b1a.order_count, 2);
+        assert_eq!(b1a.costs_cents, 500);
+        assert_eq!(b1a.profit_cents, 2500, "profit = revenue - costs");
+        assert_eq!(b1a.avg_ticket_cents, 1500);
+        assert_eq!(b1a.outstanding_debt_cents, 700);
+        assert_eq!(b1a.outstanding_supplier_balance_cents, 300);
+        let b1b = summary.branches.iter().find(|b| b.branch_id == fx.branch1b).unwrap();
+        assert_eq!(b1b.revenue_cents, 5000);
+        assert_eq!(b1b.costs_cents, 0);
+        assert_eq!(b1b.profit_cents, 5000);
+        assert_eq!(summary.total_revenue_cents, 8000, "3000 (1A) + 5000 (1B), NEVER tenant2's 999999");
+        assert_eq!(summary.total_costs_cents, 500);
+        assert_eq!(summary.total_profit_cents, 7500);
+        assert_eq!(summary.total_outstanding_debt_cents, 700);
+        assert_eq!(summary.total_outstanding_supplier_balance_cents, 300);
+        println!("[dashboard] Owner (Tenant-scoped) correctly sees both branches broken down, summed, tenant2 never leaks in");
+
+        // Manager (Branch scope): exactly their one branch, same numbers as the Owner's per-branch row.
+        let manager_scope = crate::security::Scope::Branch { tenant_id: fx.tenant1.clone(), branch_id: fx.branch1a.clone() };
+        let manager_summary = repo.dashboard_summary(&manager_scope, range_start, range_end).unwrap();
+        assert_eq!(manager_summary.branches.len(), 1, "Manager must see exactly their own 1 branch");
+        assert_eq!(manager_summary.branches[0].branch_id, fx.branch1a);
+        assert_eq!(manager_summary.total_revenue_cents, 3000, "Manager's total must equal their own branch only, not the tenant-wide 8000");
+        println!("[dashboard] Manager (Branch-scoped) correctly sees only their own branch");
+
+        // Platform scope is meaningless for this command -- must hard-error, not return an empty/garbage summary.
+        match repo.dashboard_summary(&crate::security::Scope::Platform, range_start, range_end) {
+            Err(crate::repo::RepoError::DashboardRequiresTenantOrBranchScope) => println!("[dashboard] Platform scope correctly rejected"),
+            other => panic!("expected DashboardRequiresTenantOrBranchScope, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
     /// T1.9 Part 1 -- THE PROOF: seed orders/staff/customers/menu/shifts in
     /// all 4 branches across both tenants, then exhaustively assert, for
     /// every list/read command backing each domain: a branch-scoped Manager
@@ -7711,7 +7831,7 @@ mod tests {
             "list_inventory_logs_v3", "list_low_stock_ingredients_v3",
             "create_debtor_v3", "update_debtor_v3", "deactivate_debtor_v3",
             "list_debt_entries_v3", "record_debt_payment_v3",
-            "get_finance_revenue_v3", "get_tax_collected_v3", "list_operational_costs_v3",
+            "get_finance_revenue_v3", "get_dashboard_summary_v3", "get_tax_collected_v3", "list_operational_costs_v3",
             "create_operational_cost_v3", "list_invoices_v3", "create_invoice_v3", "mark_invoice_paid_v3",
             "update_chain_currency_v3", "update_chain_tax_v3", "update_discount_caps_v3",
             "get_legacy_branch_v3", "save_legacy_branch_v3", "set_printer_active_v3",

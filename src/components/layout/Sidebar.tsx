@@ -6,11 +6,12 @@ import {
   IconCashRegister, IconToolsKitchen2, IconClipboardList, IconBox,
   IconChartBar, IconUsers, IconClock, IconReceipt2, IconWallet,
   IconTruck, IconBuilding, IconCoin, IconGift, IconRobot, IconWand,
-  IconSettings, IconTool,
+  IconSettings, IconTool, IconLayoutDashboard,
   type Icon,
 } from "@tabler/icons-react";
 
 const ICON_BY_ID: Record<string, Icon> = {
+  dashboard: IconLayoutDashboard,
   pos: IconCashRegister,
   kds: IconToolsKitchen2,
   menu: IconClipboardList,
