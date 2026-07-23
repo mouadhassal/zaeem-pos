@@ -5,6 +5,7 @@ import { useCurrency } from "../../hooks/useCurrency";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import { IconCash, IconPencil, IconTrash } from "@tabler/icons-react";
+import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 
 interface DebtorRow {
   id: string;
@@ -75,6 +76,8 @@ export default function DebtPage() {
   const [payModal, setPayModal] = useState<DebtorRow | null>(null);
   const [payAmount, setPayAmount] = useState("");
   const [payNotes, setPayNotes] = useState("");
+
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   const filtered = debtors.filter((d) => {
     const q = searchQuery.trim().toLowerCase();
@@ -166,6 +169,32 @@ export default function DebtPage() {
     } catch (err) { setError(`حدث خطأ في تسجيل الدفعة: ${realErrorText(err)}`); }
   };
 
+  const exportPdf = async () => {
+    if (exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      const bodyHtml = `
+        <h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 4px">إدارة الديون</h1>
+        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${new Date().toLocaleDateString("ar-SA")}</p>
+        ${pdfTableHtml(
+          "المدينون",
+          ["الاسم", "الهاتف", "إجمالي الديون", "المدفوع", "المتبقي", "آخر معاملة"],
+          debtors.map((d) => [
+            d.name,
+            d.phone,
+            fmt(d.total_debt_cents),
+            fmt(d.total_paid_cents),
+            fmt(d.balance_cents),
+            fmtDateTime(d.last_transaction_at),
+          ])
+        )}
+      `;
+      await exportHtmlToPdf(`الديون-${new Date().toISOString().slice(0, 10)}.pdf`, bodyHtml);
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
   if (loading) {
     return <div className="flex items-center justify-center h-full text-ink-500 font-arabic">جاري التحميل...</div>;
   }
@@ -180,6 +209,9 @@ export default function DebtPage() {
         <h1 className="text-xl font-bold text-ink-900">إدارة الديون</h1>
         <div className="flex gap-2">
           <button onClick={openAdd} className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">+ إضافة مدين</button>
+          <button onClick={exportPdf} disabled={exportingPdf} className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50">
+            {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
+          </button>
         </div>
       </div>
 

@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
 import type { TaxMode } from "../../db/types";
+import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 
 type Tab = "revenue" | "costs" | "invoices" | "taxes";
 type DateRange = "today" | "week" | "month" | "custom";
@@ -77,13 +78,6 @@ function fmtCurrency(cents: number, curr: string = "SAR"): string {
     style: "currency",
     currency: curr,
   }).format(cents / 100);
-}
-
-function csvEscape(v: string): string {
-  if (v.includes(",") || v.includes('"') || v.includes("\n")) {
-    return `"${v.replace(/"/g, '""')}"`;
-  }
-  return v;
 }
 
 const CATEGORY_OPTIONS = ["إيجار", "رواتب", "كهرباء", "مياه", "إنترنت", "صيانة", "مستلزمات", "تسويق", "أخرى"];
@@ -181,37 +175,54 @@ export default function FinancePage() {
     fetchAll();
   }, [fetchAll]);
 
-  const exportCsv = () => {
-    const rows: string[][] = [];
-    if (tab === "revenue") {
-      rows.push(["التاريخ", "عدد الطلبات", "نقدي", "بطاقة", "محفظة", "إجمالي"]);
-      for (const r of revenueData) {
-        rows.push([r.date, String(r.orderCount), fmtCents(r.cash), fmtCents(r.card), fmtCents(r.wallet), fmtCents(r.total)]);
+  const [exportingPdf, setExportingPdf] = useState(false);
+
+  const tabTitle = (t: Tab) =>
+    t === "revenue" ? "الإيرادات" : t === "costs" ? "التكاليف" : t === "invoices" ? "الفواتير" : "الضرائب";
+
+  const exportPdf = async () => {
+    if (exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      let tableHtml = "";
+      if (tab === "revenue") {
+        tableHtml = pdfTableHtml(
+          "الإيرادات",
+          ["التاريخ", "عدد الطلبات", "نقدي", "بطاقة", "محفظة", "إجمالي"],
+          revenueData.map((r) => [r.date, String(r.orderCount), fmtCents(r.cash), fmtCents(r.card), fmtCents(r.wallet), fmtCents(r.total)])
+        );
+      } else if (tab === "costs") {
+        tableHtml = pdfTableHtml(
+          "التكاليف",
+          ["التاريخ", "البند", "التكلفة", "الملاحظات"],
+          costs.map((c) => [c.date, c.category, fmtCents(c.amount_cents), c.notes ?? ""])
+        );
+      } else if (tab === "invoices") {
+        tableHtml = pdfTableHtml(
+          "الفواتير",
+          ["رقم الفاتورة", "الفترة", "المبلغ", "الحالة", "تاريخ الاستحقاق"],
+          invoices.map((inv) => [inv.id.slice(0, 8), `${inv.period_start.slice(0, 10)} - ${inv.period_end.slice(0, 10)}`, fmtCents(inv.amount_cents), inv.status, inv.due_date.slice(0, 10)])
+        );
+      } else if (tab === "taxes") {
+        tableHtml = pdfTableHtml(
+          "الضرائب",
+          ["البيان", "القيمة"],
+          [
+            ["نظام الضريبة", taxInfo?.tax_mode === "inclusive" ? "شامل" : "غير شامل"],
+            ["نسبة الضريبة", `${((taxInfo?.tax_rate_cents ?? 0) / 100).toFixed(2)}%`],
+            ["إجمالي الضريبة المحصلة اليوم", fmtCents(taxCollectedToday)],
+          ]
+        );
       }
-    } else if (tab === "costs") {
-      rows.push(["التاريخ", "البند", "التكلفة", "الملاحظات"]);
-      for (const c of costs) {
-        rows.push([c.date, c.category, fmtCents(c.amount_cents), c.notes ?? ""]);
-      }
-    } else if (tab === "invoices") {
-      rows.push(["رقم الفاتورة", "الفترة", "المبلغ", "الحالة", "تاريخ الاستحقاق"]);
-      for (const inv of invoices) {
-        rows.push([inv.id.slice(0, 8), `${inv.period_start.slice(0, 10)} - ${inv.period_end.slice(0, 10)}`, fmtCents(inv.amount_cents), inv.status, inv.due_date.slice(0, 10)]);
-      }
-    } else if (tab === "taxes") {
-      rows.push(["البيان", "القيمة"]);
-      rows.push(["نظام الضريبة", taxInfo?.tax_mode === "inclusive" ? "شامل" : "غير شامل"]);
-      rows.push(["نسبة الضريبة", `${((taxInfo?.tax_rate_cents ?? 0) / 100).toFixed(2)}%`]);
-      rows.push(["إجمالي الضريبة المحصلة اليوم", fmtCents(taxCollectedToday)]);
+      const bodyHtml = `
+        <h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 4px">تقرير ${tabTitle(tab)}</h1>
+        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${new Date().toLocaleDateString("ar-SA")}</p>
+        ${tableHtml}
+      `;
+      await exportHtmlToPdf(`تقرير-${tab}-${new Date().toISOString().slice(0, 10)}.pdf`, bodyHtml);
+    } finally {
+      setExportingPdf(false);
     }
-    const csv = rows.map((r) => r.map(csvEscape).join(",")).join("\n");
-    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `تقرير-${tab}-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
   };
 
   const handleAddCost = async () => {
@@ -283,10 +294,11 @@ export default function FinancePage() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-ink-900">المالية والمحاسبة</h1>
         <button
-          onClick={exportCsv}
-          className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors flex items-center gap-2"
+          onClick={exportPdf}
+          disabled={exportingPdf}
+          className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
         >
-          📤 تصدير التقرير
+          {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
         </button>
       </div>
 
@@ -535,10 +547,11 @@ export default function FinancePage() {
                 {fmtCurrency(taxCollectedToday, currency)}
               </p>
               <button
-                onClick={exportCsv}
-                className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+                onClick={exportPdf}
+                disabled={exportingPdf}
+                className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
-                تصدير CSV للإقرار
+                {exportingPdf ? "جاري التصدير..." : "تصدير PDF للإقرار"}
               </button>
             </div>
           </div>

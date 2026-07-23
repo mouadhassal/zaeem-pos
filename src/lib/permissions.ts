@@ -13,13 +13,14 @@ export interface SidebarNavItem {
 const CASHIER_NAV: SidebarNavItem[] = [
   { id: "pos", label: "نقاط البيع", icon: "calculator", allowed: true },
   { id: "shift", label: "الوردية", icon: "clock", allowed: true },
-  { id: "customers", label: "الديون", icon: "users", allowed: true, readOnly: true },
+  { id: "debt", label: "الديون", icon: "wallet", allowed: true, readOnly: true },
 ];
 
 const MANAGER_NAV: SidebarNavItem[] = [
   { id: "pos", label: "نقاط البيع", icon: "calculator", allowed: true },
   { id: "shift", label: "الوردية", icon: "clock", allowed: true },
-  { id: "customers", label: "الديون", icon: "users", allowed: true },
+  { id: "debt", label: "الديون", icon: "wallet", allowed: true },
+  { id: "customers", label: "العملاء", icon: "users", allowed: true },
   { id: "menu", label: "القائمة", icon: "book-open", allowed: true },
   { id: "kds", label: "المطبخ", icon: "package", allowed: true },
   { id: "ai-onboarding", label: "إعداد القائمة AI", icon: "scan-line", allowed: true },
@@ -40,7 +41,8 @@ const ACCOUNTANT_NAV: SidebarNavItem[] = [
 const OWNER_NAV: SidebarNavItem[] = [
   { id: "pos", label: "نقاط البيع", icon: "calculator", allowed: true },
   { id: "shift", label: "الوردية", icon: "clock", allowed: true },
-  { id: "customers", label: "الديون", icon: "users", allowed: true },
+  { id: "debt", label: "الديون", icon: "wallet", allowed: true },
+  { id: "customers", label: "العملاء", icon: "users", allowed: true },
   { id: "menu", label: "القائمة", icon: "book-open", allowed: true },
   { id: "kds", label: "المطبخ", icon: "package", allowed: true },
   { id: "inventory", label: "المخزون", icon: "package", allowed: true },

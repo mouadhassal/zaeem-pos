@@ -4,6 +4,7 @@ import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 import { z } from "zod";
 import { IconEye, IconPencil, IconTrash } from "@tabler/icons-react";
+import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 
 interface Customer {
   id: string;
@@ -278,28 +279,34 @@ export default function CustomersPage() {
     setDetailDraft({});
   };
 
-  const exportCsv = () => {
-    const rows = [
-      ["الاسم", "الهاتف", "البريد", "العنوان", "عدد الطلبات", "إجمالي المشتريات", "آخر طلب", "آخر تعديل"],
-      ...customers.map((c) => [
-        c.name,
-        c.phone,
-        c.email ?? "",
-        c.address ?? "",
-        c.total_orders.toString(),
-        fromCents(c.total_spent_cents),
-        formatDate(c.last_order_at),
-        formatDate(c.last_modified),
-      ]),
-    ];
-    const csv = rows.map((r) => r.map((v) => `"${v.replace(/"/g, '""')}"`).join(",")).join("\n");
-    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `العملاء-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const [exportingPdf, setExportingPdf] = useState(false);
+
+  const exportPdf = async () => {
+    if (exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      const bodyHtml = `
+        <h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 4px">قاعدة العملاء</h1>
+        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${new Date().toLocaleDateString("ar-SA")}</p>
+        ${pdfTableHtml(
+          "العملاء",
+          ["الاسم", "الهاتف", "البريد", "العنوان", "عدد الطلبات", "إجمالي المشتريات", "آخر طلب", "آخر تعديل"],
+          customers.map((c) => [
+            c.name,
+            c.phone,
+            c.email ?? "",
+            c.address ?? "",
+            c.total_orders.toString(),
+            fromCents(c.total_spent_cents),
+            formatDate(c.last_order_at),
+            formatDate(c.last_modified),
+          ])
+        )}
+      `;
+      await exportHtmlToPdf(`العملاء-${new Date().toISOString().slice(0, 10)}.pdf`, bodyHtml);
+    } finally {
+      setExportingPdf(false);
+    }
   };
 
   if (loading) {
@@ -331,10 +338,11 @@ export default function CustomersPage() {
             + إضافة عميل
           </button>
           <button
-            onClick={exportCsv}
-            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+            onClick={exportPdf}
+            disabled={exportingPdf}
+            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
           >
-            تصدير
+            {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
           </button>
         </div>
       </div>

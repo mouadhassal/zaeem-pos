@@ -2,8 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
 import { useCurrency } from "../../hooks/useCurrency";
-import jsPDF from "jspdf";
-import html2canvas from "html2canvas";
+import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 
 interface SalesSummary {
   totalSales: number;
@@ -12,34 +11,6 @@ interface SalesSummary {
   topItems: { name: string; quantity: number }[];
   staffPerformance: { name: string; orderCount: number }[];
   inventoryStatus: { name: string; currentStock: number; minStock: number }[];
-}
-
-// Item/staff names come from DB data (menu items, staff records) and are
-// interpolated into innerHTML below to build the PDF-source DOM -- must be
-// escaped, same "never trust stored data when it becomes markup" rule as
-// any other HTML-injection surface, even though this DOM is local-only and
-// never sent anywhere.
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function reportTableHtml(title: string, headers: string[], rows: string[][]): string {
-  const head = headers.map((h) => `<th style="border:1px solid #E4E7EC;padding:6px 8px;background:#F2F4F7;font-size:11px;text-align:start">${escapeHtml(h)}</th>`).join("");
-  const body = rows
-    .map((r) => `<tr>${r.map((c) => `<td style="border:1px solid #E4E7EC;padding:6px 8px;font-size:11px">${escapeHtml(c)}</td>`).join("")}</tr>`)
-    .join("");
-  return `
-    <h2 style="font-size:14px;font-weight:700;margin:16px 0 8px">${escapeHtml(title)}</h2>
-    <table style="width:100%;border-collapse:collapse">
-      <thead><tr>${head}</tr></thead>
-      <tbody>${body || `<tr><td style="border:1px solid #E4E7EC;padding:6px 8px;font-size:11px;color:#98A2B3" colspan="${headers.length}">لا توجد بيانات</td></tr>`}</tbody>
-    </table>
-  `;
 }
 
 export default function ReportsPage() {
@@ -87,34 +58,16 @@ export default function ReportsPage() {
     fetchReports();
   }, [fetchReports]);
 
-  // Arabic PDF export, done right. First attempt used jsPDF's own `.html()`
-  // method (its documented approach, backed by html2canvas) and it broke
-  // exactly the way it's known to: `.html()` mixes automatic layout with
-  // jsPDF's OWN text renderer, which has no Arabic shaping/bidi support at
-  // all (its default fonts don't even have Arabic glyphs) -- verified by
-  // actually generating a PDF and rasterizing it: real Arabic came out as
-  // disconnected mojibake (þ•þŽþÌ...), not text. Fixed by calling
-  // html2canvas manually and embedding the RESULT AS AN IMAGE via
-  // doc.addImage() -- this guarantees jsPDF never touches the Arabic text
-  // itself; it's a picture of what the browser's own text engine drew
-  // (the same Tajawal rendering already correct everywhere else in this
-  // app). Verified by regenerating and rasterizing again: correct shaped,
-  // right-to-left, right-aligned Arabic throughout.
+  // Arabic PDF export -- see lib/pdfExport.ts's doc comment for why this
+  // renders via html2canvas + doc.addImage() instead of jsPDF's own text
+  // renderer (no Arabic shaping/bidi support at all). Verified by actually
+  // generating a PDF and rasterizing it: correctly shaped, right-to-left,
+  // right-aligned Arabic throughout.
   const exportPdf = async () => {
     if (!summary || exportingPdf) return;
     setExportingPdf(true);
     try {
-      await document.fonts.ready; // Tajawal must be loaded before html2canvas captures it
-
-      // Positioned in-flow (not off-screen with a huge negative offset) --
-      // html2canvas reliably captures blank/wrong-region content for
-      // off-screen-positioned elements; verified during testing. `z-index`
-      // keeps it from visually disrupting the page during the brief moment
-      // it's attached.
-      const container = document.createElement("div");
-      container.dir = "rtl";
-      container.style.cssText = "position:absolute;top:0;left:0;width:700px;padding:24px;background:#fff;font-family:Tajawal,sans-serif;color:#101828;z-index:9999;";
-      container.innerHTML = `
+      const bodyHtml = `
         <h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 4px">تقرير المبيعات</h1>
         <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${new Date().toLocaleDateString("ar-SA")}</p>
         <div style="display:flex;gap:12px;margin-bottom:20px">
@@ -131,39 +84,11 @@ export default function ReportsPage() {
             <div style="font-size:16px;font-weight:700">${fmt(Math.round(summary.avgTicket * 100))}</div>
           </div>
         </div>
-        ${reportTableHtml("أفضل الأصناف", ["الصنف", "الكمية"], summary.topItems.map((i) => [i.name, String(i.quantity)]))}
-        ${reportTableHtml("أداء الموظفين", ["الموظف", "الطلبات"], summary.staffPerformance.map((s) => [s.name, String(s.orderCount)]))}
-        ${reportTableHtml("حالة المخزون", ["الصنف", "المخزون", "الحد الأدنى"], summary.inventoryStatus.map((inv) => [inv.name, String(inv.currentStock), String(inv.minStock)]))}
+        ${pdfTableHtml("أفضل الأصناف", ["الصنف", "الكمية"], summary.topItems.map((i) => [i.name, String(i.quantity)]))}
+        ${pdfTableHtml("أداء الموظفين", ["الموظف", "الطلبات"], summary.staffPerformance.map((s) => [s.name, String(s.orderCount)]))}
+        ${pdfTableHtml("حالة المخزون", ["الصنف", "المخزون", "الحد الأدنى"], summary.inventoryStatus.map((inv) => [inv.name, String(inv.currentStock), String(inv.minStock)]))}
       `;
-      document.body.appendChild(container);
-      const canvas = await html2canvas(container, { scale: 2, backgroundColor: "#ffffff" });
-      document.body.removeChild(container);
-
-      const doc = new jsPDF({ unit: "pt", format: "a4" });
-      const pageWidth = doc.internal.pageSize.getWidth();
-      const pageHeight = doc.internal.pageSize.getHeight();
-      const margin = 20;
-      const imgWidth = pageWidth - margin * 2;
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
-      const imgData = canvas.toDataURL("image/png");
-      const usableHeight = pageHeight - margin * 2;
-
-      // Multi-page: slice the tall rendered image across pages if the
-      // report is longer than one A4 page (many staff / many low-stock
-      // items). Each page gets the same full-width image, shifted up by
-      // one page's worth of content.
-      let heightLeft = imgHeight;
-      let renderedY = margin;
-      doc.addImage(imgData, "PNG", margin, renderedY, imgWidth, imgHeight);
-      heightLeft -= usableHeight;
-      while (heightLeft > 0) {
-        renderedY = margin - (imgHeight - heightLeft);
-        doc.addPage();
-        doc.addImage(imgData, "PNG", margin, renderedY, imgWidth, imgHeight);
-        heightLeft -= usableHeight;
-      }
-
-      doc.save(`تقرير-المبيعات-${new Date().toISOString().slice(0, 10)}.pdf`);
+      await exportHtmlToPdf(`تقرير-المبيعات-${new Date().toISOString().slice(0, 10)}.pdf`, bodyHtml);
     } finally {
       setExportingPdf(false);
     }
