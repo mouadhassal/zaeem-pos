@@ -3,6 +3,7 @@ import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
 import { invalidateMenuItemPhotoCache } from "../../hooks/useMenuItemPhoto";
 import { z } from "zod";
+import { IconPencil, IconTrash } from "@tabler/icons-react";
 
 interface Category {
   id: string;
@@ -781,32 +782,42 @@ export default function MenuPage() {
                         </span>
                       </td>
                       <td className="p-3 text-center">
-                        <button
-                          onClick={() => toggleItemStatus(item)}
-                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                            item.is_active ? "bg-saffron-600" : "bg-ink-300"
-                          }`}
-                        >
-                          <span
-                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                              item.is_active ? "translate-x-6" : "translate-x-1"
+                        <div className="flex items-center justify-center gap-2">
+                          <button
+                            onClick={() => toggleItemStatus(item)}
+                            role="switch"
+                            aria-checked={!!item.is_active}
+                            dir="ltr"
+                            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                              item.is_active ? "bg-saffron-600" : "bg-ink-300"
                             }`}
-                          />
-                        </button>
+                          >
+                            <span
+                              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                                item.is_active ? "translate-x-6" : "translate-x-1"
+                              }`}
+                            />
+                          </button>
+                          <span className={`text-xs font-arabic font-bold ${item.is_active ? "text-saffron-600" : "text-ink-400"}`}>
+                            {item.is_active ? "مفعّل" : "متوقف"}
+                          </span>
+                        </div>
                       </td>
                       <td className="p-3 text-center">
                         <div className="flex items-center justify-center gap-2">
                           <button
                             onClick={() => openEditItem(item)}
-                            className="px-3 py-1 rounded-lg text-xs font-arabic text-saffron-600 hover:bg-saffron-50 transition-colors"
+                            className="p-1.5 rounded-lg text-xs text-saffron-600 hover:bg-saffron-50 transition-colors"
+                            title="تعديل"
                           >
-                            ✏️ تعديل
+                            <IconPencil className="w-4 h-4" />
                           </button>
                           <button
                             onClick={() => setDeleteItemId(item.id)}
-                            className="px-3 py-1 rounded-lg text-xs font-arabic text-red-500 hover:bg-red-50 transition-colors"
+                            className="p-1.5 rounded-lg text-xs text-red-500 hover:bg-red-50 transition-colors"
+                            title="حذف"
                           >
-                            🗑️ حذف
+                            <IconTrash className="w-4 h-4" />
                           </button>
                         </div>
                       </td>
@@ -851,7 +862,7 @@ export default function MenuPage() {
                     className="p-2 rounded-lg text-ink-500 hover:text-saffron-600 hover:bg-saffron-50 transition-colors"
                     title="تعديل"
                   >
-                    ✏️
+                    <IconPencil className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => {
@@ -864,7 +875,7 @@ export default function MenuPage() {
                     className="p-2 rounded-lg text-ink-500 hover:text-red-500 hover:bg-red-50 transition-colors"
                     title="حذف"
                   >
-                    🗑️
+                    <IconTrash className="w-4 h-4" />
                   </button>
                 </div>
               </div>
@@ -958,12 +969,6 @@ export default function MenuPage() {
                         </div>
                       ))}
                     </div>
-                    <button
-                      onClick={() => openEditCombo(combo)}
-                      className="text-xs font-arabic text-saffron-600 hover:underline"
-                    >
-                      ✏️ تعديل
-                    </button>
                   </div>
                 );
               })}
@@ -1007,32 +1012,42 @@ export default function MenuPage() {
                       <td className="p-3 font-mono text-ink-500">{rule.start_time}</td>
                       <td className="p-3 font-mono text-ink-500">{rule.end_time}</td>
                       <td className="p-3 text-center">
-                        <button
-                          onClick={() => toggleHappyHourStatus(rule)}
-                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                            rule.is_active ? "bg-saffron-600" : "bg-ink-300"
-                          }`}
-                        >
-                          <span
-                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                              rule.is_active ? "translate-x-6" : "translate-x-1"
+                        <div className="flex items-center justify-center gap-2">
+                          <button
+                            onClick={() => toggleHappyHourStatus(rule)}
+                            role="switch"
+                            aria-checked={!!rule.is_active}
+                            dir="ltr"
+                            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                              rule.is_active ? "bg-saffron-600" : "bg-ink-300"
                             }`}
-                          />
-                        </button>
+                          >
+                            <span
+                              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                                rule.is_active ? "translate-x-6" : "translate-x-1"
+                              }`}
+                            />
+                          </button>
+                          <span className={`text-xs font-arabic font-bold ${rule.is_active ? "text-saffron-600" : "text-ink-400"}`}>
+                            {rule.is_active ? "مفعّل" : "متوقف"}
+                          </span>
+                        </div>
                       </td>
                       <td className="p-3 text-center">
                         <div className="flex items-center justify-center gap-2">
                           <button
                             onClick={() => openEditHappyHour(rule)}
-                            className="px-3 py-1 rounded-lg text-xs font-arabic text-saffron-600 hover:bg-saffron-50 transition-colors"
+                            className="p-1.5 rounded-lg text-xs text-saffron-600 hover:bg-saffron-50 transition-colors"
+                            title="تعديل"
                           >
-                            ✏️ تعديل
+                            <IconPencil className="w-4 h-4" />
                           </button>
                           <button
                             onClick={() => deleteHappyHour(rule.id)}
-                            className="px-3 py-1 rounded-lg text-xs font-arabic text-red-500 hover:bg-red-50 transition-colors"
+                            className="p-1.5 rounded-lg text-xs text-red-500 hover:bg-red-50 transition-colors"
+                            title="حذف"
                           >
-                            🗑️ حذف
+                            <IconTrash className="w-4 h-4" />
                           </button>
                         </div>
                       </td>
@@ -1639,16 +1654,22 @@ export default function MenuPage() {
                   onClick={() =>
                     setHappyHourForm((p) => ({ ...p, is_active: !p.is_active }))
                   }
-                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  role="switch"
+                  aria-checked={happyHourForm.is_active}
+                  dir="ltr"
+                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
                     happyHourForm.is_active ? "bg-saffron-600" : "bg-ink-300"
                   }`}
                 >
                   <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
                       happyHourForm.is_active ? "translate-x-6" : "translate-x-1"
                     }`}
                   />
                 </button>
+                <span className={`text-xs font-arabic font-bold ${happyHourForm.is_active ? "text-saffron-600" : "text-ink-400"}`}>
+                  {happyHourForm.is_active ? "مفعّل" : "متوقف"}
+                </span>
               </div>
 
               {happyHourErrors._form && (

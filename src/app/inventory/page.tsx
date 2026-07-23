@@ -4,6 +4,7 @@ import { realErrorText } from "../../lib/errors";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import { Package, Search, Edit3, ChevronDown, ChevronUp } from "lucide-react";
+import { IconPencil, IconTrash, IconClipboardList, IconEye, IconPackageImport, IconX } from "@tabler/icons-react";
 import EmptyState from "../../components/ui/EmptyState";
 
 const editSchema = z.object({
@@ -882,21 +883,21 @@ function SuppliersTab() {
                       className="px-3 py-1.5 rounded-lg bg-indigo-100 text-indigo-700 text-xs font-bold hover:bg-indigo-200 transition-colors"
                       title="طلبية جديدة"
                     >
-                      📋
+                      <IconClipboardList className="w-4 h-4" />
                     </button>
                     <button
                       onClick={() => setEditTarget(s)}
                       className="px-3 py-1.5 rounded-lg bg-blue-100 text-blue-700 text-xs font-bold hover:bg-blue-200 transition-colors"
                       title="تعديل"
                     >
-                      ✏️
+                      <IconPencil className="w-4 h-4" />
                     </button>
                     <button
                       onClick={() => handleDelete(s.id)}
                       className="px-3 py-1.5 rounded-lg bg-red-100 text-red-700 text-xs font-bold hover:bg-red-200 transition-colors"
                       title="حذف"
                     >
-                      🗑️
+                      <IconTrash className="w-4 h-4" />
                     </button>
                   </div>
                 </td>
@@ -1205,11 +1206,11 @@ function PurchasesTab() {
                 </td>
                 <td className="p-3 text-center">
                   <div className="flex items-center justify-center gap-1">
-                    <button onClick={() => setDetailTarget(po)} className="px-3 py-1.5 rounded-lg text-xs text-ink-400 hover:bg-white transition-colors" title="عرض التفاصيل">👁️</button>
+                    <button onClick={() => setDetailTarget(po)} className="px-3 py-1.5 rounded-lg text-xs text-ink-400 hover:bg-white transition-colors" title="عرض التفاصيل"><IconEye className="w-4 h-4" /></button>
                     {po.status === "PENDING" && (
                       <>
-                        <button onClick={() => setReceiveTarget(po)} className="px-3 py-1.5 rounded-lg text-xs text-saffron-600 hover:bg-saffron-50 transition-colors" title="استلام">📦</button>
-                        <button onClick={() => setCancelTarget(po.id)} className="px-3 py-1.5 rounded-lg text-xs text-red-500 hover:bg-red-50 transition-colors" title="إلغاء">❌</button>
+                        <button onClick={() => setReceiveTarget(po)} className="px-3 py-1.5 rounded-lg text-xs text-saffron-600 hover:bg-saffron-50 transition-colors" title="استلام"><IconPackageImport className="w-4 h-4" /></button>
+                        <button onClick={() => setCancelTarget(po.id)} className="px-3 py-1.5 rounded-lg text-xs text-red-500 hover:bg-red-50 transition-colors" title="إلغاء"><IconX className="w-4 h-4" /></button>
                       </>
                     )}
                   </div>
