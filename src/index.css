@@ -23,12 +23,12 @@
   --line: #E2E8F0;
   --line-2: #F1F5F9;
 
-  --accent: #F59E0B;
-  --accent-soft: #FFFBEB;
-  --accent-text: #B45309;
+  --accent: #F4C430;
+  --accent-soft: #FEFBF0;
+  --accent-text: #C2940A;
 
   --ok: #16A34A;
-  --warn: #D97706;
+  --warn: #E9B10C;
   --danger: #DC2626;
   --danger-soft: #FEF2F2;
 
@@ -54,16 +54,16 @@
      family for the 2 consumers that need a darker shade); live is a
      standard green scale anchored so live-600 equals --ok exactly, same
      convention as the saffron ramp's 500 equaling --accent. */
-  --saffron-50: #FFFBEB;
-  --saffron-100: #FEF3C7;
-  --saffron-200: #FDE68A;
-  --saffron-300: #FCD34D;
-  --saffron-400: #FBBF24;
-  --saffron-500: #F59E0B;
-  --saffron-600: #D97706;
-  --saffron-700: #B45309;
-  --saffron-800: #92400E;
-  --saffron-900: #78350F;
+  --saffron-50: #FEFBF0;
+  --saffron-100: #FDF4D8;
+  --saffron-200: #FBE9B1;
+  --saffron-300: #F8DB81;
+  --saffron-400: #F6CC51;
+  --saffron-500: #F4C430;
+  --saffron-600: #E9B10C;
+  --saffron-700: #C2940A;
+  --saffron-800: #A07A08;
+  --saffron-900: #836407;
 
   --live-50: #F0FDF4;
   --live-100: #DCFCE7;
@@ -78,7 +78,7 @@
 }
 
 ::selection {
-  background: rgba(245, 158, 11, 0.14);
+  background: rgba(244, 196, 48, 0.14);
 }
 
 body {
