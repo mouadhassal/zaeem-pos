@@ -1403,9 +1403,12 @@ pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::cloud::
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let debtor_id = Repo::new(&tx).create_debtor(&tenant_id, &branch_id, &name, phone.as_deref(), email.as_deref(), address.as_deref(), notes.as_deref()).map_err(|e| e.to_string())?;
     if initial_debt_cents > 0 {
-        let entry_id = Repo::new(&tx).record_initial_debt(&tenant_id, &branch_id, &debtor_id, initial_debt_cents, &actor.id).map_err(|e| e.to_string())?;
-        let license_status = license.cached_status();
-        sync_enqueue_debt_entry(&tx, &tenant_id, &branch_id, &entry_id, &actor.device_id, &license_status)?;
+        // Local-only fact (see `record_initial_debt`'s doc comment) --
+        // customer debt does not sync to the cloud, deliberately: the web
+        // owner dashboard shows business (supplier) debt only, never
+        // per-customer balances, so there is nothing on the other end to
+        // feed.
+        Repo::new(&tx).record_initial_debt(&tenant_id, &branch_id, &debtor_id, initial_debt_cents, &actor.id).map_err(|e| e.to_string())?;
     }
     audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "name": name, "created": true, "initial_debt_cents": initial_debt_cents }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -1472,11 +1475,6 @@ pub fn record_debt_payment_v3(state: State<Db>, license: State<crate::license::c
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let entry_id = Repo::new(&tx).record_debt_payment(&actor.scope(), &debtor_id, amount_cents, notes.as_deref(), &actor.id).map_err(|e| e.to_string())?;
-    let (debtor_tenant_id, debtor_branch_id): (String, String) = tx.query_row(
-        "SELECT tenant_id, branch_id FROM debtors WHERE id = ?1", params![debtor_id], |r| Ok((r.get(0)?, r.get(1)?)),
-    ).map_err(|e| e.to_string())?;
-    let license_status = license.cached_status();
-    sync_enqueue_debt_entry(&tx, &debtor_tenant_id, &debtor_branch_id, &entry_id, &actor.device_id, &license_status)?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "entry_id": entry_id, "amount_cents": amount_cents, "type": "PAYMENT" }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(entry_id)
@@ -3606,36 +3604,6 @@ fn sync_enqueue_supplier_payment(
         "amount_cents": amount_cents, "method": method, "notes": notes, "created_at": created_at,
     });
     crate::sync::enqueue(tx, "supplier_payments", payment_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
-}
-
-/// Customer debt (who owes the OWNER, the mirror image of
-/// `sync_enqueue_supplier_payment`) had never been wired into the sync
-/// outbox at all -- `debt_entries` predates the HLC-outbox scheme and has
-/// no `rev`/`device_id` columns to bump, only the older `sync_version`
-/// (append-only fact, written exactly once per row, so the value already
-/// on the row at insert time is a perfectly good, permanently-stable `rev`
-/// for the outbox's dedup key -- no UPDATE needed first, unlike
-/// `sync_enqueue_supplier_payment`).
-fn sync_enqueue_debt_entry(
-    tx: &rusqlite::Transaction,
-    tenant_id: &str,
-    branch_id: &str,
-    entry_id: &str,
-    device_id: &str,
-    license_status: &crate::license::signed::LicenseStatus,
-) -> Result<(), String> {
-    let (debtor_id, order_id, entry_type, amount_cents, notes, created_at, sync_version): (String, Option<String>, String, i64, Option<String>, String, i64) = tx.query_row(
-        "SELECT debtor_id, order_id, type, amount_cents, notes, created_at, sync_version FROM debt_entries WHERE id = ?1",
-        params![entry_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
-    ).map_err(|e| e.to_string())?;
-
-    let payload = serde_json::json!({
-        "id": entry_id, "debtor_id": debtor_id, "order_id": order_id,
-        "tenant_id": tenant_id, "branch_id": branch_id, "type": entry_type,
-        "amount_cents": amount_cents, "notes": notes, "created_at": created_at,
-    });
-    crate::sync::enqueue(tx, "debt_entries", entry_id, tenant_id, branch_id, &payload, sync_version, device_id, license_status).map_err(|e| e.to_string())
 }
 
 /// T2.0 plan §0 flag #4: `operational_costs` existed since day one but was
