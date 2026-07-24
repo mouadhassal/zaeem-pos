@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
 import { Bot, Send, User, Sparkles } from "lucide-react";
+import { IconChartBar, IconPackage, IconUsers, IconMotorbike, IconTrophy, IconCreditCard } from "@tabler/icons-react";
 
 interface Message {
   id: string;
@@ -11,12 +12,12 @@ interface Message {
 }
 
 const QUICK_ACTIONS = [
-  { label: "مبيعات اليوم", icon: "📊", query: "عرض ملخص مبيعات اليوم" },
-  { label: "المخزون المنخفض", icon: "📦", query: "أظهر المواد منخفضة المخزون" },
-  { label: "حضور الموظفين", icon: "👥", query: "من الموظفون الحاضرون اليوم؟" },
-  { label: "الطلبات النشطة", icon: "🛵", query: "عرض الطلبات النشطة حالياً" },
-  { label: "أعلى مبيعات", icon: "🏆", query: "ما هي أفضل الأصناف مبيعاً؟" },
-  { label: "الديون", icon: "💳", query: "عرض الديون المستحقة" },
+  { label: "مبيعات اليوم", icon: IconChartBar, query: "عرض ملخص مبيعات اليوم" },
+  { label: "المخزون المنخفض", icon: IconPackage, query: "أظهر المواد منخفضة المخزون" },
+  { label: "حضور الموظفين", icon: IconUsers, query: "من الموظفون الحاضرون اليوم؟" },
+  { label: "الطلبات النشطة", icon: IconMotorbike, query: "عرض الطلبات النشطة حالياً" },
+  { label: "أعلى مبيعات", icon: IconTrophy, query: "ما هي أفضل الأصناف مبيعاً؟" },
+  { label: "الديون", icon: IconCreditCard, query: "عرض الديون المستحقة" },
 ];
 
 function formatCurrency(cents: number): string {
@@ -231,9 +232,9 @@ export default function AIPage() {
               <button
                 key={action.label}
                 onClick={() => handleSend(action.query)}
-                className="px-4 py-2 rounded-xl bg-white border border-ink-200 text-sm text-ink-700 font-arabic hover:border-saffron-300 hover:text-saffron-600 transition-colors shadow-sh-1"
+                className="px-4 py-2 rounded-xl bg-white border border-ink-200 text-sm text-ink-700 font-arabic hover:border-saffron-300 hover:text-saffron-600 transition-colors shadow-sh-1 inline-flex items-center gap-1.5"
               >
-                {action.icon} {action.label}
+                <action.icon className="w-4 h-4" /> {action.label}
               </button>
             ))}
           </div>

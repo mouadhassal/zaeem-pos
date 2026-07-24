@@ -7,6 +7,7 @@ import { Package, Search, Edit3, ChevronDown, ChevronUp } from "lucide-react";
 import { IconPencil, IconTrash, IconClipboardList, IconEye, IconPackageImport, IconX, IconCash } from "@tabler/icons-react";
 import EmptyState from "../../components/ui/EmptyState";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
+import { useCurrency } from "../../hooks/useCurrency";
 
 const editSchema = z.object({
   name: z.string().min(1, "الاسم مطلوب"),
@@ -110,10 +111,20 @@ function StockBadge({ qty, min }: { qty: number; min: number }) {
   );
 }
 
+// `formatCurrency` is called from many separate tab components in this
+// file (SuppliersTab, IngredientsTab, movements, etc.), not just the top-
+// level page -- turning it into a hook would mean threading `fmt` as a
+// prop through every one of them. Module-level cache instead (same
+// established pattern as `useMenuItemPhoto`'s `photoCache`): the real
+// currency, once `useCurrency()` resolves it once at the top level, is
+// good for every tab without re-fetching per-component. Was hardcoded
+// 'SAR' before this fix -- wrong symbol for any non-SAR tenant.
+let cachedCurrency = "SAR";
+
 function formatCurrency(cents: number): string {
   return new Intl.NumberFormat("ar-SA", {
     style: "currency",
-    currency: "SAR",
+    currency: cachedCurrency,
   }).format(cents / 100);
 }
 
@@ -153,9 +164,9 @@ function Modal({
           <h2 className="text-lg font-bold text-ink-900">{title}</h2>
           <button
             onClick={onClose}
-            className="text-ink-500 hover:text-ink-500 text-xl leading-none"
+            className="text-ink-500 hover:text-ink-500 leading-none"
           >
-            ✕
+            <IconX className="w-5 h-5" />
           </button>
         </div>
         {children}
@@ -196,6 +207,8 @@ export default function InventoryPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("stock");
   const [showAddIngredient, setShowAddIngredient] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const { currency } = useCurrency();
+  useEffect(() => { cachedCurrency = currency; }, [currency]);
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: "stock", label: "المخزون" },
@@ -1561,7 +1574,7 @@ function CreatePOModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
                 </select>
                 <input type="number" min="0" step="0.01" value={item.quantity_ordered || ""} onChange={(e) => updateItem(idx, "quantity_ordered", Number(e.target.value))} placeholder="الكمية" className="w-24 h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
                 <input type="number" min="0" value={item.unit_cost_cents || ""} onChange={(e) => updateItem(idx, "unit_cost_cents", Number(e.target.value))} placeholder="سعر الوحدة" className="w-28 h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
-                <button onClick={() => removeItem(idx)} className="h-10 px-3 rounded-xl text-red-500 hover:bg-red-50 transition-colors">✕</button>
+                <button onClick={() => removeItem(idx)} className="h-10 px-3 rounded-xl text-red-500 hover:bg-red-50 transition-colors"><IconX className="w-4 h-4" /></button>
               </div>
             ))}
           </div>
@@ -1714,7 +1727,7 @@ function PODetailModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-bold text-ink-900 font-arabic">تفاصيل الطلبية</h2>
-          <button onClick={onClose} className="text-ink-500 hover:text-ink-500 text-xl leading-none">✕</button>
+          <button onClick={onClose} className="text-ink-500 hover:text-ink-500 leading-none"><IconX className="w-5 h-5" /></button>
         </div>
         {loadError && <p className="text-sm text-red-500 font-arabic">{loadError}</p>}
         <div className="grid grid-cols-2 gap-4 text-sm">
@@ -1780,6 +1793,7 @@ function MovementsTab() {
   const [dateTo, setDateTo] = useState("");
   const [filterMaterial, setFilterMaterial] = useState("");
   const [filterType, setFilterType] = useState("all");
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   const fetch = useCallback(async () => {
     setLoading(true);
@@ -1816,6 +1830,32 @@ function MovementsTab() {
     }
     setFilteredLogs(result);
   }, [logs, dateFrom, dateTo, filterMaterial, filterType]);
+
+  const exportPdf = async () => {
+    if (exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      const bodyHtml = `
+        <h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 4px">حركات المخزون</h1>
+        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${new Date().toLocaleDateString("ar-SA")}</p>
+        ${pdfTableHtml(
+          "الحركات",
+          ["التاريخ", "المادة", "النوع", "الكمية", "السبب", "المستخدم"],
+          filteredLogs.map((log) => [
+            formatDate(log.created_at),
+            log.ingredient_name,
+            getTypeLabel(log.change_amount, log.reason),
+            `${log.change_amount > 0 ? "+" : ""}${log.change_amount}`,
+            log.reason,
+            log.user_name,
+          ])
+        )}
+      `;
+      await exportHtmlToPdf(`حركات-المخزون-${new Date().toISOString().slice(0, 10)}.pdf`, bodyHtml, token ?? "");
+    } finally {
+      setExportingPdf(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -1877,6 +1917,15 @@ function MovementsTab() {
             <option value="waste">هالك</option>
             <option value="sale">بيع</option>
           </select>
+        </div>
+        <div className="flex items-end">
+          <button
+            onClick={exportPdf}
+            disabled={exportingPdf}
+            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+          >
+            {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
+          </button>
         </div>
       </div>
 

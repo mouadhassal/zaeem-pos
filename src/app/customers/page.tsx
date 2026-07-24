@@ -3,7 +3,7 @@ import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 import { z } from "zod";
-import { IconEye, IconPencil, IconTrash } from "@tabler/icons-react";
+import { IconEye, IconPencil, IconTrash, IconX } from "@tabler/icons-react";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 
 interface Customer {
@@ -565,7 +565,7 @@ export default function CustomersPage() {
                   onClick={closeDetail}
                   className="p-2 rounded-lg text-ink-500 hover:bg-white transition-colors"
                 >
-                  ✕
+                  <IconX className="w-4 h-4" />
                 </button>
               </div>
 

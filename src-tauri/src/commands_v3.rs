@@ -448,6 +448,7 @@ pub fn register_kds_terminal_v3(state: State<Db>, session_token: String) -> Resu
 #[allow(clippy::too_many_arguments)]
 pub fn create_order_v3(
     state: State<Db>,
+    license: State<crate::license::cloud::CloudLicenseState>,
     session_token: String,
     table_id: String,
     order_type: String,
@@ -456,7 +457,7 @@ pub fn create_order_v3(
     discount_cents: i64,
     manager_override_pin: Option<String>,
 ) -> Result<String, String> {
-    create_order_v3_impl(&state, session_token, table_id, order_type, subtotal_cents, tax_cents, discount_cents, manager_override_pin)
+    create_order_v3_impl(&state, &license, session_token, table_id, order_type, subtotal_cents, tax_cents, discount_cents, manager_override_pin)
 }
 
 /// Real body, `&Db` instead of `State<Db>` -- see `authenticate_actor`'s doc
@@ -464,6 +465,7 @@ pub fn create_order_v3(
 #[allow(clippy::too_many_arguments)]
 fn create_order_v3_impl(
     state: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
     session_token: String,
     table_id: String,
     order_type: String,
@@ -475,10 +477,12 @@ fn create_order_v3_impl(
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
 
-    // Platform/Owner have no single branch to write into -- order creation is
-    // inherently a Branch-scoped action; reject rather than guess a branch.
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("order creation requires a Branch-scoped actor (Cashier/Kitchen/Server/Manager)".to_string());
+    // Owner has no single home branch by role -- but the physical terminal
+    // does (its own license binding), so this auto-resolves instead of
+    // rejecting outright. Platform still has nothing to write into.
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
 
     if subtotal_cents < 0 || tax_cents < 0 || discount_cents < 0 {
@@ -489,7 +493,7 @@ fn create_order_v3_impl(
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let override_used = enforce_discount_cap(&mut conn, &actor, &tenant_id, subtotal_cents, discount_cents, manager_override_pin.as_deref())?;
 
-    let scope = actor.scope();
+    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let order_id = Repo::new(&tx)
         .create_order(
@@ -574,6 +578,7 @@ pub fn update_order_status_v3(state: State<Db>, session_token: String, order_id:
 #[allow(clippy::too_many_arguments)]
 pub fn take_payment_v3(
     state: State<Db>,
+    license: State<crate::license::cloud::CloudLicenseState>,
     session_token: String,
     order_id: String,
     method: String,
@@ -581,12 +586,13 @@ pub fn take_payment_v3(
     change_cents: i64,
     debtor_id: Option<String>,
 ) -> Result<String, String> {
-    take_payment_v3_impl(&state, session_token, order_id, method, amount_cents, change_cents, debtor_id)
+    take_payment_v3_impl(&state, &license, session_token, order_id, method, amount_cents, change_cents, debtor_id)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn take_payment_v3_impl(
     state: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
     session_token: String,
     order_id: String,
     method: String,
@@ -596,8 +602,9 @@ fn take_payment_v3_impl(
 ) -> Result<String, String> {
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::TakePayment).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("taking a payment requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     if amount_cents < 0 || change_cents < 0 {
         return Err("negative amounts are not valid".to_string());
@@ -1396,7 +1403,9 @@ pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::cloud::
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let debtor_id = Repo::new(&tx).create_debtor(&tenant_id, &branch_id, &name, phone.as_deref(), email.as_deref(), address.as_deref(), notes.as_deref()).map_err(|e| e.to_string())?;
     if initial_debt_cents > 0 {
-        Repo::new(&tx).record_initial_debt(&tenant_id, &branch_id, &debtor_id, initial_debt_cents, &actor.id).map_err(|e| e.to_string())?;
+        let entry_id = Repo::new(&tx).record_initial_debt(&tenant_id, &branch_id, &debtor_id, initial_debt_cents, &actor.id).map_err(|e| e.to_string())?;
+        let license_status = license.cached_status();
+        sync_enqueue_debt_entry(&tx, &tenant_id, &branch_id, &entry_id, &actor.device_id, &license_status)?;
     }
     audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "name": name, "created": true, "initial_debt_cents": initial_debt_cents }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -1463,6 +1472,11 @@ pub fn record_debt_payment_v3(state: State<Db>, license: State<crate::license::c
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let entry_id = Repo::new(&tx).record_debt_payment(&actor.scope(), &debtor_id, amount_cents, notes.as_deref(), &actor.id).map_err(|e| e.to_string())?;
+    let (debtor_tenant_id, debtor_branch_id): (String, String) = tx.query_row(
+        "SELECT tenant_id, branch_id FROM debtors WHERE id = ?1", params![debtor_id], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).map_err(|e| e.to_string())?;
+    let license_status = license.cached_status();
+    sync_enqueue_debt_entry(&tx, &debtor_tenant_id, &debtor_branch_id, &entry_id, &actor.device_id, &license_status)?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "entry_id": entry_id, "amount_cents": amount_cents, "type": "PAYMENT" }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(entry_id)
@@ -2978,8 +2992,9 @@ fn create_full_order_v3_impl(
 ) -> Result<String, String> {
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("order creation requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     if subtotal_cents < 0 || tax_cents < 0 || total_cents < 0 || discount_cents < 0 {
         return Err("negative amounts are not valid".to_string());
@@ -2988,7 +3003,7 @@ fn create_full_order_v3_impl(
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let override_used = enforce_discount_cap(&mut conn, &actor, &tenant_id, subtotal_cents, discount_cents, manager_override_pin.as_deref())?;
 
-    let scope = actor.scope();
+    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let input = FullOrderInput {
         table_id, user_id: actor.id.clone(), order_type: order_type.clone(),
@@ -3121,6 +3136,7 @@ fn sync_enqueue_single_order_item(
 #[allow(clippy::too_many_arguments)]
 pub fn hold_order_v3(
     state: State<Db>,
+    license: State<crate::license::cloud::CloudLicenseState>,
     session_token: String,
     table_id: String,
     order_type: String,
@@ -3130,12 +3146,13 @@ pub fn hold_order_v3(
     total_cents: i64,
     shift_id: Option<String>,
 ) -> Result<String, String> {
-    hold_order_v3_impl(&state, session_token, table_id, order_type, items, subtotal_cents, tax_cents, total_cents, shift_id)
+    hold_order_v3_impl(&state, &license, session_token, table_id, order_type, items, subtotal_cents, tax_cents, total_cents, shift_id)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn hold_order_v3_impl(
     state: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
     session_token: String,
     table_id: String,
     order_type: String,
@@ -3147,12 +3164,13 @@ fn hold_order_v3_impl(
 ) -> Result<String, String> {
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("order creation requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let scope = actor.scope();
+    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let input = FullOrderInput {
         table_id, user_id: actor.id.clone(), order_type: order_type.clone(),
@@ -3345,6 +3363,7 @@ fn transfer_order_v3_impl(state: &Db, session_token: String, order_id: String, f
 #[allow(clippy::too_many_arguments)]
 pub fn schedule_delayed_order_v3(
     state: State<Db>,
+    license: State<crate::license::cloud::CloudLicenseState>,
     session_token: String,
     table_id: String,
     order_type: String,
@@ -3354,12 +3373,13 @@ pub fn schedule_delayed_order_v3(
     total_cents: i64,
     scheduled_at: String,
 ) -> Result<String, String> {
-    schedule_delayed_order_v3_impl(&state, session_token, table_id, order_type, items, subtotal_cents, tax_cents, total_cents, scheduled_at)
+    schedule_delayed_order_v3_impl(&state, &license, session_token, table_id, order_type, items, subtotal_cents, tax_cents, total_cents, scheduled_at)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn schedule_delayed_order_v3_impl(
     state: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
     session_token: String,
     table_id: String,
     order_type: String,
@@ -3371,12 +3391,13 @@ fn schedule_delayed_order_v3_impl(
 ) -> Result<String, String> {
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("order creation requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let scope = actor.scope();
+    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let input = FullOrderInput {
         table_id, user_id: actor.id.clone(), order_type: order_type.clone(),
@@ -3493,8 +3514,9 @@ fn finalize_order_with_payment_v3_impl(
 ) -> Result<FinalizePaymentResult, String> {
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::TakePayment).map_err(|e| e.to_string())?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Err("taking a payment requires a Branch-scoped actor".to_string());
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     if amount_cents < 0 || change_cents < 0 {
         return Err("negative amounts are not valid".to_string());
@@ -3584,6 +3606,36 @@ fn sync_enqueue_supplier_payment(
         "amount_cents": amount_cents, "method": method, "notes": notes, "created_at": created_at,
     });
     crate::sync::enqueue(tx, "supplier_payments", payment_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
+}
+
+/// Customer debt (who owes the OWNER, the mirror image of
+/// `sync_enqueue_supplier_payment`) had never been wired into the sync
+/// outbox at all -- `debt_entries` predates the HLC-outbox scheme and has
+/// no `rev`/`device_id` columns to bump, only the older `sync_version`
+/// (append-only fact, written exactly once per row, so the value already
+/// on the row at insert time is a perfectly good, permanently-stable `rev`
+/// for the outbox's dedup key -- no UPDATE needed first, unlike
+/// `sync_enqueue_supplier_payment`).
+fn sync_enqueue_debt_entry(
+    tx: &rusqlite::Transaction,
+    tenant_id: &str,
+    branch_id: &str,
+    entry_id: &str,
+    device_id: &str,
+    license_status: &crate::license::signed::LicenseStatus,
+) -> Result<(), String> {
+    let (debtor_id, order_id, entry_type, amount_cents, notes, created_at, sync_version): (String, Option<String>, String, i64, Option<String>, String, i64) = tx.query_row(
+        "SELECT debtor_id, order_id, type, amount_cents, notes, created_at, sync_version FROM debt_entries WHERE id = ?1",
+        params![entry_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+    ).map_err(|e| e.to_string())?;
+
+    let payload = serde_json::json!({
+        "id": entry_id, "debtor_id": debtor_id, "order_id": order_id,
+        "tenant_id": tenant_id, "branch_id": branch_id, "type": entry_type,
+        "amount_cents": amount_cents, "notes": notes, "created_at": created_at,
+    });
+    crate::sync::enqueue(tx, "debt_entries", entry_id, tenant_id, branch_id, &payload, sync_version, device_id, license_status).map_err(|e| e.to_string())
 }
 
 /// T2.0 plan §0 flag #4: `operational_costs` existed since day one but was
@@ -4035,8 +4087,9 @@ mod tests {
             };
 
             let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
             let order_id = create_order_v3_impl(
-                &db, session, table_id, "DINE_IN".to_string(),
+                &db, &license, session, table_id, "DINE_IN".to_string(),
                 0, 0, 0, None,
             ).expect("create_order_v3 must succeed through the real wrapper body (authn -> scope -> authz -> outer tx -> repo -> audit -> commit)");
 
@@ -4095,8 +4148,9 @@ mod tests {
             };
 
             let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
             let order_id = hold_order_v3_impl(
-                &db, session, table_id, "DINE_IN".to_string(), vec![], 0, 0, 0, None,
+                &db, &license, session, table_id, "DINE_IN".to_string(), vec![], 0, 0, 0, None,
             ).expect("hold_order_v3 must succeed through the real wrapper body");
 
             let conn = Connection::open(&db_path).unwrap();
@@ -4218,7 +4272,8 @@ mod tests {
             };
 
             let db = real_db(&db_path);
-            let order_id = create_order_v3_impl(&db, session.clone(), table_id.clone(), "DINE_IN".to_string(), 0, 0, 0, None).unwrap();
+            let license = never_checked_license(&db_path);
+            let order_id = create_order_v3_impl(&db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(), 0, 0, 0, None).unwrap();
 
             transfer_order_v3_impl(&db, session, order_id.clone(), table_id, table_2_id.clone())
                 .expect("transfer_order_v3 must succeed through the real wrapper body");
@@ -4242,9 +4297,10 @@ mod tests {
             };
 
             let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
             let scheduled_at = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
             let order_id = schedule_delayed_order_v3_impl(
-                &db, session, table_id, "DINE_IN".to_string(), vec![], 0, 0, 0, scheduled_at,
+                &db, &license, session, table_id, "DINE_IN".to_string(), vec![], 0, 0, 0, scheduled_at,
             ).expect("schedule_delayed_order_v3 must succeed through the real wrapper body");
 
             let conn = Connection::open(&db_path).unwrap();
@@ -4267,7 +4323,7 @@ mod tests {
 
             let db = real_db(&db_path);
             let license = never_checked_license(&db_path);
-            let order_id = create_order_v3_impl(&db, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None).unwrap();
+            let order_id = create_order_v3_impl(&db, &license, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None).unwrap();
 
             let result = finalize_order_with_payment_v3_impl(
                 &db, &license,
@@ -4297,9 +4353,10 @@ mod tests {
             };
 
             let db = real_db(&db_path);
-            let order_id = create_order_v3_impl(&db, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None).unwrap();
+            let license = never_checked_license(&db_path);
+            let order_id = create_order_v3_impl(&db, &license, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None).unwrap();
 
-            let payment_id = take_payment_v3_impl(&db, session, order_id, "CASH".to_string(), 1000, 0, None)
+            let payment_id = take_payment_v3_impl(&db, &license, session, order_id, "CASH".to_string(), 1000, 0, None)
                 .expect("take_payment_v3 must succeed through the real wrapper body");
 
             let conn = Connection::open(&db_path).unwrap();

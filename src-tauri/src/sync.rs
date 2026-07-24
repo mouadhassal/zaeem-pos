@@ -315,6 +315,69 @@ fn build_supplier_payload(
     Ok((payments, suppliers))
 }
 
+/// "Who owes the OWNER" on the web dashboard -- the mirror image of
+/// `build_supplier_payload` ("who the owner owes"). Same shape, same
+/// reasoning: the batch's `debt_entries` rows already carry the complete
+/// fact (no local re-read needed for those), and a CURRENT balance
+/// snapshot is re-read per debtor touched, not reconstructed from the
+/// enqueue-time payload. A debtor can legitimately be missing (rare, but
+/// symmetry with suppliers) -- skipped, not an error.
+fn build_debt_payload(
+    conn: &Connection,
+    batch: &[OutboxRow],
+) -> Result<(Vec<serde_json::Value>, Vec<serde_json::Value>), rusqlite::Error> {
+    let mut entries = Vec::new();
+    let mut debtor_ids: Vec<String> = Vec::new();
+
+    for row in batch {
+        if row.table_name != "debt_entries" {
+            continue;
+        }
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(&row.payload_json) else { continue };
+        let Some(debtor_id) = payload.get("debtor_id").and_then(|v| v.as_str()).map(String::from) else { continue };
+
+        let debtor_name: Option<String> = conn
+            .query_row("SELECT name FROM debtors WHERE id = ?1", params![debtor_id], |r| r.get(0))
+            .ok();
+        let Some(debtor_name) = debtor_name else { continue };
+
+        entries.push(serde_json::json!({
+            "local_entry_id": row.row_id,
+            "local_debtor_id": debtor_id,
+            "debtor_name": debtor_name,
+            "entry_type": payload.get("type").and_then(|v| v.as_str()),
+            "amount_cents": payload.get("amount_cents"),
+            "notes": payload.get("notes"),
+            "created_at": payload.get("created_at"),
+        }));
+
+        if !debtor_ids.contains(&debtor_id) {
+            debtor_ids.push(debtor_id);
+        }
+    }
+
+    let mut debtors = Vec::new();
+    for debtor_id in debtor_ids {
+        let row: Option<(String, Option<String>, Option<String>, i64, i64, i64)> = conn
+            .query_row(
+                "SELECT name, phone, email, total_debt_cents, total_paid_cents, balance_cents FROM debtors WHERE id = ?1",
+                params![debtor_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .ok();
+        let Some((name, phone, email, total_debt_cents, total_paid_cents, balance_cents)) = row else { continue };
+        debtors.push(serde_json::json!({
+            "local_debtor_id": debtor_id,
+            "name": name, "phone": phone, "email": email,
+            "total_debt_cents": total_debt_cents,
+            "total_paid_cents": total_paid_cents,
+            "balance_cents": balance_cents,
+        }));
+    }
+
+    Ok((entries, debtors))
+}
+
 /// Slice 2c: real POST to the `sync-pos` Edge Function, the canonical POS
 /// ingestion path (`pos_device`/`pos_order`, one denormalized row per order
 /// with embedded `items` -- see `supabase/functions/sync-pos/index.ts`). The
@@ -324,15 +387,18 @@ fn build_supplier_payload(
 /// along in the same request -- one heartbeat, one auth check, same as
 /// orders (see `build_supplier_payload`'s doc comment for why these two
 /// arrays exist).
+#[allow(clippy::too_many_arguments)]
 async fn send_batch(
     orders: &[serde_json::Value],
     suppliers: &[serde_json::Value],
     supplier_payments: &[serde_json::Value],
+    debtors: &[serde_json::Value],
+    debt_entries: &[serde_json::Value],
     config_dir: &std::path::Path,
 ) -> Result<(), String> {
     use crate::license::cloud::{load_config_from_file, supabase_anon_key, supabase_url};
 
-    if orders.is_empty() && suppliers.is_empty() && supplier_payments.is_empty() {
+    if orders.is_empty() && suppliers.is_empty() && supplier_payments.is_empty() && debtors.is_empty() && debt_entries.is_empty() {
         return Ok(());
     }
 
@@ -347,6 +413,8 @@ async fn send_batch(
         "orders": orders,
         "suppliers": suppliers,
         "supplier_payments": supplier_payments,
+        "debtors": debtors,
+        "debt_entries": debt_entries,
         "device_name": "Zaeem POS",
         "version": env!("CARGO_PKG_VERSION"),
     });
@@ -396,7 +464,7 @@ pub async fn run_tick(
     batch_limit: i64,
     config_dir: &std::path::Path,
 ) -> Result<usize, rusqlite::Error> {
-    let (batch, orders_payload, suppliers_payload, supplier_payments_payload) = {
+    let (batch, orders_payload, suppliers_payload, supplier_payments_payload, debtors_payload, debt_entries_payload) = {
         let conn = db.lock().unwrap();
         let batch = due_batch(&conn, batch_limit)?;
         if batch.is_empty() {
@@ -404,10 +472,11 @@ pub async fn run_tick(
         }
         let orders_payload = build_orders_payload(&conn, &batch)?;
         let (supplier_payments_payload, suppliers_payload) = build_supplier_payload(&conn, &batch)?;
-        (batch, orders_payload, suppliers_payload, supplier_payments_payload)
+        let (debt_entries_payload, debtors_payload) = build_debt_payload(&conn, &batch)?;
+        (batch, orders_payload, suppliers_payload, supplier_payments_payload, debtors_payload, debt_entries_payload)
     };
 
-    let result = send_batch(&orders_payload, &suppliers_payload, &supplier_payments_payload, config_dir).await;
+    let result = send_batch(&orders_payload, &suppliers_payload, &supplier_payments_payload, &debtors_payload, &debt_entries_payload, config_dir).await;
 
     let conn = db.lock().unwrap();
     match result {

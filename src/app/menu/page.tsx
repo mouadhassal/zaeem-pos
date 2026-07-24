@@ -3,7 +3,7 @@ import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
 import { invalidateMenuItemPhotoCache } from "../../hooks/useMenuItemPhoto";
 import { z } from "zod";
-import { IconPencil, IconTrash } from "@tabler/icons-react";
+import { IconPencil, IconTrash, IconX } from "@tabler/icons-react";
 
 interface Category {
   id: string;
@@ -1505,7 +1505,7 @@ export default function MenuPage() {
                         onClick={() => removeComboItem(idx)}
                         className="h-10 px-2 text-ink-500 hover:text-red-500 transition-colors"
                       >
-                        ✕
+                        <IconX className="w-4 h-4" />
                       </button>
                     </div>
                   ))}

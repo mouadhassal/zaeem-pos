@@ -4,7 +4,7 @@ import { realErrorText } from "../../lib/errors";
 import { useCurrency } from "../../hooks/useCurrency";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
-import { IconCash, IconPencil, IconTrash } from "@tabler/icons-react";
+import { IconCash, IconPencil, IconTrash, IconX } from "@tabler/icons-react";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 
 interface DebtorRow {
@@ -55,6 +55,26 @@ function fmtDateTime(iso: string | null): string {
   return new Date(iso).toLocaleString("ar-SA", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+// Debt aging: only meaningful for a debtor who still owes something and has
+// a transaction on record to measure "since when" from -- a zero balance or
+// a debtor who never had a transaction has nothing to age.
+function agingDays(debtor: DebtorRow): number | null {
+  if (debtor.balance_cents <= 0 || !debtor.last_transaction_at) return null;
+  const ms = Date.now() - new Date(debtor.last_transaction_at).getTime();
+  return Math.floor(ms / 86_400_000);
+}
+
+function AgingBadge({ debtor }: { debtor: DebtorRow }) {
+  const days = agingDays(debtor);
+  if (days === null) return <span className="text-ink-400 text-xs">-</span>;
+  const tier =
+    days >= 90 ? { label: `متأخر جدًا (${days} يوم)`, className: "bg-red-100 text-red-700" }
+    : days >= 60 ? { label: `متأخر (${days} يوم)`, className: "bg-orange-100 text-orange-700" }
+    : days >= 30 ? { label: `متأخر (${days} يوم)`, className: "bg-amber-100 text-amber-700" }
+    : { label: `${days} يوم`, className: "bg-ink-100 text-ink-500" };
+  return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold ${tier.className}`}>{tier.label}</span>;
+}
+
 export default function DebtPage() {
   const { fmt } = useCurrency();
   const token = useAuthStore((s) => s.token);
@@ -80,11 +100,15 @@ export default function DebtPage() {
 
   const [exportingPdf, setExportingPdf] = useState(false);
 
-  const filtered = debtors.filter((d) => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return true;
-    return d.name.toLowerCase().includes(q) || d.phone.includes(q);
-  });
+  const filtered = debtors
+    .filter((d) => {
+      const q = searchQuery.trim().toLowerCase();
+      if (!q) return true;
+      return d.name.toLowerCase().includes(q) || d.phone.includes(q);
+    })
+    // Most-overdue first (agingDays is null for a zero balance -- sorted
+    // last, they aren't a collections concern).
+    .sort((a, b) => (agingDays(b) ?? -1) - (agingDays(a) ?? -1));
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -232,6 +256,7 @@ export default function DebtPage() {
               <th className="text-center p-3 font-medium">إجمالي الديون</th>
               <th className="text-center p-3 font-medium">المدفوع</th>
               <th className="text-center p-3 font-medium">المتبقي</th>
+              <th className="text-center p-3 font-medium">التقادم</th>
               <th className="text-right p-3 font-medium">آخر معاملة</th>
               <th className="text-center p-3 font-medium">إجراءات</th>
             </tr>
@@ -244,6 +269,7 @@ export default function DebtPage() {
                 <td className="p-3 text-center font-mono text-red-500 font-bold">{fmt(d.total_debt_cents)}</td>
                 <td className="p-3 text-center font-mono text-saffron-600 font-bold">{fmt(d.total_paid_cents)}</td>
                 <td className={`p-3 text-center font-mono font-bold ${d.balance_cents > 0 ? "text-red-600" : "text-green-600"}`}>{fmt(d.balance_cents)}</td>
+                <td className="p-3 text-center"><AgingBadge debtor={d} /></td>
                 <td className="p-3 font-arabic text-ink-400 text-xs">{fmtDateTime(d.last_transaction_at)}</td>
                 <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center justify-center gap-1">
@@ -255,7 +281,7 @@ export default function DebtPage() {
               </tr>
             ))}
             {filtered.length === 0 && (
-              <tr><td colSpan={7} className="p-6 text-center text-ink-500 font-arabic">{searchQuery ? "لا توجد نتائج" : "لا يوجد مدينون"}</td></tr>
+              <tr><td colSpan={8} className="p-6 text-center text-ink-500 font-arabic">{searchQuery ? "لا توجد نتائج" : "لا يوجد مدينون"}</td></tr>
             )}
           </tbody>
         </table>
@@ -343,7 +369,7 @@ export default function DebtPage() {
             <div className="p-6 space-y-6">
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-bold font-arabic text-ink-900">{detail.debtor.name}</h2>
-                <button onClick={() => setDetailOpen(false)} className="p-2 rounded-lg text-ink-500 hover:bg-white transition-colors">✕</button>
+                <button onClick={() => setDetailOpen(false)} className="p-2 rounded-lg text-ink-500 hover:bg-white transition-colors"><IconX className="w-4 h-4" /></button>
               </div>
 
               <div className="grid grid-cols-3 gap-3">

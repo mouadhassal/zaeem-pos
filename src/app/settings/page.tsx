@@ -3,7 +3,7 @@ import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
 import type { TaxMode } from "../../db/types";
 import { checkLicense, activateLicense, getDeviceId, backOfficeLocked, type LicenseStatus } from "../../lib/license";
-import { Pencil, Trash2 as Trash, ImagePlus } from "lucide-react";
+import { Pencil, Trash2 as Trash, ImagePlus, X } from "lucide-react";
 
 type SettingsTab = "general" | "printer" | "tax" | "branch" | "license" | "cloud" | "backup" | "about";
 
@@ -608,7 +608,7 @@ export default function SettingsPage() {
                         onClick={() => { setBranchLogo(null); localStorage.removeItem("zaeem_branch_logo"); }}
                         className="absolute -top-2 -left-2 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center hover:bg-red-600"
                       >
-                        ✕
+                        <X className="w-3 h-3" />
                       </button>
                     </div>
                   ) : (

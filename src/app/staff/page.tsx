@@ -5,6 +5,7 @@ import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import type { UserRole } from "../../db/types";
 import QRCode from "qrcode";
+import { IconDeviceMobile, IconPencil, IconLock, IconTrash } from "@tabler/icons-react";
 /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 type Tab = "employees" | "shifts" | "attendance";
@@ -449,7 +450,7 @@ export default function StaffPage() {
                         {qrDataUrls[emp.id] && (
                           <div className="relative group">
                             <button className="p-1.5 rounded-lg text-ink-500 hover:text-purple-600 hover:bg-purple-50 transition-colors" title="QR">
-                              📱
+                              <IconDeviceMobile className="w-4 h-4" />
                             </button>
                             <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-50">
                               <div className="bg-white p-2 rounded-xl shadow-xl border border-ink-200">
@@ -463,24 +464,24 @@ export default function StaffPage() {
                           className="p-1.5 rounded-lg text-ink-500 hover:text-saffron-600 hover:bg-saffron-50 transition-colors"
                           title="تعديل"
                         >
-                          ✏️
+                          <IconPencil className="w-4 h-4" />
                         </button>
                         <button
                           onClick={() => toggleEmployeeStatus(emp)}
-                          className={`px-3 py-1 rounded-lg text-xs font-arabic transition-colors ${
+                          className={`px-3 py-1 rounded-lg text-xs font-arabic transition-colors inline-flex items-center gap-1 ${
                             emp.is_active
                               ? "text-amber-600 hover:bg-amber-50"
                               : "text-saffron-600 hover:bg-saffron-50"
                           }`}
                         >
-                          {emp.is_active ? "🔒 تعليق" : "تفعيل"}
+                          {emp.is_active ? <><IconLock className="w-3.5 h-3.5" /> تعليق</> : "تفعيل"}
                         </button>
                         <button
                           onClick={() => setDeleteEmployeeId(emp.id)}
                           className="p-1.5 rounded-lg text-ink-500 hover:text-red-500 hover:bg-red-50 transition-colors"
                           title="حذف"
                         >
-                          🗑️
+                          <IconTrash className="w-4 h-4" />
                         </button>
                       </div>
                     </td>

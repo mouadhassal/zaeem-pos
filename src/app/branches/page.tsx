@@ -3,6 +3,7 @@ import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 import { z } from "zod";
+import { IconPencil, IconX } from "@tabler/icons-react";
 
 interface Branch {
   id: string;
@@ -307,7 +308,7 @@ export default function BranchesPage() {
                     className="p-1.5 rounded-lg text-xs text-amber-600 hover:bg-amber-50 transition-colors"
                     title="تعديل"
                   >
-                    ✏️
+                    <IconPencil className="w-4 h-4" />
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); toggleStatus(b); }}
@@ -515,7 +516,7 @@ export default function BranchesPage() {
                   onClick={closeDetail}
                   className="p-2 rounded-lg text-ink-500 hover:bg-white transition-colors"
                 >
-                  ✕
+                  <IconX className="w-4 h-4" />
                 </button>
               </div>
 

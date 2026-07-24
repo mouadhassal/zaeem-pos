@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useAuthStore } from "../stores/authStore";
 import { invoke } from "../lib/invoke";
-import { UtensilsCrossed, AlertCircle, Eye, EyeOff, ImagePlus } from "lucide-react";
+import { UtensilsCrossed, AlertCircle, Eye, EyeOff, ImagePlus, X } from "lucide-react";
 
 const CURRENCIES = [
   { value: "SYP", label: "ليرة سورية (SYP)" },
@@ -135,7 +135,7 @@ export default function SetupWizard() {
                           onClick={() => setLogoDataUrl(null)}
                           className="absolute -top-2 -left-2 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center"
                         >
-                         ✕
+                         <X className="w-3 h-3" />
                         </button>
                       </div>
                     ) : (

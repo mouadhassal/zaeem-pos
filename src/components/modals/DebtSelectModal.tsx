@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
-import { IconSearch, IconUserPlus } from "@tabler/icons-react";
+import { IconSearch, IconUserPlus, IconX } from "@tabler/icons-react";
 
 interface DebtorRow {
   id: string;
@@ -73,7 +73,7 @@ export default function DebtSelectModal({ onClose, onSelect }: Props) {
       <div className="bg-surface rounded-2xl shadow-xl w-full max-w-lg mx-4 max-h-[80vh] flex flex-col" dir="rtl">
         <div className="px-5 py-4 border-b border-line flex items-center justify-between">
           <h2 className="text-base font-bold font-arabic text-text">اختيار مدين</h2>
-          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-surface-alt flex items-center justify-center text-text-muted">✕</button>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-surface-alt flex items-center justify-center text-text-muted"><IconX className="w-4 h-4" /></button>
         </div>
 
         <div className="px-5 py-3 border-b border-line">

@@ -3,6 +3,7 @@ import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
 import type { TaxMode } from "../../db/types";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
+import { IconEye, IconCreditCard, IconX } from "@tabler/icons-react";
 
 type Tab = "revenue" | "costs" | "invoices" | "taxes";
 type DateRange = "today" | "week" | "month" | "custom";
@@ -504,9 +505,9 @@ export default function FinancePage() {
                     <td className="p-3 font-mono text-ink-500">{inv.due_date.slice(0, 10)}</td>
                     <td className="p-3 text-center">
                       <div className="flex items-center justify-center gap-2">
-                        <button onClick={() => setShowInvoiceDetail(inv)} className="px-3 py-1 rounded-lg text-xs text-ink-400 hover:bg-white transition-colors" title="عرض التفاصيل">👁️</button>
+                        <button onClick={() => setShowInvoiceDetail(inv)} className="px-3 py-1 rounded-lg text-xs text-ink-400 hover:bg-white transition-colors" title="عرض التفاصيل"><IconEye className="w-4 h-4" /></button>
                         {inv.status === "PENDING" && (
-                          <button onClick={() => handlePayInvoice(inv)} className="px-3 py-1 rounded-lg text-xs font-arabic text-saffron-600 hover:bg-saffron-50 transition-colors">💳 دفع</button>
+                          <button onClick={() => handlePayInvoice(inv)} className="px-3 py-1 rounded-lg text-xs font-arabic text-saffron-600 hover:bg-saffron-50 transition-colors inline-flex items-center gap-1"><IconCreditCard className="w-4 h-4" /> دفع</button>
                         )}
                       </div>
                     </td>
@@ -593,7 +594,7 @@ export default function FinancePage() {
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold font-arabic text-ink-900">تفاصيل الفاتورة</h2>
-              <button onClick={() => setShowInvoiceDetail(null)} className="text-ink-500 hover:text-ink-500 text-xl leading-none">✕</button>
+              <button onClick={() => setShowInvoiceDetail(null)} className="text-ink-500 hover:text-ink-500 leading-none"><IconX className="w-5 h-5" /></button>
             </div>
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div><span className="text-ink-400 font-arabic">رقم الفاتورة: </span><span className="font-mono text-ink-900">{showInvoiceDetail.id.slice(0, 8)}</span></div>
@@ -608,7 +609,7 @@ export default function FinancePage() {
             </div>
             <div className="flex gap-2 pt-2">
               {showInvoiceDetail.status === "PENDING" && (
-                <button onClick={() => { handlePayInvoice(showInvoiceDetail); setShowInvoiceDetail(null); }} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">💳 دفع الفاتورة</button>
+                <button onClick={() => { handlePayInvoice(showInvoiceDetail); setShowInvoiceDetail(null); }} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors inline-flex items-center justify-center gap-1.5"><IconCreditCard className="w-4 h-4" /> دفع الفاتورة</button>
               )}
               <button onClick={() => setShowInvoiceDetail(null)} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إغلاق</button>
             </div>

@@ -289,7 +289,7 @@ export default function AiOnboardingPage() {
                       : "bg-ink-100 text-ink-500"
                   }`}
                 >
-                  {u.kind === "AUDIO" ? "🎤" : "📷"}
+                  {u.kind === "AUDIO" ? <Mic className="w-4 h-4" /> : <Camera className="w-4 h-4" />}
                 </div>
                 <div className="absolute bottom-0 left-0 right-0 text-[8px] text-center bg-black/50 text-white leading-tight truncate px-1">
                   {u.status === "DONE" ? "تم" : u.status === "FAILED" ? "فشل" : u.status === "PROCESSING" ? "..." : "..."}
