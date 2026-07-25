@@ -3296,23 +3296,47 @@ pub fn unmerge_tables_v3(state: State<Db>, session_token: String, merge_group_id
 
 /// Soft-void an order item (set voided=1 + void_reason).
 #[tauri::command]
-pub fn void_order_item_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, reason: String) -> Result<(), String> {
-    void_order_item_v3_impl(&state, &license, session_token, item_id, reason)
+pub fn void_order_item_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, reason: String, manager_override_pin: Option<String>) -> Result<(), String> {
+    void_order_item_v3_impl(&state, &license, session_token, item_id, reason, manager_override_pin)
 }
 
-fn void_order_item_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String, reason: String) -> Result<(), String> {
+/// WENZDES audit C5/H5: below `VOID_MANAGER_OVERRIDE_THRESHOLD_CENTS`, any
+/// actor holding `Permission::CreateOrder` (i.e. a cashier) may void a line
+/// on their own authority, same as before. At or above it, a valid
+/// manager PIN is required -- checked here, server-side, against the
+/// line's REAL price (`order_item_line_total_cents`, itself scope-checked),
+/// not whatever price the caller claims. Mirrors `enforce_discount_cap`'s
+/// established shape exactly: verify on the plain `Connection` before the
+/// write transaction opens, since `verify_manager_override_impl` needs
+/// `&mut Connection`, not a `Transaction`.
+const VOID_MANAGER_OVERRIDE_THRESHOLD_CENTS: i64 = 2000;
+
+fn void_order_item_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String, reason: String, manager_override_pin: Option<String>) -> Result<(), String> {
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let scope = actor.scope();
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let line_total_cents = Repo::new(&conn).order_item_line_total_cents(&scope, &item_id).map_err(|e| e.to_string())?;
+    let override_used = if line_total_cents >= VOID_MANAGER_OVERRIDE_THRESHOLD_CENTS {
+        let Some(pin) = manager_override_pin.as_deref() else {
+            return Err("voiding an item over the manager-override threshold requires a manager PIN".to_string());
+        };
+        if !verify_manager_override_impl(&mut conn, &actor, pin)? {
+            return Err("manager PIN is not valid".to_string());
+        }
+        true
+    } else {
+        false
+    };
+
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     Repo::new(&tx).void_order_item(&scope, &item_id, &reason).map_err(|e| e.to_string())?;
 
     audit::append(
         &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
         audit::Action::OrderStatusChanged, "order_item", &item_id,
-        None, Some(&serde_json::json!({ "action": "void", "reason": reason })),
+        None, Some(&serde_json::json!({ "action": "void", "reason": reason, "manager_override_used": override_used })),
     ).map_err(|e| e.to_string())?;
 
     // Sync: re-stamp+re-queue this one item at its next rev (voided=1).
@@ -4367,8 +4391,80 @@ mod tests {
 
             void_order_item_v3_impl(
                 &db, &license,
-                session, item_db_id.clone(), "نفذت الكمية".to_string(),
+                session, item_db_id.clone(), "نفذت الكمية".to_string(), None,
             ).expect("void_order_item_v3 must succeed through the real wrapper body");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let voided: i64 = conn.query_row("SELECT voided FROM order_items WHERE id = ?1", params![item_db_id], |r| r.get(0)).unwrap();
+            assert_eq!(voided, 1);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// WENZDES audit C5/H5: the 2000-cent void threshold used to live
+        /// ONLY in `VoidItemModal.tsx` -- `void_order_item_v3` had no
+        /// server-side check at all, so a cashier calling the command
+        /// directly (bypassing the modal, e.g. from devtools) could void
+        /// any line regardless of price with no manager involvement. Proves
+        /// the fix: a cashier voiding a line >= the threshold with no PIN
+        /// is rejected and the item stays un-voided; the same void with a
+        /// valid manager PIN succeeds.
+        #[test]
+        fn void_order_item_v3_enforces_manager_pin_threshold_server_side() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_void_threshold");
+            let pin_hash = bcrypt::hash("1234", bcrypt::DEFAULT_COST).unwrap();
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                Repo::new(&conn).create_staff(&tenant_id, Some(&branch_id), Some(&branch_id), "MANAGER", Role::Manager.rank(), "Manager", Some(&pin_hash), None).unwrap();
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                // Line total 5000 cents (qty 1 * unit_price 5000), well over
+                // the 2000-cent threshold.
+                let item_id = repo.create_menu_item(&tenant_id, "Expensive Item", &category_id, 5000, 2500, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            let items = vec![OrderItemInput {
+                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 5000,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let order_id = create_full_order_v3_impl(
+                &db, &license,
+                session.clone(), table_id, "DINE_IN".to_string(), items,
+                5000, 0, 5000, 0, None, None, None, None, 0, None, None, None,
+            ).unwrap();
+            let item_db_id: String = {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_id], |r| r.get(0)).unwrap()
+            };
+
+            let no_pin = void_order_item_v3_impl(
+                &db, &license,
+                session.clone(), item_db_id.clone(), "بدون سبب كافٍ".to_string(), None,
+            );
+            assert!(no_pin.is_err(), "voiding a >=2000-cent line with no manager PIN must be rejected");
+
+            let wrong_pin = void_order_item_v3_impl(
+                &db, &license,
+                session.clone(), item_db_id.clone(), "رمز خاطئ".to_string(), Some("0000".to_string()),
+            );
+            assert!(wrong_pin.is_err(), "voiding with a wrong manager PIN must be rejected");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let still_active: i64 = conn.query_row("SELECT voided FROM order_items WHERE id = ?1", params![item_db_id], |r| r.get(0)).unwrap();
+            assert_eq!(still_active, 0, "the item must remain un-voided after both rejected attempts");
+            drop(conn);
+
+            void_order_item_v3_impl(
+                &db, &license,
+                session, item_db_id.clone(), "خطأ في الطلب".to_string(), Some("1234".to_string()),
+            ).expect("voiding with a valid manager PIN must succeed");
 
             let conn = Connection::open(&db_path).unwrap();
             let voided: i64 = conn.query_row("SELECT voided FROM order_items WHERE id = ?1", params![item_db_id], |r| r.get(0)).unwrap();

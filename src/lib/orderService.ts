@@ -2,7 +2,6 @@ import { invoke } from "./invoke";
 import { useAuthStore } from "../stores/authStore";
 import { printReceipt, printKitchenTicket, queuePrintJob } from "./printer";
 import { logger } from "./logger";
-import { autoSyncOrder } from "./sync";
 import type { ReceiptData } from "./printer";
 import type { OrderType as OrderTypeEnum } from "../stores/orderTypeStore";
 
@@ -166,19 +165,6 @@ export async function createOrder(
     managerOverridePin: managerOverridePin ?? null,
   });
 
-  autoSyncOrder({
-    id: orderId,
-    type: orderType,
-    status: "PENDING",
-    totalCents: Math.max(0, totalWithTax),
-    taxCents: taxCents + secondaryTaxCents + serviceChargeCents,
-    items,
-    customerName,
-    customerPhone,
-    deliveryAddress,
-    tableId,
-  });
-
   const kitchenItems = items.map((i) => {
     const ki: { name: string; quantity: number; notes?: string; modifiers?: string[] } = {
       name: i.name ?? "", quantity: i.quantity,
@@ -236,19 +222,6 @@ export async function finalizeOrder(
     changeCents,
     debtorId: debtorId ?? null,
     cardNumber: cardNumber ?? null,
-  });
-
-  autoSyncOrder({
-    id: orderId,
-    type: receiptData.orderType || "DINE_IN",
-    status: "paid",
-    totalCents: receiptData.totalCents || 0,
-    taxCents: receiptData.taxCents || 0,
-    items: (receiptData.items || []).map((i) => ({
-      name: i.name,
-      quantity: i.quantity,
-      unitPriceCents: i.priceCents,
-    })),
   });
 
   try {
@@ -380,12 +353,13 @@ export async function unmergeTables(mergeGroupId: string): Promise<void> {
 export async function voidOrderItem(
   itemId: string,
   reason: string,
-  _managerPin?: string
+  managerOverridePin?: string
 ): Promise<void> {
   return invoke("void_order_item_v3", {
     sessionToken: token(),
     itemId,
     reason,
+    managerOverridePin: managerOverridePin ?? null,
   });
 }
 
@@ -461,7 +435,11 @@ export async function activateDelayedOrders(): Promise<void> {
         logger.error("Delayed order kitchen print failed", { error: String(err), orderId });
       }
     }
-  } catch {
-    // silent - timer-based, no user feedback needed
+  } catch (err) {
+    // WENZDES audit L12: genuinely silent before -- no user toast is right
+    // (this runs on a 30s background timer, not a user action), but a
+    // real failure here (e.g. the DB call itself erroring) used to leave
+    // no trace anywhere, not even the log. Logged now, still no UI noise.
+    logger.error("activate_delayed_orders_v3 failed", { error: String(err) });
   }
 }

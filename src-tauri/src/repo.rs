@@ -4139,6 +4139,23 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
+    /// WENZDES audit C5/H5: the 2000-cent manager-PIN threshold for voiding
+    /// a line lived ONLY in `VoidItemModal.tsx` -- `void_order_item_v3`
+    /// itself had no threshold check at all, so a cashier calling the
+    /// command directly (devtools/console) bypassed the PIN prompt entirely
+    /// regardless of the voided line's value. Scoped the same way
+    /// `assert_order_item_in_scope` already is, so this can't be used to
+    /// probe another tenant/branch's prices either.
+    pub fn order_item_line_total_cents(&self, scope: &Scope, item_id: &str) -> Result<i64, RepoError> {
+        self.assert_order_item_in_scope(item_id, scope)?;
+        let (unit_price_cents, quantity): (i64, i64) = self.conn.query_row(
+            "SELECT unit_price_cents, quantity FROM order_items WHERE id = ?1",
+            params![item_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        Ok(unit_price_cents * quantity)
+    }
+
     /// Transfer an order from one table to another: update order.table_id,
     /// free the source table, occupy the target table.
     ///

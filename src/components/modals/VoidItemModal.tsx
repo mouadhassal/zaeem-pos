@@ -5,7 +5,7 @@ import { useAuthStore } from "../../stores/authStore";
 interface Props {
   itemName: string;
   itemPriceCents: number;
-  onConfirm: (reason: string) => void;
+  onConfirm: (reason: string, managerOverridePin?: string) => void;
   onCancel: () => void;
 }
 
@@ -48,12 +48,16 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
         setVerifying(false);
       }
     }
-    onConfirm(finalReason);
+    // The PIN is re-verified server-side inside void_order_item_v3 itself
+    // (against the item's REAL price, not whatever this modal was given) --
+    // the check above is only a fast, friendly pre-flight so a wrong PIN
+    // doesn't surface as a generic failure after the fact.
+    onConfirm(finalReason, needsManager ? pin : undefined);
   };
 
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-surface rounded-2xl border border-ink-600 w-[420px] overflow-hidden">
+      <div className="bg-white rounded-md border border-line shadow-sh-3 w-[420px] overflow-hidden">
         <div className="px-6 py-4 bg-danger-soft border-b border-danger-soft">
           <h2 className="font-arabic font-bold text-lg text-danger">إلغاء الصنف</h2>
           <p className="font-arabic text-sm text-danger mt-1">{itemName}</p>
@@ -71,7 +75,7 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
                   setReason(e.target.value);
                 }
               }}
-              className="w-full h-12 rounded-xl border-2 border-ink-200 px-4 font-arabic text-sm focus:border-danger outline-none"
+              className="w-full h-12 rounded-sm border-2 border-ink-200 px-4 font-arabic text-sm focus:border-danger outline-none"
             >
               <option value="">اختر سبباً</option>
               <option value="خطأ في الطلب">خطأ في الطلب</option>
@@ -88,7 +92,7 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
               value={customReason}
               onChange={(e) => setCustomReason(e.target.value)}
               placeholder="اكتب سبب الإلغاء..."
-              className="w-full h-12 rounded-xl border-2 border-ink-200 px-4 font-arabic text-sm outline-none focus:border-danger"
+              className="w-full h-12 rounded-sm border-2 border-ink-200 px-4 font-arabic text-sm outline-none focus:border-danger"
             />
           )}
 
@@ -102,7 +106,7 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
                 value={pin}
                 onChange={(e) => { setPin(e.target.value); setPinError(null); }}
                 onKeyDown={(e) => { if (e.key === "Enter") handleConfirm(); }}
-                className="w-full h-12 rounded-xl border-2 border-ink-200 px-4 font-mono text-sm outline-none focus:border-danger"
+                className="w-full h-12 rounded-sm border-2 border-ink-200 px-4 font-mono text-sm outline-none focus:border-danger"
                 autoFocus
               />
               {pinError && (
@@ -115,14 +119,14 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
         <div className="px-6 py-4 border-t border-ink-200 flex gap-3">
           <button
             onClick={onCancel}
-            className="flex-1 h-12 rounded-xl bg-surface text-ink-900 font-arabic font-bold hover:bg-ink-200"
+            className="flex-1 h-12 rounded-xl bg-surface-alt text-ink-900 font-arabic font-bold hover:bg-ink-200"
           >
             رجوع
           </button>
           <button
             onClick={handleConfirm}
             disabled={(!reason.trim() || (reason === "أخرى" && !customReason.trim())) || verifying || (needsManager && showPin && !pin)}
-            className="flex-1 h-12 rounded-xl bg-danger text-white font-arabic font-bold hover:bg-danger disabled:opacity-50"
+            className="flex-1 h-12 rounded-xl bg-red-50 text-red-600 font-arabic font-bold hover:bg-red-100 disabled:opacity-50"
           >
             {verifying ? "جاري التحقق..." : "تأكيد الإلغاء"}
           </button>

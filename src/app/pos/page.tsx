@@ -49,17 +49,14 @@ interface TableData {
   current_order_id?: string | null;
 }
 
-const MOCK_TABLES: TableData[] = [
-  { id: "t-1", name: "ط١", status: "FREE" },
-  { id: "t-2", name: "ط٢", status: "OCCUPIED" },
-  { id: "t-3", name: "ط٣", status: "FREE" },
-  { id: "t-4", name: "ط٤", status: "FREE" },
-  { id: "t-5", name: "ط٥", status: "OCCUPIED" },
-  { id: "t-6", name: "ط٦", status: "FREE" },
-];
-
 export default function POSPage() {
-  const [tables, setTables] = useState<TableData[]>(MOCK_TABLES);
+  // WENZDES audit H10: this used to default to 6 hardcoded fake tables
+  // (2 marked OCCUPIED) and never cleared them on a `listTables()` failure
+  // -- an operator seeing a real-looking table grid during a genuine
+  // backend outage, with no way to tell it wasn't real. `dbError` below is
+  // the actual signal for that state now; an empty grid + its banner is
+  // honest, a fake-but-plausible one is not.
+  const [tables, setTables] = useState<TableData[]>([]);
   const [showPayment, setShowPayment] = useState(false);
   const [showPin, setShowPin] = useState(false);
   const [showSplit, setShowSplit] = useState(false);
@@ -185,9 +182,18 @@ export default function POSPage() {
   useEffect(() => {
     const onPayment = () => {
       if (items.length > 0) {
-        const discountPercent = Math.round(
-          (useCartStore.getState().discountCents / useCartStore.getState().subtotal()) * 100
-        );
+        // WENZDES audit H11: subtotal() can legitimately be 0 (e.g. every
+        // line fully offset by modifiers) -- dividing by it produced NaN/
+        // Infinity, and `NaN > maxDiscountPercent` is always false in JS,
+        // so the manager-PIN gate silently failed OPEN on that edge case.
+        // (The server re-checks this independently via
+        // `enforce_discount_cap`, so this was a frontend UX gap, not an
+        // actual authorization bypass -- still worth closing so the prompt
+        // behaves correctly instead of skipping by accident.)
+        const cartSubtotal = useCartStore.getState().subtotal();
+        const discountPercent = cartSubtotal > 0
+          ? Math.round((useCartStore.getState().discountCents / cartSubtotal) * 100)
+          : 0;
         if (discountPercent > maxDiscountPercent) {
           setPinAction("discount");
           setShowPin(true);
@@ -320,13 +326,13 @@ export default function POSPage() {
     }
   };
 
-  const handleVoidConfirm = async (reason: string) => {
+  const handleVoidConfirm = async (reason: string, managerOverridePin?: string) => {
     if (!voidTargetItem) return;
     const target = items.find((i) => i.id === voidTargetItem);
     if (target) {
       if (target.dbItemId) {
         try {
-          await voidOrderItem(target.dbItemId, reason);
+          await voidOrderItem(target.dbItemId, reason, managerOverridePin);
         } catch {
           setSuccessMsg("تعذر حفظ الإلغاء، حاول مجدداً");
           setTimeout(() => setSuccessMsg(null), 3000);
@@ -388,17 +394,14 @@ export default function POSPage() {
     ? `طاولة ${tableName} / #${orderNumber}`
     : "اختر طاولة";
 
-  // Design-review placeholder only: no FX-rate backend/config exists yet.
-  // Hardcoded purely so the "USD equivalent above the total" layout can be
-  // reviewed -- NOT wired to any real exchange rate. Replace when a real
-  // FX command exists.
-  const PLACEHOLDER_SYP_PER_USD = 15000;
-  const usdTotal = useMemo(() => {
-    if (currencySymbol !== "ل.س" || totalCents === 0) return undefined;
-    return (totalCents / 100 / PLACEHOLDER_SYP_PER_USD).toLocaleString("en-US", {
-      minimumFractionDigits: 2, maximumFractionDigits: 2,
-    });
-  }, [totalCents, currencySymbol]);
+  // WENZDES audit M11: this used to show a "≈ X USD" line next to the
+  // total using a hardcoded 15,000 SYP/USD rate that was never wired to
+  // any real exchange-rate source -- a cashier could read that number out
+  // loud to a customer as if it meant something. No real FX command exists
+  // yet (see OrderPanel/TotalBlock's still-optional `usdTotal` prop for
+  // where a real one would plug back in); showing nothing is more honest
+  // than showing a number that's quietly made up.
+  const usdTotal = undefined;
 
   const handleIncrementLine = (id: string) => updateQuantity(id, 1);
   const handleDecrementLine = (id: string) => updateQuantity(id, -1);
@@ -502,9 +505,10 @@ export default function POSPage() {
           <PayKey
             disabled={items.length === 0 || (!tableId && orderType !== "DEBT")}
             onClick={() => {
-              const discountPercent = Math.round(
-                (useCartStore.getState().discountCents / useCartStore.getState().subtotal()) * 100
-              );
+              const cartSubtotal = useCartStore.getState().subtotal();
+              const discountPercent = cartSubtotal > 0
+                ? Math.round((useCartStore.getState().discountCents / cartSubtotal) * 100)
+                : 0;
               if (discountPercent > maxDiscountPercent) {
                 setPinAction("discount");
                 setShowPin(true);
@@ -538,7 +542,7 @@ export default function POSPage() {
                 }}
                 className={`h-8 px-3 rounded-[9px] text-xs font-bold font-arabic transition-all flex items-center gap-1.5 ${
                   isActive
-                    ? "bg-accent text-white shadow-sh-1"
+                    ? "bg-accent text-white"
                     : "bg-surface-alt text-text-3 hover:text-text-2 hover:bg-line"
                 }`}
               >
