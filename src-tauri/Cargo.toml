@@ -34,10 +34,17 @@ bcrypt = "0.15"
 sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["std", "rand_core"] }
 rand = "0.8"
-tokio = { version = "1.53.0", features = ["time"] }
+tokio = { version = "1.53.0", features = ["time", "net", "rt-multi-thread", "macros", "sync"] }
 license-core = { path = "../../../packages/license-core" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 async-trait = "0.1"
+# LAN hub/satellite (branch-local, offline-resilient multi-terminal sync --
+# see lan.rs's module doc for the full design). axum reuses the tokio
+# runtime tauri already starts; mdns-sd is what lets a satellite terminal
+# find the branch's Hub with zero typing, same mechanism as AirPlay/
+# Chromecast discovery.
+axum = { version = "0.7", features = ["ws"] }
+mdns-sd = "0.11"
 
 [dev-dependencies]
 tokio = { version = "1.53.0", features = ["time", "macros", "rt-multi-thread"] }

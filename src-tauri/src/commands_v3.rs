@@ -20,7 +20,7 @@ use tauri::{Manager, State};
 /// can be called both from the real `#[tauri::command]` wrapper (where
 /// `&state` deref-coerces from `State<Db>`) and directly from command-wrapper
 /// tests holding a plain `Db` -- no `tauri::App`/`State` construction needed.
-fn authenticate_actor(state: &Db, session_token: &str) -> Result<Actor, String> {
+pub(crate) fn authenticate_actor(state: &Db, session_token: &str) -> Result<Actor, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     security::ensure_security_schema(&conn).map_err(|e| e.to_string())?;
     security::authenticate(&conn, session_token).map_err(|e| e.to_string())
@@ -94,6 +94,17 @@ pub fn login_v3(state: State<Db>, name: String, password_or_pin: String, device_
 /// broken, `users`-table) `login_with_pin`, but against `staff`.
 #[tauri::command]
 pub fn login_pin_v3(state: State<Db>, pin: String, device_id: String) -> Result<LoginV3Response, String> {
+    login_pin_v3_impl(&state, pin, device_id)
+}
+
+/// Split out (T3.0 LAN hub/satellite) so `dispatch_lan_rpc` can call this
+/// with a plain `&Db` -- `tauri::State<T>` has no public constructor
+/// outside a live `Manager`, and this crate's tests can't build a real
+/// `tauri::App` on this dev box at all (see `command_wrapper_tests`'s own
+/// doc comment for the confirmed `STATUS_ENTRYPOINT_NOT_FOUND` crash), so
+/// anything the LAN dispatcher needs to call has to be reachable without
+/// one.
+fn login_pin_v3_impl(state: &Db, pin: String, device_id: String) -> Result<LoginV3Response, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     security::ensure_security_schema(&conn).map_err(|e| e.to_string())?;
 
@@ -176,6 +187,10 @@ pub fn needs_setup_v3(state: State<Db>) -> Result<bool, String> {
 
 #[tauri::command]
 pub fn logout_v3(state: State<Db>, session_token: String) -> Result<(), String> {
+    logout_v3_impl(&state, session_token)
+}
+
+fn logout_v3_impl(state: &Db, session_token: String) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     security::revoke_session(&conn, &session_token).map_err(|e| e.to_string())
 }
@@ -409,7 +424,11 @@ pub fn list_orders_v3(state: State<Db>, license: State<crate::license::cloud::Cl
 /// `kds/page.tsx`'s kitchen display feed.
 #[tauri::command]
 pub fn list_kitchen_orders_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::KdsOrderRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_kitchen_orders_v3_impl(&state, session_token)
+}
+
+fn list_kitchen_orders_v3_impl(state: &Db, session_token: String) -> Result<Vec<crate::repo::KdsOrderRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ViewOrders).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_kitchen_orders(&actor.scope()).map_err(|e| e.to_string())
@@ -543,7 +562,11 @@ fn create_order_v3_impl(
 /// directly; both are always derived, never hand-edited.
 #[tauri::command]
 pub fn update_order_status_v3(state: State<Db>, session_token: String, order_id: String, new_status: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    update_order_status_v3_impl(&state, session_token, order_id, new_status)
+}
+
+fn update_order_status_v3_impl(state: &Db, session_token: String, order_id: String, new_status: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::UpdateOrderStatus).map_err(|e| e.to_string())?;
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -1168,7 +1191,11 @@ pub fn adjust_stock_v3(state: State<Db>, license: State<crate::license::cloud::C
 
 #[tauri::command]
 pub fn get_active_shift_v3(state: State<Db>, session_token: String) -> Result<Option<crate::repo::ShiftRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    get_active_shift_v3_impl(&state, session_token)
+}
+
+fn get_active_shift_v3_impl(state: &Db, session_token: String) -> Result<Option<crate::repo::ShiftRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).get_active_shift(&actor.id).map_err(|e| e.to_string())
 }
@@ -1335,11 +1362,15 @@ pub fn list_attendance_v3(state: State<Db>, license: State<crate::license::cloud
 
 #[tauri::command]
 pub fn clock_in_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    clock_in_v3_impl(&state, &license, session_token, user_id)
+}
+
+fn clock_in_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1353,7 +1384,11 @@ pub fn clock_in_v3(state: State<Db>, license: State<crate::license::cloud::Cloud
 
 #[tauri::command]
 pub fn clock_out_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    clock_out_v3_impl(&state, &license, session_token, user_id)
+}
+
+fn clock_out_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -2887,7 +2922,11 @@ fn enforce_discount_cap(
 /// Simple list of all tables. No scope filter (tables has no tenant_id/branch_id).
 #[tauri::command]
 pub fn list_tables_v3(state: State<Db>, session_token: String) -> Result<Vec<TableInfo>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_tables_v3_impl(&state, session_token)
+}
+
+fn list_tables_v3_impl(state: &Db, session_token: String) -> Result<Vec<TableInfo>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_tables(&actor.scope()).map_err(|e| e.to_string())
 }
@@ -3823,6 +3862,166 @@ pub async fn activate_license_v3(state: State<'_, Db>, license: State<'_, crate:
     Ok(status)
 }
 
+// ---------------------------------------------------------------------------
+// T3.0 LAN hub/satellite: Phase 1 RPC dispatch allowlist. See `lan.rs`'s
+// module doc for the full design. Every arm here calls the SAME, real,
+// unmodified `#[tauri::command]` function a local/standalone terminal
+// would call -- there is no parallel business-logic path, only a second
+// way to reach the existing one. Deliberately a curated allowlist, not
+// "every command": commands not listed here simply aren't available to a
+// Satellite in Phase 1 (menu/inventory/supplier/finance management, for
+// example) -- those still need to be done from the Hub terminal itself
+// for now. Growing this list is safe and additive; it never changes what
+// a Hub or standalone terminal does.
+// ---------------------------------------------------------------------------
+
+/// True for any command whose success means an order/table/kitchen-queue
+/// changed -- exactly the set of events a KDS (or any other Satellite)
+/// needs to know to re-fetch. Deliberately conservative (a false positive
+/// here just costs one harmless extra re-fetch; a false negative would
+/// mean a Satellite silently goes stale).
+pub fn lan_rpc_mutates_orders(command: &str) -> bool {
+    matches!(
+        command,
+        "create_full_order_v3"
+            | "create_order_v3"
+            | "update_order_status_v3"
+            | "void_order_item_v3"
+            | "take_payment_v3"
+            | "finalize_order_with_payment_v3"
+            | "hold_order_v3"
+            | "retrieve_held_order_v3"
+            | "transfer_order_v3"
+            | "split_bill_v3"
+            | "merge_tables_v3"
+            | "unmerge_tables_v3"
+    )
+}
+
+/// Parses `args[key]` into `T`, treating a missing key the same as JSON
+/// `null` (so an `Option<T>` field the frontend simply omits still
+/// deserializes correctly, matching how Tauri's own IPC argument binding
+/// already behaves for optional params).
+fn lan_arg<T: serde::de::DeserializeOwned>(args: &serde_json::Value, key: &str) -> Result<T, String> {
+    serde_json::from_value(args.get(key).cloned().unwrap_or(serde_json::Value::Null))
+        .map_err(|e| format!("invalid or missing '{key}': {e}"))
+}
+
+/// The Phase 1 dispatcher. `args` is exactly the JSON object the frontend
+/// already builds for `invoke(command, args)` -- a Satellite's `invoke()`
+/// wrapper forwards that object over the LAN completely unchanged (see
+/// `invoke.ts`), so nothing about a page's own calling code needs to know
+/// or care whether it's talking to its own local Tauri backend or a
+/// paired Hub over the network.
+///
+/// Takes a plain `&Db`/`&CloudLicenseState`, NOT a `tauri::AppHandle` --
+/// deliberately, so this function is reachable both from the Hub's real
+/// axum handler (which gets these via `AppHandle::state::<T>()`, a
+/// `State<T>` that derefs to exactly this) AND from a unit test with a
+/// real `Db`/`CloudLicenseState` built the same way every other test in
+/// `command_wrapper_tests` already does -- `tauri::test::mock_builder()`
+/// is confirmed to crash this dev box (see that module's own doc
+/// comment), so anything built on top of a real `tauri::App`/`State<T>`
+/// would be untestable here.
+pub fn dispatch_lan_rpc(
+    db: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
+    command: &str,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let result: serde_json::Value = match command {
+        "login_pin_v3" => {
+            let pin: String = lan_arg(&args, "pin")?;
+            let device_id: String = lan_arg(&args, "deviceId")?;
+            let r = login_pin_v3_impl(db, pin, device_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "logout_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            logout_v3_impl(db, session_token)?;
+            serde_json::Value::Null
+        }
+        "list_tables_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = list_tables_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_kitchen_orders_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = list_kitchen_orders_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_order_status_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            let new_status: String = lan_arg(&args, "newStatus")?;
+            update_order_status_v3_impl(db, session_token, order_id, new_status)?;
+            serde_json::Value::Null
+        }
+        "create_full_order_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let table_id: String = lan_arg(&args, "tableId")?;
+            let order_type: String = lan_arg(&args, "orderType")?;
+            let items: Vec<crate::repo::OrderItemInput> = lan_arg(&args, "items")?;
+            let subtotal_cents: i64 = lan_arg(&args, "subtotalCents")?;
+            let tax_cents: i64 = lan_arg(&args, "taxCents")?;
+            let total_cents: i64 = lan_arg(&args, "totalCents")?;
+            let discount_cents: i64 = lan_arg(&args, "discountCents")?;
+            let discount_reason: Option<String> = lan_arg(&args, "discountReason")?;
+            let customer_name: Option<String> = lan_arg(&args, "customerName")?;
+            let customer_phone: Option<String> = lan_arg(&args, "customerPhone")?;
+            let delivery_address: Option<String> = lan_arg(&args, "deliveryAddress")?;
+            let delivery_fee_cents: i64 = args.get("deliveryFeeCents").and_then(|v| v.as_i64()).unwrap_or(0);
+            let driver_id: Option<String> = lan_arg(&args, "driverId")?;
+            let shift_id: Option<String> = lan_arg(&args, "shiftId")?;
+            let manager_override_pin: Option<String> = lan_arg(&args, "managerOverridePin")?;
+            let r = create_full_order_v3_impl(
+                db, license, session_token, table_id, order_type, items, subtotal_cents, tax_cents,
+                total_cents, discount_cents, discount_reason, customer_name, customer_phone,
+                delivery_address, delivery_fee_cents, driver_id, shift_id, manager_override_pin,
+            )?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "void_order_item_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let item_id: String = lan_arg(&args, "itemId")?;
+            let reason: String = lan_arg(&args, "reason")?;
+            let manager_override_pin: Option<String> = lan_arg(&args, "managerOverridePin")?;
+            void_order_item_v3_impl(db, license, session_token, item_id, reason, manager_override_pin)?;
+            serde_json::Value::Null
+        }
+        "take_payment_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            let method: String = lan_arg(&args, "method")?;
+            let amount_cents: i64 = lan_arg(&args, "amountCents")?;
+            let change_cents: i64 = args.get("changeCents").and_then(|v| v.as_i64()).unwrap_or(0);
+            let debtor_id: Option<String> = lan_arg(&args, "debtorId")?;
+            let r = take_payment_v3_impl(db, license, session_token, order_id, method, amount_cents, change_cents, debtor_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_active_shift_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = get_active_shift_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "clock_in_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let user_id: String = lan_arg(&args, "userId")?;
+            clock_in_v3_impl(db, license, session_token, user_id)?;
+            serde_json::Value::Null
+        }
+        "clock_out_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let user_id: String = lan_arg(&args, "userId")?;
+            clock_out_v3_impl(db, license, session_token, user_id)?;
+            serde_json::Value::Null
+        }
+        _ => return Err("UNKNOWN_COMMAND".to_string()),
+    };
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     //! Integration tests against a real, fully-migrated DB (0001-0003 + T1.1's
@@ -3859,6 +4058,7 @@ mod tests {
         migrate_v3::run_supplier_ledger_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_loyalty_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_staff_sync_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_lan_pairing_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -4589,6 +4789,97 @@ mod tests {
             ).unwrap();
             let payload: serde_json::Value = serde_json::from_str(&payload_json).unwrap();
             assert_eq!(payload["is_clocked_in"], false, "clocking out must enqueue is_clocked_in = false");
+
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// T3.0 LAN hub/satellite: proves the whole point of the dispatcher
+        /// -- an order created by calling `create_full_order_v3` over the
+        /// RPC path (exactly the JSON shape a Satellite cashier terminal
+        /// would send: camelCase keys, nothing Rust-specific) is visible to
+        /// `list_kitchen_orders_v3` called over that SAME path (exactly
+        /// what a Satellite KDS on a different physical machine would call)
+        /// -- because both go through the identical underlying command
+        /// against the Hub's one real database. This is the mechanism that
+        /// makes a kitchen screen on a separate machine from the till see
+        /// an order the till fired. Also proves an unknown command name is
+        /// rejected rather than silently doing nothing, and that a session
+        /// token which doesn't authorize the target role is still rejected
+        /// through this path exactly as it would be locally (no auth
+        /// bypass introduced by going over "RPC" instead of direct IPC).
+        #[test]
+        fn dispatch_lan_rpc_relays_an_order_from_one_terminal_to_another() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("lan_rpc_dispatch");
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier 1");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Burger", &category_id, 1500, 700, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "cashier-terminal-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+
+            // Exactly the JSON body a Satellite cashier terminal's
+            // `invoke("create_full_order_v3", {...})` would forward over
+            // the LAN, unmodified -- top-level command args are camelCase
+            // (Tauri's own auto-conversion), but `orderService.ts` builds
+            // the nested `items` entries as `OrderItemInput`-shaped objects
+            // with literal snake_case field names (`menu_item_id`,
+            // `unit_price_cents`, `combo_id`), since Tauri's camelCase
+            // conversion only applies to a command's own top-level
+            // parameter names, not to fields inside a struct argument.
+            let create_order_args = serde_json::json!({
+                "sessionToken": session,
+                "tableId": table_id,
+                "orderType": "DINE_IN",
+                "items": [{
+                    "menu_item_id": item_id,
+                    "name": null,
+                    "quantity": 2,
+                    "unit_price_cents": 1500,
+                    "notes": null,
+                    "combo_id": null,
+                    "modifiers": [],
+                }],
+                "subtotalCents": 3000,
+                "taxCents": 0,
+                "totalCents": 3000,
+                "discountCents": 0,
+            });
+            let order_id_value = dispatch_lan_rpc(&db, &license, "create_full_order_v3", create_order_args)
+                .expect("create_full_order_v3 must succeed through the LAN RPC dispatcher");
+            let order_id = order_id_value.as_str().expect("create_full_order_v3 returns the new order id as a string").to_string();
+
+            // A DIFFERENT terminal (a KDS, in reality) asking "what's in
+            // the kitchen queue right now" through the exact same
+            // dispatcher -- this is the cross-terminal visibility this
+            // whole subsystem exists for.
+            let kitchen_args = serde_json::json!({ "sessionToken": session });
+            let kitchen_orders = dispatch_lan_rpc(&db, &license, "list_kitchen_orders_v3", kitchen_args)
+                .expect("list_kitchen_orders_v3 must succeed through the LAN RPC dispatcher");
+            let kitchen_orders = kitchen_orders.as_array().expect("list_kitchen_orders_v3 returns an array");
+            assert!(
+                kitchen_orders.iter().any(|o| o["id"].as_str() == Some(order_id.as_str())),
+                "the order created via RPC on \"terminal 1\" must be visible to a KDS reading via RPC, same as it would be if both were the same physical terminal"
+            );
+
+            // An unknown command must be rejected, not silently ignored --
+            // this is the "growing the allowlist is safe, shrinking to
+            // nothing by typo is loud" guarantee.
+            let unknown = dispatch_lan_rpc(&db, &license, "delete_everything_v3", serde_json::json!({}));
+            assert!(unknown.is_err(), "a command outside the Phase 1 allowlist must be rejected");
+
+            // A malformed/missing required arg must fail with a clear
+            // error, not panic or silently coerce.
+            let bad_args = dispatch_lan_rpc(&db, &license, "list_kitchen_orders_v3", serde_json::json!({}));
+            assert!(bad_args.is_err(), "a missing sessionToken must be rejected, not treated as an empty/anonymous session");
 
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }

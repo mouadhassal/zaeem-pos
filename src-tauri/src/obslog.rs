@@ -85,3 +85,11 @@ pub fn log_frontend_command_error(command: &str, error: &str) {
         uptime_str()
     );
 }
+
+/// T3.0 LAN hub/satellite: the hub server and mDNS advertisement run on a
+/// background tokio task with no UI of their own -- this is the only place
+/// a bind failure, an mDNS registration error, or the server exiting
+/// unexpectedly gets recorded anywhere.
+pub fn log_lan_error(message: &str) {
+    log::warn!("lan: {message} [uptime {}]", uptime_str());
+}

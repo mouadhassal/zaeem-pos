@@ -4,8 +4,9 @@ import { useAuthStore } from "../../stores/authStore";
 import type { TaxMode } from "../../db/types";
 import { checkLicense, activateLicense, getDeviceId, backOfficeLocked, type LicenseStatus } from "../../lib/license";
 import { Pencil, Trash2 as Trash, ImagePlus, X } from "lucide-react";
+import NetworkTab from "./NetworkTab";
 
-type SettingsTab = "general" | "printer" | "tax" | "branch" | "license" | "cloud" | "backup" | "about";
+type SettingsTab = "general" | "printer" | "tax" | "branch" | "license" | "network" | "backup" | "about";
 
 interface ChainConfig {
   currency: string;
@@ -45,7 +46,7 @@ const TABS: { id: SettingsTab; label: string }[] = [
   { id: "tax", label: "الضرائب" },
   { id: "branch", label: "الفرع" },
   { id: "license", label: "الترخيص" },
-  { id: "cloud", label: "المزامنة السحابية" },
+  { id: "network", label: "الشبكة المحلية" },
   { id: "backup", label: "النسخ الاحتياطي" },
   { id: "about", label: "عن النظام" },
 ];
@@ -873,32 +874,7 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {tab === "cloud" && (
-          <div className="space-y-6 max-w-xl">
-            <h2 className="text-lg font-bold text-ink-900 font-arabic">المزامنة السحابية</h2>
-            <div className="bg-white rounded-2xl p-8 shadow-sh-1 flex flex-col items-center justify-center text-center space-y-4">
-              <div className="w-16 h-16 rounded-full bg-ink-100 flex items-center justify-center">
-                <svg className="w-8 h-8 text-ink-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
-              </div>
-              <h3 className="text-lg font-bold text-ink-900 font-arabic">قريباً</h3>
-              <p className="text-ink-500 font-arabic text-sm max-w-md">
-                المزامنة السحابية ستتيح لك مزامنة البيانات بين عدة فروع وأجهزة بشكل آلي وآمن.
-              </p>
-              <div className="bg-ink-50 rounded-xl p-4 w-full text-right space-y-2">
-                <p className="text-sm font-arabic text-ink-700 font-bold">الميزات القادمة:</p>
-                <ul className="text-sm text-ink-500 space-y-1 font-arabic list-disc pr-4">
-                  <li>مزامنة فورية مع جميع الفروع</li>
-                  <li>نسخ احتياطي تلقائي على السحابة</li>
-                  <li>لوحة تحكم ويب للإدارة عن بعد</li>
-                  <li>تطبيق جوال للمتابعة</li>
-                  <li>تقارير موحدة لكل الفروع</li>
-                  <li>تشغيل متعدد الأجهزة</li>
-                </ul>
-              </div>
-              <span className="inline-block px-3 py-1 rounded-full bg-amber-100 text-amber-700 text-xs font-arabic font-medium">قيد التطوير</span>
-            </div>
-          </div>
-        )}
+        {tab === "network" && <NetworkTab token={token} />}
 
         {tab === "backup" && (
           <div className="space-y-6 max-w-xl">

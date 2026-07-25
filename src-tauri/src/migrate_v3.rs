@@ -1542,6 +1542,50 @@ pub fn run_staff_sync_migration(conn: &mut Connection, _db_path: &Path) -> Resul
     Ok(())
 }
 
+pub const MIGRATION_K_VERSION: i64 = 15;
+
+/// T3.0 branch-local LAN hub/satellite plan (multi-terminal, offline-
+/// resilient sync -- see lan.rs's module doc for the full design). This
+/// table lives ONLY on whichever terminal becomes the branch's Hub; a
+/// Satellite's own copy of this table is simply never populated. Trust
+/// tokens are stored as a SHA-256 hash, never plaintext -- comparable to
+/// an API key, deliberately NOT bcrypt (bcrypt's slow-by-design hashing
+/// is wrong for a token checked on every single RPC call from a paired
+/// terminal, unlike a human-entered PIN checked once at login).
+pub fn run_lan_pairing_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_K_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS paired_terminal (
+            id TEXT PRIMARY KEY,
+            device_name TEXT NOT NULL,
+            trust_token_hash TEXT,
+            status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','APPROVED','REJECTED','REVOKED')),
+            requested_at TEXT NOT NULL,
+            decided_at TEXT,
+            last_seen_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_paired_terminal_status ON paired_terminal(status);"
+    )?;
+
+    println!("v15_lan_pairing: paired_terminal table created (Hub-side only)");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_K_VERSION, "0015_lan_pairing", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

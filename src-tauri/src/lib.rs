@@ -16,6 +16,7 @@ pub mod license;
 mod hlc;
 mod sync;
 mod obslog;
+mod lan;
 
 use bcrypt::{hash, DEFAULT_COST};
 
@@ -69,6 +70,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_supplier_ledger_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_loyalty_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_staff_sync_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_lan_pairing_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -311,6 +313,18 @@ pub fn run() {
                 }
             });
 
+            // T3.0 LAN hub/satellite: if this terminal was already
+            // configured as the branch's Hub (persisted in
+            // lan_config.json, set via `enable_hub_mode_v3`), start the
+            // LAN RPC/WS server + mDNS advertisement automatically on
+            // every boot -- an owner shouldn't have to re-enable Hub mode
+            // after every restart. Never runs for `standalone`/
+            // `satellite` mode.
+            let lan_dir = db_path.parent().expect("db_path must have a parent dir").to_path_buf();
+            if lan::load_lan_config(&lan_dir).mode == "hub" {
+                lan::start_hub_server(app.handle().clone(), &lan_dir);
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -490,6 +504,19 @@ pub fn run() {
             commands::reset_failed_uploads,
             commands::clear_uploads,
             commands::apply_draft,
+            lan::get_lan_status_v3,
+            lan::enable_hub_mode_v3,
+            lan::list_pending_pairings_v3,
+            lan::list_paired_terminals_v3,
+            lan::approve_pairing_v3,
+            lan::reject_pairing_v3,
+            lan::revoke_terminal_v3,
+            lan::discover_hubs_v3,
+            lan::request_pairing_v3,
+            lan::check_pairing_status_v3,
+            lan::forget_pairing_v3,
+            lan::get_lan_redirect_target_v3,
+            lan::lan_relay_v3,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

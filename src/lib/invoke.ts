@@ -1,5 +1,6 @@
 import { invoke as tauriInvoke, type InvokeArgs, type InvokeOptions } from "@tauri-apps/api/core";
 import { useSessionStore } from "../stores/sessionStore";
+import { LAN_REDIRECT_COMMANDS, relayIfSatellite } from "./lan";
 
 /**
  * Drop-in replacement for `@tauri-apps/api/core`'s `invoke` -- same
@@ -22,9 +23,25 @@ import { useSessionStore } from "../stores/sessionStore";
  * report was undiagnosable after the fact (fixed by #1) and, separately,
  * was actually session expiry masquerading as a database error (fixed by
  * the 16h+sliding session lifetime in security.rs, surfaced here by #2).
+ *
+ * T3.0 LAN hub/satellite: a third addition, ONLY for commands on
+ * `LAN_REDIRECT_COMMANDS`. On a paired Satellite terminal these are sent
+ * to the branch's Hub instead of running against this terminal's own
+ * (otherwise-empty-of-shared-data) local DB -- this is the single
+ * chokepoint that makes a second cashier register or a separate KDS
+ * machine see the same orders/tables as the Hub. On a standalone or Hub
+ * terminal, `relayIfSatellite` returns `redirected: false` immediately and
+ * this falls through to the exact same local call as before.
  */
 export async function invoke<T>(cmd: string, args?: InvokeArgs, options?: InvokeOptions): Promise<T> {
   try {
+    if (LAN_REDIRECT_COMMANDS.has(cmd)) {
+      const relayed = await relayIfSatellite<T>(cmd, args as Record<string, unknown> | undefined);
+      if (relayed.redirected) {
+        if (relayed.error) throw new Error(relayed.error);
+        return relayed.data as T;
+      }
+    }
     return await tauriInvoke<T>(cmd, args, options);
   } catch (err) {
     tauriInvoke("log_frontend_command_error", { command: cmd, error: String(err) }).catch(() => {});

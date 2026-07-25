@@ -3,6 +3,7 @@ import { IconChefHat, IconNote } from "@tabler/icons-react";
 import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
+import { connectLanChangeSocket } from "../../lib/lan";
 
 interface KDSItem {
   name: string;
@@ -102,6 +103,14 @@ export default function KDSPage() {
     fetchOrders();
     const interval = setInterval(fetchOrders, 10000);
     return () => clearInterval(interval);
+  }, [fetchOrders]);
+
+  // T3.0: on a paired Satellite, near-instant refetch the moment the Hub
+  // says an order changed (fired from any terminal, not just this one) --
+  // the 10s poll above stays as a safety net for a missed/dropped socket
+  // message, not the primary mechanism.
+  useEffect(() => {
+    return connectLanChangeSocket(fetchOrders);
   }, [fetchOrders]);
 
   // T2.0 per-terminal licensing (plan §2): fleet-visibility registration
