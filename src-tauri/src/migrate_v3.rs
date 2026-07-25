@@ -1488,6 +1488,60 @@ pub fn run_loyalty_migration(conn: &mut Connection, _db_path: &Path) -> Result<(
     Ok(())
 }
 
+pub const MIGRATION_J_VERSION: i64 = 14;
+
+/// Owner dashboard "staff" summary (aggregate-only, per T2.0 follow-up --
+/// see `commands_v3::sync_enqueue_staff_snapshot`'s doc comment). Widens
+/// `sync_outbox.table_name`'s CHECK to admit `'staff'`, same rebuild
+/// pattern as v12's supplier-ledger widening (SQLite can't ALTER a CHECK
+/// in place).
+pub fn run_staff_sync_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_J_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+
+    if table_exists(&tx, "sync_outbox")? {
+        tx.execute_batch(
+            "CREATE TABLE sync_outbox_v14 (
+                id TEXT PRIMARY KEY,
+                table_name TEXT NOT NULL CHECK(table_name IN ('orders','order_items','payments','supplier_payments','operational_costs','staff')),
+                row_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                branch_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                rev INTEGER NOT NULL,
+                hlc TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                license_status_at_enqueue TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'QUEUED' CHECK(status IN ('QUEUED','FAILED')),
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO sync_outbox_v14 SELECT * FROM sync_outbox;
+            DROP TABLE sync_outbox;
+            ALTER TABLE sync_outbox_v14 RENAME TO sync_outbox;
+            CREATE INDEX IF NOT EXISTS idx_sync_outbox_due ON sync_outbox(status, next_attempt_at);
+            CREATE INDEX IF NOT EXISTS idx_sync_outbox_tenant ON sync_outbox(tenant_id);"
+        )?;
+    }
+
+    println!("v14_staff_sync: sync_outbox table_name CHECK admits 'staff'");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_J_VERSION, "0014_staff_sync", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

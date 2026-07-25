@@ -259,6 +259,8 @@ pub fn create_staff_v3(
         audit::Action::StaffCreated, "staff", &staff_id,
         None, Some(&serde_json::json!({ "role": role, "name": name })),
     ).map_err(|e| e.to_string())?;
+    let license_status = license.cached_status();
+    sync_enqueue_staff_snapshot(&tx, &actor.tenant_id, &staff_id, &actor.device_id, &license_status)?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(staff_id)
 }
@@ -1343,18 +1345,22 @@ pub fn clock_in_v3(state: State<Db>, license: State<crate::license::cloud::Cloud
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     Repo::new(&tx).clock_in(&actor.scope(), &tenant_id, &branch_id, &user_id).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::SettingsChanged, "attendance", &user_id, None, Some(&serde_json::json!({ "action": "clock_in" }))).map_err(|e| e.to_string())?;
+    let license_status = license.cached_status();
+    sync_enqueue_staff_snapshot(&tx, &tenant_id, &user_id, &actor.device_id, &license_status)?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-pub fn clock_out_v3(state: State<Db>, session_token: String, user_id: String) -> Result<(), String> {
+pub fn clock_out_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     Repo::new(&tx).clock_out(&actor.scope(), &user_id).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "attendance", &user_id, None, Some(&serde_json::json!({ "action": "clock_out" }))).map_err(|e| e.to_string())?;
+    let license_status = license.cached_status();
+    sync_enqueue_staff_snapshot(&tx, &actor.tenant_id, &user_id, &actor.device_id, &license_status)?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -3630,6 +3636,64 @@ fn sync_enqueue_supplier_payment(
     crate::sync::enqueue(tx, "supplier_payments", payment_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
 }
 
+/// Owner dashboard "staff" summary (aggregate-only, per user's explicit
+/// scope decision: who exists / who's clocked in per branch, no remote
+/// edit path -- that stays a POS-only, in-person action, same trust
+/// boundary as everything else that requires a manager PIN in person).
+/// Called at the 3 points that change what this snapshot should show:
+/// `create_staff_v3` (new hire appears), `clock_in_v3`/`clock_out_v3`
+/// (attendance is the purpose-built "who's here today" system -- NOT
+/// shifts, which track cash-register sessions and can span multiple
+/// staff or stay open across a clock-out). `update_staff_v3` (role
+/// changes) is NOT hooked -- role edits are rare and this is a summary
+/// view, not a management tool, so a few minutes of staleness there is
+/// an accepted tradeoff rather than wiring a 4th call site for it.
+///
+/// Skips PLATFORM/OWNER-role staff rows entirely (no branch_id -- there's
+/// nothing to attach them to on a per-branch dashboard card, and an
+/// owner doesn't need to see themselves listed as "staff").
+fn sync_enqueue_staff_snapshot(
+    tx: &rusqlite::Transaction,
+    tenant_id: &str,
+    staff_id: &str,
+    device_id: &str,
+    license_status: &crate::license::signed::LicenseStatus,
+) -> Result<(), String> {
+    tx.execute(
+        "UPDATE staff SET rev = COALESCE(rev, 0) + 1, updated_at_hlc = ?1, device_id = ?2 WHERE id = ?3",
+        params![crate::hlc::next(), device_id, staff_id],
+    ).map_err(|e| e.to_string())?;
+
+    let (branch_id, name, role, is_active, rev): (Option<String>, String, String, i64, i64) = tx.query_row(
+        "SELECT branch_id, name, role, is_active, rev FROM staff WHERE id = ?1",
+        params![staff_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    ).map_err(|e| e.to_string())?;
+
+    let Some(branch_id) = branch_id else {
+        // OWNER/PLATFORM staff row -- nothing to sync, not an error.
+        return Ok(());
+    };
+
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let today_attendance: Option<(Option<String>, Option<String>)> = tx.query_row(
+        "SELECT clock_in, clock_out FROM attendance WHERE user_id = ?1 AND date = ?2",
+        params![staff_id, today],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).optional().map_err(|e| e.to_string())?;
+    let (last_clock_in, is_clocked_in) = match today_attendance {
+        Some((clock_in, clock_out)) => (clock_in.clone(), clock_in.is_some() && clock_out.is_none()),
+        None => (None, false),
+    };
+
+    let payload = serde_json::json!({
+        "id": staff_id, "tenant_id": tenant_id, "branch_id": branch_id,
+        "name": name, "role": role, "is_active": is_active != 0,
+        "is_clocked_in": is_clocked_in, "last_clock_in": last_clock_in,
+    });
+    crate::sync::enqueue(tx, "staff", staff_id, tenant_id, &branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
+}
+
 /// T2.0 plan §0 flag #4: `operational_costs` existed since day one but was
 /// never wired into the sync outbox at all -- this is its first sync
 /// wire-up, same pattern as every other enqueue function here.
@@ -3794,6 +3858,7 @@ mod tests {
         migrate_v3::run_sync_outbox_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_supplier_ledger_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_loyalty_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_staff_sync_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -4469,6 +4534,62 @@ mod tests {
             let conn = Connection::open(&db_path).unwrap();
             let voided: i64 = conn.query_row("SELECT voided FROM order_items WHERE id = ?1", params![item_db_id], |r| r.get(0)).unwrap();
             assert_eq!(voided, 1);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Owner dashboard "staff" summary: proves `sync_enqueue_staff_snapshot`
+        /// enqueues a current, correct snapshot on clock-in and clock-out --
+        /// `is_clocked_in` flips accordingly, and `last_clock_in` reflects
+        /// today's attendance row, not shift state (attendance is the
+        /// authoritative signal, see the function's own doc comment for why).
+        #[test]
+        fn staff_snapshot_sync_reflects_clock_in_and_clock_out() {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("staff_snapshot_sync");
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier Amal")
+            };
+
+            let mut conn = Connection::open(&db_path).unwrap();
+            let license = never_checked_license(&db_path);
+            let license_status = license.cached_status();
+
+            // Clock in -- enqueue must show is_clocked_in = true.
+            {
+                let tx = conn.transaction().unwrap();
+                Repo::new(&tx).clock_in(
+                    &security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() },
+                    &tenant_id, &branch_id, &cashier_id,
+                ).unwrap();
+                sync_enqueue_staff_snapshot(&tx, &tenant_id, &cashier_id, "device-1", &license_status).unwrap();
+                tx.commit().unwrap();
+            }
+            let payload_json: String = conn.query_row(
+                "SELECT payload_json FROM sync_outbox WHERE table_name = 'staff' AND row_id = ?1 ORDER BY id DESC LIMIT 1",
+                params![cashier_id], |r| r.get(0),
+            ).unwrap();
+            let payload: serde_json::Value = serde_json::from_str(&payload_json).unwrap();
+            assert_eq!(payload["is_clocked_in"], true, "clocking in must enqueue is_clocked_in = true");
+            assert_eq!(payload["name"], "Cashier Amal");
+            assert!(payload["last_clock_in"].is_string(), "last_clock_in must be populated after clocking in");
+
+            // Clock out -- a fresh enqueue must flip to is_clocked_in = false.
+            {
+                let tx = conn.transaction().unwrap();
+                Repo::new(&tx).clock_out(
+                    &security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() },
+                    &cashier_id,
+                ).unwrap();
+                sync_enqueue_staff_snapshot(&tx, &tenant_id, &cashier_id, "device-1", &license_status).unwrap();
+                tx.commit().unwrap();
+            }
+            let payload_json: String = conn.query_row(
+                "SELECT payload_json FROM sync_outbox WHERE table_name = 'staff' AND row_id = ?1 ORDER BY id DESC LIMIT 1",
+                params![cashier_id], |r| r.get(0),
+            ).unwrap();
+            let payload: serde_json::Value = serde_json::from_str(&payload_json).unwrap();
+            assert_eq!(payload["is_clocked_in"], false, "clocking out must enqueue is_clocked_in = false");
+
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
     }

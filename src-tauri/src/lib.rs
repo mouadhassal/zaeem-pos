@@ -68,6 +68,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_sync_outbox_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_supplier_ledger_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_loyalty_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_staff_sync_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -205,6 +206,13 @@ pub fn run() {
             let db_path = db_path(app.handle());
             let mut conn = Connection::open(&db_path).expect("Failed to open database");
             set_busy_timeout(&conn);
+            // WAL mode and foreign_keys must be set OUTSIDE any transaction.
+            // The 0001_init.sql migration contains these PRAGMAs but they get
+            // executed inside a transaction in run_migrations(), which SQLite
+            // rejects ("cannot change into wal mode from within a transaction").
+            // Setting them here on the bare connection avoids the crash and
+            // makes migration SQL independent of PRAGMA statements.
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").expect("Failed to set WAL mode");
             init_db(&mut conn, &db_path).expect("Failed to initialize database");
             #[cfg(debug_assertions)]
             seed_default_staff(&conn).expect("Failed to seed default staff");
