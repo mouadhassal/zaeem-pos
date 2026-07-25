@@ -117,7 +117,7 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
 
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-surface rounded-2xl border border-ink-600 w-[520px] overflow-hidden" dir="rtl">
+      <div className="bg-white rounded-md border border-line shadow-sh-3 w-[520px] overflow-hidden" dir="rtl">
         <div className="px-6 py-4 border-b border-ink-200 flex items-center justify-between">
           <h2 className="font-arabic font-bold text-lg text-ink-900">الدفع</h2>
           <button
@@ -153,7 +153,7 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
                   onClick={() => setMethod(m)}
                   className={`flex-1 py-2.5 rounded-lg font-arabic font-medium text-sm transition-all flex items-center justify-center gap-1.5 ${
                     method === m
-                      ? "bg-surface text-ink-900 shadow-sh-1"
+                      ? "bg-white text-ink-900 border border-line"
                       : "text-ink-400 hover:text-ink-900"
                   }`}
                 >
@@ -177,7 +177,7 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
                   inputMode="decimal"
                   value={receivedStr}
                   onChange={(e) => setReceivedStr(e.target.value)}
-                  className="w-full h-14 text-right font-mono text-2xl font-bold text-ink-900 bg-surface border-2 border-ink-200 rounded-xl px-4 focus:border-accent outline-none transition-all"
+                  className="w-full h-14 text-right font-mono text-2xl font-bold text-ink-900 bg-white border-2 border-ink-200 rounded-sm px-4 focus:border-accent outline-none transition-all"
                   placeholder="٠"
                   autoFocus
                   dir="ltr"
@@ -248,7 +248,7 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
                 inputMode="numeric"
                 value={debtorPhone}
                 onChange={(e) => setDebtorPhone(e.target.value)}
-                className="w-full h-14 text-right font-mono text-lg bg-surface border-2 border-ink-200 rounded-xl px-4 focus:border-accent outline-none transition-all"
+                className="w-full h-14 text-right font-mono text-lg bg-white border-2 border-ink-200 rounded-sm px-4 focus:border-accent outline-none transition-all"
                 placeholder="٠٧٧٠xxxxxxx"
                 autoFocus
                 dir="ltr"
@@ -278,12 +278,12 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
                   value={newDebtorName}
                   onChange={(e) => setNewDebtorName(e.target.value)}
                   placeholder="اسم المدين *"
-                  className="w-full h-10 px-3 rounded-lg bg-surface border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-accent"
+                  className="w-full h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-accent"
                 />
                 <div className="flex gap-2">
                   <button
                     onClick={() => { setShowNewDebtorForm(false); setNewDebtorName(""); }}
-                    className="flex-1 h-9 rounded-lg bg-surface text-ink-500 text-sm font-arabic hover:bg-ink-200 transition-colors"
+                    className="flex-1 h-9 rounded-sm bg-surface-alt text-ink-500 text-sm font-arabic hover:bg-ink-200 transition-colors"
                   >
                     إلغاء
                   </button>
@@ -308,7 +308,7 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
                       }
                     }}
                     disabled={!newDebtorName.trim()}
-                    className="flex-1 h-9 rounded-lg bg-accent text-white text-sm font-bold hover:bg-accent-text transition-colors disabled:opacity-50"
+                    className="flex-1 h-9 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-accent-text transition-colors disabled:opacity-50"
                   >
                     حفظ
                   </button>
@@ -339,14 +339,14 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
         <div className="px-6 py-4 border-t border-ink-200 flex gap-3">
           <button
             onClick={onClose}
-            className="flex-1 h-14 rounded-xl bg-surface text-ink-900 font-arabic font-bold hover:bg-ink-200 transition-colors"
+            className="flex-1 h-14 rounded-xl bg-surface-alt text-ink-900 font-arabic font-bold hover:bg-ink-200 transition-colors"
           >
             إلغاء
           </button>
           <button
             onClick={handleConfirm}
             disabled={!sufficient || processing}
-            className="flex-1 h-14 rounded-xl bg-accent text-white font-arabic font-bold hover:bg-accent-text shadow-sh-3 active:scale-[0.98] transition-all disabled:opacity-50 disabled:shadow-none"
+            className="flex-1 h-14 rounded-xl bg-saffron-600 text-white font-arabic font-bold hover:bg-accent-text active:scale-[0.98] transition-all disabled:opacity-50 disabled:shadow-none"
           >
             {processing ? "...جارٍ" : "تأكيد وطباعة"}
           </button>

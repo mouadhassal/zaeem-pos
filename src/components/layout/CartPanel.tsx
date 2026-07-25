@@ -66,10 +66,16 @@ export default function CartPanel({
         {items.map((item) => (
           <div
             key={item.id}
-            className="flex items-center gap-3 mx-4 p-4 bg-white rounded-xl shadow-sh-1"
+            className="flex items-center gap-3 mx-4 p-4 bg-white rounded-md border border-ink-200"
           >
             <div className="w-12 h-12 rounded-lg bg-white flex-shrink-0 flex items-center justify-center">
-              <span className="text-lg">🍽</span>
+              <span className="text-lg">
+                <svg className="w-6 h-6 text-ink-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <circle cx="9" cy="21" r="1" />
+                  <circle cx="20" cy="21" r="1" />
+                  <path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6" />
+                </svg>
+              </span>
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-start justify-between">
@@ -94,7 +100,7 @@ export default function CartPanel({
                 <div className="flex items-center gap-1.5">
                   <button
                     onClick={() => onQuantityChange(item.id, -1)}
-                    className="w-7 h-7 rounded-lg bg-white text-ink-500 flex items-center justify-center hover:bg-ink-200 transition-colors"
+                    className="w-7 h-7 rounded-sm bg-white text-ink-500 flex items-center justify-center hover:bg-ink-200 transition-colors"
                   >
                     <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                       <path d="M5 12h14" />
@@ -105,7 +111,7 @@ export default function CartPanel({
                   </span>
                   <button
                     onClick={() => onQuantityChange(item.id, 1)}
-                    className="w-7 h-7 rounded-lg bg-saffron-50 text-saffron-600 flex items-center justify-center hover:bg-saffron-100 transition-colors"
+                    className="w-7 h-7 rounded-sm bg-saffron-50 text-saffron-600 flex items-center justify-center hover:bg-saffron-100 transition-colors"
                   >
                     <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                       <path d="M12 5v14M5 12h14" />
@@ -124,7 +130,7 @@ export default function CartPanel({
         ))}
       </div>
 
-      <div className="p-6 bg-white border-t border-ink-200 mt-auto space-y-3">
+      <div className="p-6 bg-surface-alt border-t-2 border-ink-900 mt-auto space-y-3">
         <div className="flex justify-between items-center">
           <span className="font-arabic text-ink-400 text-sm">المجموع الفرعي</span>
           <span className="font-mono text-ink-900 text-sm font-medium">
@@ -156,13 +162,13 @@ export default function CartPanel({
         <div className="flex gap-2 pt-2">
           <button
             onClick={onHold}
-            className="flex-1 h-14 rounded-xl border-2 border-ink-200 text-ink-500 font-arabic font-bold hover:bg-white transition-colors text-sm"
+            className="flex-1 h-14 rounded-sm border-2 border-ink-200 text-ink-500 font-arabic font-bold hover:bg-white transition-colors text-sm"
           >
             تعليق
           </button>
           <button
             onClick={onCheckout}
-            className="flex-1 h-14 rounded-xl bg-saffron-600 hover:bg-saffron-700 text-white font-arabic font-bold shadow-sh-3 shadow-saffron-600\/20 transition-all active:scale-[0.98] text-sm"
+            className="flex-1 h-14 rounded-sm bg-saffron-600 hover:bg-saffron-700 text-white font-arabic font-bold transition-all active:scale-[0.98] text-sm"
           >
             دفع
           </button>

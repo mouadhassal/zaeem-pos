@@ -269,9 +269,9 @@ export default function FinancePage() {
   };
 
   const statusBadge = (status: string) => {
-    if (status === "PAID") return "bg-saffron-100 text-saffron-600";
-    if (status === "PENDING") return "bg-amber-100 text-amber-700";
-    if (status === "OVERDUE") return "bg-red-100 text-red-700";
+    if (status === "PAID") return "bg-ok-100 text-ok-700";
+    if (status === "PENDING") return "bg-warn-100 text-warn-700";
+    if (status === "OVERDUE") return "bg-danger-100 text-danger-600";
     return "bg-white text-ink-500";
   };
 
@@ -297,7 +297,7 @@ export default function FinancePage() {
         <button
           onClick={exportPdf}
           disabled={exportingPdf}
-          className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+          className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
         >
           {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
         </button>
@@ -310,7 +310,7 @@ export default function FinancePage() {
             onClick={() => setTab(t)}
             className={`px-5 py-2 rounded-t-lg font-arabic font-medium text-sm transition-colors ${
               tab === t
-                ? "bg-saffron-600 text-white shadow-sh-1"
+                ? "bg-saffron-600 text-white"
                 : "text-ink-500 hover:text-saffron-600 hover:bg-white"
             }`}
           >
@@ -328,7 +328,7 @@ export default function FinancePage() {
                 onClick={() => setDateRange(r)}
                 className={`px-4 py-2 rounded-lg font-arabic text-sm transition-colors ${
                   dateRange === r
-                    ? "bg-saffron-600 text-white shadow-sh-1"
+                    ? "bg-saffron-600 text-white"
                     : "bg-white text-ink-500 hover:bg-ink-200"
                 }`}
               >
@@ -342,29 +342,29 @@ export default function FinancePage() {
                 type="date"
                 value={customStart}
                 onChange={(e) => setCustomStart(e.target.value)}
-                className="h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                className="h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
               />
               <input
                 type="date"
                 value={customEnd}
                 onChange={(e) => setCustomEnd(e.target.value)}
-                className="h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                className="h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
               />
             </div>
           )}
 
           <div className="grid grid-cols-3 gap-4">
-            <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sh-1">
+            <div className="bg-white rounded-md p-4 space-y-1 border border-ink-200">
               <p className="text-ink-400 text-sm font-arabic">إجمالي الإيرادات</p>
               <p className="text-2xl font-bold text-saffron-600 font-mono">
                 {fmtCurrency(totalRevenue, currency)}
               </p>
             </div>
-            <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sh-1">
+            <div className="bg-white rounded-md p-4 space-y-1 border border-ink-200">
               <p className="text-ink-400 text-sm font-arabic">عدد الطلبات</p>
               <p className="text-2xl font-bold text-ink-900">{totalOrders}</p>
             </div>
-            <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sh-1">
+            <div className="bg-white rounded-md p-4 space-y-1 border border-ink-200">
               <p className="text-ink-400 text-sm font-arabic">متوسط قيمة الطلب</p>
               <p className="text-2xl font-bold text-ink-900 font-mono">
                 {fmtCurrency(avgOrder, currency)}
@@ -372,10 +372,10 @@ export default function FinancePage() {
             </div>
           </div>
 
-          <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
+          <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-ink-200 text-ink-400 font-arabic">
+                <tr className="border-b border-ink-200 bg-surface-alt text-ink-400 font-arabic">
                   <th className="text-right p-3 font-medium">التاريخ</th>
                   <th className="text-right p-3 font-medium">عدد الطلبات</th>
                   <th className="text-right p-3 font-medium">نقدي</th>
@@ -386,12 +386,12 @@ export default function FinancePage() {
               </thead>
               <tbody>
                 {revenueData.map((r, i) => (
-                  <tr key={i} className="border-b border-ink-200 hover:bg-white">
+                  <tr key={i} className="border-b border-ink-200 hover:bg-saffron-50">
                     <td className="p-3 font-arabic text-ink-900">{r.date}</td>
                     <td className="p-3 font-mono text-ink-900">{r.orderCount}</td>
                     <td className="p-3 font-mono text-saffron-600">{fmtCurrency(r.cash, currency)}</td>
-                    <td className="p-3 font-mono text-blue-600">{fmtCurrency(r.card, currency)}</td>
-                    <td className="p-3 font-mono text-amber-600">{fmtCurrency(r.wallet, currency)}</td>
+                    <td className="p-3 font-mono text-ink-700">{fmtCurrency(r.card, currency)}</td>
+                    <td className="p-3 font-mono text-ink-700">{fmtCurrency(r.wallet, currency)}</td>
                     <td className="p-3 font-mono text-saffron-600 font-bold">{fmtCurrency(r.total, currency)}</td>
                   </tr>
                 ))}
@@ -411,24 +411,24 @@ export default function FinancePage() {
       {tab === "costs" && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <div className="bg-white rounded-2xl p-4 shadow-sh-1 flex-1 max-w-xs">
+            <div className="bg-white rounded-md p-4 border border-ink-200 flex-1 max-w-xs">
               <p className="text-ink-400 text-sm font-arabic">إجمالي التكاليف</p>
-              <p className="text-2xl font-bold text-red-500 font-mono">
+              <p className="text-2xl font-bold text-danger-600 font-mono">
                 {fmtCurrency(totalCosts, currency)}
               </p>
             </div>
             <button
               onClick={() => setShowAddCost(true)}
-              className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+              className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
             >
               + إضافة تكلفة
             </button>
           </div>
 
-          <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
+          <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-ink-200 text-ink-400 font-arabic">
+                <tr className="border-b border-ink-200 bg-surface-alt text-ink-400 font-arabic">
                   <th className="text-right p-3 font-medium">التاريخ</th>
                   <th className="text-right p-3 font-medium">البند</th>
                   <th className="text-right p-3 font-medium">التكلفة</th>
@@ -437,14 +437,14 @@ export default function FinancePage() {
               </thead>
               <tbody>
                 {costs.map((c) => (
-                  <tr key={c.id} className="border-b border-ink-200 hover:bg-white">
+                  <tr key={c.id} className="border-b border-ink-200 hover:bg-saffron-50">
                     <td className="p-3 font-arabic text-ink-900">{c.date.slice(0, 10)}</td>
                     <td className="p-3">
                       <span className="inline-block px-3 py-1 rounded-full text-xs font-arabic bg-white text-ink-900">
                         {c.category}
                       </span>
                     </td>
-                    <td className="p-3 font-mono text-red-500 font-bold">{fmtCurrency(c.amount_cents, currency)}</td>
+                    <td className="p-3 font-mono text-danger-600 font-bold">{fmtCurrency(c.amount_cents, currency)}</td>
                     <td className="p-3 text-ink-400 text-sm">{c.notes || "-"}</td>
                   </tr>
                 ))}
@@ -464,23 +464,23 @@ export default function FinancePage() {
       {tab === "invoices" && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <div className="bg-white rounded-2xl p-4 shadow-sh-1 flex-1 max-w-xs">
+            <div className="bg-white rounded-md p-4 border border-ink-200 flex-1 max-w-xs">
               <p className="text-ink-400 text-sm font-arabic">إجمالي الفواتير المستحقة</p>
-              <p className="text-2xl font-bold text-amber-600 font-mono">
+              <p className="text-2xl font-bold text-warn-600 font-mono">
                 {fmtCurrency(invoices.filter((i) => i.status === "PENDING" || i.status === "OVERDUE").reduce((a, i) => a + i.amount_cents, 0), currency)}
               </p>
             </div>
             <button
               onClick={() => setShowAddInvoice(true)}
-              className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+              className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
             >
               + إنشاء فاتورة
             </button>
           </div>
-          <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
+          <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-ink-200 text-ink-400 font-arabic">
+                <tr className="border-b border-ink-200 bg-surface-alt text-ink-400 font-arabic">
                   <th className="text-right p-3 font-medium">رقم الفاتورة</th>
                   <th className="text-right p-3 font-medium">الفترة</th>
                   <th className="text-right p-3 font-medium">المبلغ</th>
@@ -491,7 +491,7 @@ export default function FinancePage() {
               </thead>
               <tbody>
                 {invoices.map((inv) => (
-                  <tr key={inv.id} className="border-b border-ink-200 hover:bg-white">
+                  <tr key={inv.id} className="border-b border-ink-200 hover:bg-saffron-50">
                     <td className="p-3 font-mono text-ink-900">{inv.id.slice(0, 8)}</td>
                     <td className="p-3 text-ink-900 text-sm">
                       {inv.period_start.slice(0, 10)} - {inv.period_end.slice(0, 10)}
@@ -527,7 +527,7 @@ export default function FinancePage() {
       {tab === "taxes" && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
-            <div className="bg-white rounded-2xl p-4 shadow-sh-1 space-y-2">
+            <div className="bg-white rounded-md p-4 border border-ink-200 space-y-2">
               <h2 className="font-bold text-ink-900 font-arabic">إعدادات الضريبة</h2>
               <div className="flex justify-between text-sm">
                 <span className="text-ink-400 font-arabic">النظام</span>
@@ -542,7 +542,7 @@ export default function FinancePage() {
                 </span>
               </div>
             </div>
-            <div className="bg-white rounded-2xl p-4 shadow-sh-1 space-y-2">
+            <div className="bg-white rounded-md p-4 border border-ink-200 space-y-2">
               <h2 className="font-bold text-ink-900 font-arabic">الضريبة المحصلة اليوم</h2>
               <p className="text-2xl font-bold text-saffron-600 font-mono">
                 {fmtCurrency(taxCollectedToday, currency)}
@@ -550,7 +550,7 @@ export default function FinancePage() {
               <button
                 onClick={exportPdf}
                 disabled={exportingPdf}
-                className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 {exportingPdf ? "جاري التصدير..." : "تصدير PDF للإقرار"}
               </button>
@@ -561,29 +561,29 @@ export default function FinancePage() {
 
       {showAddInvoice && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
+          <div className="bg-white rounded-md shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
             <h2 className="text-lg font-bold font-arabic text-ink-900">إنشاء فاتورة جديدة</h2>
             <div className="space-y-3">
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">بداية الفترة</label>
-                <input type="date" value={invoicePeriodStart} onChange={(e) => setInvoicePeriodStart(e.target.value)} className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500" />
+                <input type="date" value={invoicePeriodStart} onChange={(e) => setInvoicePeriodStart(e.target.value)} className="w-full h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500" />
               </div>
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">نهاية الفترة</label>
-                <input type="date" value={invoicePeriodEnd} onChange={(e) => setInvoicePeriodEnd(e.target.value)} className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500" />
+                <input type="date" value={invoicePeriodEnd} onChange={(e) => setInvoicePeriodEnd(e.target.value)} className="w-full h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500" />
               </div>
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">المبلغ (ريال)</label>
-                <input type="number" min="0" step="0.01" value={invoiceAmount} onChange={(e) => setInvoiceAmount(e.target.value)} className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500" dir="ltr" />
+                <input type="number" min="0" step="0.01" value={invoiceAmount} onChange={(e) => setInvoiceAmount(e.target.value)} className="w-full h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500" dir="ltr" />
               </div>
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">تاريخ الاستحقاق</label>
-                <input type="date" value={invoiceDueDate} onChange={(e) => setInvoiceDueDate(e.target.value)} className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500" />
+                <input type="date" value={invoiceDueDate} onChange={(e) => setInvoiceDueDate(e.target.value)} className="w-full h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500" />
               </div>
             </div>
             <div className="flex gap-3 justify-end pt-2">
-              <button onClick={() => setShowAddInvoice(false)} className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors">إلغاء</button>
-              <button onClick={handleAddInvoice} className="h-10 px-6 rounded-xl bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors">إنشاء الفاتورة</button>
+              <button onClick={() => setShowAddInvoice(false)} className="h-10 px-6 rounded-sm bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors">إلغاء</button>
+              <button onClick={handleAddInvoice} className="h-10 px-6 rounded-sm bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors">إنشاء الفاتورة</button>
             </div>
           </div>
         </div>
@@ -591,14 +591,14 @@ export default function FinancePage() {
 
       {showInvoiceDetail && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
+          <div className="bg-white rounded-md shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold font-arabic text-ink-900">تفاصيل الفاتورة</h2>
               <button onClick={() => setShowInvoiceDetail(null)} className="text-ink-500 hover:text-ink-500 leading-none"><IconX className="w-5 h-5" /></button>
             </div>
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div><span className="text-ink-400 font-arabic">رقم الفاتورة: </span><span className="font-mono text-ink-900">{showInvoiceDetail.id.slice(0, 8)}</span></div>
-              <div><span className="text-ink-400 font-arabic">الحالة: </span><span className={`font-arabic font-medium ${showInvoiceDetail.status === "PAID" ? "text-saffron-600" : showInvoiceDetail.status === "OVERDUE" ? "text-red-500" : "text-amber-600"}`}>{statusLabel(showInvoiceDetail.status)}</span></div>
+              <div><span className="text-ink-400 font-arabic">الحالة: </span><span className={`font-arabic font-medium ${showInvoiceDetail.status === "PAID" ? "text-ok-600" : showInvoiceDetail.status === "OVERDUE" ? "text-danger-600" : "text-warn-600"}`}>{statusLabel(showInvoiceDetail.status)}</span></div>
               <div><span className="text-ink-400 font-arabic">الفترة: </span><span className="text-ink-900">{showInvoiceDetail.period_start.slice(0, 10)} - {showInvoiceDetail.period_end.slice(0, 10)}</span></div>
               <div><span className="text-ink-400 font-arabic">تاريخ الاستحقاق: </span><span className="text-ink-900">{showInvoiceDetail.due_date.slice(0, 10)}</span></div>
               {showInvoiceDetail.paid_at && <div><span className="text-ink-400 font-arabic">تاريخ الدفع: </span><span className="text-ink-900">{showInvoiceDetail.paid_at.slice(0, 10)}</span></div>}
@@ -609,9 +609,9 @@ export default function FinancePage() {
             </div>
             <div className="flex gap-2 pt-2">
               {showInvoiceDetail.status === "PENDING" && (
-                <button onClick={() => { handlePayInvoice(showInvoiceDetail); setShowInvoiceDetail(null); }} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors inline-flex items-center justify-center gap-1.5"><IconCreditCard className="w-4 h-4" /> دفع الفاتورة</button>
+                <button onClick={() => { handlePayInvoice(showInvoiceDetail); setShowInvoiceDetail(null); }} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors inline-flex items-center justify-center gap-1.5"><IconCreditCard className="w-4 h-4" /> دفع الفاتورة</button>
               )}
-              <button onClick={() => setShowInvoiceDetail(null)} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إغلاق</button>
+              <button onClick={() => setShowInvoiceDetail(null)} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إغلاق</button>
             </div>
           </div>
         </div>
@@ -619,7 +619,7 @@ export default function FinancePage() {
 
       {showAddCost && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
+          <div className="bg-white rounded-md shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
             <h2 className="text-lg font-bold font-arabic text-ink-900">إضافة تكلفة</h2>
             <div className="space-y-3">
               <div>
@@ -627,7 +627,7 @@ export default function FinancePage() {
                 <select
                   value={costCategory}
                   onChange={(e) => setCostCategory(e.target.value)}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 >
                   {CATEGORY_OPTIONS.map((cat) => (
                     <option key={cat} value={cat}>{cat}</option>
@@ -642,7 +642,7 @@ export default function FinancePage() {
                   step="0.01"
                   value={costAmount}
                   onChange={(e) => setCostAmount(e.target.value)}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                   dir="ltr"
                 />
               </div>
@@ -652,7 +652,7 @@ export default function FinancePage() {
                   type="date"
                   value={costDate}
                   onChange={(e) => setCostDate(e.target.value)}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                 />
               </div>
               <div>
@@ -661,20 +661,20 @@ export default function FinancePage() {
                   value={costNotes}
                   onChange={(e) => setCostNotes(e.target.value)}
                   rows={3}
-                  className="w-full px-4 py-2 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500 resize-none"
+                  className="w-full px-4 py-2 rounded-sm bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500 resize-none"
                 />
               </div>
             </div>
             <div className="flex gap-3 justify-end pt-2">
               <button
                 onClick={() => setShowAddCost(false)}
-                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
+                className="h-10 px-6 rounded-sm bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={handleAddCost}
-                className="h-10 px-6 rounded-xl bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors"
+                className="h-10 px-6 rounded-sm bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors"
               >
                 إضافة
               </button>
@@ -684,7 +684,7 @@ export default function FinancePage() {
       )}
 
       {message && (
-        <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-saffron-600 text-white px-6 py-3 rounded-xl shadow-sh-3 z-50 font-arabic">
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-saffron-600 text-white px-6 py-3 rounded-sm border border-ink-200 z-50 font-arabic">
           {message}
         </div>
       )}

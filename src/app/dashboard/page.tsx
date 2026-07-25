@@ -100,7 +100,7 @@ export default function DashboardPage() {
               key={r}
               onClick={() => setRange(r)}
               className={`px-4 py-2 rounded-lg font-arabic text-sm transition-colors ${
-                range === r ? "bg-saffron-600 text-white shadow-sh-1" : "bg-white text-ink-500 hover:bg-ink-200"
+                range === r ? "bg-saffron-600 text-white" : "bg-white text-ink-500 hover:bg-ink-200"
               }`}
             >
               {r === "today" ? "اليوم" : r === "week" ? "هذا الأسبوع" : "هذا الشهر"}
@@ -111,19 +111,19 @@ export default function DashboardPage() {
 
       {/* KPI row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sh-1">
+        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic flex items-center gap-1"><IconTrendingUp className="w-4 h-4" /> الإيرادات</p>
           <p className="text-2xl font-bold text-saffron-600 font-mono">{fmt(summary.total_revenue_cents)}</p>
         </div>
-        <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sh-1">
+        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic flex items-center gap-1"><IconTrendingDown className="w-4 h-4" /> المصروفات</p>
           <p className="text-2xl font-bold text-red-500 font-mono">{fmt(summary.total_costs_cents)}</p>
         </div>
-        <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sh-1">
+        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic flex items-center gap-1"><IconCash className="w-4 h-4" /> صافي الربح</p>
           <p className={`text-2xl font-bold font-mono ${isProfitable ? "text-green-600" : "text-red-600"}`}>{fmt(summary.total_profit_cents)}</p>
         </div>
-        <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sh-1">
+        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic">عدد الطلبات</p>
           <p className="text-2xl font-bold text-ink-900 font-mono">{summary.branches.reduce((a, b) => a + b.order_count, 0)}</p>
         </div>
@@ -131,7 +131,7 @@ export default function DashboardPage() {
 
       {/* Debt / supplier widgets */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-white rounded-2xl p-4 shadow-sh-1 flex items-center justify-between">
+        <div className="bg-white rounded-md border border-ink-200 p-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-red-50 flex items-center justify-center">
               <IconUsers className="w-5 h-5 text-red-500" />
@@ -142,7 +142,7 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
-        <div className="bg-white rounded-2xl p-4 shadow-sh-1 flex items-center justify-between">
+        <div className="bg-white rounded-md border border-ink-200 p-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center">
               <IconTruck className="w-5 h-5 text-amber-600" />
@@ -157,13 +157,13 @@ export default function DashboardPage() {
 
       {/* Branch comparison -- only shown when there's more than one branch to compare */}
       {multiBranch && (
-        <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
+        <div className="bg-white rounded-lg border border-ink-200 overflow-x-auto">
           <div className="p-4 pb-0">
             <h2 className="font-bold text-ink-900 font-arabic">مقارنة الفروع</h2>
           </div>
           <table className="w-full text-sm mt-2">
             <thead>
-              <tr className="border-b border-ink-200 text-ink-400 font-arabic">
+              <tr className="border-b border-ink-200 text-ink-400 font-arabic bg-surface-alt">
                 <th className="text-right p-3 font-medium">الفرع</th>
                 <th className="text-center p-3 font-medium">الإيرادات</th>
                 <th className="text-center p-3 font-medium">المصروفات</th>
@@ -174,7 +174,7 @@ export default function DashboardPage() {
             </thead>
             <tbody>
               {[...summary.branches].sort((a, b) => b.profit_cents - a.profit_cents).map((b) => (
-                <tr key={b.branch_id} className="border-b border-ink-200 hover:bg-white">
+                <tr key={b.branch_id} className="border-b border-ink-100 hover:bg-saffron-50">
                   <td className="p-3 font-arabic text-ink-900 font-medium">{b.branch_name}</td>
                   <td className="p-3 text-center font-mono text-saffron-600">{fmt(b.revenue_cents)}</td>
                   <td className="p-3 text-center font-mono text-red-500">{fmt(b.costs_cents)}</td>
@@ -189,7 +189,7 @@ export default function DashboardPage() {
       )}
 
       {!multiBranch && summary.branches.length === 0 && (
-        <div className="text-center py-12 text-ink-500 font-arabic bg-white rounded-2xl shadow-sh-1">
+        <div className="text-center py-12 text-ink-500 font-arabic bg-white rounded-lg border border-ink-200">
           لا توجد بيانات لهذا الفرع بعد
         </div>
       )}

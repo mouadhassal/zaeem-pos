@@ -36,7 +36,7 @@ export default function MergeTablesModal({ tables, selectedTableId, onMerge, onC
 
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-surface rounded-2xl border border-ink-600 w-[500px]">
+      <div className="bg-white rounded-md border border-line shadow-sh-3 w-[500px]">
         <div className="px-6 py-4 border-b border-ink-200">
           <h2 className="font-arabic font-bold text-lg text-ink-900">دمج الطاولات</h2>
           <p className="font-arabic text-sm text-ink-400 mt-1">
@@ -87,14 +87,14 @@ export default function MergeTablesModal({ tables, selectedTableId, onMerge, onC
         <div className="px-6 py-4 border-t border-ink-200 flex gap-3">
           <button
             onClick={onCancel}
-            className="flex-1 h-12 rounded-xl bg-surface text-ink-900 font-arabic font-bold hover:bg-ink-200"
+            className="flex-1 h-12 rounded-xl bg-surface-alt text-ink-900 font-arabic font-bold hover:bg-ink-200"
           >
             إلغاء
           </button>
           <button
             onClick={() => targetTable && onMerge(selected, targetTable)}
             disabled={selected.length < 2}
-            className="flex-1 h-12 rounded-xl bg-accent text-white font-arabic font-bold hover:bg-accent-text disabled:opacity-50"
+            className="flex-1 h-12 rounded-xl bg-saffron-600 text-white font-arabic font-bold hover:bg-accent-text disabled:opacity-50"
           >
             دمج
           </button>

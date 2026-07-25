@@ -219,11 +219,11 @@ export default function InventoryPage() {
   ];
 
   return (
-    <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
+    <div className="p-6 space-y-6 overflow-y-auto h-full bg-canvas" dir="rtl">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-ink-900">إدارة المخزون</h1>
         <div className="flex gap-2">
-          <button onClick={() => setShowAddIngredient(true)} className="h-10 px-5 rounded-lg bg-saffron-600 text-white text-sm font-medium shadow-sh-1 shadow-200 hover:bg-saffron-700 hover:shadow-sh-2 hover:shadow-200 active:scale-[0.98] transition-all duration-150">
+          <button onClick={() => setShowAddIngredient(true)} className="h-10 px-5 rounded-sm bg-saffron-600 text-white text-sm font-medium hover:bg-saffron-700 active:scale-[0.98] transition-all duration-150">
             + إضافة مادة
           </button>
           <AddIngredientModal
@@ -231,10 +231,10 @@ export default function InventoryPage() {
             onClose={() => setShowAddIngredient(false)}
             onSaved={() => { setShowAddIngredient(false); setRefreshKey((k) => k + 1); }}
           />
-          <button className="h-10 px-5 rounded-lg bg-white text-ink-900 text-sm font-medium border border-ink-200 hover:bg-white hover:border-ink-300 active:scale-[0.98] transition-all duration-150">
+          <button className="h-10 px-5 rounded-sm bg-white text-ink-900 text-sm font-medium border border-ink-200 hover:bg-saffron-50 hover:border-ink-300 active:scale-[0.98] transition-all duration-150">
             جرد المخزون
           </button>
-          <button className="h-10 px-4 rounded-lg text-ink-400 text-sm hover:bg-white hover:text-ink-900 active:scale-[0.98] transition-all duration-150">
+          <button className="h-10 px-4 rounded-sm text-ink-400 text-sm hover:bg-saffron-50 hover:text-ink-900 active:scale-[0.98] transition-all duration-150">
             تقرير الهالك
           </button>
         </div>
@@ -261,14 +261,14 @@ function TabBar({
   onChange: (k: TabKey) => void;
 }) {
   return (
-    <div className="flex gap-1 bg-white rounded-xl p-1 w-fit">
+    <div className="flex gap-1 bg-white rounded-sm p-1 w-fit">
       {tabs.map((t) => (
         <button
           key={t.key}
           onClick={() => onChange(t.key)}
-          className={`px-5 py-2 rounded-lg text-sm font-bold transition-colors ${
+          className={`px-5 py-2 rounded-sm text-sm font-bold transition-colors ${
             active === t.key
-              ? "bg-white text-saffron-600 shadow-sh-1"
+              ? "bg-white text-saffron-600"
               : "text-ink-400 hover:text-ink-900"
           }`}
         >
@@ -347,10 +347,10 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
   return (
     <div className="space-y-4">
       {loadError && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{loadError}</div>
+        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{loadError}</div>
       )}
       {actionError && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{actionError}</div>
+        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{actionError}</div>
       )}
       <div className="relative max-w-sm">
         <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-500" />
@@ -359,11 +359,11 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="بحث..."
-          className="w-full h-10 pr-10 pl-4 rounded-lg bg-white border border-ink-200 text-sm text-right focus:bg-white focus:border-saffron-300 focus:ring-2 focus:ring-saffron-100 transition-all outline-none"
+          className="w-full h-10 pr-10 pl-4 rounded-sm bg-white border-2 border-ink-200 text-sm text-right focus:bg-white focus:border-saffron-600 focus:ring-2 focus:ring-saffron-100 transition-all outline-none"
         />
       </div>
 
-      <div className="bg-white rounded-xl border border-ink-200 shadow-sh-1 overflow-hidden">
+      <div className="bg-white rounded-md border border-ink-200 overflow-hidden">
         <div className="grid grid-cols-7 gap-4 px-6 py-3 bg-white/80 border-b border-ink-200">
           <div className="text-xs font-semibold text-ink-400">المادة</div>
           <div className="text-xs font-semibold text-ink-400">الوحدة</div>
@@ -391,7 +391,7 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
                 } hover:bg-ink-50`}
               >
                 <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-white flex items-center justify-center">
+                  <div className="w-8 h-8 rounded-sm bg-white flex items-center justify-center">
                     <Package className="w-4 h-4 text-ink-500" />
                   </div>
                   <span className="text-sm font-medium text-ink-900">{ing.name}</span>
@@ -416,21 +416,21 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
                 <div className="flex items-center justify-end gap-1">
                   <button
                     onClick={() => setAddTarget(ing)}
-                    className="p-2 rounded-lg text-ink-500 hover:text-saffron-600 hover:bg-saffron-50 transition-colors"
+                    className="p-2 rounded-sm text-ink-500 hover:text-saffron-600 hover:bg-saffron-50 transition-colors"
                     title="إضافة كمية"
                   >
                     <ChevronUp className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => setRemoveTarget(ing)}
-                    className="p-2 rounded-lg text-ink-500 hover:text-red-500 hover:bg-red-50 transition-colors"
+                    className="p-2 rounded-sm text-ink-500 hover:text-red-500 hover:bg-red-50 transition-colors"
                     title="خصم كمية"
                   >
                     <ChevronDown className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => setEditTarget(ing)}
-                    className="p-2 rounded-lg text-ink-500 hover:text-blue-500 hover:bg-blue-50 transition-colors"
+                    className="p-2 rounded-sm text-ink-500 hover:text-blue-500 hover:bg-blue-50 transition-colors"
                     title="تعديل"
                   >
                     <Edit3 className="w-4 h-4" />
@@ -501,33 +501,33 @@ function AddStockModal({
           value={qty || ""}
           onChange={(e) => setQty(Number(e.target.value))}
           placeholder="الكمية"
-          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+          className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
         />
         <input
           type="text"
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           placeholder="السبب (مطلوب)"
-          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+          className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
         />
         <input
           type="text"
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           placeholder="ملاحظات (اختياري)"
-          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+          className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
         />
         <div className="flex gap-2 pt-2">
           <button
             onClick={handleSubmit}
             disabled={qty <= 0 || !reason.trim()}
-            className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
+            className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
             تأكيد
           </button>
           <button
             onClick={onClose}
-            className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors"
+            className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors"
           >
             إلغاء
           </button>
@@ -581,7 +581,7 @@ function RemoveStockModal({
           onChange={(e) => setQty(Number(e.target.value))}
           placeholder="الكمية"
           max={target.current_stock}
-          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+          className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
         />
         {qty > target.current_stock && (
           <p className="text-red-500 text-xs">الكمية تتجاوز المخزون المتاح</p>
@@ -591,26 +591,26 @@ function RemoveStockModal({
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           placeholder="السبب (مطلوب)"
-          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+          className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
         />
         <input
           type="text"
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           placeholder="ملاحظات (اختياري)"
-          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+          className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
         />
         <div className="flex gap-2 pt-2">
           <button
             onClick={handleSubmit}
             disabled={qty <= 0 || !reason.trim() || qty > target.current_stock}
-            className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
+            className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
             تأكيد
           </button>
           <button
             onClick={onClose}
-            className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors"
+            className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors"
           >
             إلغاء
           </button>
@@ -667,25 +667,25 @@ function AddIngredientModal({
     <Modal open={open} onClose={onClose} title="إضافة مادة جديدة">
       <div className="space-y-3">
         <div>
-          <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="اسم المادة" className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
+          <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="اسم المادة" className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
           {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name}</p>}
         </div>
         <div>
-          <input type="text" value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="الوحدة (كجم, لتر, قطعة...)" className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
+          <input type="text" value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="الوحدة (كجم, لتر, قطعة...)" className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
           {errors.unit && <p className="text-red-500 text-xs mt-1">{errors.unit}</p>}
         </div>
         <div>
-          <input type="number" value={cost || ""} onChange={(e) => setCost(Number(e.target.value))} placeholder="التكلفة لكل وحدة (هللة)" className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
+          <input type="number" value={cost || ""} onChange={(e) => setCost(Number(e.target.value))} placeholder="التكلفة لكل وحدة (هللة)" className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
           {errors.cost_cents_per_unit && <p className="text-red-500 text-xs mt-1">{errors.cost_cents_per_unit}</p>}
         </div>
         <div>
-          <input type="number" value={minStock || ""} onChange={(e) => setMinStock(Number(e.target.value))} placeholder="الحد الأدنى للمخزون" className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
+          <input type="number" value={minStock || ""} onChange={(e) => setMinStock(Number(e.target.value))} placeholder="الحد الأدنى للمخزون" className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
           {errors.min_stock && <p className="text-red-500 text-xs mt-1">{errors.min_stock}</p>}
         </div>
         {errors._form && <p className="text-sm text-red-500">{errors._form}</p>}
         <div className="flex gap-2 pt-2">
-          <button onClick={handleSubmit} disabled={saving} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{saving ? "جاري..." : "إضافة"}</button>
-          <button onClick={onClose} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
+          <button onClick={handleSubmit} disabled={saving} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{saving ? "جاري..." : "إضافة"}</button>
+          <button onClick={onClose} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors">إلغاء</button>
         </div>
       </div>
     </Modal>
@@ -761,7 +761,7 @@ function EditIngredientModal({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="اسم المادة"
-            className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+            className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
           {errors.name && (
             <p className="text-red-500 text-xs mt-1">{errors.name}</p>
@@ -773,7 +773,7 @@ function EditIngredientModal({
             value={unit}
             onChange={(e) => setUnit(e.target.value)}
             placeholder="الوحدة (كجم, لتر, قطعة...)"
-            className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+            className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
           {errors.unit && (
             <p className="text-red-500 text-xs mt-1">{errors.unit}</p>
@@ -785,7 +785,7 @@ function EditIngredientModal({
             value={cost || ""}
             onChange={(e) => setCost(Number(e.target.value))}
             placeholder="التكلفة لكل وحدة (هللة)"
-            className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+            className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
           {errors.cost_cents_per_unit && (
             <p className="text-red-500 text-xs mt-1">
@@ -799,7 +799,7 @@ function EditIngredientModal({
             value={minStock || ""}
             onChange={(e) => setMinStock(Number(e.target.value))}
             placeholder="الحد الأدنى للمخزون"
-            className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+            className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
           {errors.min_stock && (
             <p className="text-red-500 text-xs mt-1">{errors.min_stock}</p>
@@ -809,13 +809,13 @@ function EditIngredientModal({
         <div className="flex gap-2 pt-2">
           <button
             onClick={handleSubmit}
-            className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+            className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
             حفظ
           </button>
           <button
             onClick={onClose}
-            className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors"
+            className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors"
           >
             إلغاء
           </button>
@@ -914,34 +914,34 @@ function SuppliersTab() {
   return (
     <div className="space-y-4">
       {loadError && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{loadError}</div>
+        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{loadError}</div>
       )}
       {actionError && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{actionError}</div>
+        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{actionError}</div>
       )}
       {detailError && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{detailError}</div>
+        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{detailError}</div>
       )}
       <div className="flex gap-2">
         <button
           onClick={() => setShowAdd(true)}
-          className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+          className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
         >
           + إضافة مورد
         </button>
         <button
           onClick={exportPdf}
           disabled={exportingPdf}
-          className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+          className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
         >
           {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
         </button>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
+      <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-ink-200 text-ink-400 font-arabic">
+            <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
               <th className="text-right p-3">اسم المورد</th>
               <th className="text-right p-3">الهاتف</th>
               <th className="text-right p-3">البريد</th>
@@ -955,7 +955,7 @@ function SuppliersTab() {
             {suppliers.map((s) => (
               <tr
                 key={s.id}
-                className="border-b border-ink-200 hover:bg-white transition-colors cursor-pointer"
+                className="border-b border-ink-200 hover:bg-saffron-50 transition-colors cursor-pointer"
                 onClick={() => openDetail(s)}
               >
                 <td className="p-3 font-medium text-ink-900">{s.name}</td>
@@ -976,28 +976,28 @@ function SuppliersTab() {
                   <div className="flex gap-2">
                     <button
                       onClick={() => setPayTarget(s)}
-                      className="px-3 py-1.5 rounded-lg bg-saffron-100 text-saffron-700 text-xs font-bold hover:bg-saffron-200 transition-colors"
+                      className="px-3 py-1.5 rounded-sm bg-saffron-100 text-saffron-700 text-xs font-bold hover:bg-saffron-200 transition-colors"
                       title="تسديد دفعة"
                     >
                       <IconCash className="w-4 h-4" />
                     </button>
                     <button
                       onClick={() => setShowOrder(s)}
-                      className="px-3 py-1.5 rounded-lg bg-indigo-100 text-indigo-700 text-xs font-bold hover:bg-indigo-200 transition-colors"
+                      className="px-3 py-1.5 rounded-sm bg-indigo-100 text-indigo-700 text-xs font-bold hover:bg-indigo-200 transition-colors"
                       title="طلبية جديدة"
                     >
                       <IconClipboardList className="w-4 h-4" />
                     </button>
                     <button
                       onClick={() => setEditTarget(s)}
-                      className="px-3 py-1.5 rounded-lg bg-blue-100 text-blue-700 text-xs font-bold hover:bg-blue-200 transition-colors"
+                      className="px-3 py-1.5 rounded-sm bg-blue-100 text-blue-700 text-xs font-bold hover:bg-blue-200 transition-colors"
                       title="تعديل"
                     >
                       <IconPencil className="w-4 h-4" />
                     </button>
                     <button
                       onClick={() => handleDelete(s.id)}
-                      className="px-3 py-1.5 rounded-lg bg-red-100 text-red-700 text-xs font-bold hover:bg-red-200 transition-colors"
+                      className="px-3 py-1.5 rounded-sm bg-red-100 text-red-700 text-xs font-bold hover:bg-red-200 transition-colors"
                       title="حذف"
                     >
                       <IconTrash className="w-4 h-4" />
@@ -1046,27 +1046,27 @@ function SuppliersTab() {
             <div className="p-6 space-y-6">
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-bold font-arabic text-ink-900">{detail.supplier.name}</h2>
-                <button onClick={() => setDetailOpen(false)} className="p-2 rounded-lg text-ink-500 hover:bg-white transition-colors">
+                <button onClick={() => setDetailOpen(false)} className="p-2 rounded-sm text-ink-500 hover:bg-saffron-50 transition-colors">
                   <IconX className="w-4 h-4" />
                 </button>
               </div>
 
               <div className="grid grid-cols-3 gap-3">
-                <div className="bg-ink-50 rounded-xl p-3 text-center">
+                <div className="bg-ink-50 rounded-sm p-3 text-center">
                   <p className="text-2xl font-bold text-ink-900 font-mono">{formatCurrency(detail.supplier.total_purchases_cents)}</p>
                   <p className="text-xs text-ink-500 font-arabic mt-1">إجمالي المشتريات</p>
                 </div>
-                <div className="bg-saffron-50 rounded-xl p-3 text-center">
+                <div className="bg-saffron-50 rounded-sm p-3 text-center">
                   <p className="text-2xl font-bold text-saffron-600 font-mono">{formatCurrency(detail.supplier.total_paid_cents)}</p>
                   <p className="text-xs text-saffron-600 font-arabic mt-1">المدفوع</p>
                 </div>
-                <div className={`rounded-xl p-3 text-center ${detail.supplier.balance_cents > 0 ? "bg-red-50" : "bg-saffron-50"}`}>
+                <div className={`rounded-sm p-3 text-center ${detail.supplier.balance_cents > 0 ? "bg-red-50" : "bg-saffron-50"}`}>
                   <p className={`text-2xl font-bold font-mono ${detail.supplier.balance_cents > 0 ? "text-red-600" : "text-saffron-600"}`}>{formatCurrency(detail.supplier.balance_cents)}</p>
                   <p className="text-xs font-arabic mt-1">الرصيد المستحق</p>
                 </div>
               </div>
 
-              <div className="bg-white rounded-2xl p-4 space-y-2 shadow-sh-1">
+              <div className="bg-white rounded-md p-4 space-y-2 border border-ink-200">
                 <h3 className="font-bold font-arabic text-sm text-ink-900">سجل الدفعات</h3>
                 {detail.payments.length > 0 ? (
                   <div className="space-y-1">
@@ -1091,7 +1091,7 @@ function SuppliersTab() {
                 )}
               </div>
 
-              <div className="bg-white rounded-2xl p-4 space-y-2">
+              <div className="bg-white rounded-md p-4 space-y-2 border border-ink-200">
                 <h3 className="font-bold font-arabic text-sm text-ink-900">معلومات الاتصال</h3>
                 <div className="space-y-1 text-sm">
                   <div className="flex justify-between"><span className="text-ink-400 font-arabic">الهاتف</span><span className="font-mono text-ink-900" dir="ltr">{detail.supplier.phone || "-"}</span></div>
@@ -1146,18 +1146,18 @@ function PaySupplierModal({ supplier, onClose, onSaved }: { supplier: Supplier; 
         <p className="text-sm font-arabic text-ink-500">المورد: <span className="font-bold">{supplier.name}</span></p>
         <p className="text-sm font-arabic text-ink-400">الرصيد المستحق: <span className="font-mono font-bold text-red-600">{formatCurrency(supplier.balance_cents)}</span></p>
         {error && <p className="text-sm text-red-500 font-arabic">{error}</p>}
-        <input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="المبلغ" className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-saffron-500" dir="ltr" />
-        <select value={method} onChange={(e) => setMethod(e.target.value as "CASH" | "BANK" | "CARD")} className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm font-arabic focus:outline-none focus:ring-2 focus:ring-saffron-500">
+        <input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="المبلغ" className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-saffron-600" dir="ltr" />
+        <select value={method} onChange={(e) => setMethod(e.target.value as "CASH" | "BANK" | "CARD")} className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm font-arabic focus:outline-none focus:ring-2 focus:ring-saffron-600">
           <option value="CASH">نقدي</option>
           <option value="BANK">تحويل بنكي</option>
           <option value="CARD">بطاقة</option>
         </select>
-        <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="ملاحظات (اختياري)" className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm font-arabic focus:outline-none focus:ring-2 focus:ring-saffron-500" />
+        <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="ملاحظات (اختياري)" className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm font-arabic focus:outline-none focus:ring-2 focus:ring-saffron-600" />
         <div className="flex gap-2 pt-2">
-          <button onClick={handlePay} disabled={saving || !amount || parseFloat(amount) <= 0} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">
+          <button onClick={handlePay} disabled={saving || !amount || parseFloat(amount) <= 0} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">
             {saving ? "جاري..." : "تسديد"}
           </button>
-          <button onClick={onClose} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
+          <button onClick={onClose} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors">إلغاء</button>
         </div>
       </div>
     </div>
@@ -1245,7 +1245,7 @@ function SupplierModal({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="اسم المورد"
-            className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+            className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
           {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name}</p>}
         </div>
@@ -1254,7 +1254,7 @@ function SupplierModal({
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
           placeholder="رقم الهاتف"
-          className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+          className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
         />
         <div>
           <input
@@ -1262,7 +1262,7 @@ function SupplierModal({
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="البريد الإلكتروني"
-            className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+            className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
           {errors.email && <p className="text-red-500 text-xs mt-1">{errors.email}</p>}
         </div>
@@ -1270,13 +1270,13 @@ function SupplierModal({
         <div className="flex gap-2 pt-2">
           <button
             onClick={handleSubmit}
-            className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+            className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
             {isEdit ? "حفظ" : "إضافة"}
           </button>
           <button
             onClick={onClose}
-            className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors"
+            className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors"
           >
             إلغاء
           </button>
@@ -1326,13 +1326,13 @@ function NewOrderModal({
       <div className="flex gap-2 pt-2">
         <button
           onClick={handleCreate}
-          className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+          className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
         >
           إنشاء
         </button>
         <button
           onClick={onClose}
-          className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors"
+          className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors"
         >
           إلغاء
         </button>
@@ -1415,21 +1415,21 @@ function PurchasesTab() {
   return (
     <div className="space-y-4">
       {loadError && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{loadError}</div>
+        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{loadError}</div>
       )}
       {cancelError && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{cancelError}</div>
+        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{cancelError}</div>
       )}
       <div className="flex gap-2">
-        <button onClick={() => setShowCreate(true)} className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">
+        <button onClick={() => setShowCreate(true)} className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">
           + طلبية شراء جديدة
         </button>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
+      <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-ink-200 text-ink-400 font-arabic">
+            <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
               <th className="text-right p-3 font-medium">رقم الطلبية</th>
               <th className="text-right p-3 font-medium">المورد</th>
               <th className="text-right p-3 font-medium">التاريخ</th>
@@ -1441,7 +1441,7 @@ function PurchasesTab() {
           </thead>
           <tbody>
             {orders.map((po) => (
-              <tr key={po.id} className="border-b border-ink-200 hover:bg-white">
+              <tr key={po.id} className="border-b border-ink-200 hover:bg-saffron-50">
                 <td className="p-3 font-mono text-ink-900 text-xs">{po.id.slice(0, 8)}</td>
                 <td className="p-3 font-arabic text-ink-900 font-medium">{po.supplier_name}</td>
                 <td className="p-3 font-mono text-ink-500 text-xs">{po.created_at.slice(0, 10)}</td>
@@ -1460,11 +1460,11 @@ function PurchasesTab() {
                 </td>
                 <td className="p-3 text-center">
                   <div className="flex items-center justify-center gap-1">
-                    <button onClick={() => setDetailTarget(po)} className="px-3 py-1.5 rounded-lg text-xs text-ink-400 hover:bg-white transition-colors" title="عرض التفاصيل"><IconEye className="w-4 h-4" /></button>
+                    <button onClick={() => setDetailTarget(po)} className="px-3 py-1.5 rounded-sm text-xs text-ink-400 hover:bg-saffron-50 transition-colors" title="عرض التفاصيل"><IconEye className="w-4 h-4" /></button>
                     {po.status === "PENDING" && (
                       <>
-                        <button onClick={() => setReceiveTarget(po)} className="px-3 py-1.5 rounded-lg text-xs text-saffron-600 hover:bg-saffron-50 transition-colors" title="استلام"><IconPackageImport className="w-4 h-4" /></button>
-                        <button onClick={() => setCancelTarget(po.id)} className="px-3 py-1.5 rounded-lg text-xs text-red-500 hover:bg-red-50 transition-colors" title="إلغاء"><IconX className="w-4 h-4" /></button>
+                        <button onClick={() => setReceiveTarget(po)} className="px-3 py-1.5 rounded-sm text-xs text-saffron-600 hover:bg-saffron-50 transition-colors" title="استلام"><IconPackageImport className="w-4 h-4" /></button>
+                        <button onClick={() => setCancelTarget(po.id)} className="px-3 py-1.5 rounded-sm text-xs text-red-500 hover:bg-red-50 transition-colors" title="إلغاء"><IconX className="w-4 h-4" /></button>
                       </>
                     )}
                   </div>
@@ -1487,8 +1487,8 @@ function PurchasesTab() {
             <h2 className="text-lg font-bold text-ink-900 font-arabic">تأكيد الإلغاء</h2>
             <p className="text-sm text-ink-600 font-arabic">هل أنت متأكد من إلغاء طلبية الشراء هذه؟</p>
             <div className="flex gap-2 pt-2">
-              <button onClick={() => handleCancel(cancelTarget)} className="flex-1 h-10 rounded-xl bg-red-600 text-white text-sm font-bold hover:bg-red-700 transition-colors">تأكيد الإلغاء</button>
-              <button onClick={() => setCancelTarget(null)} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">رجوع</button>
+              <button onClick={() => handleCancel(cancelTarget)} className="flex-1 h-10 rounded-sm bg-red-600 text-white text-sm font-bold hover:bg-red-700 transition-colors">تأكيد الإلغاء</button>
+              <button onClick={() => setCancelTarget(null)} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors">رجوع</button>
             </div>
           </div>
         </div>
@@ -1551,30 +1551,30 @@ function CreatePOModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
         <div className="space-y-3">
           <div>
             <label className="block text-sm font-arabic text-ink-900 mb-1">المورد</label>
-            <select value={selectedSupplier} onChange={(e) => setSelectedSupplier(e.target.value)} className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500">
+            <select value={selectedSupplier} onChange={(e) => setSelectedSupplier(e.target.value)} className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600">
               <option value="">اختر المورد</option>
               {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </div>
           <div>
             <label className="block text-sm font-arabic text-ink-900 mb-1">ملاحظات</label>
-            <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full h-10 px-4 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
+            <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
           </div>
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-sm font-arabic text-ink-900 font-bold">الأصناف</label>
-              <button onClick={addItem} className="px-3 py-1.5 rounded-lg bg-indigo-100 text-indigo-700 text-xs font-bold hover:bg-indigo-200 transition-colors">+ إضافة صنف</button>
+              <button onClick={addItem} className="px-3 py-1.5 rounded-sm bg-indigo-100 text-indigo-700 text-xs font-bold hover:bg-indigo-200 transition-colors">+ إضافة صنف</button>
             </div>
             {items.map((item, idx) => (
               <div key={idx} className="flex gap-2 items-start">
-                <select value={item.ingredient_id} onChange={(e) => updateItem(idx, "ingredient_id", e.target.value)} className="flex-1 h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500">
+                <select value={item.ingredient_id} onChange={(e) => updateItem(idx, "ingredient_id", e.target.value)} className="flex-1 h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600">
                   <option value="">اختر المادة</option>
                   {ingredients.map((ing) => <option key={ing.id} value={ing.id}>{ing.name}</option>)}
                 </select>
-                <input type="number" min="0" step="0.01" value={item.quantity_ordered || ""} onChange={(e) => updateItem(idx, "quantity_ordered", Number(e.target.value))} placeholder="الكمية" className="w-24 h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
-                <input type="number" min="0" value={item.unit_cost_cents || ""} onChange={(e) => updateItem(idx, "unit_cost_cents", Number(e.target.value))} placeholder="سعر الوحدة" className="w-28 h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
-                <button onClick={() => removeItem(idx)} className="h-10 px-3 rounded-xl text-red-500 hover:bg-red-50 transition-colors"><IconX className="w-4 h-4" /></button>
+                <input type="number" min="0" step="0.01" value={item.quantity_ordered || ""} onChange={(e) => updateItem(idx, "quantity_ordered", Number(e.target.value))} placeholder="الكمية" className="w-24 h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
+                <input type="number" min="0" value={item.unit_cost_cents || ""} onChange={(e) => updateItem(idx, "unit_cost_cents", Number(e.target.value))} placeholder="سعر الوحدة" className="w-28 h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
+                <button onClick={() => removeItem(idx)} className="h-10 px-3 rounded-sm text-red-500 hover:bg-red-50 transition-colors"><IconX className="w-4 h-4" /></button>
               </div>
             ))}
           </div>
@@ -1585,8 +1585,8 @@ function CreatePOModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
           </div>
 
           <div className="flex gap-2 pt-2">
-            <button onClick={handleCreate} disabled={!selectedSupplier || items.length === 0} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">إنشاء الطلبية</button>
-            <button onClick={onClose} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
+            <button onClick={handleCreate} disabled={!selectedSupplier || items.length === 0} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">إنشاء الطلبية</button>
+            <button onClick={onClose} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors">إلغاء</button>
           </div>
         </div>
       </div>
@@ -1651,29 +1651,29 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
         {receiveError && <p className="text-sm text-red-500 font-arabic">{receiveError}</p>}
         <div className="space-y-3">
           {items.map((item, idx) => (
-            <div key={item.id} className="bg-white rounded-xl border border-ink-200 p-3 space-y-2">
+            <div key={item.id} className="bg-white rounded-sm border border-ink-200 p-3 space-y-2">
               <div className="flex justify-between">
                 <span className="font-bold text-ink-900">{item.ingredient_name}</span>
                 <span className="text-sm text-ink-500">الكمية المطلوبة: {item.quantity_ordered}</span>
               </div>
               <div className="flex items-center gap-2">
                 <label className="text-sm text-ink-500 font-arabic">الكمية المستلمة:</label>
-                <input type="number" min="0" max={item.quantity_ordered} step="0.01" value={item.quantity_received || ""} onChange={(e) => updateReceived(idx, Number(e.target.value))} className="w-24 h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500" />
+                <input type="number" min="0" max={item.quantity_ordered} step="0.01" value={item.quantity_received || ""} onChange={(e) => updateReceived(idx, Number(e.target.value))} className="w-24 h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
                 <span className="text-xs text-ink-400">من أصل {item.quantity_ordered}</span>
               </div>
             </div>
           ))}
 
-          <div className="bg-white rounded-xl border border-ink-200 p-3 space-y-2">
+          <div className="bg-white rounded-sm border border-ink-200 p-3 space-y-2">
             <h3 className="font-bold text-ink-900 font-arabic text-sm">الدفع للمورد</h3>
             <p className="text-xs text-ink-400 font-arabic">إجمالي الطلبية: <span className="font-mono font-bold text-ink-900">{formatCurrency(po.total_cents)}</span></p>
             <div className="flex items-center gap-2">
               <input
                 type="number" min="0" step="0.01" value={amountPaid} onChange={(e) => setAmountPaid(e.target.value)}
                 placeholder="المبلغ المدفوع الآن"
-                className="flex-1 h-10 px-3 rounded-xl border border-ink-200 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-saffron-500" dir="ltr"
+                className="flex-1 h-10 px-3 rounded-sm border-2 border-ink-200 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-saffron-600" dir="ltr"
               />
-              <select value={payMethod} onChange={(e) => setPayMethod(e.target.value as "CASH" | "BANK" | "CARD")} className="h-10 px-3 rounded-xl border border-ink-200 text-sm font-arabic focus:outline-none focus:ring-2 focus:ring-saffron-500">
+              <select value={payMethod} onChange={(e) => setPayMethod(e.target.value as "CASH" | "BANK" | "CARD")} className="h-10 px-3 rounded-sm border-2 border-ink-200 text-sm font-arabic focus:outline-none focus:ring-2 focus:ring-saffron-600">
                 <option value="CASH">نقدي</option>
                 <option value="BANK">تحويل بنكي</option>
                 <option value="CARD">بطاقة</option>
@@ -1686,8 +1686,8 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
           </div>
 
           <div className="flex gap-2 pt-2">
-            <button onClick={handleReceive} className="flex-1 h-10 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">تأكيد الاستلام</button>
-            <button onClick={onClose} className="px-6 h-10 rounded-xl border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
+            <button onClick={handleReceive} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">تأكيد الاستلام</button>
+            <button onClick={onClose} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors">إلغاء</button>
           </div>
         </div>
       </div>
@@ -1744,7 +1744,7 @@ function PODetailModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void
           <h3 className="font-bold text-ink-900 font-arabic mb-2">الأصناف</h3>
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-ink-200 text-ink-400 font-arabic">
+              <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
                 <th className="text-right p-2 font-medium">المادة</th>
                 <th className="text-right p-2 font-medium">الكمية المطلوبة</th>
                 <th className="text-right p-2 font-medium">الكمية المستلمة</th>
@@ -1868,7 +1868,7 @@ function MovementsTab() {
   return (
     <div className="space-y-4">
       {loadError && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{loadError}</div>
+        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{loadError}</div>
       )}
       <div className="flex gap-3 flex-wrap">
         <div>
@@ -1877,7 +1877,7 @@ function MovementsTab() {
             type="date"
             value={dateFrom}
             onChange={(e) => setDateFrom(e.target.value)}
-            className="h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+            className="h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
         </div>
         <div>
@@ -1886,7 +1886,7 @@ function MovementsTab() {
             type="date"
             value={dateTo}
             onChange={(e) => setDateTo(e.target.value)}
-            className="h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+            className="h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
         </div>
         <div>
@@ -1894,7 +1894,7 @@ function MovementsTab() {
           <select
             value={filterMaterial}
             onChange={(e) => setFilterMaterial(e.target.value)}
-            className="h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+            className="h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           >
             <option value="">الكل</option>
             {ingredients.map((ing) => (
@@ -1909,7 +1909,7 @@ function MovementsTab() {
           <select
             value={filterType}
             onChange={(e) => setFilterType(e.target.value)}
-            className="h-10 px-3 rounded-xl border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500"
+            className="h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           >
             <option value="all">الكل</option>
             <option value="add">إضافة</option>
@@ -1922,17 +1922,17 @@ function MovementsTab() {
           <button
             onClick={exportPdf}
             disabled={exportingPdf}
-            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+            className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
           >
             {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
           </button>
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
+      <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-ink-200 text-ink-400 font-arabic">
+            <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
               <th className="text-right p-3">التاريخ</th>
               <th className="text-right p-3">المادة</th>
               <th className="text-right p-3">النوع</th>
@@ -1954,7 +1954,7 @@ function MovementsTab() {
               return (
                 <tr
                   key={log.id}
-                  className="border-b border-ink-200 hover:bg-white transition-colors"
+                  className="border-b border-ink-200 hover:bg-saffron-50 transition-colors"
                 >
                   <td className="p-3 text-ink-400 text-xs font-mono">
                     {formatDate(log.created_at)}
@@ -1962,7 +1962,7 @@ function MovementsTab() {
                   <td className="p-3 text-ink-900">{log.ingredient_name}</td>
                   <td className="p-3">
                     <span
-                      className={`inline-block px-2 py-0.5 rounded-lg text-xs font-bold ${colorClass}`}
+                      className={`inline-block px-2 py-0.5 rounded-sm text-xs font-bold ${colorClass}`}
                     >
                       {typeLabel}
                     </span>
@@ -2059,19 +2059,19 @@ function AlertsTab() {
   return (
     <div className="space-y-4">
       {loadError && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{loadError}</div>
+        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{loadError}</div>
       )}
       {orderError && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-600 font-arabic">{orderError}</div>
+        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{orderError}</div>
       )}
       {suppliers.length === 0 && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-700 font-arabic">
+        <div className="bg-amber-50 border border-amber-200 rounded-sm p-4 text-sm text-amber-700 font-arabic">
           لا يوجد موردون. يرجى إضافة مورد أولاً لاستخدام خاصية الطلبيات التلقائية.
         </div>
       )}
 
       {lowStock.length === 0 && (
-        <div className="bg-green-50 border border-green-200 rounded-xl p-4 text-sm text-green-700 font-arabic">
+        <div className="bg-green-50 border border-green-200 rounded-sm p-4 text-sm text-green-700 font-arabic">
           لا توجد مواد منخفضة المخزون. جميع المواد ضمن الحد الآمن.
         </div>
       )}
@@ -2079,7 +2079,7 @@ function AlertsTab() {
       {lowStock.map((ing) => (
         <div
           key={ing.id}
-          className="bg-white rounded-2xl shadow-sh-1 p-4 flex items-center justify-between"
+          className="bg-white rounded-md border border-ink-200 p-4 flex items-center justify-between"
         >
           <div className="space-y-1">
             <h3 className="font-bold text-ink-900">{ing.name}</h3>
@@ -2096,7 +2096,7 @@ function AlertsTab() {
           <button
             onClick={() => handleAutoOrder(ing)}
             disabled={creating === ing.id || suppliers.length === 0}
-            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
+            className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
             {creating === ing.id ? "جاري الإنشاء..." : "طلبية تلقائية"}
           </button>

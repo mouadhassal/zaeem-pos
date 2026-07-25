@@ -49,15 +49,15 @@ interface ZoneRow {
 }
 
 const STATUS_BADGE: Record<string, { class: string; label: string }> = {
-  AVAILABLE: { class: "bg-saffron-100 text-saffron-700", label: "متاح" },
-  BUSY: { class: "bg-amber-100 text-amber-700", label: "مشغول" },
+  AVAILABLE: { class: "bg-ok-100 text-ok-700", label: "متاح" },
+  BUSY: { class: "bg-warn-100 text-warn-700", label: "مشغول" },
   OFFLINE: { class: "bg-ink-100 text-ink-500", label: "غير متصل" },
-  INACTIVE: { class: "bg-red-100 text-red-600", label: "غير نشط" },
-  ASSIGNED: { class: "bg-blue-100 text-blue-700", label: "تم التعيين" },
-  PICKED_UP: { class: "bg-purple-100 text-purple-700", label: "تم الاستلام" },
-  IN_TRANSIT: { class: "bg-amber-100 text-amber-700", label: "قيد التوصيل" },
-  DELIVERED: { class: "bg-saffron-100 text-saffron-700", label: "تم التوصيل" },
-  FAILED: { class: "bg-red-100 text-red-600", label: "فشل" },
+  INACTIVE: { class: "bg-danger-100 text-danger-600", label: "غير نشط" },
+  ASSIGNED: { class: "bg-ink-100 text-ink-700", label: "تم التعيين" },
+  PICKED_UP: { class: "bg-ink-200 text-ink-700", label: "تم الاستلام" },
+  IN_TRANSIT: { class: "bg-warn-100 text-warn-700", label: "قيد التوصيل" },
+  DELIVERED: { class: "bg-ok-100 text-ok-700", label: "تم التوصيل" },
+  FAILED: { class: "bg-danger-100 text-danger-600", label: "فشل" },
   CANCELLED: { class: "bg-ink-100 text-ink-500", label: "ملغي" },
 };
 
@@ -130,7 +130,7 @@ export default function DeliveryPage() {
 
   return (
     <div className="h-full flex flex-col" dir="rtl">
-      <div className="h-14 shrink-0 flex items-center justify-between px-6 border-b border-ink-200 bg-white">
+      <div className="h-14 shrink-0 flex items-center justify-between px-6 border-b border-ink-200 bg-surface-alt">
         <div className="flex items-center gap-3">
           <Truck className="w-5 h-5 text-saffron-600" />
           <h1 className="font-bold text-lg text-ink-800">إدارة التوصيل</h1>
@@ -148,7 +148,7 @@ export default function DeliveryPage() {
                 key={t.id}
                 onClick={() => setTab(t.id)}
                 className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-all ${
-                  tab === t.id ? "bg-white text-saffron-700 font-medium shadow-sh-1" : "text-ink-500 hover:text-ink-700"
+                  tab === t.id ? "bg-white text-saffron-700 font-medium" : "text-ink-500 hover:text-ink-700"
                 }`}
               >
                 <Icon className="w-4 h-4" />
@@ -271,20 +271,20 @@ function ActiveDeliveriesView({
 
               {d.delivery_status === "ASSIGNED" && (
                 <div className="flex gap-2">
-                  <button onClick={() => onUpdateStatus(d.log_id, "PICKED_UP")} className="flex-1 bg-purple-500 text-white rounded-md py-2 text-sm font-medium hover:bg-purple-600 transition-colors">
+                  <button onClick={() => onUpdateStatus(d.log_id, "PICKED_UP")} className="flex-1 bg-saffron-600 text-white rounded-md py-2 text-sm font-medium hover:bg-saffron-700 transition-colors">
                     تم الاستلام
                   </button>
-                  <button onClick={() => onUpdateStatus(d.log_id, "CANCELLED")} className="px-3 text-red-500 hover:text-red-600 text-sm">
+                  <button onClick={() => onUpdateStatus(d.log_id, "CANCELLED")} className="px-3 text-danger-600 hover:text-danger-700 text-sm">
                     إلغاء
                   </button>
                 </div>
               )}
               {d.delivery_status === "PICKED_UP" && (
                 <div className="flex gap-2">
-                  <button onClick={() => onUpdateStatus(d.log_id, "IN_TRANSIT")} className="flex-1 bg-amber-500 text-white rounded-md py-2 text-sm font-medium hover:bg-amber-600 transition-colors">
+                  <button onClick={() => onUpdateStatus(d.log_id, "IN_TRANSIT")} className="flex-1 bg-saffron-600 text-white rounded-md py-2 text-sm font-medium hover:bg-saffron-700 transition-colors">
                     قيد التوصيل
                   </button>
-                  <button onClick={() => onUpdateStatus(d.log_id, "FAILED")} className="px-3 text-red-500 hover:text-red-600 text-sm">
+                  <button onClick={() => onUpdateStatus(d.log_id, "FAILED")} className="px-3 text-danger-600 hover:text-danger-700 text-sm">
                     فشل
                   </button>
                 </div>
@@ -294,7 +294,7 @@ function ActiveDeliveriesView({
                   <button onClick={() => onUpdateStatus(d.log_id, "DELIVERED")} className="flex-1 bg-saffron-500 text-white rounded-md py-2 text-sm font-medium hover:bg-saffron-600 transition-colors">
                     تم التوصيل
                   </button>
-                  <button onClick={() => onUpdateStatus(d.log_id, "FAILED")} className="px-3 text-red-500 hover:text-red-600 text-sm">
+                  <button onClick={() => onUpdateStatus(d.log_id, "FAILED")} className="px-3 text-danger-600 hover:text-danger-700 text-sm">
                     فشل
                   </button>
                 </div>
@@ -360,7 +360,7 @@ function DriversView({
                   <span>{d.total_deliveries} توصيلة</span>
                   <span className="flex items-center gap-0.5">
                     {Array.from({ length: 5 }, (_, i) => (
-                      <Star key={i} className={`w-3 h-3 ${i < stars ? "text-amber-400 fill-amber-400" : "text-ink-200"}`} />
+                      <Star key={i} className={`w-3 h-3 ${i < stars ? "text-saffron-400 fill-saffron-400" : "text-ink-200"}`} />
                     ))}
                   </span>
                 </div>
@@ -457,7 +457,7 @@ function DriverForm({ editing, onClose, onSaved }: { editing: DriverRow | null; 
         </div>
       </div>
       <div className="flex justify-end gap-2 pt-1">
-        {error && <p className="text-sm text-red-500 flex-1">{error}</p>}
+        {error && <p className="text-sm text-danger-600 flex-1">{error}</p>}
         <button onClick={onClose} className="px-4 py-2 text-sm text-ink-500 hover:text-ink-700">إلغاء</button>
         <button onClick={handleSave} disabled={saving || !name.trim() || !phone.trim()} className="px-4 py-2 bg-saffron-500 text-white rounded-md text-sm font-medium hover:bg-saffron-600 disabled:opacity-50 transition-colors">
           {saving ? "جاري الحفظ..." : editing ? "حفظ التغييرات" : "إضافة"}
@@ -577,7 +577,7 @@ function ZoneForm({ editing, onClose, onSaved }: { editing: ZoneRow | null; onCl
         </div>
       </div>
       <div className="flex justify-end gap-2 pt-1">
-        {error && <p className="text-sm text-red-500 flex-1">{error}</p>}
+        {error && <p className="text-sm text-danger-600 flex-1">{error}</p>}
         <button onClick={onClose} className="px-4 py-2 text-sm text-ink-500 hover:text-ink-700">إلغاء</button>
         <button onClick={handleSave} disabled={saving || !name.trim()} className="px-4 py-2 bg-saffron-500 text-white rounded-md text-sm font-medium hover:bg-saffron-600 disabled:opacity-50 transition-colors">
           {saving ? "جاري الحفظ..." : editing ? "حفظ التغييرات" : "إضافة"}
@@ -606,7 +606,7 @@ function DeliveryHistoryView({ fmt }: { fmt: (c: number) => string }) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-ink-400">
         <History className="w-12 h-12 mb-3" />
-        <p className="text-lg font-medium text-red-500">{error}</p>
+        <p className="text-lg font-medium text-danger-600">{error}</p>
       </div>
     );
   }
@@ -626,7 +626,7 @@ function DeliveryHistoryView({ fmt }: { fmt: (c: number) => string }) {
       <h2 className="font-semibold text-ink-700">سجل التوصيل ({logs.length})</h2>
       <div className="overflow-x-auto rounded-lg border border-ink-200">
         <table className="w-full text-sm">
-          <thead className="bg-ink-50">
+          <thead className="bg-surface-alt">
             <tr>
               <th className="text-right px-4 py-2.5 text-ink-500 font-medium">العميل</th>
               <th className="text-right px-4 py-2.5 text-ink-500 font-medium">السائق</th>
@@ -639,7 +639,7 @@ function DeliveryHistoryView({ fmt }: { fmt: (c: number) => string }) {
             {logs.map((log: any) => {
               const badge = STATUS_BADGE[log.delivery_status] || STATUS_BADGE.CANCELLED;
               return (
-                <tr key={log.log_id} className="hover:bg-ink-50">
+                <tr key={log.log_id} className="hover:bg-saffron-50">
                   <td className="px-4 py-2.5 font-medium text-ink-700">{log.customer_name || "بدون اسم"}</td>
                   <td className="px-4 py-2.5 text-ink-600">{log.driver_name}</td>
                   <td className="px-4 py-2.5"><span className={`px-2 py-0.5 rounded-full text-xs font-medium ${badge.class}`}>{badge.label}</span></td>

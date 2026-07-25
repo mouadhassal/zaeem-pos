@@ -665,13 +665,13 @@ export default function MenuPage() {
   }
 
   return (
-    <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
+    <div className="p-6 space-y-6 overflow-y-auto h-full bg-canvas" dir="rtl">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-ink-900">إدارة القائمة</h1>
         {tab === "items" && (
           <button
             onClick={openAddItem}
-            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+            className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
             + إضافة صنف
           </button>
@@ -679,7 +679,7 @@ export default function MenuPage() {
         {tab === "categories" && (
           <button
             onClick={openAddCategory}
-            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+            className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
             + إضافة تصنيف
           </button>
@@ -687,7 +687,7 @@ export default function MenuPage() {
         {tab === "offers" && offerSubTab === "combos" && (
           <button
             onClick={openAddCombo}
-            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+            className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
             + إضافة وجبة مجمعة
           </button>
@@ -695,7 +695,7 @@ export default function MenuPage() {
         {tab === "offers" && offerSubTab === "happyhour" && (
           <button
             onClick={openAddHappyHour}
-            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+            className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
             + إضافة قاعدة
           </button>
@@ -708,10 +708,10 @@ export default function MenuPage() {
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`px-5 py-2 rounded-t-lg font-arabic font-medium text-sm transition-colors ${
+            className={`px-5 py-2 rounded-t-sm font-arabic font-medium text-sm transition-colors ${
               tab === t
-                ? "bg-saffron-600 text-white shadow-sh-1"
-                : "text-ink-500 hover:text-saffron-600 hover:bg-white"
+                ? "bg-saffron-600 text-white"
+                : "text-ink-500 hover:text-saffron-600 hover:bg-saffron-50"
             }`}
           >
             {t === "items" ? "الأصناف" : t === "categories" ? "التصنيفات" : "العروض"}
@@ -728,12 +728,12 @@ export default function MenuPage() {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="ابحث عن صنف..."
-              className="flex-1 h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+              className="flex-1 h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
             />
             <select
               value={filterCategory}
               onChange={(e) => setFilterCategory(e.target.value)}
-              className="h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+              className="h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
             >
               <option value="">كل التصنيفات</option>
               {categories.map((cat) => (
@@ -744,10 +744,10 @@ export default function MenuPage() {
             </select>
           </div>
 
-          <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
+          <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-ink-200 text-ink-400 font-arabic">
+                <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
                   <th className="text-right p-3 font-medium">الاسم</th>
                   <th className="text-right p-3 font-medium">التصنيف</th>
                   <th className="text-right p-3 font-medium">السعر</th>
@@ -761,7 +761,7 @@ export default function MenuPage() {
                 {filteredItems.map((item) => {
                   const margin = calcMargin(item.price_cents, item.cost_cents);
                   return (
-                    <tr key={item.id} className="border-b border-ink-200 hover:bg-white">
+                    <tr key={item.id} className="border-b border-ink-200 hover:bg-saffron-50">
                       <td className="p-3 font-arabic text-ink-900">{item.name}</td>
                       <td className="p-3">
                         <span className="inline-block px-3 py-1 rounded-full text-xs font-arabic bg-saffron-50 text-saffron-700">
@@ -807,14 +807,14 @@ export default function MenuPage() {
                         <div className="flex items-center justify-center gap-2">
                           <button
                             onClick={() => openEditItem(item)}
-                            className="p-1.5 rounded-lg text-xs text-saffron-600 hover:bg-saffron-50 transition-colors"
+                            className="p-1.5 rounded-sm text-xs text-saffron-600 hover:bg-saffron-50 transition-colors"
                             title="تعديل"
                           >
                             <IconPencil className="w-4 h-4" />
                           </button>
                           <button
                             onClick={() => setDeleteItemId(item.id)}
-                            className="p-1.5 rounded-lg text-xs text-red-500 hover:bg-red-50 transition-colors"
+                            className="p-1.5 rounded-sm text-xs text-red-500 hover:bg-red-50 transition-colors"
                             title="حذف"
                           >
                             <IconTrash className="w-4 h-4" />
@@ -844,7 +844,7 @@ export default function MenuPage() {
             {categories.map((cat) => (
               <div
                 key={cat.id}
-                className="bg-white rounded-2xl shadow-sh-1 p-4 flex items-center gap-4"
+                className="bg-white rounded-md border border-ink-200 p-4 flex items-center gap-4"
               >
                 <div
                   className="w-10 h-10 rounded-full flex-shrink-0"
@@ -859,7 +859,7 @@ export default function MenuPage() {
                 <div className="flex gap-1">
                   <button
                     onClick={() => openEditCategory(cat)}
-                    className="p-2 rounded-lg text-ink-500 hover:text-saffron-600 hover:bg-saffron-50 transition-colors"
+                    className="p-2 rounded-sm text-ink-500 hover:text-saffron-600 hover:bg-saffron-50 transition-colors"
                     title="تعديل"
                   >
                     <IconPencil className="w-4 h-4" />
@@ -872,7 +872,7 @@ export default function MenuPage() {
                       }
                       setDeleteCategoryId(cat.id);
                     }}
-                    className="p-2 rounded-lg text-ink-500 hover:text-red-500 hover:bg-red-50 transition-colors"
+                    className="p-2 rounded-sm text-ink-500 hover:text-red-500 hover:bg-red-50 transition-colors"
                     title="حذف"
                   >
                     <IconTrash className="w-4 h-4" />
@@ -897,10 +897,10 @@ export default function MenuPage() {
               <button
                 key={st}
                 onClick={() => setOfferSubTab(st)}
-                className={`px-4 py-2 rounded-lg font-arabic font-medium text-sm transition-colors ${
+                className={`px-4 py-2 rounded-sm font-arabic font-medium text-sm transition-colors ${
                   offerSubTab === st
-                    ? "bg-saffron-600 text-white shadow-sh-1"
-                    : "text-ink-500 hover:text-saffron-600 hover:bg-white"
+                    ? "bg-saffron-600 text-white"
+                    : "text-ink-500 hover:text-saffron-600 hover:bg-saffron-50"
                 }`}
               >
                 {st === "combos" ? "الوجبات المجمعة" : "ساعة السعادة"}
@@ -922,20 +922,20 @@ export default function MenuPage() {
                 return (
                   <div
                     key={combo.id}
-                    className="bg-white rounded-2xl shadow-sh-1 p-4 space-y-3"
+                    className="bg-white rounded-md border border-ink-200 p-4 space-y-3"
                   >
                     <div className="flex items-center justify-between">
                       <h3 className="font-arabic font-bold text-ink-900">{combo.name}</h3>
                       <div className="flex gap-2">
                         <button
                           onClick={() => openEditCombo(combo)}
-                          className="px-3 py-1.5 rounded-lg bg-blue-100 text-blue-700 text-xs font-bold hover:bg-blue-200 transition-colors"
+                          className="px-3 py-1.5 rounded-sm bg-blue-100 text-blue-700 text-xs font-bold hover:bg-blue-200 transition-colors"
                         >
                           تعديل
                         </button>
                         <button
                           onClick={() => setDeleteComboId(combo.id)}
-                          className="px-3 py-1.5 rounded-lg bg-red-100 text-red-700 text-xs font-bold hover:bg-red-200 transition-colors"
+                          className="px-3 py-1.5 rounded-sm bg-red-100 text-red-700 text-xs font-bold hover:bg-red-200 transition-colors"
                         >
                           حذف
                         </button>
@@ -981,10 +981,10 @@ export default function MenuPage() {
           )}
 
           {offerSubTab === "happyhour" && (
-            <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
+            <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-ink-200 text-ink-400 font-arabic">
+                  <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
                     <th className="text-right p-3 font-medium">الصنف</th>
                     <th className="text-right p-3 font-medium">الخصم</th>
                     <th className="text-right p-3 font-medium">اليوم</th>
@@ -998,7 +998,7 @@ export default function MenuPage() {
                   {happyHourRules.map((rule) => (
                     <tr
                       key={rule.id}
-                      className="border-b border-ink-200 hover:bg-white"
+                      className="border-b border-ink-200 hover:bg-saffron-50"
                     >
                       <td className="p-3 font-arabic text-ink-900">
                         {rule.menu_item_name}
@@ -1037,14 +1037,14 @@ export default function MenuPage() {
                         <div className="flex items-center justify-center gap-2">
                           <button
                             onClick={() => openEditHappyHour(rule)}
-                            className="p-1.5 rounded-lg text-xs text-saffron-600 hover:bg-saffron-50 transition-colors"
+                            className="p-1.5 rounded-sm text-xs text-saffron-600 hover:bg-saffron-50 transition-colors"
                             title="تعديل"
                           >
                             <IconPencil className="w-4 h-4" />
                           </button>
                           <button
                             onClick={() => deleteHappyHour(rule.id)}
-                            className="p-1.5 rounded-lg text-xs text-red-500 hover:bg-red-50 transition-colors"
+                            className="p-1.5 rounded-sm text-xs text-red-500 hover:bg-red-50 transition-colors"
                             title="حذف"
                           >
                             <IconTrash className="w-4 h-4" />
@@ -1085,7 +1085,7 @@ export default function MenuPage() {
                   value={itemForm.name}
                   onChange={(e) => setItemForm((p) => ({ ...p, name: e.target.value }))}
                   maxLength={100}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
                 />
                 {itemErrors.name && (
                   <p className="text-xs text-red-500 mt-1 font-arabic">{itemErrors.name}</p>
@@ -1097,7 +1097,7 @@ export default function MenuPage() {
                 <select
                   value={itemForm.category_id}
                   onChange={(e) => setItemForm((p) => ({ ...p, category_id: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
                 >
                   <option value="">اختر تصنيف</option>
                   {categories.map((cat) => (
@@ -1120,7 +1120,7 @@ export default function MenuPage() {
                     step="0.01"
                     value={itemForm.price_cents}
                     onChange={(e) => setItemForm((p) => ({ ...p, price_cents: e.target.value }))}
-                    className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                    className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                   />
                   {itemErrors.price_cents && (
                     <p className="text-xs text-red-500 mt-1 font-arabic">
@@ -1136,7 +1136,7 @@ export default function MenuPage() {
                     step="0.01"
                     value={itemForm.cost_cents}
                     onChange={(e) => setItemForm((p) => ({ ...p, cost_cents: e.target.value }))}
-                    className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                    className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                   />
                   {itemErrors.cost_cents && (
                     <p className="text-xs text-red-500 mt-1 font-arabic">
@@ -1154,7 +1154,7 @@ export default function MenuPage() {
                   type="text"
                   value={itemForm.barcode}
                   onChange={(e) => setItemForm((p) => ({ ...p, barcode: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                 />
                 {itemErrors.barcode && (
                   <p className="text-xs text-red-500 mt-1 font-arabic">{itemErrors.barcode}</p>
@@ -1167,7 +1167,7 @@ export default function MenuPage() {
                 </label>
                 {editItemId ? (
                   <div className="flex items-center gap-3">
-                    <div className="w-[62px] h-[62px] shrink-0 rounded-lg overflow-hidden border border-ink-200 bg-ink-100 flex items-center justify-center">
+                    <div className="w-[62px] h-[62px] shrink-0 rounded-md overflow-hidden border border-ink-200 bg-ink-100 flex items-center justify-center">
                       {itemPhoto ? (
                         <img src={itemPhoto} alt="" className="w-full h-full object-cover" />
                       ) : (
@@ -1177,7 +1177,7 @@ export default function MenuPage() {
                       )}
                     </div>
                     <div className="flex flex-col gap-1.5">
-                      <label className="h-9 px-4 rounded-lg bg-saffron-600 text-white text-xs font-arabic flex items-center justify-center cursor-pointer hover:bg-saffron-700 transition-colors">
+                      <label className="h-9 px-4 rounded-sm bg-saffron-600 text-white text-xs font-arabic flex items-center justify-center cursor-pointer hover:bg-saffron-700 transition-colors">
                         {uploadingPhoto ? "جاري الرفع..." : itemPhoto ? "تغيير الصورة" : "رفع صورة"}
                         <input
                           type="file"
@@ -1196,7 +1196,7 @@ export default function MenuPage() {
                           type="button"
                           onClick={removeItemPhoto}
                           disabled={uploadingPhoto}
-                          className="h-9 px-4 rounded-lg bg-white text-ink-700 border border-ink-200 text-xs font-arabic hover:bg-ink-50 transition-colors disabled:opacity-50"
+                          className="h-9 px-4 rounded-sm bg-white text-ink-700 border border-ink-200 text-xs font-arabic hover:bg-ink-50 transition-colors disabled:opacity-50"
                         >
                           إزالة الصورة
                         </button>
@@ -1219,7 +1219,7 @@ export default function MenuPage() {
                   value={itemForm.description}
                   onChange={(e) => setItemForm((p) => ({ ...p, description: e.target.value }))}
                   rows={3}
-                  className="w-full px-4 py-2 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500 resize-none"
+                  className="w-full px-4 py-2 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600 resize-none"
                 />
               </div>
 
@@ -1231,14 +1231,14 @@ export default function MenuPage() {
             <div className="flex gap-3 justify-end pt-2">
               <button
                 onClick={() => setShowItemModal(false)}
-                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
+                className="h-10 px-6 rounded-sm bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={saveItem}
                 disabled={savingItem}
-                className="h-10 px-6 rounded-xl bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                className="h-10 px-6 rounded-sm bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 {savingItem ? "جاري الحفظ..." : "حفظ"}
               </button>
@@ -1258,13 +1258,13 @@ export default function MenuPage() {
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setDeleteItemId(null)}
-                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
+                className="h-10 px-6 rounded-sm bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={confirmDeleteItem}
-                className="h-10 px-6 rounded-xl bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
+                className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
               >
                 حذف
               </button>
@@ -1284,13 +1284,13 @@ export default function MenuPage() {
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setDeleteComboId(null)}
-                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
+                className="h-10 px-6 rounded-sm bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={confirmDeleteCombo}
-                className="h-10 px-6 rounded-xl bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
+                className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
               >
                 حذف
               </button>
@@ -1315,7 +1315,7 @@ export default function MenuPage() {
                   value={categoryForm.name}
                   onChange={(e) => setCategoryForm((p) => ({ ...p, name: e.target.value }))}
                   maxLength={100}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
                 />
                 {categoryErrors.name && (
                   <p className="text-xs text-red-500 mt-1 font-arabic">{categoryErrors.name}</p>
@@ -1329,14 +1329,14 @@ export default function MenuPage() {
                     type="color"
                     value={categoryForm.color}
                     onChange={(e) => setCategoryForm((p) => ({ ...p, color: e.target.value }))}
-                    className="w-10 h-10 rounded-lg border border-ink-200 cursor-pointer"
+                    className="w-10 h-10 rounded-sm border border-ink-200 cursor-pointer"
                   />
                   <input
                     type="text"
                     value={categoryForm.color}
                     onChange={(e) => setCategoryForm((p) => ({ ...p, color: e.target.value }))}
                     placeholder="#667085"
-                    className="flex-1 h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                    className="flex-1 h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                   />
                 </div>
                 {categoryErrors.color && (
@@ -1351,7 +1351,7 @@ export default function MenuPage() {
                   min="0"
                   value={categoryForm.sort_order}
                   onChange={(e) => setCategoryForm((p) => ({ ...p, sort_order: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                 />
                 {categoryErrors.sort_order && (
                   <p className="text-xs text-red-500 mt-1 font-arabic">
@@ -1368,7 +1368,7 @@ export default function MenuPage() {
                   type="text"
                   value={categoryForm.image_path}
                   onChange={(e) => setCategoryForm((p) => ({ ...p, image_path: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-600"
                 />
               </div>
 
@@ -1380,14 +1380,14 @@ export default function MenuPage() {
             <div className="flex gap-3 justify-end pt-2">
               <button
                 onClick={() => setShowCategoryModal(false)}
-                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
+                className="h-10 px-6 rounded-sm bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={saveCategory}
                 disabled={savingCategory}
-                className="h-10 px-6 rounded-xl bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                className="h-10 px-6 rounded-sm bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 {savingCategory ? "جاري الحفظ..." : "حفظ"}
               </button>
@@ -1407,13 +1407,13 @@ export default function MenuPage() {
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setDeleteCategoryId(null)}
-                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
+                className="h-10 px-6 rounded-sm bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={confirmDeleteCategory}
-                className="h-10 px-6 rounded-xl bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
+                className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
               >
                 حذف
               </button>
@@ -1438,7 +1438,7 @@ export default function MenuPage() {
                   value={comboForm.name}
                   onChange={(e) => setComboForm((p) => ({ ...p, name: e.target.value }))}
                   maxLength={100}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
                 />
                 {comboErrors.name && (
                   <p className="text-xs text-red-500 mt-1 font-arabic">{comboErrors.name}</p>
@@ -1457,7 +1457,7 @@ export default function MenuPage() {
                   onChange={(e) =>
                     setComboForm((p) => ({ ...p, bundle_price_cents: e.target.value }))
                   }
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                 />
                 {comboErrors.bundle_price_cents && (
                   <p className="text-xs text-red-500 mt-1 font-arabic">
@@ -1485,7 +1485,7 @@ export default function MenuPage() {
                       <select
                         value={item.menu_item_id}
                         onChange={(e) => updateComboItem(idx, "menu_item_id", e.target.value)}
-                        className="flex-1 h-10 px-3 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                        className="flex-1 h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
                       >
                         <option value="">اختر صنف</option>
                         {menuItems.map((mi) => (
@@ -1499,7 +1499,7 @@ export default function MenuPage() {
                         min="1"
                         value={item.quantity}
                         onChange={(e) => updateComboItem(idx, "quantity", e.target.value)}
-                        className="w-20 h-10 px-3 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                        className="w-20 h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                       />
                       <button
                         onClick={() => removeComboItem(idx)}
@@ -1520,14 +1520,14 @@ export default function MenuPage() {
             <div className="flex gap-3 justify-end pt-2">
               <button
                 onClick={() => setShowComboModal(false)}
-                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
+                className="h-10 px-6 rounded-sm bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={saveCombo}
                 disabled={savingCombo}
-                className="h-10 px-6 rounded-xl bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                className="h-10 px-6 rounded-sm bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 {savingCombo ? "جاري الحفظ..." : "حفظ"}
               </button>
@@ -1550,7 +1550,7 @@ export default function MenuPage() {
                 <select
                   value={happyHourForm.menu_item_id}
                   onChange={(e) => setHappyHourForm((p) => ({ ...p, menu_item_id: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
                 >
                   <option value="">اختر صنف</option>
                   {menuItems.map((mi) => (
@@ -1578,7 +1578,7 @@ export default function MenuPage() {
                   onChange={(e) =>
                     setHappyHourForm((p) => ({ ...p, discount_percent: e.target.value }))
                   }
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                 />
                 {happyHourErrors.discount_percent && (
                   <p className="text-xs text-red-500 mt-1 font-arabic">
@@ -1594,7 +1594,7 @@ export default function MenuPage() {
                   onChange={(e) =>
                     setHappyHourForm((p) => ({ ...p, day_of_week: e.target.value }))
                   }
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
                 >
                   {DAY_NAMES.map((name, idx) => (
                     <option key={idx} value={idx}>
@@ -1620,7 +1620,7 @@ export default function MenuPage() {
                     onChange={(e) =>
                       setHappyHourForm((p) => ({ ...p, start_time: e.target.value }))
                     }
-                    className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                    className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                   />
                   {happyHourErrors.start_time && (
                     <p className="text-xs text-red-500 mt-1 font-arabic">
@@ -1638,7 +1638,7 @@ export default function MenuPage() {
                     onChange={(e) =>
                       setHappyHourForm((p) => ({ ...p, end_time: e.target.value }))
                     }
-                    className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                    className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                   />
                   {happyHourErrors.end_time && (
                     <p className="text-xs text-red-500 mt-1 font-arabic">
@@ -1680,14 +1680,14 @@ export default function MenuPage() {
             <div className="flex gap-3 justify-end pt-2">
               <button
                 onClick={() => setShowHappyHourModal(false)}
-                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
+                className="h-10 px-6 rounded-sm bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={saveHappyHour}
                 disabled={savingHappyHour}
-                className="h-10 px-6 rounded-xl bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                className="h-10 px-6 rounded-sm bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 {savingHappyHour ? "جاري الحفظ..." : "حفظ"}
               </button>

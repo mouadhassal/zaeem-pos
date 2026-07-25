@@ -5,9 +5,20 @@ import SplashScreen from "./components/SplashScreen";
 import { createBackup, startAutoBackup } from "./lib/backup";
 import { startMemoryMonitoring, measureStartup, startFpsMonitor } from "./lib/performance";
 import { logger } from "./lib/logger";
+import "@fontsource/inter/400.css";
+import "@fontsource/inter/500.css";
+import "@fontsource/inter/600.css";
+import "@fontsource/inter/700.css";
 import "@fontsource/tajawal/400.css";
 import "@fontsource/tajawal/500.css";
 import "@fontsource/tajawal/700.css";
+import "@fontsource/tajawal/800.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/500.css";
+import "@fontsource/jetbrains-mono/600.css";
+import "@fontsource/jetbrains-mono/700.css";
+import "@fontsource/space-grotesk/500.css";
+import "@fontsource/space-grotesk/700.css";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
@@ -22,7 +33,7 @@ if (import.meta.env.DEV && !("__TAURI__" in window)) {
   const mockInvoke = async (cmd: string): Promise<unknown> => {
     const empty: Record<string, unknown> = {
       needs_setup_v3: false,
-      get_chain_config_v3: { currency: "SAR", tax_mode: "exclusive", tax_rate_cents: 1500, secondary_tax_rate_cents: 0, service_charge_rate_cents: 0, chain_name: "Zaeem", branch_name: "Demo" },
+      get_chain_config_v3: { currency: "SAR", tax_mode: "exclusive", tax_rate_cents: 1500, secondary_tax_rate_cents: 0, service_charge_rate_cents: 0, chain_name: "WENZDES", branch_name: "Demo" },
       get_receipt_config_v3: { currency: "SAR" },
       get_discount_caps_v3: { caps: { cashier_percent: 10, manager_percent: 25, owner_percent: 100 }, your_cap_percent: 10 },
       list_tables_v3: [],

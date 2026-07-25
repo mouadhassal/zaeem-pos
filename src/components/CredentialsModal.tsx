@@ -21,8 +21,8 @@ export default function CredentialsModal({ isOpen, onClose }: { isOpen: boolean;
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" dir="rtl">
-      <div className="w-full max-w-lg bg-ink-50 border border-ink-200 rounded-2xl shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30 backdrop-blur-sm" dir="rtl">
+      <div className="w-full max-w-lg bg-white border border-line rounded-md shadow-sh-3 overflow-hidden">
         <div className="flex items-center justify-between p-6 border-b border-ink-200">
           <div>
             <h2 className="text-xl font-bold text-ink-900">بيانات تسجيل الدخول</h2>
@@ -45,7 +45,7 @@ export default function CredentialsModal({ isOpen, onClose }: { isOpen: boolean;
           </div>
 
           {credentials.map((cred) => (
-            <div key={cred.username} className="bg-ink-50 rounded-xl p-4 border border-ink-200/50">
+            <div key={cred.username} className="bg-surface-alt rounded-xl p-4 border border-line">
               <div className="flex items-center justify-between mb-3">
                 <div className={`inline-flex items-center gap-2 px-2.5 py-1 rounded-lg text-xs font-bold ${cred.bg} ${cred.color}`}>
                   {cred.role}
@@ -56,7 +56,7 @@ export default function CredentialsModal({ isOpen, onClose }: { isOpen: boolean;
                 <div className="space-y-1">
                   <label className="text-xs text-ink-400">اسم المستخدم</label>
                   <div className="flex items-center gap-2">
-                    <code className="flex-1 bg-ink-50 rounded-lg px-3 py-2 text-sm text-saffron-600 font-mono">{cred.username}</code>
+                    <code className="flex-1 bg-white rounded-lg px-3 py-2 text-sm text-saffron-600 font-mono">{cred.username}</code>
                     <button
                       onClick={() => copy(cred.username, cred.username)}
                       className="p-2 rounded-lg hover:bg-ink-100 text-ink-500 transition-colors"
@@ -68,7 +68,7 @@ export default function CredentialsModal({ isOpen, onClose }: { isOpen: boolean;
                 <div className="space-y-1">
                   <label className="text-xs text-ink-400">كلمة المرور</label>
                   <div className="flex items-center gap-2">
-                    <code className="flex-1 bg-ink-50 rounded-lg px-3 py-2 text-sm text-rose-400 font-mono">
+                    <code className="flex-1 bg-white rounded-lg px-3 py-2 text-sm text-rose-400 font-mono">
                       {showPasswords ? cred.password : "••••••••"}
                     </code>
                     <button
@@ -84,7 +84,7 @@ export default function CredentialsModal({ isOpen, onClose }: { isOpen: boolean;
           ))}
         </div>
 
-        <div className="p-6 border-t border-ink-200 bg-ink-50/50">
+        <div className="p-6 border-t border-line bg-surface-alt">
           <button onClick={onClose} className="w-full py-3 rounded-xl bg-saffron-600 hover:bg-saffron-600 text-white font-bold transition-colors">
             تم الفهم
           </button>

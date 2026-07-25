@@ -26,7 +26,7 @@ export default function TransferOrderModal({ currentTable, tables, onTransfer, o
 
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-surface rounded-2xl border border-ink-600 w-[450px]">
+      <div className="bg-white rounded-md border border-line shadow-sh-3 w-[450px]">
         <div className="px-6 py-4 border-b border-ink-200">
           <h2 className="font-arabic font-bold text-lg text-ink-900">نقل الطلبية</h2>
           {currentTable && (
@@ -59,7 +59,7 @@ export default function TransferOrderModal({ currentTable, tables, onTransfer, o
         <div className="px-6 py-4 border-t border-ink-200 flex justify-center">
           <button
             onClick={onCancel}
-            className="h-12 px-8 rounded-xl bg-surface text-ink-900 font-arabic font-bold hover:bg-ink-200"
+            className="h-12 px-8 rounded-xl bg-surface-alt text-ink-900 font-arabic font-bold hover:bg-ink-200"
           >
             إلغاء
           </button>

@@ -3,75 +3,65 @@
 @tailwind utilities;
 
 :root {
-  /* Corrected palette (docs/color-palette.md, "White-First with Saffron
-     Whisper") -- the previous ramp below was a burnt-persimmon orange
-     (#D14016) mislabeled "saffron", paired with a cool blue-gray canvas.
-     This is a token-value-only fix: every name below already existed and
-     is already wired into tailwind-preset.js/consumed by every component
-     via Tailwind classes (bg-accent, text-ink-500, bg-saffron-600, shadow-
-     sh-2, ...) -- nothing here renames a token or touches a component. */
-  --bg: #FFFCF7;
+  /* WENZDES Design System v1 — Warm Authority, Light Mode */
+  --bg: #FAF9F7;
   --panel-footer: #FFFFFF;
   --surface: #FFFFFF;
-  --surface-alt: #F1F5F9;
+  --surface-alt: #F5F2EE;
 
-  --text: #0F172A;
-  --text-2: #475569;
-  --text-3: #64748B;
-  --text-muted: #94A3B8;
+  --text: #1C1917;
+  --text-2: #292524;
+  --text-3: #57534E;
+  --text-muted: #A8A29E;
 
-  --line: #E2E8F0;
-  --line-2: #F1F5F9;
+  --line: #E7E5E4;
+  --line-2: #F5F2EE;
 
   --accent: #F4C430;
-  --accent-soft: #FEFBF0;
+  --accent-soft: #FEF8E0;
   --accent-text: #C2940A;
 
-  --ok: #16A34A;
-  --warn: #E9B10C;
-  --danger: #DC2626;
-  --danger-soft: #FEF2F2;
+  --ok: #15803D;
+  --warn: #C2410C;
+  --danger: #B91C1C;
+  --danger-soft: #FEE2E2;
 
-  --sh-1: 0 1px 2px rgba(15,23,42,.04);
-  --sh-2: 0 1px 3px rgba(15,23,42,.05), 0 1px 2px rgba(15,23,42,.03);
-  --sh-3: 0 4px 12px rgba(15,23,42,.06);
+  --sh-1: 0 1px 2px rgba(28,25,23,.04);
+  --sh-2: 0 1px 2px rgba(28,25,23,.04), 0 1px 3px rgba(28,25,23,.06);
+  --sh-3: 0 20px 25px -5px rgba(28,25,23,.08), 0 10px 10px -5px rgba(28,25,23,.04);
 
-  --ink-50: #F8FAFC;
-  --ink-100: #F1F5F9;
-  --ink-200: #E2E8F0;
-  --ink-300: #CBD5E1;
-  --ink-400: #94A3B8;
-  --ink-500: #64748B;
-  --ink-600: #475569;
-  --ink-700: #334155;
-  --ink-800: #1E293B;
-  --ink-900: #0F172A;
+  /* Warm neutral ink scale (no blue tint) */
+  --ink-50: #FAF9F7;
+  --ink-100: #F5F2EE;
+  --ink-200: #E7E5E4;
+  --ink-300: #D6D3D1;
+  --ink-400: #A8A29E;
+  --ink-500: #78716C;
+  --ink-600: #57534E;
+  --ink-700: #44403C;
+  --ink-800: #292524;
+  --ink-900: #1C1917;
 
-  /* `saffron` and `live` (success/active-status ramp) are referenced by
-     classes like bg-saffron-600/bg-live-700 across the app -- defined here
-     so every consumer inherits the real palette. Saffron is the true amber
-     scale from color-palette.md (extended to 800/900 with the same amber
-     family for the 2 consumers that need a darker shade); live is a
-     standard green scale anchored so live-600 equals --ok exactly, same
-     convention as the saffron ramp's 500 equaling --accent. */
-  --saffron-50: #FEFBF0;
+  /* Saffron ramp — true warm amber */
+  --saffron-50: #FEF8E0;
   --saffron-100: #FDF4D8;
   --saffron-200: #FBE9B1;
   --saffron-300: #F8DB81;
   --saffron-400: #F6CC51;
   --saffron-500: #F4C430;
-  --saffron-600: #E9B10C;
+  --saffron-600: #D9A820;
   --saffron-700: #C2940A;
   --saffron-800: #A07A08;
   --saffron-900: #836407;
 
+  /* Live/green ramp */
   --live-50: #F0FDF4;
   --live-100: #DCFCE7;
   --live-200: #BBF7D0;
   --live-300: #86EFAC;
   --live-400: #4ADE80;
   --live-500: #22C55E;
-  --live-600: #16A34A;
+  --live-600: #15803D;
   --live-700: #15803D;
   --live-800: #166534;
   --live-900: #14532D;
@@ -86,12 +76,13 @@ body {
   padding: 0;
   background-color: var(--bg);
   color: var(--text);
+  font-family: 'Inter', 'Tajawal', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 .tabular {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: 'JetBrains Mono', 'IBM Plex Mono', monospace;
   font-variant-numeric: tabular-nums;
 }
 

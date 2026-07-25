@@ -18,10 +18,10 @@ export default function TopBar() {
           <img src={logo} alt="شعار الفرع" className="w-8 h-8 rounded-lg object-cover" />
         ) : (
           <div className="w-8 h-8 rounded-[9px] flex items-center justify-center text-white text-sm font-bold" style={{ backgroundColor: "var(--accent)" }}>
-            ز
+            W
           </div>
         )}
-        <h1 className="text-base font-medium text-text">نقطة البيع</h1>
+        <h1 className="text-base font-bold text-text" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>WENZDES</h1>
       </div>
       <div className="flex items-center gap-3">
         <button className="w-9 h-9 rounded-[10px] flex items-center justify-center text-text-muted hover:bg-surface-alt transition-colors">
@@ -32,9 +32,9 @@ export default function TopBar() {
             className="w-8 h-8 rounded-[9px] flex items-center justify-center text-white text-sm font-bold"
             style={{ backgroundColor: "var(--accent)" }}
           >
-            {user?.name?.[0] || "ز"}
+            {user?.name?.[0] || "W"}
           </div>
-          <span className="text-sm text-text-2 hidden md:block">{user?.name || "زائر"}</span>
+          <span className="text-sm text-text-2 hidden md:block">{user?.name || "W"}</span>
         </div>
       </div>
     </header>

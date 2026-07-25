@@ -38,9 +38,9 @@ interface UploadItem {
 }
 
 function confidenceColor(c: number): string {
-  if (c >= 0.9) return "text-live-600 bg-live-100";
-  if (c >= 0.7) return "text-wait-600 bg-wait-100";
-  return "text-stop-600 bg-stop-100";
+  if (c >= 0.9) return "text-ok-600 bg-ok-100";
+  if (c >= 0.7) return "text-warn-600 bg-warn-100";
+  return "text-danger-600 bg-danger-100";
 }
 
 function confidenceLabel(c: number): string {
@@ -230,14 +230,14 @@ export default function AiOnboardingPage() {
           />
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="h-9 px-4 rounded-xl bg-saffron-600 text-white text-sm flex items-center gap-2 hover:bg-saffron-700 transition-colors"
+            className="h-9 px-4 rounded-sm bg-saffron-600 text-white text-sm flex items-center gap-2 hover:bg-saffron-700 transition-colors"
           >
             <Camera className="w-4 h-4" />
             إضافة صور
           </button>
           <button
             onClick={() => audioInputRef.current?.click()}
-            className="h-9 px-4 rounded-xl border border-ink-300 text-ink-700 text-sm flex items-center gap-2 hover:bg-ink-100 transition-colors"
+            className="h-9 px-4 rounded-sm border border-ink-300 text-ink-700 text-sm flex items-center gap-2 hover:bg-ink-100 transition-colors"
           >
             <Mic className="w-4 h-4" />
             تسجيل صوتي
@@ -247,7 +247,7 @@ export default function AiOnboardingPage() {
               <button
                 onClick={processAll}
                 disabled={processing}
-                className="h-9 px-4 rounded-xl bg-live-600 text-white text-sm flex items-center gap-2 hover:bg-live-700 transition-colors disabled:opacity-50"
+                className="h-9 px-4 rounded-sm bg-saffron-600 text-white text-sm flex items-center gap-2 hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 {processing ? "جاري المعالجة..." : "معالجة الكل"}
               </button>
@@ -255,7 +255,7 @@ export default function AiOnboardingPage() {
             {uploads.some((u) => u.status === "FAILED") && (
               <button
                 onClick={async () => { await invoke("reset_failed_uploads", { sessionToken: token }); await refreshUploads(); }}
-                className="h-9 px-4 rounded-xl border border-ink-300 text-ink-700 text-sm flex items-center gap-2 hover:bg-ink-100 transition-colors"
+                className="h-9 px-4 rounded-sm border border-ink-300 text-ink-700 text-sm flex items-center gap-2 hover:bg-ink-100 transition-colors"
               >
                 <RotateCcw className="w-4 h-4" />
                 إعادة المحاولة
@@ -272,20 +272,20 @@ export default function AiOnboardingPage() {
               <button
                 key={u.id}
                 onClick={() => selectUpload(i)}
-                className={`flex-shrink-0 w-16 h-16 rounded-xl border-2 transition-colors overflow-hidden relative ${
+                className={`flex-shrink-0 w-16 h-16 rounded-sm border-2 transition-colors overflow-hidden relative ${
                   selectedIdx === i
-                    ? "border-saffron-500 shadow-sh-1"
+                    ? "border-saffron-500"
                     : "border-ink-200 hover:border-ink-400"
                 }`}
               >
                 <div
                   className={`w-full h-full flex items-center justify-center text-xs font-bold ${
                     u.status === "DONE"
-                      ? "bg-live-100 text-live-700"
+                      ? "bg-ok-100 text-ok-700"
                       : u.status === "FAILED"
-                      ? "bg-stop-100 text-stop-700"
+                      ? "bg-danger-100 text-danger-700"
                       : u.status === "PROCESSING"
-                      ? "bg-wait-100 text-wait-700"
+                      ? "bg-warn-100 text-warn-700"
                       : "bg-ink-100 text-ink-500"
                   }`}
                 >
@@ -309,7 +309,7 @@ export default function AiOnboardingPage() {
                   <Camera className="w-16 h-16 mx-auto mb-2 opacity-30" />
                   <p className="text-sm font-arabic">معاينة الصورة</p>
                   {selectedItem.error && (
-                    <p className="text-xs text-stop-600 mt-2 font-arabic">{selectedItem.error}</p>
+                    <p className="text-xs text-danger-600 mt-2 font-arabic">{selectedItem.error}</p>
                   )}
                 </div>
               </div>
@@ -317,7 +317,7 @@ export default function AiOnboardingPage() {
               {/* Extraction results */}
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
                 {editing && applyResult && (
-                  <div className="px-4 py-3 rounded-xl bg-live-100 text-live-800 text-sm font-arabic">{applyResult}</div>
+                  <div className="px-4 py-3 rounded-sm bg-ok-100 text-ok-800 text-sm font-arabic">{applyResult}</div>
                 )}
 
                 <div className="flex items-center justify-between">
@@ -328,7 +328,7 @@ export default function AiOnboardingPage() {
                     {!editing && selectedItem.status === "DONE" && (
                       <button
                         onClick={startEditing}
-                        className="h-9 px-4 rounded-xl bg-saffron-600 text-white text-sm hover:bg-saffron-700 transition-colors"
+                        className="h-9 px-4 rounded-sm bg-saffron-600 text-white text-sm hover:bg-saffron-700 transition-colors"
                       >
                         تعديل
                       </button>
@@ -337,14 +337,14 @@ export default function AiOnboardingPage() {
                       <>
                         <button
                           onClick={() => { setEditing(false); setEditedDraft(null); setApplyResult(null); }}
-                          className="h-9 px-4 rounded-xl border border-ink-300 text-ink-700 text-sm hover:bg-ink-100 transition-colors"
+                          className="h-9 px-4 rounded-sm border border-ink-300 text-ink-700 text-sm hover:bg-ink-100 transition-colors"
                         >
                           إلغاء
                         </button>
                         <button
                           onClick={applyDraft}
                           disabled={applying}
-                          className="h-9 px-4 rounded-xl bg-live-600 text-white text-sm flex items-center gap-2 hover:bg-live-700 transition-colors disabled:opacity-50"
+                          className="h-9 px-4 rounded-sm bg-saffron-600 text-white text-sm flex items-center gap-2 hover:bg-saffron-700 transition-colors disabled:opacity-50"
                         >
                           {applying ? "جاري التطبيق..." : "تطبيق على النظام"}
                           <Check className="w-4 h-4" />
@@ -359,7 +359,7 @@ export default function AiOnboardingPage() {
                   const items = displayDraft.items.filter((i) => i.category_name === cat.name);
                   if (items.length === 0) return null;
                   return (
-                    <div key={cat.name} className="bg-white rounded-2xl shadow-sh-1 overflow-hidden">
+                    <div key={cat.name} className="bg-white rounded-md border border-ink-200 overflow-hidden">
                       <div className="bg-ink-50 px-4 py-2 flex items-center gap-2 border-b border-ink-200">
                         <span className={`inline-block w-2 h-2 rounded-full ${confidenceColor(cat.confidence)}`} />
                         <span className="font-bold text-ink-900 font-arabic text-sm">{cat.name}</span>
@@ -390,7 +390,7 @@ export default function AiOnboardingPage() {
                                       type="text"
                                       value={item.ar_name}
                                       onChange={(e) => updateItem(globalIdx, "ar_name", e.target.value)}
-                                      className="w-full h-9 px-3 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                                      className="w-full h-9 px-3 rounded-sm bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                                     />
                                   ) : (
                                     <div className="flex items-center gap-2">
@@ -420,7 +420,7 @@ export default function AiOnboardingPage() {
                                       step="0.01"
                                       value={formatCents(item.price_cents)}
                                       onChange={(e) => updateItem(globalIdx, "price_cents", parseCents(e.target.value))}
-                                      className="w-24 h-9 px-3 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm text-left outline-none focus:border-saffron-500"
+                                      className="w-24 h-9 px-3 rounded-sm bg-white border border-ink-200 text-ink-900 font-mono text-sm text-left outline-none focus:border-saffron-500"
                                       dir="ltr"
                                     />
                                   ) : (
@@ -433,7 +433,7 @@ export default function AiOnboardingPage() {
                                     <select
                                       value={item.category_name}
                                       onChange={(e) => updateItem(globalIdx, "category_name", e.target.value)}
-                                      className="h-9 px-2 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-xs outline-none focus:border-saffron-500"
+                                      className="h-9 px-2 rounded-sm bg-white border border-ink-200 text-ink-900 font-arabic text-xs outline-none focus:border-saffron-500"
                                     >
                                       {displayDraft.categories.map((c) => (
                                         <option key={c.name} value={c.name}>{c.name}</option>
@@ -456,7 +456,7 @@ export default function AiOnboardingPage() {
                                       </button>
                                       <button
                                         onClick={() => removeItem(itemIdx)}
-                                        className="p-1.5 rounded-lg text-ink-400 hover:text-stop-600 hover:bg-stop-50 transition-colors"
+                                        className="p-1.5 rounded-lg text-ink-400 hover:text-danger-600 hover:bg-danger-50 transition-colors"
                                         title="حذف"
                                       >
                                         <Trash2 className="w-3.5 h-3.5" />
@@ -489,7 +489,7 @@ export default function AiOnboardingPage() {
                                       />
                                       <button
                                         onClick={() => removeModifier(globalIdx, mi)}
-                                        className="p-1 rounded text-ink-400 hover:text-stop-600"
+                                        className="p-1 rounded text-ink-400 hover:text-danger-600"
                                       >
                                         <X className="w-3 h-3" />
                                       </button>
@@ -519,14 +519,14 @@ export default function AiOnboardingPage() {
                 <div className="flex justify-center gap-3">
                   <button
                     onClick={() => fileInputRef.current?.click()}
-                    className="h-10 px-6 rounded-xl bg-saffron-600 text-white text-sm flex items-center gap-2 hover:bg-saffron-700 transition-colors"
+                    className="h-10 px-6 rounded-sm bg-saffron-600 text-white text-sm flex items-center gap-2 hover:bg-saffron-700 transition-colors"
                   >
                     <Upload className="w-4 h-4" />
                     رفع صور القائمة
                   </button>
                   <button
                     onClick={() => audioInputRef.current?.click()}
-                    className="h-10 px-6 rounded-xl border border-ink-300 text-ink-700 text-sm flex items-center gap-2 hover:bg-ink-100 transition-colors"
+                    className="h-10 px-6 rounded-sm border border-ink-300 text-ink-700 text-sm flex items-center gap-2 hover:bg-ink-100 transition-colors"
                   >
                     <Mic className="w-4 h-4" />
                     تسجيل صوتي

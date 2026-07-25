@@ -29,7 +29,7 @@ export default function OrderTypeSelector({ onSelect, onClose }: Props) {
               <button
                 key={t.id}
                 onClick={() => onSelect(t.id)}
-                className={`p-4 rounded-xl border-2 text-right transition-all group ${t.color}`}
+                className={`p-4 rounded-md border-2 text-right transition-all group ${t.color}`}
               >
                 <div className="flex items-center gap-3">
                   <IconComp className="w-6 h-6 shrink-0" stroke={1.75} />
@@ -45,7 +45,7 @@ export default function OrderTypeSelector({ onSelect, onClose }: Props) {
         <div className="px-6 py-4 border-t border-line">
           <button
             onClick={onClose}
-            className="w-full h-11 rounded-xl bg-surface-alt text-text-3 font-arabic font-bold hover:bg-line transition-colors"
+            className="w-full h-11 rounded-sm bg-surface-alt text-text-3 font-arabic font-bold hover:bg-line transition-colors"
           >
             إلغاء
           </button>

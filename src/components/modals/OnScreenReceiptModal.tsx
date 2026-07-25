@@ -21,7 +21,7 @@ export default function OnScreenReceiptModal({ receiptData, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-surface rounded-2xl border border-ink-600 w-[400px] max-h-[80vh] overflow-y-auto">
+      <div className="bg-white rounded-md border border-line shadow-sh-3 w-[400px] max-h-[80vh] overflow-y-auto">
         <div className="px-6 py-4 border-b border-ink-200 flex items-center justify-between">
           <h2 className="font-arabic font-bold text-lg text-ink-900">الفاتورة</h2>
           <button
@@ -40,7 +40,7 @@ export default function OnScreenReceiptModal({ receiptData, onClose }: Props) {
           </p>
           <button
             onClick={onClose}
-            className="w-full h-12 rounded-xl bg-accent text-white font-arabic font-bold hover:bg-accent-text"
+            className="w-full h-12 rounded-xl bg-saffron-600 text-white font-arabic font-bold hover:bg-accent-text"
           >
             تم
           </button>

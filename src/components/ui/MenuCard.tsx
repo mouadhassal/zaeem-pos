@@ -14,7 +14,7 @@ export default function MenuCard({
   onAdd,
 }: Props) {
   return (
-    <div className="bg-white rounded-2xl overflow-hidden shadow-sh-1 hover:border-ink-600 hover:-translate-y-0.5 transition-all duration-200">
+    <div className="bg-white border border-ink-200 rounded-md overflow-hidden hover:border-ink-600 hover:-translate-y-0.5 transition-all duration-200">
       <div
         className="h-28 bg-white flex items-center justify-center overflow-hidden"
         style={categoryColor ? { borderTop: `3px solid ${categoryColor}` } : undefined}
@@ -26,7 +26,11 @@ export default function MenuCard({
             className="w-full h-full object-cover"
           />
         ) : (
-          <span className="text-3xl opacity-30">🍽</span>
+          <svg className="w-8 h-8 text-ink-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <circle cx="9" cy="21" r="1" />
+            <circle cx="20" cy="21" r="1" />
+            <path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6" />
+          </svg>
         )}
       </div>
       <div className="p-3 space-y-2">

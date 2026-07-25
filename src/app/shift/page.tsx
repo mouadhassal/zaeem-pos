@@ -222,7 +222,7 @@ export default function ShiftPage() {
   if (initialLoading) {
     return (
       <div className="flex items-center justify-center h-full" dir="rtl">
-        <div className="bg-surface rounded-[13px] p-8 w-full max-w-sm space-y-4 shadow-sh-2 border border-line">
+        <div className="bg-surface rounded-[13px] p-8 w-full max-w-sm space-y-4 border border-line">
           <div className="h-6 w-40 mx-auto rounded bg-surface-alt animate-pulse" />
           <div className="h-14 w-full rounded-xl bg-surface-alt animate-pulse" />
           <div className="h-14 w-full rounded-xl bg-surface-alt animate-pulse" />
@@ -234,7 +234,7 @@ export default function ShiftPage() {
   if (summary) {
     return (
       <div className="flex items-center justify-center h-full" dir="rtl">
-        <div className="bg-surface rounded-[13px] p-8 w-full max-w-sm space-y-6 shadow-sh-3 border border-line">
+        <div className="bg-surface rounded-[13px] p-8 w-full max-w-sm space-y-6 border border-line">
           <div className="text-center space-y-1">
             <div className="w-12 h-12 rounded-full bg-accent-soft flex items-center justify-center mx-auto mb-1">
               <IconReceipt2 className="w-6 h-6 text-accent-text" stroke={1.75} />
@@ -268,7 +268,7 @@ export default function ShiftPage() {
           </div>
           <button
             onClick={() => setSummary(null)}
-            className="w-full h-14 rounded-xl bg-accent text-white font-bold hover:bg-accent-text shadow-sh-3 active:scale-[0.98] transition-all"
+            className="w-full h-14 rounded-xl bg-accent text-white font-bold hover:bg-accent-text active:scale-[0.98] transition-all"
           >
             فتح وردية جديدة
           </button>
@@ -280,7 +280,7 @@ export default function ShiftPage() {
   if (!activeShift) {
     return (
       <div className="flex items-center justify-center h-full" dir="rtl">
-        <div className="bg-surface rounded-[13px] p-8 w-full max-w-sm space-y-6 shadow-sh-3 border border-line">
+        <div className="bg-surface rounded-[13px] p-8 w-full max-w-sm space-y-6 border border-line">
           <div className="text-center space-y-2">
             <div className="w-12 h-12 rounded-full bg-accent-soft flex items-center justify-center mx-auto mb-1">
               <IconClockHour3 className="w-6 h-6 text-accent-text" stroke={1.75} />
@@ -306,7 +306,7 @@ export default function ShiftPage() {
           <button
             onClick={handleStartShift}
             disabled={startingShift}
-            className="w-full h-14 rounded-xl bg-accent text-white font-bold text-lg flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-accent-text shadow-sh-3 active:scale-[0.98] transition-all"
+            className="w-full h-14 rounded-xl bg-accent text-white font-bold text-lg flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-accent-text active:scale-[0.98] transition-all"
           >
             {startingShift ? (
               "جاري..."
@@ -338,27 +338,27 @@ export default function ShiftPage() {
       </div>
 
       <div className="grid grid-cols-4 gap-4">
-        <div className="bg-surface rounded-[13px] p-4 shadow-sh-2 border border-line">
+        <div className="bg-surface rounded-[13px] p-4 border border-line">
           <div className="flex items-center gap-1.5 text-text-3 text-xs mb-1.5">
             <IconClockHour3 className="w-3.5 h-3.5" stroke={1.75} />
             الوقت المنقضي
           </div>
           <p className="text-2xl font-bold font-mono tabular text-accent-text" dir="ltr">{elapsed}</p>
         </div>
-        <div className="bg-surface rounded-[13px] p-4 shadow-sh-2 border border-line">
+        <div className="bg-surface rounded-[13px] p-4 border border-line">
           <div className="flex items-center gap-1.5 text-text-3 text-xs mb-1.5">
             <IconReceipt2 className="w-3.5 h-3.5" stroke={1.75} />
             عدد الطلبات
           </div>
           <p className="text-2xl font-bold text-text tabular">{stats.orderCount}</p>
         </div>
-        <div className="bg-surface rounded-[13px] p-4 shadow-sh-2 border border-line">
+        <div className="bg-surface rounded-[13px] p-4 border border-line">
           <div className="flex items-center gap-1.5 text-text-3 text-xs mb-1.5">
             إجمالي المبيعات
           </div>
           <p className="text-2xl font-bold text-accent-text font-mono tabular" dir="ltr">{fmtCurrency(stats.totalSales, currency)}</p>
         </div>
-        <div className="bg-surface rounded-[13px] p-4 shadow-sh-2 border border-line">
+        <div className="bg-surface rounded-[13px] p-4 border border-line">
           <div className="flex items-center gap-1.5 text-text-3 text-xs mb-1.5">
             <IconCash className="w-3.5 h-3.5" stroke={1.75} />
             نقدي
@@ -367,7 +367,7 @@ export default function ShiftPage() {
         </div>
       </div>
 
-      <div className="bg-surface rounded-[13px] p-4 shadow-sh-2 border border-line">
+      <div className="bg-surface rounded-[13px] p-4 border border-line">
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-bold text-text">آخر الطلبات</h2>
           <div className="flex items-center gap-1.5 text-text-3 text-xs">
@@ -400,8 +400,7 @@ export default function ShiftPage() {
       <div className="flex justify-center pt-4">
         <button
           onClick={openCloseModal}
-          className="h-14 px-10 rounded-xl text-white font-bold text-base flex items-center gap-2.5 shadow-sh-3 active:scale-[0.98] transition-all"
-          style={{ background: "var(--danger)" }}
+          className="h-14 px-10 rounded-xl bg-red-50 text-red-600 border border-red-200 font-bold text-base flex items-center gap-2.5 active:scale-[0.98] transition-all"
         >
           <IconLogout2 className="w-5 h-5" stroke={1.75} />
           إغلاق الوردية

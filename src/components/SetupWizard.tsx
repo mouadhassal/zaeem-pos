@@ -85,12 +85,12 @@ export default function SetupWizard() {
                 <UtensilsCrossed className="w-8 h-8 text-white" />
               </div>
               <h1 className="text-3xl font-bold text-ink-800 mb-2 tracking-tight">
-                زعيم <span className="text-saffron-600">Zaeem</span>
+                WENZDES
               </h1>
               <p className="text-ink-400 text-sm">بيانات الفرع</p>
             </div>
 
-            <div className="bg-white border border-ink-200 rounded-md p-8 shadow-sh-1">
+            <div className="bg-white border border-ink-200 rounded-md p-8">
               {error && (
                 <div className="mb-6 flex items-center gap-2 p-3 rounded-sm bg-red-50 border border-red-200 text-red-600 text-sm">
                   <AlertCircle className="w-4 h-4 shrink-0" />
@@ -191,12 +191,12 @@ export default function SetupWizard() {
               <UtensilsCrossed className="w-8 h-8 text-white" />
             </div>
             <h1 className="text-3xl font-bold text-ink-800 mb-2 tracking-tight">
-              زعيم <span className="text-saffron-600">Zaeem</span>
+              WENZDES
             </h1>
             <p className="text-ink-400 text-sm">الإعداد الأولي — إنشاء حساب المالك</p>
           </div>
 
-          <div className="bg-white border border-ink-200 rounded-md p-8 shadow-sh-1">
+          <div className="bg-white border border-ink-200 rounded-md p-8">
             {error && (
               <div className="mb-6 flex items-center gap-2 p-3 rounded-sm bg-red-50 border border-red-200 text-red-600 text-sm">
                 <AlertCircle className="w-4 h-4 shrink-0" />

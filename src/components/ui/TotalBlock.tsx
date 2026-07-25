@@ -11,14 +11,14 @@ export default function TotalBlock({ totalCents, currencySymbol, usdTotal }: Pro
   return (
     <div className="text-center">
       {usdTotal && (
-        <div className="tabular text-[11px] text-text-muted mb-0.5">≈ {usdTotal} USD</div>
+        <div className="tabular-nums tabular text-[11px] text-text-muted mb-0.5">≈ {usdTotal} USD</div>
       )}
       <div
-        className="tabular text-text font-medium leading-none"
+        className="tabular-nums tabular text-text font-medium leading-none"
         style={{
           fontSize: 44,
           letterSpacing: "-0.02em",
-          fontFamily: "'IBM Plex Mono', monospace",
+          fontFamily: "'JetBrains Mono', monospace",
         }}
       >
         {currencySymbol}{fmt(totalCents)}

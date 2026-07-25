@@ -56,7 +56,7 @@ export default function ManagerPinModal({
       className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-[60]"
       dir="rtl"
     >
-      <div className="bg-surface rounded-2xl border border-ink-600 w-[380px] overflow-hidden">
+      <div className="bg-white rounded-md border border-line shadow-sh-3 w-[380px] overflow-hidden">
         <div className="px-6 py-4 border-b border-ink-200">
           <h3 className="font-arabic font-bold text-lg text-ink-900">{title}</h3>
           <p className="font-arabic text-sm text-ink-400 mt-1">{description}</p>
@@ -74,7 +74,7 @@ export default function ManagerPinModal({
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleVerify();
               }}
-              className="w-full h-12 text-center font-mono text-lg bg-surface border-2 border-ink-200 rounded-xl outline-none focus:border-accent transition-all"
+              className="w-full h-12 text-center font-mono text-lg bg-white border-2 border-ink-200 rounded-sm outline-none focus:border-accent transition-all"
               autoFocus
               dir="ltr"
               maxLength={6}
@@ -90,26 +90,26 @@ export default function ManagerPinModal({
               <button
                 key={n}
                 onClick={() => setPin((p) => p.length < 6 ? p + n : p)}
-                className="h-12 rounded-xl bg-surface border border-ink-200 font-mono text-lg font-bold text-ink-900 hover:bg-ink-100 active:bg-ink-100 transition-colors"
+                className="h-12 rounded-xl bg-white border border-ink-200 font-mono text-lg font-bold text-ink-900 hover:bg-ink-100 active:bg-ink-100 transition-colors"
               >
                 {n}
               </button>
             ))}
             <button
               onClick={() => setPin((p) => p.slice(0, -1))}
-              className="h-12 rounded-xl bg-surface border border-ink-200 text-ink-500 hover:bg-ink-100 flex items-center justify-center transition-colors"
+              className="h-12 rounded-xl bg-white border border-ink-200 text-ink-500 hover:bg-ink-100 flex items-center justify-center transition-colors"
             >
               <IconBackspace className="w-5 h-5" stroke={1.75} />
             </button>
             <button
               onClick={() => setPin((p) => p.length < 6 ? p + "0" : p)}
-              className="h-12 rounded-xl bg-surface border border-ink-200 font-mono text-lg font-bold text-ink-900 hover:bg-ink-100 transition-colors"
+              className="h-12 rounded-xl bg-white border border-ink-200 font-mono text-lg font-bold text-ink-900 hover:bg-ink-100 transition-colors"
             >
               0
             </button>
             <button
               onClick={() => setPin("")}
-              className="h-12 rounded-xl bg-surface border border-ink-200 text-ink-500 hover:bg-ink-100 flex items-center justify-center transition-colors"
+              className="h-12 rounded-xl bg-white border border-ink-200 text-ink-500 hover:bg-ink-100 flex items-center justify-center transition-colors"
             >
               <IconX className="w-4 h-4" stroke={1.75} />
             </button>
@@ -119,14 +119,14 @@ export default function ManagerPinModal({
         <div className="px-6 py-4 border-t border-ink-200 flex gap-3">
           <button
             onClick={onCancel}
-            className="flex-1 h-12 rounded-xl bg-surface text-ink-900 font-arabic font-bold hover:bg-ink-200 transition-colors"
+            className="flex-1 h-12 rounded-xl bg-surface-alt text-ink-900 font-arabic font-bold hover:bg-ink-200 transition-colors"
           >
             إلغاء
           </button>
           <button
             onClick={handleVerify}
             disabled={loading || pin.length < 4}
-            className="flex-1 h-12 rounded-xl bg-accent text-white font-arabic font-bold hover:bg-accent-text shadow-sh-3 disabled:opacity-50 transition-all"
+            className="flex-1 h-12 rounded-xl bg-saffron-600 text-white font-arabic font-bold hover:bg-accent-text disabled:opacity-50 transition-all"
           >
             {loading ? "جاري..." : "تأكيد"}
           </button>

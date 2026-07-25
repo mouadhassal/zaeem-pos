@@ -39,7 +39,7 @@ export default function DriverSelectModal({ selectedId, onSelect, onClose }: Pro
 
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-surface rounded-2xl border border-ink-600 w-[420px] max-h-[80vh] overflow-hidden">
+      <div className="bg-white rounded-md border border-line shadow-sh-3 w-[420px] max-h-[80vh] overflow-hidden">
         <div className="px-6 py-4 border-b border-ink-200 flex items-center justify-between">
           <h2 className="font-bold text-lg text-ink-900">اختيار سائق التوصيل</h2>
           <button onClick={onClose} className="text-ink-400 hover:text-ink-600">
@@ -108,7 +108,7 @@ export default function DriverSelectModal({ selectedId, onSelect, onClose }: Pro
         <div className="px-6 py-4 border-t border-ink-200">
           <button
             onClick={onClose}
-            className="w-full h-12 rounded-xl bg-surface text-ink-900 font-bold hover:bg-ink-100 transition-colors"
+            className="w-full h-12 rounded-xl bg-surface-alt text-ink-900 font-bold hover:bg-ink-100 transition-colors"
           >
             {selectedId ? "تأكيد" : "إلغاء"}
           </button>

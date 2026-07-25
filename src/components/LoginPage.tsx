@@ -36,9 +36,9 @@ export default function LoginPage() {
             className="w-14 h-14 rounded-[13px] flex items-center justify-center text-white text-2xl font-bold mx-auto mb-4"
             style={{ backgroundColor: "var(--accent)" }}
           >
-            ز
+            W
           </div>
-          <h1 className="text-2xl font-bold text-text mb-1">زعيم</h1>
+          <h1 className="text-2xl font-bold text-text mb-1">WENZDES</h1>
           <p className="text-sm text-text-3">نظام إدارة المطاعم</p>
         </div>
 
@@ -68,7 +68,7 @@ export default function LoginPage() {
                 <button
                   key={k}
                   onClick={handleBackspace}
-                  className="rounded-[12px] bg-surface-alt text-text-2 text-xl font-medium transition-all active:scale-95 shadow-sh-1"
+                  className="rounded-[12px] bg-surface-alt text-text-2 text-xl font-medium transition-all active:scale-95"
                   style={{ minHeight: 52, minWidth: 52 }}
                 >
                   ⌫
@@ -80,7 +80,7 @@ export default function LoginPage() {
                 key={k}
                 onClick={() => handleDigit(k)}
                 disabled={loading}
-                className="rounded-[12px] bg-surface text-text text-xl font-medium transition-all active:scale-95 shadow-sh-1 disabled:opacity-50"
+                className="rounded-[12px] bg-surface text-text text-xl font-medium transition-all active:scale-95 disabled:opacity-50"
                 style={{ minHeight: 52, minWidth: 52 }}
               >
                 {k}
@@ -107,7 +107,7 @@ export default function LoginPage() {
               دخول سريع (dev)
             </button>
           )}
-          <p className="text-[10px] text-text-muted mt-2">Zaeem POS © 2026</p>
+          <p className="text-[10px] text-text-muted mt-2">WENZDES POS © 2026</p>
         </div>
       </div>
     </div>

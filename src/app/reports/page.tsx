@@ -118,24 +118,24 @@ export default function ReportsPage() {
         <button
           onClick={exportPdf}
           disabled={exportingPdf}
-          className="h-10 px-4 rounded-xl bg-red-600 text-white text-sm font-bold hover:bg-red-700 transition-colors disabled:opacity-50"
+          className="h-10 px-4 rounded-sm bg-red-50 text-red-600 border border-red-200 text-sm font-bold hover:bg-red-100 transition-colors disabled:opacity-50"
         >
           {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
         </button>
       </div>
 
       <div className="grid grid-cols-3 gap-4">
-        <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sh-1">
+        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic">إجمالي المبيعات اليوم</p>
           <p className="text-2xl font-bold text-saffron-600 font-mono">
             {fmt(Math.round(summary.totalSales * 100))}
           </p>
         </div>
-        <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sh-1">
+        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic">عدد الطلبات</p>
           <p className="text-2xl font-bold text-ink-900">{summary.orderCount}</p>
         </div>
-        <div className="bg-white rounded-2xl p-4 space-y-1 shadow-sh-1">
+        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic">متوسط الفاتورة</p>
           <p className="text-2xl font-bold text-ink-900 font-mono">
             {fmt(Math.round(summary.avgTicket * 100))}
@@ -144,7 +144,7 @@ export default function ReportsPage() {
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        <div className="bg-white rounded-2xl p-4 space-y-3 shadow-sh-1">
+        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-3">
           <h2 className="font-bold text-ink-900 font-arabic">أفضل الأصناف</h2>
           {summary.topItems.map((item, i) => (
             <div key={i} className="flex justify-between text-sm">
@@ -154,7 +154,7 @@ export default function ReportsPage() {
           ))}
         </div>
 
-        <div className="bg-white rounded-2xl p-4 space-y-3 shadow-sh-1">
+        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-3">
           <h2 className="font-bold text-ink-900 font-arabic">أداء الموظفين</h2>
           {summary.staffPerformance.map((staff, i) => (
             <div key={i} className="flex justify-between text-sm">
@@ -165,7 +165,7 @@ export default function ReportsPage() {
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl p-4 space-y-3 shadow-sh-1">
+      <div className="bg-white rounded-md border border-ink-200 p-4 space-y-3">
         <h2 className="font-bold text-ink-900 font-arabic">حالة المخزون</h2>
         {summary.inventoryStatus.map((inv, i) => (
           <div key={i} className="flex justify-between text-sm">

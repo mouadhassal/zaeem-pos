@@ -47,12 +47,12 @@ export default function SplashScreen({ onComplete }: Props) {
       dir="rtl"
     >
       <div className="flex flex-col items-center gap-8">
-        <div className="w-16 h-16 rounded-2xl bg-saffron-600 flex items-center justify-center shadow-sh-3 shadow-saffron-600\/30">
-          <span className="text-white text-3xl font-bold">ز</span>
+        <div className="w-16 h-16 rounded-2xl bg-saffron-600 flex items-center justify-center">
+          <span className="text-white text-3xl font-bold">W</span>
         </div>
 
         <div className="text-center space-y-2">
-          <h1 className="text-2xl font-bold text-ink-900">زعيم</h1>
+          <h1 className="text-2xl font-bold text-ink-900">WENZDES</h1>
           <p className="text-sm text-ink-500 font-arabic">نقاط البيع</p>
         </div>
 

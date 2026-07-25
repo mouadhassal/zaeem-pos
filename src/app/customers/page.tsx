@@ -326,21 +326,21 @@ export default function CustomersPage() {
   }
 
   return (
-    <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
+    <div className="bg-canvas p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-ink-900">قاعدة العملاء</h1>
         <div className="flex gap-2">
           <button
             onClick={openAdd}
-            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+            className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
             + إضافة عميل
           </button>
           <button
             onClick={exportPdf}
             disabled={exportingPdf}
-            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+            className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
           >
             {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
           </button>
@@ -353,14 +353,14 @@ export default function CustomersPage() {
         value={searchQuery}
         onChange={(e) => setSearchQuery(e.target.value)}
         placeholder="ابحث بالاسم أو الهاتف..."
-        className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+        className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
       />
 
       {/* Table */}
-      <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
+      <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-ink-200 text-ink-400 font-arabic">
+            <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
               <th className="text-right p-3 font-medium">الاسم</th>
               <th className="text-right p-3 font-medium">الهاتف</th>
               <th className="text-center p-3 font-medium">عدد الطلبات</th>
@@ -374,7 +374,7 @@ export default function CustomersPage() {
             {filtered.map((c) => (
               <tr
                 key={c.id}
-                className="border-b border-ink-200 hover:bg-white cursor-pointer"
+                className="border-b border-ink-200 hover:bg-saffron-50 cursor-pointer"
                 onClick={() => openDetail(c)}
               >
                 <td className="p-3 font-arabic text-ink-900 font-medium">{c.name}</td>
@@ -393,21 +393,21 @@ export default function CustomersPage() {
                   <div className="flex items-center justify-center gap-1">
                     <button
                       onClick={(e) => { e.stopPropagation(); openDetail(c); }}
-                      className="p-1.5 rounded-lg text-xs text-saffron-600 hover:bg-saffron-50 transition-colors"
+                      className="p-1.5 rounded-sm text-xs text-saffron-600 hover:bg-saffron-50 transition-colors"
                       title="الطلبات"
                     >
                       <IconEye className="w-4 h-4" />
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); openEdit(c); }}
-                      className="p-1.5 rounded-lg text-xs text-amber-600 hover:bg-amber-50 transition-colors"
+                      className="p-1.5 rounded-sm text-xs text-amber-600 hover:bg-amber-50 transition-colors"
                       title="تعديل"
                     >
                       <IconPencil className="w-4 h-4" />
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); setDeleteId(c.id); }}
-                      className="p-1.5 rounded-lg text-xs text-red-500 hover:bg-red-50 transition-colors"
+                      className="p-1.5 rounded-sm text-xs text-red-500 hover:bg-red-50 transition-colors"
                       title="حذف"
                     >
                       <IconTrash className="w-4 h-4" />
@@ -430,7 +430,7 @@ export default function CustomersPage() {
       {/* Add/Edit Modal */}
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
+          <div className="bg-white rounded-md shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
             <h2 className="text-lg font-bold font-arabic text-ink-900">
               {editId ? "تعديل عميل" : "إضافة عميل"}
             </h2>
@@ -443,7 +443,7 @@ export default function CustomersPage() {
                   value={form.name}
                   onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
                   maxLength={100}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 />
                 {formErrors.name && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.name}</p>}
               </div>
@@ -454,7 +454,7 @@ export default function CustomersPage() {
                   type="text"
                   value={form.phone}
                   onChange={(e) => setForm((p) => ({ ...p, phone: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                   dir="ltr"
                 />
                 {formErrors.phone && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.phone}</p>}
@@ -466,7 +466,7 @@ export default function CustomersPage() {
                   type="email"
                   value={form.email}
                   onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                   dir="ltr"
                 />
                 {formErrors.email && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.email}</p>}
@@ -478,7 +478,7 @@ export default function CustomersPage() {
                   type="text"
                   value={form.address}
                   onChange={(e) => setForm((p) => ({ ...p, address: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 />
               </div>
 
@@ -488,7 +488,7 @@ export default function CustomersPage() {
                   value={form.notes}
                   onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))}
                   rows={3}
-                  className="w-full px-4 py-2 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500 resize-none"
+                  className="w-full px-4 py-2 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500 resize-none"
                 />
               </div>
 
@@ -498,7 +498,7 @@ export default function CustomersPage() {
                   type="date"
                   value={form.birthday}
                   onChange={(e) => setForm((p) => ({ ...p, birthday: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                 />
               </div>
 
@@ -510,14 +510,14 @@ export default function CustomersPage() {
             <div className="flex gap-3 justify-end pt-2">
               <button
                 onClick={() => setShowModal(false)}
-                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
+                className="h-10 px-6 rounded-sm bg-white border border-ink-200 text-ink-900 font-arabic text-sm hover:bg-ink-100 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={save}
                 disabled={saving}
-                className="h-10 px-6 rounded-xl bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                className="h-10 px-6 rounded-sm bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 {saving ? "جاري الحفظ..." : "حفظ"}
               </button>
@@ -529,19 +529,19 @@ export default function CustomersPage() {
       {/* Delete Confirmation */}
       {deleteId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
+          <div className="bg-white rounded-md shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
             <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد الحذف</h2>
             <p className="text-sm font-arabic text-ink-500">هل أنت متأكد من حذف هذا العميل؟</p>
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setDeleteId(null)}
-                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
+                className="h-10 px-6 rounded-sm bg-white border border-ink-200 text-ink-900 font-arabic text-sm hover:bg-ink-100 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={confirmDelete}
-                className="h-10 px-6 rounded-xl bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
+                className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
               >
                 حذف
               </button>
@@ -563,14 +563,14 @@ export default function CustomersPage() {
                 </h2>
                 <button
                   onClick={closeDetail}
-                  className="p-2 rounded-lg text-ink-500 hover:bg-white transition-colors"
+                  className="p-2 rounded-sm text-ink-500 hover:bg-white transition-colors"
                 >
                   <IconX className="w-4 h-4" />
                 </button>
               </div>
 
               {/* Customer Info */}
-              <div className="bg-white rounded-2xl p-4 space-y-3">
+              <div className="bg-white rounded-md p-4 space-y-3">
                 <h3 className="font-bold font-arabic text-sm text-ink-900">معلومات العميل</h3>
                 <div className="space-y-2">
                   <div className="flex items-center gap-2">
@@ -579,7 +579,7 @@ export default function CustomersPage() {
                       type="text"
                       value={detailDraft.name ?? detailCustomer.customer.name}
                       onChange={(e) => updateDetailDraft("name", e.target.value)}
-                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                      className="flex-1 h-8 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                     />
                   </div>
                   <div className="flex items-center gap-2">
@@ -588,7 +588,7 @@ export default function CustomersPage() {
                       type="text"
                       value={detailDraft.phone ?? detailCustomer.customer.phone}
                       onChange={(e) => updateDetailDraft("phone", e.target.value)}
-                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                      className="flex-1 h-8 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                       dir="ltr"
                     />
                   </div>
@@ -598,7 +598,7 @@ export default function CustomersPage() {
                       type="email"
                       value={detailDraft.email ?? detailCustomer.customer.email ?? ""}
                       onChange={(e) => updateDetailDraft("email", e.target.value)}
-                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                      className="flex-1 h-8 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                       dir="ltr"
                     />
                   </div>
@@ -608,7 +608,7 @@ export default function CustomersPage() {
                       type="text"
                       value={detailDraft.address ?? detailCustomer.customer.address ?? ""}
                       onChange={(e) => updateDetailDraft("address", e.target.value)}
-                      className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                      className="flex-1 h-8 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                     />
                   </div>
                 </div>
@@ -617,13 +617,13 @@ export default function CustomersPage() {
                     <button
                       onClick={saveDetailDraft}
                       disabled={detailSaving}
-                      className="flex-1 h-8 rounded-lg bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                      className="flex-1 h-8 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
                     >
                       {detailSaving ? "جاري الحفظ..." : "حفظ"}
                     </button>
                     <button
                       onClick={cancelDetailDraft}
-                      className="flex-1 h-8 rounded-lg border border-ink-200 text-ink-500 text-sm hover:bg-ink-100 transition-colors"
+                      className="flex-1 h-8 rounded-sm border border-ink-200 text-ink-500 text-sm hover:bg-ink-100 transition-colors"
                     >
                       إلغاء
                     </button>
@@ -633,19 +633,19 @@ export default function CustomersPage() {
 
               {/* Stats */}
               <div className="grid grid-cols-3 gap-3">
-                <div className="bg-saffron-50 rounded-xl p-3 text-center">
+                <div className="bg-saffron-50 rounded-sm p-3 text-center">
                   <p className="text-2xl font-bold text-saffron-600 font-mono">
                     {detailCustomer.customer.total_orders}
                   </p>
                   <p className="text-xs text-saffron-700 font-arabic mt-1">الطلبات</p>
                 </div>
-                <div className="bg-saffron-50 rounded-xl p-3 text-center">
+                <div className="bg-saffron-50 rounded-sm p-3 text-center">
                   <p className="text-2xl font-bold text-saffron-600 font-mono">
                     {fromCents(detailCustomer.avgOrderValue)}
                   </p>
                   <p className="text-xs text-saffron-600 font-arabic mt-1">متوسط الفاتورة</p>
                 </div>
-                <div className="bg-amber-50 rounded-xl p-3 text-center">
+                <div className="bg-amber-50 rounded-sm p-3 text-center">
                   <p className="text-2xl font-bold text-amber-600 font-mono">
                     {detailCustomer.customer.loyalty_points}
                   </p>
@@ -654,7 +654,7 @@ export default function CustomersPage() {
               </div>
 
               {/* Favorite Items */}
-              <div className="bg-white rounded-2xl p-4 space-y-2 shadow-sh-1">
+              <div className="bg-white rounded-md p-4 space-y-2 border border-ink-200">
                 <h3 className="font-bold font-arabic text-sm text-ink-900">الأصناف المفضلة</h3>
                 {detailCustomer.favoriteItems.length > 0 ? (
                   <div className="space-y-1">
@@ -671,7 +671,7 @@ export default function CustomersPage() {
               </div>
 
               {/* Order History */}
-              <div className="bg-white rounded-2xl p-4 space-y-2 shadow-sh-1">
+              <div className="bg-white rounded-md p-4 space-y-2 border border-ink-200">
                 <h3 className="font-bold font-arabic text-sm text-ink-900">آخر الطلبات</h3>
                 {detailCustomer.orders.length > 0 ? (
                   <div className="space-y-1">

@@ -377,13 +377,13 @@ export default function StaffPage() {
   }
 
   return (
-    <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
+    <div className="bg-canvas p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-ink-900">إدارة الموظفين</h1>
         {tab === "employees" && (
           <button
             onClick={openAddEmployee}
-            className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+            className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
             + إضافة موظف
           </button>
@@ -397,7 +397,7 @@ export default function StaffPage() {
             onClick={() => setTab(t)}
             className={`px-5 py-2 rounded-t-lg font-arabic font-medium text-sm transition-colors ${
               tab === t
-                ? "bg-saffron-600 text-white shadow-sh-1"
+                ? "bg-saffron-600 text-white"
                 : "text-ink-500 hover:text-saffron-600 hover:bg-white"
             }`}
           >
@@ -413,10 +413,10 @@ export default function StaffPage() {
       {/* TAB: Employees */}
       {tab === "employees" && (
         <div className="space-y-4">
-          <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
+          <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-ink-200 text-ink-400 font-arabic">
+                <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
                   <th className="text-right p-3 font-medium">الاسم</th>
                   <th className="text-right p-3 font-medium">الدور</th>
                   <th className="text-center p-3 font-medium">الحالة</th>
@@ -426,7 +426,7 @@ export default function StaffPage() {
               </thead>
               <tbody>
                 {employees.map((emp) => (
-                  <tr key={emp.id} className="border-b border-ink-200 hover:bg-white">
+                  <tr key={emp.id} className="border-b border-ink-200 hover:bg-saffron-50">
                     <td className="p-3 font-arabic text-ink-900 font-medium">
                       <span>{emp.name}</span>
                     </td>
@@ -449,11 +449,11 @@ export default function StaffPage() {
                       <div className="flex items-center justify-center gap-2">
                         {qrDataUrls[emp.id] && (
                           <div className="relative group">
-                            <button className="p-1.5 rounded-lg text-ink-500 hover:text-purple-600 hover:bg-purple-50 transition-colors" title="QR">
+                            <button className="p-1.5 rounded-sm text-ink-500 hover:text-purple-600 hover:bg-purple-50 transition-colors" title="QR">
                               <IconDeviceMobile className="w-4 h-4" />
                             </button>
                             <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-50">
-                              <div className="bg-white p-2 rounded-xl shadow-xl border border-ink-200">
+                              <div className="bg-white p-2 rounded-sm shadow-xl border border-ink-200">
                                 <img src={qrDataUrls[emp.id]} alt="QR" className="w-32 h-32" />
                               </div>
                             </div>
@@ -461,14 +461,14 @@ export default function StaffPage() {
                         )}
                         <button
                           onClick={() => openEditEmployee(emp)}
-                          className="p-1.5 rounded-lg text-ink-500 hover:text-saffron-600 hover:bg-saffron-50 transition-colors"
+                          className="p-1.5 rounded-sm text-ink-500 hover:text-saffron-600 hover:bg-saffron-50 transition-colors"
                           title="تعديل"
                         >
                           <IconPencil className="w-4 h-4" />
                         </button>
                         <button
                           onClick={() => toggleEmployeeStatus(emp)}
-                          className={`px-3 py-1 rounded-lg text-xs font-arabic transition-colors inline-flex items-center gap-1 ${
+                          className={`px-3 py-1 rounded-sm text-xs font-arabic transition-colors inline-flex items-center gap-1 ${
                             emp.is_active
                               ? "text-amber-600 hover:bg-amber-50"
                               : "text-saffron-600 hover:bg-saffron-50"
@@ -478,7 +478,7 @@ export default function StaffPage() {
                         </button>
                         <button
                           onClick={() => setDeleteEmployeeId(emp.id)}
-                          className="p-1.5 rounded-lg text-ink-500 hover:text-red-500 hover:bg-red-50 transition-colors"
+                          className="p-1.5 rounded-sm text-ink-500 hover:text-red-500 hover:bg-red-50 transition-colors"
                           title="حذف"
                         >
                           <IconTrash className="w-4 h-4" />
@@ -510,7 +510,7 @@ export default function StaffPage() {
                 type="date"
                 value={shiftDateFrom}
                 onChange={(e) => setShiftDateFrom(e.target.value)}
-                className="h-10 px-3 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                className="h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -519,13 +519,13 @@ export default function StaffPage() {
                 type="date"
                 value={shiftDateTo}
                 onChange={(e) => setShiftDateTo(e.target.value)}
-                className="h-10 px-3 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                className="h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
               />
             </div>
             <select
               value={shiftEmployeeFilter}
               onChange={(e) => setShiftEmployeeFilter(e.target.value)}
-              className="h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+              className="h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
             >
               <option value="">كل الموظفين</option>
               {employees.map((emp) => (
@@ -536,10 +536,10 @@ export default function StaffPage() {
             </select>
           </div>
 
-          <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
+          <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-ink-200 text-ink-400 font-arabic">
+                <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
                   <th className="text-right p-3 font-medium">الموظف</th>
                   <th className="text-right p-3 font-medium">بداية الوردية</th>
                   <th className="text-right p-3 font-medium">نهاية الوردية</th>
@@ -557,7 +557,7 @@ export default function StaffPage() {
                   const needsReview =
                     !isOpen && diff !== null && Math.abs(diff) > DIFF_THRESHOLD_CENTS;
                   return (
-                    <tr key={shift.id} className="border-b border-ink-200 hover:bg-white">
+                    <tr key={shift.id} className="border-b border-ink-200 hover:bg-saffron-50">
                       <td className="p-3 font-arabic text-ink-900">{shift.user_name}</td>
                       <td className="p-3 font-mono text-ink-900 text-xs">
                         {formatDateTime(shift.opened_at)}
@@ -601,7 +601,7 @@ export default function StaffPage() {
                         {isOpen && user?.role === "MANAGER" && (
                           <button
                             onClick={() => setForceCloseShiftId(shift.id)}
-                            className="px-3 py-1 rounded-lg text-xs font-arabic text-amber-600 hover:bg-amber-50 transition-colors"
+                            className="px-3 py-1 rounded-sm text-xs font-arabic text-amber-600 hover:bg-amber-50 transition-colors"
                           >
                             إغلاق قسري
                           </button>
@@ -633,7 +633,7 @@ export default function StaffPage() {
                 onClick={() => setAttendanceSubTab(st)}
                 className={`px-5 py-2 rounded-t-lg font-arabic font-medium text-sm transition-colors ${
                   attendanceSubTab === st
-                    ? "bg-saffron-600 text-white shadow-sh-1"
+                    ? "bg-saffron-600 text-white"
                     : "text-ink-500 hover:text-saffron-600 hover:bg-white"
                 }`}
               >
@@ -665,7 +665,7 @@ export default function StaffPage() {
                   return (
                     <div
                       key={emp.id}
-                      className="bg-white rounded-2xl shadow-sh-1 p-5 space-y-3"
+                      className="bg-white rounded-md border border-ink-200 p-5 space-y-3"
                     >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
@@ -711,7 +711,7 @@ export default function StaffPage() {
                           <button
                             onClick={() => handleClockIn(emp.id)}
                             disabled={clockingUserId === emp.id}
-                            className="flex-1 h-11 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                            className="flex-1 h-11 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
                           >
                             {clockingUserId === emp.id ? "..." : "تسجيل دخول"}
                           </button>
@@ -720,7 +720,7 @@ export default function StaffPage() {
                           <button
                             onClick={() => handleClockOut(emp.id)}
                             disabled={clockingUserId === emp.id}
-                            className="flex-1 h-11 rounded-xl bg-amber-600 text-white text-sm font-bold hover:bg-amber-700 transition-colors disabled:opacity-50"
+                            className="flex-1 h-11 rounded-sm bg-amber-600 text-white text-sm font-bold hover:bg-amber-700 transition-colors disabled:opacity-50"
                           >
                             {clockingUserId === emp.id ? "..." : "تسجيل خروج"}
                           </button>
@@ -731,10 +731,10 @@ export default function StaffPage() {
                 })}
               </div>
 
-              <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
+              <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-ink-200 text-ink-400 font-arabic">
+                    <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
                       <th className="text-right p-3 font-medium">الموظف</th>
                       <th className="text-right p-3 font-medium">وقت الحضور</th>
                       <th className="text-right p-3 font-medium">وقت الانصراف</th>
@@ -757,7 +757,7 @@ export default function StaffPage() {
                         ABSENT: "غائب",
                       };
                       return (
-                        <tr key={rec.id} className="border-b border-ink-200 hover:bg-white">
+                        <tr key={rec.id} className="border-b border-ink-200 hover:bg-saffron-50">
                           <td className="p-3 font-arabic text-ink-900 font-medium">{rec.user_name}</td>
                           <td className="p-3 font-mono text-ink-900 text-xs" dir="ltr">{formatTime(rec.clock_in)}</td>
                           <td className="p-3 font-mono text-ink-900 text-xs" dir="ltr">{formatTime(rec.clock_out)}</td>
@@ -792,7 +792,7 @@ export default function StaffPage() {
                     type="date"
                     value={attendanceDateFrom}
                     onChange={(e) => setAttendanceDateFrom(e.target.value)}
-                    className="h-10 px-3 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                    className="h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                   />
                 </div>
                 <div className="flex items-center gap-2">
@@ -801,13 +801,13 @@ export default function StaffPage() {
                     type="date"
                     value={attendanceDateTo}
                     onChange={(e) => setAttendanceDateTo(e.target.value)}
-                    className="h-10 px-3 rounded-xl bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                    className="h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                   />
                 </div>
                 <select
                   value={attendanceEmployeeFilter}
                   onChange={(e) => setAttendanceEmployeeFilter(e.target.value)}
-                  className="h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                  className="h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 >
                   <option value="">كل الموظفين</option>
                   {employees.map((emp) => (
@@ -816,16 +816,16 @@ export default function StaffPage() {
                 </select>
                 <button
                   onClick={() => fetchAttendance(attendanceDateFrom, attendanceDateTo)}
-                  className="h-10 px-4 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+                  className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
                 >
                   بحث
                 </button>
               </div>
 
-              <div className="bg-white rounded-2xl shadow-sh-1 overflow-x-auto">
+              <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-ink-200 text-ink-400 font-arabic">
+                    <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
                       <th className="text-right p-3 font-medium">التاريخ</th>
                       <th className="text-right p-3 font-medium">الموظف</th>
                       <th className="text-right p-3 font-medium">الحضور</th>
@@ -849,7 +849,7 @@ export default function StaffPage() {
                         ABSENT: "غائب",
                       };
                       return (
-                        <tr key={rec.id} className="border-b border-ink-200 hover:bg-white">
+                        <tr key={rec.id} className="border-b border-ink-200 hover:bg-saffron-50">
                           <td className="p-3 font-mono text-ink-500 text-xs">{rec.date}</td>
                           <td className="p-3 font-arabic text-ink-900 font-medium">{rec.user_name}</td>
                           <td className="p-3 font-mono text-ink-900 text-xs" dir="ltr">{formatTime(rec.clock_in)}</td>
@@ -881,7 +881,7 @@ export default function StaffPage() {
       {/* Employee Modal */}
       {showEmployeeModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
+          <div className="bg-white rounded-md shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
             <h2 className="text-lg font-bold font-arabic text-ink-900">
               {editEmployeeId ? "تعديل موظف" : "إضافة موظف"}
             </h2>
@@ -893,7 +893,7 @@ export default function StaffPage() {
                   type="text"
                   value={employeeForm.name}
                   onChange={(e) => setEmployeeForm((p) => ({ ...p, name: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 />
                 {employeeErrors.name && (
                   <p className="text-xs text-red-500 mt-1 font-arabic">{employeeErrors.name}</p>
@@ -907,7 +907,7 @@ export default function StaffPage() {
                   onChange={(e) =>
                     setEmployeeForm((p) => ({ ...p, role: e.target.value as EmployeeForm["role"] }))
                   }
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 >
                   {(["CASHIER", "KITCHEN", "MANAGER", "OWNER"] as const).map((r) => (
                     <option key={r} value={r}>
@@ -929,7 +929,7 @@ export default function StaffPage() {
                   value={employeeForm.pin}
                   onChange={(e) => setEmployeeForm((p) => ({ ...p, pin: e.target.value }))}
                   maxLength={6}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                   dir="ltr"
                 />
                 {employeeErrors.pin && (
@@ -967,14 +967,14 @@ export default function StaffPage() {
             <div className="flex gap-3 justify-end pt-2">
               <button
                 onClick={() => setShowEmployeeModal(false)}
-                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
+                className="h-10 px-6 rounded-sm bg-white border border-ink-200 text-ink-900 font-arabic text-sm hover:bg-ink-100 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={saveEmployee}
                 disabled={savingEmployee}
-                className="h-10 px-6 rounded-xl bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                className="h-10 px-6 rounded-sm bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 {savingEmployee ? "جاري الحفظ..." : "حفظ"}
               </button>
@@ -986,7 +986,7 @@ export default function StaffPage() {
       {/* Delete Employee Confirmation */}
       {deleteEmployeeId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
+          <div className="bg-white rounded-md shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
             <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد التعليق</h2>
             <p className="text-sm font-arabic text-ink-500">
               هل أنت متأكد من تعليق هذا الموظف؟ (حذف ناعم)
@@ -994,13 +994,13 @@ export default function StaffPage() {
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setDeleteEmployeeId(null)}
-                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
+                className="h-10 px-6 rounded-sm bg-white border border-ink-200 text-ink-900 font-arabic text-sm hover:bg-ink-100 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={confirmDeleteEmployee}
-                className="h-10 px-6 rounded-xl bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
+                className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
               >
                 تعليق
               </button>
@@ -1012,7 +1012,7 @@ export default function StaffPage() {
       {/* Force Close Shift Confirmation */}
       {forceCloseShiftId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
+          <div className="bg-white rounded-md shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
             <h2 className="text-lg font-bold font-arabic text-ink-900">إغلاق قسري للوردية</h2>
             <p className="text-sm font-arabic text-ink-500">
               هل أنت متأكد من إغلاق هذه الوردية قسرياً؟ سيتم تعيين الرصيد الفعلي إلى 0.
@@ -1020,13 +1020,13 @@ export default function StaffPage() {
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setForceCloseShiftId(null)}
-                className="h-10 px-6 rounded-xl bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
+                className="h-10 px-6 rounded-sm bg-white border border-ink-200 text-ink-900 font-arabic text-sm hover:bg-ink-100 transition-colors"
               >
                 إلغاء
               </button>
               <button
                 onClick={() => forceCloseShift(forceCloseShiftId)}
-                className="h-10 px-6 rounded-xl bg-amber-600 text-white font-arabic text-sm hover:bg-amber-700 transition-colors"
+                className="h-10 px-6 rounded-sm bg-amber-600 text-white font-arabic text-sm hover:bg-amber-700 transition-colors"
               >
                 إغلاق قسري
               </button>

@@ -69,8 +69,8 @@ export default function DebtSelectModal({ onClose, onSelect }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-surface rounded-2xl shadow-xl w-full max-w-lg mx-4 max-h-[80vh] flex flex-col" dir="rtl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
+      <div className="bg-white rounded-md shadow-sh-3 w-full max-w-lg mx-4 max-h-[80vh] flex flex-col border border-line" dir="rtl">
         <div className="px-5 py-4 border-b border-line flex items-center justify-between">
           <h2 className="text-base font-bold font-arabic text-text">اختيار مدين</h2>
           <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-surface-alt flex items-center justify-center text-text-muted"><IconX className="w-4 h-4" /></button>
@@ -82,7 +82,7 @@ export default function DebtSelectModal({ onClose, onSelect }: Props) {
             <input
               type="text" value={search} onChange={(e) => setSearch(e.target.value)}
               placeholder="ابحث بالاسم أو الهاتف..."
-              className="w-full h-9 pr-9 pl-3 rounded-lg bg-surface-alt border border-line text-sm font-arabic outline-none focus:border-accent"
+              className="w-full h-9 pr-9 pl-3 rounded-sm bg-white border-2 border-ink-200 text-sm font-arabic outline-none focus:border-accent"
               autoFocus
             />
           </div>
@@ -123,18 +123,18 @@ export default function DebtSelectModal({ onClose, onSelect }: Props) {
           {showNew && (
             <div className="border border-accent rounded-xl p-3 space-y-2 bg-accent-soft/30">
               <input type="text" value={newName} onChange={(e) => setNewName(e.target.value)}
-                placeholder="الاسم *" className="w-full h-9 px-3 rounded-lg bg-surface border border-line text-sm font-arabic outline-none focus:border-accent" autoFocus />
+                placeholder="الاسم *" className="w-full h-9 px-3 rounded-sm bg-white border-2 border-ink-200 text-sm font-arabic outline-none focus:border-accent" autoFocus />
               <input type="text" value={newPhone} onChange={(e) => setNewPhone(e.target.value)}
-                placeholder="رقم الهاتف" className="w-full h-9 px-3 rounded-lg bg-surface border border-line text-sm font-mono outline-none focus:border-accent" dir="ltr" />
+                placeholder="رقم الهاتف" className="w-full h-9 px-3 rounded-sm bg-white border-2 border-ink-200 text-sm font-mono outline-none focus:border-accent" dir="ltr" />
               <input type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)}
-                placeholder="البريد الإلكتروني" className="w-full h-9 px-3 rounded-lg bg-surface border border-line text-sm outline-none focus:border-accent" dir="ltr" />
+                placeholder="البريد الإلكتروني" className="w-full h-9 px-3 rounded-sm bg-white border-2 border-ink-200 text-sm outline-none focus:border-accent" dir="ltr" />
               <p className="text-xs text-text-muted font-arabic">الاسم مطلوب + هاتف أو بريد</p>
               {newError && <p className="text-xs text-red-500 font-arabic">{newError}</p>}
               <div className="flex gap-2">
                 <button onClick={() => { setShowNew(false); setNewName(""); setNewPhone(""); setNewEmail(""); setNewError(null); }}
-                  className="flex-1 h-9 rounded-lg bg-surface-alt text-text-3 text-sm font-arabic hover:bg-line transition-colors">إلغاء</button>
+                  className="flex-1 h-9 rounded-sm bg-surface-alt text-text-3 text-sm font-arabic hover:bg-line transition-colors">إلغاء</button>
                 <button onClick={handleCreate} disabled={creating || !newName.trim()}
-                  className="flex-1 h-9 rounded-lg bg-accent text-white text-sm font-bold hover:bg-accent-text transition-colors disabled:opacity-50">
+                  className="flex-1 h-9 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-accent-text transition-colors disabled:opacity-50">
                   {creating ? "جاري..." : "حفظ"}
                 </button>
               </div>

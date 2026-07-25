@@ -384,8 +384,8 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="flex h-full overflow-hidden" dir="rtl">
-      <nav className="w-44 bg-white border-l border-ink-200 flex flex-col py-3 gap-0.5 shrink-0 overflow-y-auto">
+    <div className="flex h-full overflow-hidden bg-canvas" dir="rtl">
+      <nav className="w-44 bg-surface-alt border-l border-ink-200 flex flex-col py-3 gap-0.5 shrink-0 overflow-y-auto">
         {TABS.map((t) => (
           <button
             key={t.id}
@@ -415,14 +415,14 @@ export default function SettingsPage() {
         {tab === "general" && (
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">الإعدادات العامة</h2>
-            <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-4">
+            <div className="bg-white rounded-md p-5 border border-ink-200 space-y-4">
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">العملة</label>
                 <div className="flex gap-3">
                   <select
                     value={currency}
                     onChange={(e) => setCurrency(e.target.value)}
-                    className="flex-1 h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                    className="flex-1 h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
                   >
                     {CURRENCIES.map((c) => (
                       <option key={c.value} value={c.value}>{c.label}</option>
@@ -431,7 +431,7 @@ export default function SettingsPage() {
                   <button
                     onClick={saveCurrency}
                     disabled={saving}
-                    className="h-10 px-6 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                    className="h-10 px-6 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
                   >
                     حفظ
                   </button>
@@ -445,12 +445,12 @@ export default function SettingsPage() {
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">إعدادات الطابعة</h2>
             {printers.length === 0 && (
-              <div className="bg-white rounded-2xl p-8 shadow-sh-1 text-center text-ink-500 font-arabic">
+              <div className="bg-white rounded-md p-8 border border-ink-200 text-center text-ink-500 font-arabic">
                 لا توجد طابعات مسجلة
               </div>
             )}
             {printers.map((printer) => (
-              <div key={printer.id} className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-3">
+              <div key={printer.id} className="bg-white rounded-md p-5 border border-ink-200 space-y-3">
                 <div className="flex items-center justify-between">
                   <h3 className="font-arabic font-bold text-ink-900">{printer.name}</h3>
                   <button
@@ -473,7 +473,7 @@ export default function SettingsPage() {
                       <button
                         key={w}
                         onClick={() => updatePaperWidth(printer, w)}
-                        className={`px-3 py-1 rounded-lg text-xs font-mono transition-colors ${
+                        className={`px-3 py-1 rounded-sm text-xs font-mono transition-colors ${
                           printer.paper_width_mm === w
                             ? "bg-saffron-600 text-white"
                             : "bg-white text-ink-500 hover:bg-ink-200"
@@ -494,7 +494,7 @@ export default function SettingsPage() {
                       showMsg("فشلت الطباعة التجريبية");
                     }
                   }}
-                  className="px-4 py-2 rounded-xl bg-white text-ink-500 text-sm font-arabic hover:bg-ink-200 transition-colors"
+                  className="px-4 py-2 rounded-sm bg-white text-ink-500 text-sm font-arabic hover:bg-ink-200 transition-colors"
                 >
                   اختبار الطباعة
                 </button>
@@ -506,7 +506,7 @@ export default function SettingsPage() {
         {tab === "tax" && (
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">إعدادات الضرائب</h2>
-            <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-4">
+            <div className="bg-white rounded-md p-5 border border-ink-200 space-y-4">
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">نسبة الضريبة (%)</label>
                 <div className="flex items-center gap-4">
@@ -526,7 +526,7 @@ export default function SettingsPage() {
                     step="0.5"
                     value={taxRate}
                     onChange={(e) => setTaxRate(e.target.value)}
-                    className="w-20 h-10 px-3 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm text-center outline-none focus:border-saffron-500"
+                    className="w-20 h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm text-center outline-none focus:border-saffron-600"
                     dir="ltr"
                   />
                 </div>
@@ -536,9 +536,9 @@ export default function SettingsPage() {
                 <div className="flex gap-3">
                   <button
                     onClick={() => setTaxMode("exclusive")}
-                    className={`flex-1 h-10 rounded-xl font-arabic text-sm transition-colors ${
+                    className={`flex-1 h-10 rounded-sm font-arabic text-sm transition-colors ${
                       taxMode === "exclusive"
-                        ? "bg-saffron-600 text-white shadow-sh-1"
+                        ? "bg-saffron-600 text-white"
                         : "bg-white text-ink-500 hover:bg-ink-200"
                     }`}
                   >
@@ -546,9 +546,9 @@ export default function SettingsPage() {
                   </button>
                   <button
                     onClick={() => setTaxMode("inclusive")}
-                    className={`flex-1 h-10 rounded-xl font-arabic text-sm transition-colors ${
+                    className={`flex-1 h-10 rounded-sm font-arabic text-sm transition-colors ${
                       taxMode === "inclusive"
-                        ? "bg-saffron-600 text-white shadow-sh-1"
+                        ? "bg-saffron-600 text-white"
                         : "bg-white text-ink-500 hover:bg-ink-200"
                     }`}
                   >
@@ -559,7 +559,7 @@ export default function SettingsPage() {
               <button
                 onClick={saveTax}
                 disabled={saving}
-                className="h-10 px-6 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                className="h-10 px-6 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 حفظ إعدادات الضريبة
               </button>
@@ -570,14 +570,14 @@ export default function SettingsPage() {
         {tab === "branch" && (
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">بيانات الفرع</h2>
-            <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-4">
+            <div className="bg-white rounded-md p-5 border border-ink-200 space-y-4">
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">اسم الفرع</label>
                 <input
                   type="text"
                   value={branchName}
                   onChange={(e) => setBranchName(e.target.value)}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
                 />
               </div>
               <div>
@@ -586,7 +586,7 @@ export default function SettingsPage() {
                   type="text"
                   value={branchAddress}
                   onChange={(e) => setBranchAddress(e.target.value)}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
                 />
               </div>
               <div>
@@ -595,7 +595,7 @@ export default function SettingsPage() {
                   type="text"
                   value={branchPhone}
                   onChange={(e) => setBranchPhone(e.target.value)}
-                  className="w-full h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                   dir="ltr"
                 />
               </div>
@@ -640,14 +640,14 @@ export default function SettingsPage() {
               <button
                 onClick={saveBranch}
                 disabled={saving}
-                className="h-10 px-6 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                className="h-10 px-6 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 حفظ بيانات الفرع
               </button>
             </div>
 
             <h2 className="text-lg font-bold text-ink-900 font-arabic">الطاولات</h2>
-            <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-3">
+            <div className="bg-white rounded-md p-5 border border-ink-200 space-y-3">
               <p className="text-xs text-ink-400 font-arabic">
                 أضف أو أعد تسمية أو احذف أي عدد من الطاولات -- لا يوجد حد أدنى أو أقصى (يمكن أن يكون صفر، واحدة، أو عشرين).
               </p>
@@ -659,12 +659,12 @@ export default function SettingsPage() {
                   onChange={(e) => setNewTableName(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter" && newTableName.trim()) handleAddTable(); }}
                   placeholder="اسم الطاولة الجديدة (مثال: طاولة 5)"
-                  className="flex-1 h-10 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                  className="flex-1 h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
                 />
                 <button
                   onClick={handleAddTable}
                   disabled={tableBusy || !newTableName.trim()}
-                  className="h-10 px-5 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50 shrink-0"
+                  className="h-10 px-5 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50 shrink-0"
                 >
                   إضافة
                 </button>
@@ -677,7 +677,7 @@ export default function SettingsPage() {
               ) : (
                 <div className="space-y-1.5">
                   {tables.map((t) => (
-                    <div key={t.id} className="flex items-center justify-between gap-2 p-2.5 rounded-xl border border-ink-100">
+                    <div key={t.id} className="flex items-center justify-between gap-2 p-2.5 rounded-sm border border-ink-100">
                       {editingTableId === t.id ? (
                         <input
                           type="text"
@@ -685,7 +685,7 @@ export default function SettingsPage() {
                           value={editingTableName}
                           onChange={(e) => setEditingTableName(e.target.value)}
                           onKeyDown={(e) => { if (e.key === "Enter") handleRenameTable(t.id); if (e.key === "Escape") setEditingTableId(null); }}
-                          className="flex-1 h-8 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                          className="flex-1 h-8 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
                         />
                       ) : (
                         <div className="flex items-center gap-2">
@@ -702,14 +702,14 @@ export default function SettingsPage() {
                       <div className="flex items-center gap-1 shrink-0">
                         {editingTableId === t.id ? (
                           <>
-                            <button onClick={() => handleRenameTable(t.id)} className="h-8 px-3 rounded-lg bg-saffron-600 text-white text-xs font-bold hover:bg-saffron-700 transition-colors">حفظ</button>
-                            <button onClick={() => setEditingTableId(null)} className="h-8 px-3 rounded-lg text-ink-500 text-xs font-arabic hover:bg-ink-100 transition-colors">إلغاء</button>
+                            <button onClick={() => handleRenameTable(t.id)} className="h-8 px-3 rounded-sm bg-saffron-600 text-white text-xs font-bold hover:bg-saffron-700 transition-colors">حفظ</button>
+                            <button onClick={() => setEditingTableId(null)} className="h-8 px-3 rounded-sm text-ink-500 text-xs font-arabic hover:bg-ink-100 transition-colors">إلغاء</button>
                           </>
                         ) : (
                           <>
                             <button
                               onClick={() => { setEditingTableId(t.id); setEditingTableName(t.name); }}
-                              className="h-8 w-8 rounded-lg flex items-center justify-center text-ink-500 hover:bg-ink-100 transition-colors"
+                              className="h-8 w-8 rounded-sm flex items-center justify-center text-ink-500 hover:bg-ink-100 transition-colors"
                               title="إعادة تسمية"
                             >
                               <Pencil className="w-3.5 h-3.5" />
@@ -722,7 +722,7 @@ export default function SettingsPage() {
                               }}
                               disabled={t.status !== "FREE" || !!t.current_order_id}
                               title={t.status !== "FREE" || t.current_order_id ? "لا يمكن حذف طاولة مشغولة أو مدمجة" : "حذف"}
-                              className="h-8 w-8 rounded-lg flex items-center justify-center text-ink-500 hover:bg-red-50 hover:text-red-600 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                              className="h-8 w-8 rounded-sm flex items-center justify-center text-ink-500 hover:bg-red-50 hover:text-red-600 transition-colors disabled:opacity-30 disabled:pointer-events-none"
                             >
                               <Trash className="w-3.5 h-3.5" />
                             </button>
@@ -741,13 +741,13 @@ export default function SettingsPage() {
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">الترخيص</h2>
             {!isOwner && (
-              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-amber-700 font-arabic text-sm">
+              <div className="bg-amber-50 border border-amber-200 rounded-md p-4 text-amber-700 font-arabic text-sm">
                 هذه الصفحة متاحة للمالك فقط
               </div>
             )}
 
             {isOwner && (
-              <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-2">
+              <div className="bg-white rounded-md p-5 border border-ink-200 space-y-2">
                 <p className="text-sm font-arabic text-ink-900 font-bold">معرّف الجهاز (Device ID)</p>
                 <p className="text-xs font-arabic text-ink-500">
                   أرسل هذا المعرّف إلى المورّد لإصدار ترخيص خاص بهذا الجهاز فقط.
@@ -757,20 +757,20 @@ export default function SettingsPage() {
                   value={deviceId ?? "جاري القراءة..."}
                   rows={2}
                   dir="ltr"
-                  className="w-full px-3 py-2 rounded-xl bg-ink-50 border border-ink-200 text-ink-900 font-mono text-xs"
+                  className="w-full px-3 py-2 rounded-sm bg-ink-50 border-2 border-ink-200 text-ink-900 font-mono text-xs"
                   onFocus={(e) => e.currentTarget.select()}
                 />
                 <button
                   onClick={copyDeviceId}
                   disabled={!deviceId}
-                  className="h-9 px-4 rounded-xl bg-white border border-ink-200 text-ink-900 text-xs font-bold hover:bg-ink-100 transition-colors disabled:opacity-50"
+                  className="h-9 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-xs font-bold hover:bg-ink-100 transition-colors disabled:opacity-50"
                 >
                   {deviceIdCopied ? "تم النسخ!" : "نسخ المعرّف"}
                 </button>
               </div>
             )}
 
-            <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-3">
+            <div className="bg-white rounded-md p-5 border border-ink-200 space-y-3">
               {!licenseStatus && (
                 <p className="text-sm text-ink-400 font-arabic">جاري تحميل حالة الترخيص...</p>
               )}
@@ -846,7 +846,7 @@ export default function SettingsPage() {
             </div>
 
             {isOwner && (
-              <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-3">
+              <div className="bg-white rounded-md p-5 border border-ink-200 space-y-3">
                 <label className="block text-sm font-arabic text-ink-900 mb-1">مفتاح التفعيل</label>
                 <textarea
                   value={activationKey}
@@ -854,7 +854,7 @@ export default function SettingsPage() {
                   rows={4}
                   dir="ltr"
                   placeholder="الصق مفتاح التفعيل هنا"
-                  className="w-full px-4 py-3 rounded-xl bg-white border border-ink-200 text-ink-900 font-mono text-xs outline-none focus:border-saffron-500"
+                  className="w-full px-4 py-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-xs outline-none focus:border-saffron-600"
                 />
                 {activationError && (
                   <p className="text-sm font-arabic text-red-700">{activationError}</p>
@@ -865,7 +865,7 @@ export default function SettingsPage() {
                 <button
                   onClick={handleActivate}
                   disabled={activating || !activationKey.trim()}
-                  className="h-10 px-6 rounded-xl bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                  className="h-10 px-6 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
                 >
                   {activating ? "جاري التفعيل..." : "تفعيل"}
                 </button>
@@ -879,7 +879,7 @@ export default function SettingsPage() {
         {tab === "backup" && (
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">النسخ الاحتياطي</h2>
-            <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-4">
+            <div className="bg-white rounded-md p-5 border border-ink-200 space-y-4">
               <div className="flex justify-between items-center">
                 <span className="text-sm text-ink-400 font-arabic">آخر نسخة احتياطية</span>
                 <span className="text-sm font-mono text-ink-900">
@@ -891,7 +891,7 @@ export default function SettingsPage() {
               <button
                 onClick={() => handleBackup()}
                 disabled={backingUp}
-                className="w-full h-12 rounded-xl bg-saffron-600 text-white font-bold text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                className="w-full h-12 rounded-sm bg-saffron-600 text-white font-bold text-sm hover:bg-saffron-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {backingUp ? "جاري..." : "نسخ احتياطي الآن"}
               </button>
@@ -920,7 +920,7 @@ export default function SettingsPage() {
         {tab === "about" && (
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">عن النظام</h2>
-            <div className="bg-white rounded-2xl p-5 shadow-sh-1 space-y-4">
+            <div className="bg-white rounded-md p-5 border border-ink-200 space-y-4">
               <div className="flex justify-between items-center">
                 <span className="text-sm text-ink-400 font-arabic">الإصدار</span>
                 <span className="font-mono font-bold text-ink-900">1.0.0</span>
@@ -940,11 +940,11 @@ export default function SettingsPage() {
               <div className="border-t border-ink-200 pt-4">
                 <p className="text-sm font-arabic text-ink-900 mb-2">الدعم الفني</p>
                 <a
-                  href="mailto:support@zaeem.com"
+                  href="mailto:support@wenzdes.com"
                   className="text-saffron-600 hover:underline font-arabic text-sm"
                   dir="ltr"
                 >
-                  support@zaeem.com
+                  support@wenzdes.com
                 </a>
               </div>
             </div>
@@ -955,7 +955,7 @@ export default function SettingsPage() {
       </div>
 
       {message && (
-        <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-saffron-600 text-white px-6 py-3 rounded-xl shadow-sh-3 z-50 font-arabic">
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-saffron-600 text-white px-6 py-3 rounded-sm z-50 font-arabic">
           {message}
         </div>
       )}

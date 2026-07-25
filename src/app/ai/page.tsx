@@ -192,11 +192,11 @@ export default function AIPage() {
       <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-ink-50">
         {messages.map((msg) => (
           <div key={msg.id} className={`flex gap-3 ${msg.role === "user" ? "justify-start flex-row-reverse" : ""}`}>
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${msg.role === "assistant" ? "bg-saffron-100 text-saffron-600" : "bg-indigo-100 text-indigo-600"}`}>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${msg.role === "assistant" ? "bg-saffron-100 text-saffron-600" : "bg-ink-100 text-ink-600"}`}>
               {msg.role === "assistant" ? <Bot className="w-4 h-4" /> : <User className="w-4 h-4" />}
             </div>
-            <div className={`max-w-[80%] rounded-2xl p-4 text-sm leading-relaxed ${
-              msg.role === "assistant" ? "bg-white shadow-sh-1 text-ink-900" : "bg-saffron-600 text-white"
+            <div className={`max-w-[80%] rounded-md p-4 text-sm leading-relaxed ${
+              msg.role === "assistant" ? "bg-white border border-ink-200 text-ink-900" : "bg-saffron-600 text-white"
             }`}>
               <div className="whitespace-pre-wrap font-arabic">{msg.content}</div>
               <p className={`text-xs mt-2 ${msg.role === "assistant" ? "text-ink-400" : "text-saffron-200"}`}>
@@ -211,7 +211,7 @@ export default function AIPage() {
             <div className="w-8 h-8 rounded-full bg-saffron-100 text-saffron-600 flex items-center justify-center">
               <Bot className="w-4 h-4" />
             </div>
-            <div className="bg-white rounded-2xl p-4 shadow-sh-1">
+            <div className="bg-white rounded-md p-4 border border-ink-200">
               <div className="flex gap-1">
                 <span className="w-2 h-2 bg-saffron-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
                 <span className="w-2 h-2 bg-saffron-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
@@ -232,7 +232,7 @@ export default function AIPage() {
               <button
                 key={action.label}
                 onClick={() => handleSend(action.query)}
-                className="px-4 py-2 rounded-xl bg-white border border-ink-200 text-sm text-ink-700 font-arabic hover:border-saffron-300 hover:text-saffron-600 transition-colors shadow-sh-1 inline-flex items-center gap-1.5"
+                className="px-4 py-2 rounded-sm bg-white border border-ink-200 text-sm text-ink-700 font-arabic hover:border-saffron-300 hover:text-saffron-600 transition-colors inline-flex items-center gap-1.5"
               >
                 <action.icon className="w-4 h-4" /> {action.label}
               </button>
@@ -249,12 +249,12 @@ export default function AIPage() {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSend()}
             placeholder="اسأل عن المبيعات، المخزون، الموظفين..."
-            className="flex-1 h-12 px-4 rounded-xl bg-white border border-ink-200 text-sm outline-none focus:border-saffron-500 font-arabic"
+            className="flex-1 h-12 px-4 rounded-sm bg-white border border-ink-200 text-sm outline-none focus:border-saffron-500 font-arabic"
           />
           <button
             onClick={() => handleSend()}
             disabled={!input.trim() || loading}
-            className="h-12 w-12 rounded-xl bg-saffron-600 text-white flex items-center justify-center hover:bg-saffron-700 transition-colors disabled:opacity-40"
+            className="h-12 w-12 rounded-sm bg-saffron-600 text-white flex items-center justify-center hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
             <Send className="w-5 h-5" />
           </button>

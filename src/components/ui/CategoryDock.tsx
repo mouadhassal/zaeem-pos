@@ -44,7 +44,7 @@ export default function CategoryDock({ categories = [], active = null, onChange 
       {showScroll && (
         <button
           onClick={() => scroll("right")}
-          className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-7 h-7 flex items-center justify-center bg-white border border-ink-200 rounded-sm shadow-sh-1 text-ink-500 hover:text-ink-700"
+            className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-7 h-7 flex items-center justify-center bg-white border border-ink-200 rounded-sm text-ink-500 hover:text-ink-700"
         >
           <ChevronRight className="w-4 h-4" />
         </button>
@@ -56,7 +56,7 @@ export default function CategoryDock({ categories = [], active = null, onChange 
         {onChange && (
           <button
             onClick={() => onChange(null)}
-            className={`shrink-0 px-3.5 py-1.5 rounded-sm text-sm font-medium transition-colors ${
+            className={`shrink-0 px-3.5 py-1.5 rounded-full text-sm font-medium transition-colors ${
               active === null
                 ? "bg-saffron-600 text-white"
                 : "bg-white text-ink-600 border border-ink-200 hover:bg-ink-50 hover:text-ink-700"
@@ -69,7 +69,7 @@ export default function CategoryDock({ categories = [], active = null, onChange 
           <button
             key={cat.id}
             onClick={() => onChange?.(cat.name)}
-            className={`shrink-0 px-3.5 py-1.5 rounded-sm text-sm font-medium transition-colors whitespace-nowrap ${
+            className={`shrink-0 px-3.5 py-1.5 rounded-full text-sm font-medium transition-colors whitespace-nowrap ${
               active === cat.name
                 ? "bg-saffron-600 text-white"
                 : "bg-white text-ink-600 border border-ink-200 hover:bg-ink-50 hover:text-ink-700"
@@ -82,7 +82,7 @@ export default function CategoryDock({ categories = [], active = null, onChange 
       {showScroll && (
         <button
           onClick={() => scroll("left")}
-          className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-7 h-7 flex items-center justify-center bg-white border border-ink-200 rounded-sm shadow-sh-1 text-ink-500 hover:text-ink-700"
+            className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-7 h-7 flex items-center justify-center bg-white border border-ink-200 rounded-sm text-ink-500 hover:text-ink-700"
         >
           <ChevronLeft className="w-4 h-4" />
         </button>

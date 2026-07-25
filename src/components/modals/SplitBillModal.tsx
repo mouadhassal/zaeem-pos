@@ -48,7 +48,7 @@ export default function SplitBillModal({ onClose, onConfirm }: Props) {
 
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-surface rounded-2xl border border-ink-600 w-[600px] max-h-[80vh] overflow-y-auto">
+      <div className="bg-white rounded-md border border-line shadow-sh-3 w-[600px] max-h-[80vh] overflow-y-auto">
         <div className="px-6 py-4 border-b border-ink-200 flex items-center justify-between">
           <h2 className="font-arabic font-bold text-lg text-ink-900">تقسيم الفاتورة</h2>
           <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center transition-colors">
@@ -71,7 +71,7 @@ export default function SplitBillModal({ onClose, onConfirm }: Props) {
                       prev.map((s) => (s.id === split.id ? { ...s, label: e.target.value } : s))
                     )
                   }
-                  className="w-full px-3 py-2 rounded-lg border border-ink-200 bg-surface font-arabic text-sm mb-2"
+                  className="w-full px-3 py-2 rounded-sm border-2 border-ink-200 bg-white font-arabic text-sm mb-2"
                 />
                 <div className="font-mono font-bold text-lg text-ink-900" dir="ltr">
                   {fmt(split.amountCents)}
@@ -129,14 +129,14 @@ export default function SplitBillModal({ onClose, onConfirm }: Props) {
         <div className="px-6 py-4 border-t border-ink-200 flex gap-3">
           <button
             onClick={onClose}
-            className="flex-1 h-12 rounded-xl bg-surface text-ink-900 font-arabic font-bold hover:bg-ink-200"
+            className="flex-1 h-12 rounded-xl bg-surface-alt text-ink-900 font-arabic font-bold hover:bg-ink-200"
           >
             إلغاء
           </button>
           <button
             onClick={() => onConfirm(splits)}
             disabled={!allAssigned || remainder !== 0}
-            className="flex-1 h-12 rounded-xl bg-accent text-white font-arabic font-bold hover:bg-accent-text disabled:opacity-50"
+            className="flex-1 h-12 rounded-xl bg-saffron-600 text-white font-arabic font-bold hover:bg-accent-text disabled:opacity-50"
           >
             تأكيد التقسيم
           </button>

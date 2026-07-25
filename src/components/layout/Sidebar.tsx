@@ -59,7 +59,7 @@ export default function Sidebar({ active, onNavigate }: Props) {
           className="w-8 h-8 rounded-[9px] flex items-center justify-center text-white text-sm font-bold shrink-0"
           style={{ backgroundColor: "var(--accent)" }}
         >
-          ز
+          W
         </div>
       </div>
 

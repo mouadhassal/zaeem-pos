@@ -31,18 +31,11 @@ export default function ItemCard({
 
   return (
     <div
-      className="bg-white rounded-[12px] flex flex-col overflow-hidden transition-all active:scale-[0.98] relative"
-      style={{
-        minHeight: 0,
-        boxShadow: inCart
-          ? "0 0 0 2px #F04E23, 0 1px 3px rgba(16,24,40,.08)"
-          : "0 1px 3px rgba(16,24,40,.08)",
-      }}
+      className={`bg-white rounded-lg flex flex-col overflow-hidden transition-all active:scale-[0.98] relative border ${inCart ? 'border-danger' : 'border-ink-200 hover:border-saffron-400'}`}
     >
       {badge && (
         <span
-          className="absolute top-1.5 start-1.5 z-10 text-[10px] font-semibold text-white rounded-full px-1.5 py-0.5"
-          style={{ background: "#F04E23" }}
+          className="absolute top-1.5 start-1.5 z-10 text-[10px] font-semibold text-white rounded-full px-1.5 py-0.5 bg-danger"
         >
           {badge}
         </span>
