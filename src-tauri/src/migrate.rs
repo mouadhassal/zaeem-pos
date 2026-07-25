@@ -200,13 +200,22 @@ pub fn run_migrations(conn: &mut Connection, db_path: &Path) -> Result<(), Migra
             // for ALTER TABLE statements that may already exist on fresh installs
             for statement in sql.split(';') {
                 let trimmed = statement.trim();
-                if !trimmed.is_empty() {
-                    if let Err(e) = tx.execute_batch(trimmed) {
-                        // Only ignore "duplicate column" errors during migration
-                        let err_str = e.to_string();
-                        if !err_str.contains("duplicate column") {
-                            return Err(MigrationError::Db(e));
-                        }
+                if trimmed.is_empty() {
+                    continue;
+                }
+                // PRAGMA statements (especially journal_mode) cannot run inside
+                // a transaction -- SQLite rejects them with "cannot change into
+                // wal mode from within a transaction". They are already handled
+                // on the connection before init_db() in lib.rs.
+                let upper = trimmed.to_uppercase();
+                if upper.starts_with("PRAGMA ") {
+                    continue;
+                }
+                if let Err(e) = tx.execute_batch(trimmed) {
+                    // Only ignore "duplicate column" errors during migration
+                    let err_str = e.to_string();
+                    if !err_str.contains("duplicate column") {
+                        return Err(MigrationError::Db(e));
                     }
                 }
             }
