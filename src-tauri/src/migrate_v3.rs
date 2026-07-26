@@ -1595,6 +1595,40 @@ pub fn run_lan_pairing_migration(conn: &mut Connection, _db_path: &Path) -> Resu
     Ok(())
 }
 
+pub const MIGRATION_L_VERSION: i64 = 16;
+
+/// 2026-07-26 printer audit: a USB printer configured via the old
+/// vendor_id/product_id + WebUSB path silently never printed at all --
+/// Tauri's embedded webview (WebView2/WebKitGTK) has no WebUSB
+/// implementation, so `navigator.usb` is simply undefined at runtime.
+/// Real USB printing now goes through the OS print spooler (winspool on
+/// Windows, CUPS on Linux/macOS, both wrapped by the `printers` crate),
+/// which needs this printer's exact OS-registered queue name -- distinct
+/// from vendor_id/product_id, which stay as display-only "known printer
+/// model" metadata now.
+pub fn run_printer_system_name_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_L_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    if table_exists(&tx, "printers")? {
+        add_column_if_missing(&tx, "printers", "system_printer_name", "TEXT")?;
+    }
+    println!("v16_printer_system_name: printers.system_printer_name added (real OS print-queue name for USB printing)");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_L_VERSION, "0016_printer_system_name", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

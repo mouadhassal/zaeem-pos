@@ -45,6 +45,13 @@ async-trait = "0.1"
 # Chromecast discovery.
 axum = { version = "0.7", features = ["ws"] }
 mdns-sd = "0.11"
+# 2026-07-26 printer audit: USB printing previously relied on browser
+# WebUSB (navigator.usb), which Tauri's embedded webview does not
+# implement -- it silently never worked. `printers` wraps the real OS
+# print spooler (winspool on Windows, CUPS on Linux/macOS) so a raw
+# ESC/POS byte buffer reaches actual USB-attached hardware through the
+# OS's own driver, the same path any other installed printer uses.
+printers = "2.3.0"
 
 [dev-dependencies]
 tokio = { version = "1.53.0", features = ["time", "macros", "rt-multi-thread"] }

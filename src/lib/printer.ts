@@ -58,6 +58,27 @@ interface PrinterRowV3 {
   ip_address: string | null;
   port: number;
   code_page: number;
+  system_printer_name: string | null;
+}
+
+/** A real, OS-installed printer (winspool/CUPS via the Rust `printers` crate). */
+export interface SystemPrinter {
+  systemName: string;
+  name: string;
+  isDefault: boolean;
+}
+
+/**
+ * 2026-07-26 printer audit fix: replaces the old WebUSB-based discovery,
+ * which silently found nothing in the real desktop app -- Tauri's
+ * embedded webview has no WebUSB implementation at all, so
+ * `navigator.usb` was always undefined at runtime. This calls the real
+ * Rust-side OS print spooler instead (see `print.rs`), which is how a USB
+ * thermal printer actually needs to be reached going forward: pick one
+ * from this list in Settings, not a WebUSB device chooser.
+ */
+export async function listSystemPrinters(): Promise<SystemPrinter[]> {
+  return invoke<SystemPrinter[]>("list_system_printers_v3");
 }
 
 interface ChainConfigV3 {
@@ -80,6 +101,8 @@ interface PrinterConfig {
   drawerPulseMs: number;
   isPrimary: number;
   isSecondary: number;
+  /** Real OS print-queue name -- what a USB printer is actually reached by now. */
+  systemPrinterName?: string;
 }
 
 
@@ -360,24 +383,18 @@ function generateEscPosKitchenTicket(data: KitchenTicketData, config: { codePage
 }
 
 export async function printToDevice(data: Uint8Array, printer: PrinterConfig): Promise<void> {
-  if (printer.interface === "USB" && typeof navigator !== "undefined" && "usb" in navigator) {
-    try {
-      const devices = await (navigator as any).usb.getDevices();
-      const device = devices.find(
-        (d: any) =>
-          `0x${d.vendorId.toString(16).padStart(4, "0")}` === printer.vendorId
-      );
-      if (!device) throw new Error("USB device not found");
-      await device.open();
-      if (device.configuration === null) await device.selectConfiguration(1);
-      await device.claimInterface(0);
-      await device.transferOut(1, data.buffer);
-      await device.close();
-      return;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "USB print failed";
-      throw new Error(msg);
+  // 2026-07-26 printer audit fix: this used to call browser WebUSB
+  // (navigator.usb), which Tauri's embedded webview does not implement --
+  // it silently never worked (no error, no paper, `.bin` file quietly
+  // downloaded instead). Real USB printing now goes through the OS print
+  // spooler via a Rust command (see print.rs), sending the exact same
+  // ESC/POS bytes as a RAW job straight to the device's own driver queue.
+  if (printer.interface === "USB") {
+    if (!printer.systemPrinterName) {
+      throw new Error("لم يتم اختيار طابعة من قائمة النظام لهذا الجهاز -- اذهب إلى الإعدادات واختر الطابعة الفعلية");
     }
+    await invoke("print_raw_bytes_v3", { printerName: printer.systemPrinterName, data: Array.from(data) });
+    return;
   }
 
   if (printer.interface === "NETWORK" && printer.ipAddress) {
@@ -439,6 +456,7 @@ export async function printReceipt(data: ReceiptData): Promise<void> {
         drawerPulseMs: p.drawer_pulse_ms,
         isPrimary: p.is_primary,
         isSecondary: p.is_secondary,
+        systemPrinterName: p.system_printer_name ?? undefined,
       });
       return;
     } catch (err) {
@@ -494,6 +512,7 @@ export async function printKitchenTicket(data: KitchenTicketData): Promise<void>
         drawerPulseMs: p.drawer_pulse_ms,
         isPrimary: p.is_primary,
         isSecondary: p.is_secondary,
+        systemPrinterName: p.system_printer_name ?? undefined,
       });
       anyPrinted = true;
     } catch (err) {
@@ -533,6 +552,7 @@ export async function openCashDrawer(pulseMs: number = 200): Promise<void> {
     drawerPulseMs: pr.drawer_pulse_ms,
     isPrimary: pr.is_primary,
     isSecondary: pr.is_secondary,
+    systemPrinterName: pr.system_printer_name ?? undefined,
   });
 }
 

@@ -18,8 +18,13 @@ interface ChainConfig {
 interface Printer {
   id: string;
   name: string;
+  printer_type: "RECEIPT" | "KITCHEN" | "LABEL";
+  interface: "USB" | "NETWORK" | "BLUETOOTH";
   paper_width_mm: number;
   is_active: number;
+  ip_address: string | null;
+  port: number;
+  system_printer_name: string | null;
 }
 
 interface Branch {
@@ -103,6 +108,15 @@ export default function SettingsPage() {
   const [currency, setCurrency] = useState("SAR");
 
   const [printers, setPrinters] = useState<Printer[]>([]);
+  const [systemPrinters, setSystemPrinters] = useState<{ systemName: string; name: string; isDefault: boolean }[]>([]);
+  const [showAddPrinter, setShowAddPrinter] = useState(false);
+  const [newPrinterName, setNewPrinterName] = useState("");
+  const [newPrinterType, setNewPrinterType] = useState<"RECEIPT" | "KITCHEN" | "LABEL">("RECEIPT");
+  const [newPrinterInterface, setNewPrinterInterface] = useState<"USB" | "NETWORK">("USB");
+  const [newPrinterSystemName, setNewPrinterSystemName] = useState("");
+  const [newPrinterIp, setNewPrinterIp] = useState("");
+  const [newPrinterPort, setNewPrinterPort] = useState("9100");
+  const [addingPrinter, setAddingPrinter] = useState(false);
 
   const [taxRate, setTaxRate] = useState("15");
   const [taxMode, setTaxMode] = useState<TaxMode>("exclusive");
@@ -383,6 +397,60 @@ export default function SettingsPage() {
     }
   };
 
+  const loadSystemPrinters = async () => {
+    try {
+      const { listSystemPrinters } = await import("../../lib/printer");
+      setSystemPrinters(await listSystemPrinters());
+    } catch {
+      showMsg("تعذر قراءة قائمة الطابعات المثبتة على هذا الجهاز");
+    }
+  };
+
+  const bindSystemPrinter = async (printer: Printer, systemPrinterName: string) => {
+    if (!systemPrinterName) return;
+    try {
+      await invoke("update_printer_system_name_v3", { sessionToken: token, printerId: printer.id, systemPrinterName });
+      showMsg("تم ربط الطابعة بنجاح");
+      fetchData();
+    } catch {
+      showMsg("حدث خطأ في ربط الطابعة");
+    }
+  };
+
+  const handleAddPrinter = async () => {
+    if (!newPrinterName.trim()) return;
+    if (newPrinterInterface === "USB" && !newPrinterSystemName) {
+      showMsg("اختر طابعة من قائمة الطابعات المثبتة على هذا الجهاز");
+      return;
+    }
+    setAddingPrinter(true);
+    try {
+      await invoke<string>("create_printer_v3", {
+        sessionToken: token,
+        name: newPrinterName.trim(),
+        printerType: newPrinterType,
+        interface: newPrinterInterface,
+        vendorId: null,
+        productId: null,
+        drawerPulseMs: 200,
+        isPrimary: printers.length === 0,
+        systemPrinterName: newPrinterInterface === "USB" ? newPrinterSystemName : null,
+        ipAddress: newPrinterInterface === "NETWORK" ? newPrinterIp.trim() || null : null,
+        port: newPrinterInterface === "NETWORK" ? (parseInt(newPrinterPort, 10) || 9100) : null,
+      });
+      setShowAddPrinter(false);
+      setNewPrinterName("");
+      setNewPrinterSystemName("");
+      setNewPrinterIp("");
+      showMsg("تمت إضافة الطابعة بنجاح");
+      fetchData();
+    } catch (err) {
+      showMsg(typeof err === "string" ? err : "حدث خطأ في إضافة الطابعة");
+    } finally {
+      setAddingPrinter(false);
+    }
+  };
+
   return (
     <div className="flex h-full overflow-hidden bg-canvas" dir="rtl">
       <nav className="w-44 bg-surface-alt border-l border-ink-200 flex flex-col py-3 gap-0.5 shrink-0 overflow-y-auto">
@@ -443,8 +511,91 @@ export default function SettingsPage() {
 
         {tab === "printer" && (
           <div className="space-y-6 max-w-xl">
-            <h2 className="text-lg font-bold text-ink-900 font-arabic">إعدادات الطابعة</h2>
-            {printers.length === 0 && (
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-ink-900 font-arabic">إعدادات الطابعة</h2>
+              <button
+                onClick={() => { setShowAddPrinter((v) => !v); if (!showAddPrinter) loadSystemPrinters(); }}
+                className="h-9 px-4 rounded-sm bg-saffron-600 text-white text-xs font-bold hover:bg-saffron-700 transition-colors"
+              >
+                {showAddPrinter ? "إلغاء" : "+ إضافة طابعة"}
+              </button>
+            </div>
+
+            {showAddPrinter && (
+              <div className="bg-white rounded-md p-5 border border-ink-200 space-y-3">
+                <input
+                  type="text"
+                  value={newPrinterName}
+                  onChange={(e) => setNewPrinterName(e.target.value)}
+                  placeholder="اسم الطابعة (مثال: طابعة الكاشير)"
+                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
+                />
+                <div className="flex gap-2">
+                  {(["RECEIPT", "KITCHEN", "LABEL"] as const).map((t) => (
+                    <button key={t} onClick={() => setNewPrinterType(t)} className={`flex-1 h-9 rounded-sm text-xs font-arabic transition-colors ${newPrinterType === t ? "bg-saffron-600 text-white" : "bg-white border-2 border-ink-200 text-ink-500"}`}>
+                      {t === "RECEIPT" ? "إيصال" : t === "KITCHEN" ? "مطبخ" : "ملصق"}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  {(["USB", "NETWORK"] as const).map((i) => (
+                    <button key={i} onClick={() => setNewPrinterInterface(i)} className={`flex-1 h-9 rounded-sm text-xs font-arabic transition-colors ${newPrinterInterface === i ? "bg-saffron-600 text-white" : "bg-white border-2 border-ink-200 text-ink-500"}`}>
+                      {i === "USB" ? "USB" : "شبكة (IP)"}
+                    </button>
+                  ))}
+                </div>
+
+                {newPrinterInterface === "USB" && (
+                  <div>
+                    <select
+                      value={newPrinterSystemName}
+                      onChange={(e) => setNewPrinterSystemName(e.target.value)}
+                      className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
+                    >
+                      <option value="">-- اختر طابعة من الأجهزة المثبتة --</option>
+                      {systemPrinters.map((sp) => (
+                        <option key={sp.systemName} value={sp.systemName}>{sp.name}{sp.isDefault ? " (افتراضية)" : ""}</option>
+                      ))}
+                    </select>
+                    {systemPrinters.length === 0 && (
+                      <p className="text-xs text-amber-700 font-arabic mt-1">
+                        لم يتم العثور على أي طابعة مثبتة على هذا الجهاز -- تأكد من توصيل الطابعة وتثبيت تعريفها في نظام التشغيل أولاً.
+                      </p>
+                    )}
+                  </div>
+                )}
+                {newPrinterInterface === "NETWORK" && (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newPrinterIp}
+                      onChange={(e) => setNewPrinterIp(e.target.value)}
+                      placeholder="عنوان IP (مثال: 192.168.1.50)"
+                      dir="ltr"
+                      className="flex-1 h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
+                    />
+                    <input
+                      type="number"
+                      value={newPrinterPort}
+                      onChange={(e) => setNewPrinterPort(e.target.value)}
+                      placeholder="Port"
+                      dir="ltr"
+                      className="w-24 h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
+                    />
+                  </div>
+                )}
+
+                <button
+                  onClick={handleAddPrinter}
+                  disabled={addingPrinter || !newPrinterName.trim()}
+                  className="h-10 px-6 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                >
+                  {addingPrinter ? "جاري الإضافة..." : "إضافة"}
+                </button>
+              </div>
+            )}
+
+            {printers.length === 0 && !showAddPrinter && (
               <div className="bg-white rounded-md p-8 border border-ink-200 text-center text-ink-500 font-arabic">
                 لا توجد طابعات مسجلة
               </div>
@@ -466,6 +617,28 @@ export default function SettingsPage() {
                     />
                   </button>
                 </div>
+
+                {printer.interface === "USB" && !printer.system_printer_name && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-sm p-3 space-y-2">
+                    <p className="text-xs font-arabic text-amber-700">
+                      هذه الطابعة غير مرتبطة بطابعة حقيقية على هذا الجهاز -- لن تطبع حتى يتم الاختيار.
+                    </p>
+                    <div className="flex gap-2">
+                      <select
+                        onFocus={() => { if (systemPrinters.length === 0) loadSystemPrinters(); }}
+                        onChange={(e) => bindSystemPrinter(printer, e.target.value)}
+                        defaultValue=""
+                        className="flex-1 h-9 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-xs outline-none focus:border-saffron-600"
+                      >
+                        <option value="">-- اختر طابعة --</option>
+                        {systemPrinters.map((sp) => (
+                          <option key={sp.systemName} value={sp.systemName}>{sp.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex items-center gap-3">
                   <span className="text-sm text-ink-400 font-arabic">عرض الورق:</span>
                   <div className="flex gap-2">
@@ -490,8 +663,8 @@ export default function SettingsPage() {
                       const { testPrint } = await import("../../lib/printer");
                       await testPrint();
                       showMsg("تم إرسال أمر الطباعة التجريبي");
-                    } catch {
-                      showMsg("فشلت الطباعة التجريبية");
+                    } catch (err) {
+                      showMsg(err instanceof Error ? err.message : "فشلت الطباعة التجريبية");
                     }
                   }}
                   className="px-4 py-2 rounded-sm bg-white text-ink-500 text-sm font-arabic hover:bg-ink-200 transition-colors"

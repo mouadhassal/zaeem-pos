@@ -17,6 +17,7 @@ mod hlc;
 mod sync;
 mod obslog;
 mod lan;
+mod print;
 
 use bcrypt::{hash, DEFAULT_COST};
 
@@ -71,6 +72,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_loyalty_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_staff_sync_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_lan_pairing_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_printer_system_name_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -441,6 +443,7 @@ pub fn run() {
             commands_v3::save_legacy_branch_v3,
             commands_v3::set_printer_active_v3,
             commands_v3::update_printer_paper_width_v3,
+            commands_v3::update_printer_system_name_v3,
             commands_v3::create_purchase_order_v3,
             commands_v3::create_purchase_order_and_bump_supplier_v3,
             commands_v3::create_purchase_order_with_items_v3,
@@ -521,6 +524,8 @@ pub fn run() {
             lan::forget_pairing_v3,
             lan::get_lan_redirect_target_v3,
             lan::lan_relay_v3,
+            print::list_system_printers_v3,
+            print::print_raw_bytes_v3,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

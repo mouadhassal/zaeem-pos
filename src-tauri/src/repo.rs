@@ -820,6 +820,13 @@ pub struct PrinterRow {
     pub ip_address: Option<String>,
     pub port: i64,
     pub code_page: i64,
+    /// 2026-07-26 printer audit: the real OS-registered print queue name
+    /// (winspool/CUPS), used by `print_raw_bytes_v3` -- distinct from
+    /// `vendor_id`/`product_id`, which are now display-only "known model"
+    /// metadata (the old WebUSB-based USB path never actually worked in
+    /// Tauri's webview). `None` until re-selected via Settings' printer
+    /// picker for any printer created before this column existed.
+    pub system_printer_name: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -2892,15 +2899,27 @@ impl<'a> Repo<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn create_printer(&self, tenant_id: &str, branch_id: &str, name: &str, printer_type: &str, interface: &str, vendor_id: Option<&str>, product_id: Option<&str>, drawer_pulse_ms: i64, is_primary: bool) -> Result<String, RepoError> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_printer(&self, tenant_id: &str, branch_id: &str, name: &str, printer_type: &str, interface: &str, vendor_id: Option<&str>, product_id: Option<&str>, drawer_pulse_ms: i64, is_primary: bool, system_printer_name: Option<&str>, ip_address: Option<&str>, port: Option<i64>) -> Result<String, RepoError> {
         self.assert_scope_populated("printers", true)?;
         let id = uuid::Uuid::now_v7().to_string();
         self.conn.execute(
-            "INSERT INTO printers (id, tenant_id, branch_id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary, is_secondary, is_active, last_modified, sync_status) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, 1, datetime('now'), 'pending')",
-            params![id, tenant_id, branch_id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary as i64],
+            "INSERT INTO printers (id, tenant_id, branch_id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary, is_secondary, is_active, system_printer_name, ip_address, port, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, 1, ?11, ?12, COALESCE(?13, 9100), datetime('now'), 'pending')",
+            params![id, tenant_id, branch_id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary as i64, system_printer_name, ip_address, port],
         )?;
         Ok(id)
+    }
+
+    /// Lets Settings' printer picker (re-)bind a printer row to a real
+    /// OS-registered print queue name after `list_system_printers_v3`
+    /// enumerates what's actually installed -- needed both at creation
+    /// time and later if the OS queue name ever changes (driver
+    /// reinstall, printer renamed in Windows' own Printers & Scanners).
+    pub fn update_printer_system_name(&self, scope: &Scope, printer_id: &str, system_printer_name: &str) -> Result<(), RepoError> {
+        self.assert_row_in_scope("printers", printer_id, scope)?;
+        self.conn.execute("UPDATE printers SET system_printer_name = ?1, last_modified = datetime('now') WHERE id = ?2", params![system_printer_name, printer_id])?;
+        Ok(())
     }
 
     /// Batch 3b, slice 3, group 4: widened to include `is_active`/
@@ -2914,7 +2933,7 @@ impl<'a> Repo<'a> {
         self.assert_scope_populated("printers", true)?;
         let (predicate, args) = Self::scope_predicate(scope);
         let sql = format!(
-            "SELECT id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary, is_secondary, is_active, paper_width_mm, ip_address, port, code_page FROM printers WHERE {predicate} ORDER BY name ASC"
+            "SELECT id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary, is_secondary, is_active, paper_width_mm, ip_address, port, code_page, system_printer_name FROM printers WHERE {predicate} ORDER BY name ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
@@ -2922,7 +2941,7 @@ impl<'a> Repo<'a> {
             Ok(PrinterRow {
                 id: r.get(0)?, name: r.get(1)?, printer_type: r.get(2)?, interface: r.get(3)?, vendor_id: r.get(4)?, product_id: r.get(5)?,
                 drawer_pulse_ms: r.get(6)?, is_primary: r.get(7)?, is_secondary: r.get(8)?, is_active: r.get(9)?, paper_width_mm: r.get(10)?,
-                ip_address: r.get(11)?, port: r.get(12)?, code_page: r.get(13)?,
+                ip_address: r.get(11)?, port: r.get(12)?, code_page: r.get(13)?, system_printer_name: r.get(14)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)

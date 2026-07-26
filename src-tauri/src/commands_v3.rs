@@ -1824,6 +1824,23 @@ pub fn update_printer_paper_width_v3(state: State<Db>, license: State<crate::lic
     Ok(())
 }
 
+/// Binds a printer row to a real OS-registered print queue name (see
+/// `print.rs`'s `list_system_printers_v3`) -- required for a USB printer
+/// to actually print anything (see `print_raw_bytes_v3`); a no-op for
+/// NETWORK printers, which never needed this.
+#[tauri::command]
+pub fn update_printer_system_name_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, printer_id: String, system_printer_name: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_printer_system_name(&actor.scope(), &printer_id, &system_printer_name).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "printer", &printer_id, None, Some(&serde_json::json!({ "system_printer_name": system_printer_name }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// T1.6: two-layer menu price resolution (`override ?? default`), exposed
 /// read-only so a client can price an item before/while building an order.
 /// Gated on `CreateOrder` (the same permission that lets an actor build an
@@ -2534,7 +2551,7 @@ pub fn deactivate_driver_v3(state: State<Db>, license: State<crate::license::clo
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_printer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, printer_type: String, interface: String, vendor_id: Option<String>, product_id: Option<String>, drawer_pulse_ms: i64, is_primary: bool) -> Result<String, String> {
+pub fn create_printer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, printer_type: String, interface: String, vendor_id: Option<String>, product_id: Option<String>, drawer_pulse_ms: i64, is_primary: bool, system_printer_name: Option<String>, ip_address: Option<String>, port: Option<i64>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
@@ -2545,7 +2562,7 @@ pub fn create_printer_v3(state: State<Db>, license: State<crate::license::cloud:
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let printer_id = Repo::new(&tx)
-        .create_printer(&tenant_id, &branch_id, &name, &printer_type, &interface, vendor_id.as_deref(), product_id.as_deref(), drawer_pulse_ms, is_primary)
+        .create_printer(&tenant_id, &branch_id, &name, &printer_type, &interface, vendor_id.as_deref(), product_id.as_deref(), drawer_pulse_ms, is_primary, system_printer_name.as_deref(), ip_address.as_deref(), port)
         .map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
@@ -4159,6 +4176,7 @@ mod tests {
         migrate_v3::run_loyalty_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_staff_sync_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_lan_pairing_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_printer_system_name_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -5331,7 +5349,7 @@ mod tests {
         println!("[drift-groups] delivery_logs: status progressed ASSIGNED -> PICKED_UP -> DELIVERED, each transition stamping its own timestamp column, none overwritten");
 
         // printers (Finding #5): drawer_pulse_ms/is_primary/is_secondary/vendor_id/product_id.
-        let printer_id = repo.create_printer(&tenant_id, &branch_id, "طابعة المطبخ", "KITCHEN", "USB", Some("04b8"), Some("0202"), 250, true).unwrap();
+        let printer_id = repo.create_printer(&tenant_id, &branch_id, "طابعة المطبخ", "KITCHEN", "USB", Some("04b8"), Some("0202"), 250, true, None, None, None).unwrap();
         let printers = repo.list_printers(&manager.scope()).unwrap();
         let printer = printers.iter().find(|p| p.id == printer_id).unwrap();
         assert_eq!(printer.drawer_pulse_ms, 250);
@@ -6221,7 +6239,7 @@ mod tests {
         assert_eq!(legacy.max_tables, 30);
         println!("[settings] legacy branch updated in place, same id");
 
-        let printer_id = repo.create_printer(&tenant_id, &branch_id, "طابعة الكاشير", "RECEIPT", "USB", None, None, 200, true).unwrap();
+        let printer_id = repo.create_printer(&tenant_id, &branch_id, "طابعة الكاشير", "RECEIPT", "USB", None, None, 200, true, None, None, None).unwrap();
         repo.set_printer_active(&scope, &printer_id, false).unwrap();
         let printers = repo.list_printers(&scope).unwrap();
         let p = printers.iter().find(|p| p.id == printer_id).unwrap();
@@ -7715,7 +7733,7 @@ mod tests {
         }
 
         // ---- 19/20: printers (set_printer_active, update_printer_paper_width) ----
-        let printer_id = repo.create_printer(&tenant_id, &branch_id, "طابعة محلية", "RECEIPT", "USB", None, None, 200, true).unwrap();
+        let printer_id = repo.create_printer(&tenant_id, &branch_id, "طابعة محلية", "RECEIPT", "USB", None, None, 200, true, None, None, None).unwrap();
         repo.set_printer_active(&scope, &printer_id, false).unwrap();
         println!("[t1.9] set_printer_active succeeds for an in-scope printer");
         let other_printer = "other-tenant-printer";
@@ -8702,7 +8720,7 @@ mod tests {
             "create_operational_cost_v3", "list_invoices_v3", "create_invoice_v3", "mark_invoice_paid_v3",
             "update_chain_currency_v3", "update_chain_tax_v3", "update_discount_caps_v3",
             "get_legacy_branch_v3", "save_legacy_branch_v3", "set_printer_active_v3",
-            "update_printer_paper_width_v3", "create_printer_v3", "list_printers_v3",
+            "update_printer_paper_width_v3", "update_printer_system_name_v3", "create_printer_v3", "list_printers_v3",
             "create_customer_v3", "list_customers_v3", "update_customer_v3", "delete_customer_v3",
             "get_customer_detail_v3",
             "list_loyalty_cards_v3", "issue_loyalty_card_v3", "list_loyalty_transactions_v3",
