@@ -19,6 +19,9 @@ export const LAN_REDIRECT_COMMANDS = new Set([
   "get_active_shift_v3",
   "clock_in_v3",
   "clock_out_v3",
+  "open_shift_v3",
+  "close_shift_v3",
+  "get_shift_stats_v3",
 ]);
 
 interface LanRelayResult<T> {

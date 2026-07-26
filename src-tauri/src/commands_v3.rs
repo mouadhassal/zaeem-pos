@@ -21,9 +21,40 @@ use tauri::{Manager, State};
 /// `&state` deref-coerces from `State<Db>`) and directly from command-wrapper
 /// tests holding a plain `Db` -- no `tauri::App`/`State` construction needed.
 pub(crate) fn authenticate_actor(state: &Db, session_token: &str) -> Result<Actor, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    security::ensure_security_schema(&conn).map_err(|e| e.to_string())?;
-    security::authenticate(&conn, session_token).map_err(|e| e.to_string())
+    let local_result = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        security::ensure_security_schema(&conn).map_err(|e| e.to_string())?;
+        security::authenticate(&conn, session_token).map_err(|e| e.to_string())
+    };
+    match local_result {
+        Ok(actor) => Ok(actor),
+        // A Satellite's own local `session_v3` never has this row -- every
+        // login is LAN-redirected to the Hub (staff accounts/PINs are
+        // Hub-authoritative, see `lan.rs`'s module doc), so the ~140
+        // commands NOT on the Phase 1 order/table allowlist would
+        // otherwise see a cashier's own just-created session as "session
+        // expired" everywhere except the 11 redirected commands. Only
+        // reached on the local-lookup failure path -- zero extra cost for
+        // every standalone/Hub terminal, where this always returns
+        // `Ok(None)` immediately (mode != "satellite").
+        Err(local_err) => match crate::lan::resolve_actor_via_hub(session_token) {
+            Ok(Some(actor)) => Ok(actor),
+            Ok(None) => Err(local_err),
+            Err(hub_err) => Err(hub_err),
+        },
+    }
+}
+
+/// Wire shape for `__resolve_actor_v3` -- `security::Actor` itself doesn't
+/// derive `Serialize` (it's never persisted or sent anywhere else), so
+/// this is a deliberate, minimal copy just for the one LAN round-trip.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct ActorWire {
+    pub id: String,
+    pub tenant_id: String,
+    pub branch_id: Option<String>,
+    pub role: Role,
+    pub device_id: String,
 }
 
 /// The POS-never-stops-selling guarantee is structural, not a flag check:
@@ -1202,7 +1233,11 @@ fn get_active_shift_v3_impl(state: &Db, session_token: String) -> Result<Option<
 
 #[tauri::command]
 pub fn get_shift_stats_v3(state: State<Db>, session_token: String, shift_id: String) -> Result<crate::repo::ShiftStatsRow, String> {
-    authenticate_actor(&state, &session_token)?;
+    get_shift_stats_v3_impl(&state, session_token, shift_id)
+}
+
+fn get_shift_stats_v3_impl(state: &Db, session_token: String, shift_id: String) -> Result<crate::repo::ShiftStatsRow, String> {
+    authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).shift_stats(&shift_id).map_err(|e| e.to_string())
 }
@@ -1296,7 +1331,11 @@ fn resolve_operating_branch(
 
 #[tauri::command]
 pub fn open_shift_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, starting_cash_cents: i64, branch_id: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    open_shift_v3_impl(&state, &license, session_token, starting_cash_cents, branch_id)
+}
+
+fn open_shift_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, starting_cash_cents: i64, branch_id: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ManageShift).map_err(|e| e.to_string())?;
     if starting_cash_cents < 0 {
         return Err("negative starting cash is not valid".to_string());
@@ -1304,7 +1343,7 @@ pub fn open_shift_v3(state: State<Db>, license: State<crate::license::cloud::Clo
 
     let (tenant_id, resolved_branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, branch_id)?
+        resolve_operating_branch(&conn, &actor, license, branch_id)?
     };
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -1317,7 +1356,11 @@ pub fn open_shift_v3(state: State<Db>, license: State<crate::license::cloud::Clo
 
 #[tauri::command]
 pub fn close_shift_v3(state: State<Db>, session_token: String, shift_id: String, ending_cash_cents: i64, difference_cents: i64) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    close_shift_v3_impl(&state, session_token, shift_id, ending_cash_cents, difference_cents)
+}
+
+fn close_shift_v3_impl(state: &Db, session_token: String, shift_id: String, ending_cash_cents: i64, difference_cents: i64) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ManageShift).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -4016,6 +4059,53 @@ pub fn dispatch_lan_rpc(
             let user_id: String = lan_arg(&args, "userId")?;
             clock_out_v3_impl(db, license, session_token, user_id)?;
             serde_json::Value::Null
+        }
+        // T3.0 follow-up: a shift opened/closed on a Satellite must live in
+        // the SAME `shifts` table its orders/payments already land in (the
+        // Hub's) -- otherwise end-of-shift cash reconciliation reads an
+        // empty local table while the drawer holds real Hub-recorded
+        // sales. See the audit that flagged this as the #1 remaining gap
+        // after Phase 1's order/table redirection.
+        "open_shift_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let starting_cash_cents: i64 = lan_arg(&args, "startingCashCents")?;
+            let branch_id: Option<String> = lan_arg(&args, "branchId")?;
+            let r = open_shift_v3_impl(db, license, session_token, starting_cash_cents, branch_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "close_shift_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let shift_id: String = lan_arg(&args, "shiftId")?;
+            let ending_cash_cents: i64 = lan_arg(&args, "endingCashCents")?;
+            let difference_cents: i64 = lan_arg(&args, "differenceCents")?;
+            close_shift_v3_impl(db, session_token, shift_id, ending_cash_cents, difference_cents)?;
+            serde_json::Value::Null
+        }
+        "get_shift_stats_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let shift_id: String = lan_arg(&args, "shiftId")?;
+            let r = get_shift_stats_v3_impl(db, session_token, shift_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        // Resolves a session token that only exists in the Hub's own
+        // `session_v3` table (every login is redirected -- staff accounts
+        // are Hub-authoritative) into an `Actor` a Satellite can use
+        // locally. Not a real business command and never on the frontend
+        // allowlist directly -- `authenticate_actor`'s own Hub-fallback
+        // path (see `lan::resolve_actor_via_hub`) is the only caller, for
+        // every one of the ~140 commands NOT on the Phase 1 allowlist that
+        // would otherwise see a session that "doesn't exist" the moment a
+        // cashier logs in at a Satellite.
+        "__resolve_actor_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let actor = authenticate_actor(db, &session_token)?;
+            serde_json::to_value(ActorWire {
+                id: actor.id,
+                tenant_id: actor.tenant_id,
+                branch_id: actor.branch_id,
+                role: actor.role,
+                device_id: actor.device_id,
+            }).map_err(|e| e.to_string())?
         }
         _ => return Err("UNKNOWN_COMMAND".to_string()),
     };

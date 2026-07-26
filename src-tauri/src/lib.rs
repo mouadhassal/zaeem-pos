@@ -321,6 +321,10 @@ pub fn run() {
             // after every restart. Never runs for `standalone`/
             // `satellite` mode.
             let lan_dir = db_path.parent().expect("db_path must have a parent dir").to_path_buf();
+            // Lets `authenticate_actor`'s Hub-fallback (see its own doc
+            // comment) find this device's own lan_config.json from deep
+            // inside a plain `fn` with no `AppHandle` in scope.
+            lan::set_db_dir(lan_dir.clone());
             if lan::load_lan_config(&lan_dir).mode == "hub" {
                 lan::start_hub_server(app.handle().clone(), &lan_dir);
             }

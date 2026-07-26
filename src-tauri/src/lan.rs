@@ -100,6 +100,17 @@ fn lan_config_path(db_path: &std::path::Path) -> std::path::PathBuf {
     db_path.parent().expect("db_path must have a parent dir").join("lan_config.json")
 }
 
+/// Set once, early in `setup()`, so `resolve_actor_via_hub` -- called from
+/// deep inside `authenticate_actor` (a plain `fn` with no `AppHandle` in
+/// scope, reachable from ~150 call sites) -- has somewhere to read this
+/// device's own LAN role from without threading a new parameter through
+/// every one of them.
+static DB_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+pub fn set_db_dir(dir: std::path::PathBuf) {
+    let _ = DB_DIR.set(dir);
+}
+
 pub fn load_lan_config(db_path: &std::path::Path) -> LanConfig {
     std::fs::read_to_string(lan_config_path(db_path))
         .ok()
@@ -705,6 +716,86 @@ pub fn forget_pairing_v3(app: AppHandle) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// Auth resolution fallback: makes a Satellite's Hub-only session usable by
+// every command, not just the Phase 1 order/table allowlist. See
+// `commands_v3::authenticate_actor`'s doc comment for why this exists.
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct ActorWireIn {
+    id: String,
+    tenant_id: String,
+    branch_id: Option<String>,
+    role: crate::security::Role,
+    device_id: String,
+}
+
+/// Called only on a LOCAL session lookup failure. Returns `Ok(None)` for a
+/// standalone/Hub terminal (the overwhelming majority of calls -- local
+/// lookup normally succeeds there and this is never reached at all) or a
+/// Satellite with no pairing configured yet. Returns `Ok(Some(actor))` once
+/// the Hub confirms the token, `Err` if this terminal IS a paired
+/// Satellite but the Hub couldn't be reached or rejected the token (a real
+/// session-expired/offline-Hub error, not "not applicable").
+///
+/// Bridges into async by hand rather than requiring `reqwest`'s separate
+/// `blocking` feature: `authenticate_actor` is a plain `fn` called from
+/// both sync AND async `#[tauri::command]`s, so this has to work whether
+/// or not it's already running inside a tokio task on the same thread --
+/// `block_in_place` for the former, a throwaway runtime for the latter.
+pub fn resolve_actor_via_hub(session_token: &str) -> Result<Option<crate::security::Actor>, String> {
+    let Some(dir) = DB_DIR.get() else { return Ok(None) };
+    let config = load_lan_config(dir);
+    resolve_actor_via_hub_with_config(&config, session_token)
+}
+
+/// The testable half of `resolve_actor_via_hub` -- everything except
+/// "where do I read my own config from" (a process-global `OnceLock`,
+/// deliberately not touched by tests: it can only ever be set once per
+/// process, and `cargo test` runs many unrelated tests in the same one).
+fn resolve_actor_via_hub_with_config(config: &LanConfig, session_token: &str) -> Result<Option<crate::security::Actor>, String> {
+    if config.mode != "satellite" {
+        return Ok(None);
+    }
+    let (Some(hub_addr), Some(trust_token)) = (config.hub_addr.clone(), config.trust_token.clone()) else {
+        return Ok(None);
+    };
+    let session_token = session_token.to_string();
+
+    let fetch = async move {
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://{hub_addr}/rpc/__resolve_actor_v3"))
+            .bearer_auth(trust_token)
+            .json(&serde_json::json!({ "sessionToken": session_token }))
+            .send()
+            .await
+            .map_err(|e| format!("could not reach hub: {e}"))?;
+        resp.json::<Value>().await.map_err(|e| e.to_string())
+    };
+    let body = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fetch))?,
+        Err(_) => {
+            let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+            rt.block_on(fetch)?
+        }
+    };
+
+    if body.get("ok").and_then(Value::as_bool) == Some(true) {
+        let wire: ActorWireIn = serde_json::from_value(body.get("data").cloned().unwrap_or(Value::Null)).map_err(|e| e.to_string())?;
+        Ok(Some(crate::security::Actor {
+            id: wire.id,
+            tenant_id: wire.tenant_id,
+            branch_id: wire.branch_id,
+            role: wire.role,
+            device_id: wire.device_id,
+        }))
+    } else {
+        Err(body.get("error").and_then(Value::as_str).unwrap_or("hub rejected request").to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Frontend redirection support -- `invoke.ts` calls these on every command
 // (not just LAN-related ones), so both are deliberately NOT auth-gated:
 // they only ever return/act on THIS device's own local, already-on-disk
@@ -787,5 +878,105 @@ pub async fn lan_relay_v3(app: AppHandle, command: String, args: Value) -> Resul
     } else {
         let err = body.get("error").and_then(Value::as_str).unwrap_or("hub rejected request").to_string();
         Ok(LanRelayResultV3 { redirected: true, data: None, error: Some(err) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Deliberately never touches `DB_DIR` (a process-global `OnceLock` --
+    //! see its own doc comment) or a real Tauri `AppHandle` (constructing
+    //! one crashes this dev box, see `commands_v3::tests::command_wrapper_tests`'s
+    //! doc comment). Exercises `resolve_actor_via_hub_with_config` against
+    //! a plain, hand-built axum server standing in for the Hub's real
+    //! `/rpc/__resolve_actor_v3` route -- that's the entire surface this
+    //! function talks to, so this proves the HTTP+parsing contract without
+    //! needing either.
+    use super::*;
+
+    async fn spawn_stub_hub(response: serde_json::Value) -> String {
+        let router = Router::new().route(
+            "/rpc/__resolve_actor_v3",
+            axum::routing::post(move || {
+                let response = response.clone();
+                async move { Json(response) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        addr.to_string()
+    }
+
+    fn satellite_config(hub_addr: String) -> LanConfig {
+        LanConfig {
+            mode: "satellite".to_string(),
+            hub_addr: Some(hub_addr),
+            trust_token: Some("test-trust-token".to_string()),
+            pairing_request_id: None,
+            device_name: "Test Satellite".to_string(),
+        }
+    }
+
+    #[test]
+    fn standalone_and_hub_terminals_never_attempt_a_network_call() {
+        let standalone = LanConfig { mode: "standalone".to_string(), ..Default::default() };
+        assert!(resolve_actor_via_hub_with_config(&standalone, "any-token").unwrap().is_none());
+
+        let hub = LanConfig { mode: "hub".to_string(), ..Default::default() };
+        assert!(resolve_actor_via_hub_with_config(&hub, "any-token").unwrap().is_none());
+    }
+
+    #[test]
+    fn satellite_with_no_completed_pairing_yet_is_also_a_no_op() {
+        let unpaired = LanConfig { mode: "satellite".to_string(), ..Default::default() };
+        assert!(resolve_actor_via_hub_with_config(&unpaired, "any-token").unwrap().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_paired_satellite_resolves_a_hub_only_session_into_a_usable_actor() {
+        let hub_addr = spawn_stub_hub(serde_json::json!({
+            "ok": true,
+            "data": {
+                "id": "staff-1",
+                "tenant_id": "tenant-1",
+                "branch_id": "branch-1",
+                "role": "Cashier",
+                "device_id": "hub-terminal-1",
+            }
+        }))
+        .await;
+
+        let config = satellite_config(hub_addr);
+        let actor = resolve_actor_via_hub_with_config(&config, "some-hub-only-session-token")
+            .unwrap()
+            .expect("a successful hub response must resolve to Some(actor)");
+        assert_eq!(actor.id, "staff-1");
+        assert_eq!(actor.tenant_id, "tenant-1");
+        assert_eq!(actor.branch_id.as_deref(), Some("branch-1"));
+        assert_eq!(actor.role, crate::security::Role::Cashier);
+        assert_eq!(actor.device_id, "hub-terminal-1");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_paired_satellite_surfaces_the_hubs_own_rejection_reason() {
+        let hub_addr = spawn_stub_hub(serde_json::json!({
+            "ok": false,
+            "error": "session expired",
+        }))
+        .await;
+
+        let config = satellite_config(hub_addr);
+        let err = resolve_actor_via_hub_with_config(&config, "an-expired-token").unwrap_err();
+        assert_eq!(err, "session expired");
+    }
+
+    #[test]
+    fn a_paired_satellite_whose_hub_is_unreachable_gets_a_clear_error_not_a_panic() {
+        // Port 1 is reserved and nothing will ever be listening there.
+        let config = satellite_config("127.0.0.1:1".to_string());
+        let err = resolve_actor_via_hub_with_config(&config, "any-token").unwrap_err();
+        assert!(err.contains("could not reach hub"), "got: {err}");
     }
 }
