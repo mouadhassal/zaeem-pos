@@ -349,6 +349,30 @@ pub fn kitchen_role_may_call(command: &str) -> bool {
     )
 }
 
+/// Closes the LOCAL-bypass version of the licensing kill-switch (2026-07-26
+/// audit, part 2): `rpc_dispatch`'s `kitchen_role_may_call` gate only
+/// protects a REMOTE call arriving at the Hub over the LAN -- it does
+/// nothing to stop a kitchen-role Satellite's OWN local command handlers
+/// from running directly, since Tauri's IPC bridge exposes every
+/// `#[tauri::command]` to the webview regardless of `invoke.ts`'s
+/// JS-level redirection (a devtools console calling
+/// `window.__TAURI__.core.invoke("create_full_order_v3", ...)` reaches the
+/// exact same function, with zero dependency on `invoke.ts` existing at
+/// all). Called at the top of every order/payment/shift `_impl` whose
+/// command name is NOT in `kitchen_role_may_call`'s safe subset -- a no-op
+/// for every standalone/Hub terminal and every 'register'-role satellite;
+/// only `mode == "satellite" && device_role == "kitchen"` ever rejects.
+pub fn reject_if_local_kitchen_satellite(command: &str) -> Result<(), String> {
+    let Some(dir) = DB_DIR.get() else { return Ok(()) };
+    let config = load_lan_config(dir);
+    if config.mode == "satellite" && config.device_role.as_deref() == Some("kitchen") && !kitchen_role_may_call(command) {
+        return Err(
+            "هذا الجهاز مسجل كشاشة مطبخ فقط ولا يمكنه تنفيذ عمليات نقطة البيع (طلبات/دفع/وردية) -- يجب ربطه كجهاز كاشير مرخّص لهذا الغرض".to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Looks up the calling Satellite's own trust token (from the
 /// `Authorization: Bearer <token>` header) against approved, non-revoked
 /// `paired_terminal` rows and returns its declared `device_role`. Any RPC
@@ -1053,6 +1077,17 @@ mod tests {
         let config = satellite_config("127.0.0.1:1".to_string());
         let err = resolve_actor_via_hub_with_config(&config, "any-token").unwrap_err();
         assert!(err.contains("could not reach hub"), "got: {err}");
+    }
+
+    #[test]
+    fn reject_if_local_kitchen_satellite_is_a_no_op_without_db_dir_set() {
+        // DB_DIR is a process-global OnceLock this test suite deliberately
+        // never sets (see its own doc comment) -- so every test, including
+        // this one, always exercises the "no config available yet" path.
+        // That's still worth pinning: it must default OPEN (Ok), not
+        // fail-closed, since a fresh install with no lan_config.json at
+        // all is by far the most common case (standalone).
+        assert!(reject_if_local_kitchen_satellite("create_full_order_v3").is_ok());
     }
 
     /// Licensing kill-switch (2026-07-26 audit): a free 'kitchen' Satellite

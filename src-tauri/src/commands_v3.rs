@@ -656,6 +656,7 @@ fn take_payment_v3_impl(
     change_cents: i64,
     debtor_id: Option<String>,
 ) -> Result<String, String> {
+    crate::lan::reject_if_local_kitchen_satellite("take_payment_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::TakePayment).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
@@ -1226,6 +1227,7 @@ pub fn get_active_shift_v3(state: State<Db>, session_token: String) -> Result<Op
 }
 
 fn get_active_shift_v3_impl(state: &Db, session_token: String) -> Result<Option<crate::repo::ShiftRow>, String> {
+    crate::lan::reject_if_local_kitchen_satellite("get_active_shift_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).get_active_shift(&actor.id).map_err(|e| e.to_string())
@@ -1237,6 +1239,7 @@ pub fn get_shift_stats_v3(state: State<Db>, session_token: String, shift_id: Str
 }
 
 fn get_shift_stats_v3_impl(state: &Db, session_token: String, shift_id: String) -> Result<crate::repo::ShiftStatsRow, String> {
+    crate::lan::reject_if_local_kitchen_satellite("get_shift_stats_v3")?;
     authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).shift_stats(&shift_id).map_err(|e| e.to_string())
@@ -1335,6 +1338,7 @@ pub fn open_shift_v3(state: State<Db>, license: State<crate::license::cloud::Clo
 }
 
 fn open_shift_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, starting_cash_cents: i64, branch_id: Option<String>) -> Result<String, String> {
+    crate::lan::reject_if_local_kitchen_satellite("open_shift_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ManageShift).map_err(|e| e.to_string())?;
     if starting_cash_cents < 0 {
@@ -1360,6 +1364,7 @@ pub fn close_shift_v3(state: State<Db>, session_token: String, shift_id: String,
 }
 
 fn close_shift_v3_impl(state: &Db, session_token: String, shift_id: String, ending_cash_cents: i64, difference_cents: i64) -> Result<(), String> {
+    crate::lan::reject_if_local_kitchen_satellite("close_shift_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ManageShift).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -1409,6 +1414,7 @@ pub fn clock_in_v3(state: State<Db>, license: State<crate::license::cloud::Cloud
 }
 
 fn clock_in_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String) -> Result<(), String> {
+    crate::lan::reject_if_local_kitchen_satellite("clock_in_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
@@ -1431,6 +1437,7 @@ pub fn clock_out_v3(state: State<Db>, license: State<crate::license::cloud::Clou
 }
 
 fn clock_out_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String) -> Result<(), String> {
+    crate::lan::reject_if_local_kitchen_satellite("clock_out_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -2969,6 +2976,7 @@ pub fn list_tables_v3(state: State<Db>, session_token: String) -> Result<Vec<Tab
 }
 
 fn list_tables_v3_impl(state: &Db, session_token: String) -> Result<Vec<TableInfo>, String> {
+    crate::lan::reject_if_local_kitchen_satellite("list_tables_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_tables(&actor.scope()).map_err(|e| e.to_string())
@@ -3076,6 +3084,7 @@ fn create_full_order_v3_impl(
     shift_id: Option<String>,
     manager_override_pin: Option<String>,
 ) -> Result<String, String> {
+    crate::lan::reject_if_local_kitchen_satellite("create_full_order_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
@@ -3400,6 +3409,7 @@ pub fn void_order_item_v3(state: State<Db>, license: State<crate::license::cloud
 const VOID_MANAGER_OVERRIDE_THRESHOLD_CENTS: i64 = 2000;
 
 fn void_order_item_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String, reason: String, manager_override_pin: Option<String>) -> Result<(), String> {
+    crate::lan::reject_if_local_kitchen_satellite("void_order_item_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let scope = actor.scope();
