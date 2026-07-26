@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import SplashScreen from "./components/SplashScreen";
 import { createBackup, startAutoBackup } from "./lib/backup";
+import { checkForUpdatesSilently } from "./lib/autoUpdate";
 import { startMemoryMonitoring, measureStartup, startFpsMonitor } from "./lib/performance";
 import { logger } from "./lib/logger";
 import "@fontsource/inter/400.css";
@@ -82,6 +83,13 @@ function Root() {
         // migrations before the frontend ever loads, and applies its own
         // pragmas on its one authoritative connection -- this redundant
         // second bootstrap is gone (Batch 3b closeout), not replaced.
+        // Runs before the app is otherwise usable, on purpose -- a cold
+        // boot (before any order-taking has started) is the one moment an
+        // automatic relaunch is truly invisible/harmless. If this installs
+        // an update, `relaunch()` restarts the process and this whole
+        // startup sequence simply runs again on the new version.
+        await checkForUpdatesSilently();
+
         await createBackup();
         startAutoBackup();
         startMemoryMonitoring();
