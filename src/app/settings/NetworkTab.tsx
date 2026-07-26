@@ -12,14 +12,20 @@ interface LanStatus {
 interface PendingPairing {
   id: string;
   deviceName: string;
+  deviceRole: string;
   requestedAt: string;
 }
 
 interface PairedTerminal {
   id: string;
   deviceName: string;
+  deviceRole: string;
   status: string;
   lastSeenAt: string | null;
+}
+
+function roleLabel(role: string): string {
+  return role === "kitchen" ? "شاشة مطبخ (مجاني)" : "كاشير / نقطة بيع (بترخيص)";
 }
 
 interface DiscoveredHub {
@@ -43,6 +49,7 @@ export default function NetworkTab({ token }: { token: string | null }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pairingWait, setPairingWait] = useState(false);
+  const [joinRole, setJoinRole] = useState<"register" | "kitchen">("kitchen");
 
   const refresh = useCallback(async () => {
     try {
@@ -118,7 +125,11 @@ export default function NetworkTab({ token }: { token: string | null }) {
     setBusy(true);
     setError(null);
     try {
-      await invoke("request_pairing_v3", { hubAddr: hub.addr, deviceName: status?.deviceName ?? "POS Terminal" });
+      await invoke("request_pairing_v3", {
+        hubAddr: hub.addr,
+        deviceName: status?.deviceName ?? "POS Terminal",
+        deviceRole: joinRole,
+      });
       invalidateLanTargetCache();
       await refresh();
     } catch (err) {
@@ -219,6 +230,25 @@ export default function NetworkTab({ token }: { token: string | null }) {
             <p className="text-xs font-arabic text-ink-400 mb-2">
               اختر هذا في أي جهاز آخر (شاشة مطبخ، كاشير إضافي) بعد تفعيل جهاز مركزي في نفس الشبكة.
             </p>
+            <div className="flex gap-2 mb-3">
+              <button
+                onClick={() => setJoinRole("kitchen")}
+                className={`flex-1 h-10 rounded-sm text-xs font-arabic transition-colors ${joinRole === "kitchen" ? "bg-saffron-600 text-white" : "bg-white border-2 border-ink-200 text-ink-500"}`}
+              >
+                شاشة مطبخ فقط (مجاني)
+              </button>
+              <button
+                onClick={() => setJoinRole("register")}
+                className={`flex-1 h-10 rounded-sm text-xs font-arabic transition-colors ${joinRole === "register" ? "bg-saffron-600 text-white" : "bg-white border-2 border-ink-200 text-ink-500"}`}
+              >
+                كاشير / نقطة بيع (يتطلب ترخيصاً لهذا الجهاز)
+              </button>
+            </div>
+            {joinRole === "register" && (
+              <p className="text-xs font-arabic text-amber-700 mb-2">
+                هذا الجهاز يعمل كنقطة بيع كاملة (طلبات، دفع، ورديات) -- يجب تفعيل ترخيص خاص به من تبويب &quot;الترخيص&quot; قبل الاتصال.
+              </p>
+            )}
             <button
               onClick={runDiscovery}
               disabled={discovering}
@@ -282,7 +312,10 @@ export default function NetworkTab({ token }: { token: string | null }) {
               <div className="space-y-1.5">
                 {pending.map((p) => (
                   <div key={p.id} className="flex items-center justify-between p-2.5 rounded-sm border border-ink-100">
-                    <span className="text-sm font-arabic text-ink-900">{p.deviceName}</span>
+                    <div>
+                      <span className="text-sm font-arabic text-ink-900">{p.deviceName}</span>
+                      <span className="mr-2 text-[11px] font-arabic px-2 py-0.5 rounded-full bg-ink-100 text-ink-500">{roleLabel(p.deviceRole)}</span>
+                    </div>
                     <div className="flex gap-1.5">
                       <button onClick={() => approve(p.id)} className="h-8 px-4 rounded-sm bg-saffron-600 text-white text-xs font-bold hover:bg-saffron-700 transition-colors">
                         موافقة
@@ -310,6 +343,7 @@ export default function NetworkTab({ token }: { token: string | null }) {
                       <span className={`mr-2 text-[11px] font-arabic px-2 py-0.5 rounded-full ${t.status === "APPROVED" ? "bg-green-50 text-green-700" : "bg-ink-100 text-ink-500"}`}>
                         {t.status === "APPROVED" ? "متصل" : "ملغى"}
                       </span>
+                      <span className="mr-1 text-[11px] font-arabic px-2 py-0.5 rounded-full bg-ink-100 text-ink-500">{roleLabel(t.deviceRole)}</span>
                     </div>
                     {t.status === "APPROVED" && (
                       <button onClick={() => revoke(t.id)} className="h-8 px-4 rounded-sm bg-white border-2 border-ink-200 text-red-600 text-xs font-bold hover:bg-red-50 transition-colors">

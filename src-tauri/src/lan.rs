@@ -93,6 +93,11 @@ pub struct LanConfig {
     /// `request_pairing_v3` call after an app restart (still PENDING or
     /// already APPROVED) can resume instead of creating a duplicate row.
     pub pairing_request_id: Option<String>,
+    /// Satellite-only: what this terminal declared itself as at pairing
+    /// time -- "register" or "kitchen". Kept locally purely for the
+    /// Network settings tab to display; the Hub's own `paired_terminal`
+    /// row is what's actually authoritative and enforced.
+    pub device_role: Option<String>,
     pub device_name: String,
 }
 
@@ -259,6 +264,15 @@ fn tenant_and_branch_for_mdns(app: &AppHandle) -> Option<(String, String)> {
 struct PairRequestBody {
     device_name: String,
     trust_token_hash: String,
+    /// "register" (a real cash register/POS terminal -- must already hold
+    /// its own active license, checked client-side before this request is
+    /// even sent, see `request_pairing_v3`) or "kitchen" (a KDS-only
+    /// terminal -- free, and restricted server-side to a small safe
+    /// command subset regardless of what it later asks for, see
+    /// `kitchen_role_may_call`). Never trusted alone: the Hub-side gate in
+    /// `rpc_dispatch` is what actually enforces this, not the client's own
+    /// declaration.
+    device_role: String,
 }
 
 #[derive(Serialize)]
@@ -270,6 +284,9 @@ async fn pair_request(
     AxumState(state): AxumState<LanState>,
     Json(body): Json<PairRequestBody>,
 ) -> impl IntoResponse {
+    if body.device_role != "register" && body.device_role != "kitchen" {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "deviceRole must be \"register\" or \"kitchen\""}))).into_response();
+    }
     let db = match state.app.try_state::<Db>() {
         Some(d) => d,
         None => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "db unavailable"}))).into_response(),
@@ -281,8 +298,8 @@ async fn pair_request(
     let id = uuid::Uuid::now_v7().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let result = conn.execute(
-        "INSERT INTO paired_terminal (id, device_name, trust_token_hash, status, requested_at) VALUES (?1, ?2, ?3, 'PENDING', ?4)",
-        rusqlite::params![id, body.device_name, body.trust_token_hash, now],
+        "INSERT INTO paired_terminal (id, device_name, trust_token_hash, device_role, status, requested_at) VALUES (?1, ?2, ?3, ?4, 'PENDING', ?5)",
+        rusqlite::params![id, body.device_name, body.trust_token_hash, body.device_role, now],
     );
     match result {
         Ok(_) => (StatusCode::OK, Json(serde_json::json!(PairRequestResponse { request_id: id }))).into_response(),
@@ -316,11 +333,28 @@ async fn pair_status(
     }
 }
 
+/// True for the small set of commands a free 'kitchen' Satellite may call
+/// regardless of what it asks for -- everything else (every order-
+/// creating/paying/shift command) requires a 'register' Satellite, which
+/// in turn requires its own active license (enforced client-side at
+/// `request_pairing_v3` time, before it ever reaches the Hub). This is the
+/// server-side half of the licensing kill-switch: a Satellite can declare
+/// itself "kitchen" to pair for free, but the Hub -- not the client's own
+/// declaration -- is what actually stops it from being used as a free cash
+/// register.
+pub fn kitchen_role_may_call(command: &str) -> bool {
+    matches!(
+        command,
+        "login_pin_v3" | "logout_v3" | "list_kitchen_orders_v3" | "update_order_status_v3" | "__resolve_actor_v3"
+    )
+}
+
 /// Looks up the calling Satellite's own trust token (from the
 /// `Authorization: Bearer <token>` header) against approved, non-revoked
-/// `paired_terminal` rows. Any RPC call without a valid, approved token is
-/// rejected before it ever reaches real command logic.
-fn authorize_satellite(conn: &rusqlite::Connection, headers: &HeaderMap) -> Result<(), String> {
+/// `paired_terminal` rows and returns its declared `device_role`. Any RPC
+/// call without a valid, approved token is rejected before it ever reaches
+/// real command logic.
+fn authorize_satellite(conn: &rusqlite::Connection, headers: &HeaderMap) -> Result<String, String> {
     let auth = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -328,21 +362,21 @@ fn authorize_satellite(conn: &rusqlite::Connection, headers: &HeaderMap) -> Resu
     let token = auth.strip_prefix("Bearer ").ok_or_else(|| "malformed Authorization header".to_string())?;
     let hash = sha256_hex(token);
     let now = chrono::Utc::now().to_rfc3339();
-    let matched: bool = conn
+    let device_role: Option<String> = conn
         .query_row(
-            "SELECT COUNT(*) > 0 FROM paired_terminal WHERE trust_token_hash = ?1 AND status = 'APPROVED'",
+            "SELECT device_role FROM paired_terminal WHERE trust_token_hash = ?1 AND status = 'APPROVED'",
             rusqlite::params![hash],
             |r| r.get(0),
         )
-        .unwrap_or(false);
-    if !matched {
+        .ok();
+    let Some(device_role) = device_role else {
         return Err("terminal is not paired/approved".to_string());
-    }
+    };
     let _ = conn.execute(
         "UPDATE paired_terminal SET last_seen_at = ?1 WHERE trust_token_hash = ?2",
         rusqlite::params![now, hash],
     );
-    Ok(())
+    Ok(device_role)
 }
 
 // ---------------------------------------------------------------------------
@@ -413,14 +447,27 @@ async fn rpc_dispatch(
         Some(l) => l,
         None => return rpc_error(StatusCode::INTERNAL_SERVER_ERROR, "license state unavailable"),
     };
-    {
+    let device_role = {
         let conn = match db.0.lock() {
             Ok(c) => c,
             Err(e) => return rpc_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
         };
-        if let Err(e) = authorize_satellite(&conn, &headers) {
-            return rpc_error(StatusCode::UNAUTHORIZED, &e);
+        match authorize_satellite(&conn, &headers) {
+            Ok(role) => role,
+            Err(e) => return rpc_error(StatusCode::UNAUTHORIZED, &e),
         }
+    };
+    // Licensing kill-switch (2026-07-26 audit): a 'kitchen' Satellite is
+    // free and read-mostly by design -- it does NOT get a free pass into
+    // the full order/payment/shift command set just because it's on the
+    // same allowlist as a licensed 'register' terminal. This check is
+    // authoritative regardless of what `dispatch_lan_rpc`'s own allowlist
+    // would otherwise permit.
+    if device_role == "kitchen" && !kitchen_role_may_call(&command) {
+        return rpc_error(
+            StatusCode::FORBIDDEN,
+            "this device is paired as a kitchen-screen-only terminal and cannot run cash register commands -- pair it as a register terminal with its own active license instead",
+        );
     }
 
     // `State<T>` derefs to `&T`, so `&db`/`&license` here are exactly the
@@ -502,6 +549,7 @@ pub fn enable_hub_mode_v3(app: AppHandle, state: State<Db>, session_token: Strin
 pub struct PendingPairingV3 {
     pub id: String,
     pub device_name: String,
+    pub device_role: String,
     pub requested_at: String,
 }
 
@@ -511,10 +559,10 @@ pub fn list_pending_pairings_v3(state: State<Db>, session_token: String) -> Resu
     crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id, device_name, requested_at FROM paired_terminal WHERE status = 'PENDING' ORDER BY requested_at ASC")
+        .prepare("SELECT id, device_name, device_role, requested_at FROM paired_terminal WHERE status = 'PENDING' ORDER BY requested_at ASC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |r| Ok(PendingPairingV3 { id: r.get(0)?, device_name: r.get(1)?, requested_at: r.get(2)? }))
+        .query_map([], |r| Ok(PendingPairingV3 { id: r.get(0)?, device_name: r.get(1)?, device_role: r.get(2)?, requested_at: r.get(3)? }))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
@@ -526,6 +574,7 @@ pub fn list_pending_pairings_v3(state: State<Db>, session_token: String) -> Resu
 pub struct PairedTerminalV3 {
     pub id: String,
     pub device_name: String,
+    pub device_role: String,
     pub status: String,
     pub last_seen_at: Option<String>,
 }
@@ -536,10 +585,10 @@ pub fn list_paired_terminals_v3(state: State<Db>, session_token: String) -> Resu
     crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id, device_name, status, last_seen_at FROM paired_terminal WHERE status IN ('APPROVED','REVOKED') ORDER BY device_name ASC")
+        .prepare("SELECT id, device_name, device_role, status, last_seen_at FROM paired_terminal WHERE status IN ('APPROVED','REVOKED') ORDER BY device_name ASC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |r| Ok(PairedTerminalV3 { id: r.get(0)?, device_name: r.get(1)?, status: r.get(2)?, last_seen_at: r.get(3)? }))
+        .query_map([], |r| Ok(PairedTerminalV3 { id: r.get(0)?, device_name: r.get(1)?, device_role: r.get(2)?, status: r.get(3)?, last_seen_at: r.get(4)? }))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
@@ -647,8 +696,32 @@ struct PairRequestReply {
 /// call again after an app restart if a previous attempt is still
 /// PENDING/APPROVED -- reuses the same locally-generated trust token and
 /// request id rather than creating a duplicate row on the Hub.
+///
+/// Licensing kill-switch (2026-07-26 audit): pairing as a free "kitchen"
+/// Satellite has no license requirement -- it's a read-mostly KDS by
+/// design, enforced server-side on every call by `rpc_dispatch`/
+/// `kitchen_role_may_call`. Pairing as "register" (a real cash register)
+/// requires THIS device to already hold its own active license -- the
+/// same `back_office_locked()` gate every terminal's back office already
+/// obeys -- checked here, before the request ever reaches the Hub, so an
+/// unlicensed device can't even become a pending pairing request.
 #[tauri::command]
-pub async fn request_pairing_v3(app: AppHandle, hub_addr: String, device_name: String) -> Result<(), String> {
+pub async fn request_pairing_v3(
+    app: AppHandle,
+    license: State<'_, crate::license::cloud::CloudLicenseState>,
+    hub_addr: String,
+    device_name: String,
+    device_role: String,
+) -> Result<(), String> {
+    if device_role != "register" && device_role != "kitchen" {
+        return Err("deviceRole must be \"register\" or \"kitchen\"".to_string());
+    }
+    if device_role == "register" && license.cached_status().back_office_locked() {
+        return Err(
+            "هذا الجهاز لا يملك ترخيصاً فعّالاً. كل نقطة بيع (كاشير) يجب أن يكون لها ترخيص خاص بها -- فعّل ترخيص هذا الجهاز أولاً من تبويب الترخيص، أو اربطه كشاشة مطبخ فقط (مجاناً) إذا كان الغرض عرض الطلبات فقط.".to_string()
+        );
+    }
+
     let dir = db_dir(&app)?;
     let mut config = load_lan_config(&dir);
 
@@ -658,7 +731,7 @@ pub async fn request_pairing_v3(app: AppHandle, hub_addr: String, device_name: S
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("http://{hub_addr}/pair/request"))
-        .json(&serde_json::json!({ "device_name": device_name, "trust_token_hash": trust_token_hash }))
+        .json(&serde_json::json!({ "device_name": device_name, "trust_token_hash": trust_token_hash, "device_role": device_role }))
         .send()
         .await
         .map_err(|e| format!("could not reach hub at {hub_addr}: {e}"))?;
@@ -671,6 +744,7 @@ pub async fn request_pairing_v3(app: AppHandle, hub_addr: String, device_name: S
     config.hub_addr = Some(hub_addr);
     config.trust_token = Some(trust_token);
     config.pairing_request_id = Some(body.request_id);
+    config.device_role = Some(device_role);
     config.device_name = device_name;
     save_lan_config(&dir, &config)?;
     Ok(())
@@ -915,6 +989,7 @@ mod tests {
             hub_addr: Some(hub_addr),
             trust_token: Some("test-trust-token".to_string()),
             pairing_request_id: None,
+            device_role: Some("register".to_string()),
             device_name: "Test Satellite".to_string(),
         }
     }
@@ -978,5 +1053,32 @@ mod tests {
         let config = satellite_config("127.0.0.1:1".to_string());
         let err = resolve_actor_via_hub_with_config(&config, "any-token").unwrap_err();
         assert!(err.contains("could not reach hub"), "got: {err}");
+    }
+
+    /// Licensing kill-switch (2026-07-26 audit): a free 'kitchen' Satellite
+    /// must never be usable as a free cash register. Pinning the exact
+    /// allowed set here means growing it back toward "everything" by
+    /// accident (e.g. someone copy-pasting a new case into
+    /// `dispatch_lan_rpc` and assuming it's covered) shows up as a failing
+    /// test, not a silent revenue-model hole.
+    #[test]
+    fn kitchen_role_is_restricted_to_the_read_mostly_kds_safe_subset() {
+        for allowed in ["login_pin_v3", "logout_v3", "list_kitchen_orders_v3", "update_order_status_v3", "__resolve_actor_v3"] {
+            assert!(kitchen_role_may_call(allowed), "{allowed} must be allowed for a kitchen-role satellite");
+        }
+        for forbidden in [
+            "create_full_order_v3",
+            "void_order_item_v3",
+            "take_payment_v3",
+            "open_shift_v3",
+            "close_shift_v3",
+            "get_shift_stats_v3",
+            "get_active_shift_v3",
+            "clock_in_v3",
+            "clock_out_v3",
+            "list_tables_v3",
+        ] {
+            assert!(!kitchen_role_may_call(forbidden), "{forbidden} must be forbidden for a free kitchen-role satellite -- it's a cash-register-shaped command");
+        }
     }
 }

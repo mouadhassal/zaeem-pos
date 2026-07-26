@@ -1562,11 +1562,20 @@ pub fn run_lan_pairing_migration(conn: &mut Connection, _db_path: &Path) -> Resu
 
     let tx = conn.transaction()?;
 
+    // `device_role` gates the licensing kill-switch (2026-07-26 audit): a
+    // 'kitchen' Satellite is a free, read-mostly KDS and the Hub's
+    // `rpc_dispatch` restricts it to a small safe command subset
+    // regardless of what it asks for; a 'register' Satellite is a real
+    // cash register/POS and the SATELLITE'S OWN device must already hold
+    // an active license (checked at `request_pairing_v3` time, same
+    // `back_office_locked()` gate every other terminal already obeys) --
+    // pairing as 'register' is not a way to get a free extra terminal.
     tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS paired_terminal (
             id TEXT PRIMARY KEY,
             device_name TEXT NOT NULL,
             trust_token_hash TEXT,
+            device_role TEXT NOT NULL DEFAULT 'register' CHECK(device_role IN ('register','kitchen')),
             status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','APPROVED','REJECTED','REVOKED')),
             requested_at TEXT NOT NULL,
             decided_at TEXT,
