@@ -3,15 +3,17 @@
 //! `NullAiProvider` (always errors, what every release build actually
 //! shipped with -- "menu onboarding" silently never worked).
 //!
-//! Deliberately does NOT call Anthropic's API directly from this desktop
-//! app: that would mean embedding a real API key inside a binary anyone
-//! can extract from an installer, and every customer's usage would bill
-//! to that one key with no way to gate abuse. Instead this proxies
-//! through a Supabase Edge Function (`ai-menu-extract`), which holds the
-//! real key server-side and checks the caller's `device_token` against
-//! the `license` table first -- the same gate `sync-pos` already uses,
-//! so only a genuinely licensed, active terminal can trigger a paid AI
-//! call.
+//! Deliberately does NOT call the AI vendor's API directly from this
+//! desktop app: that would mean embedding a real API key inside a binary
+//! anyone can extract from an installer. Instead this proxies through a
+//! Supabase Edge Function (`ai-menu-extract`), which holds the real key
+//! server-side (currently Google Gemini's free tier -- see that
+//! function's own doc comment) and checks the caller's `device_token`
+//! against the `license` table first -- the same gate `sync-pos` already
+//! uses, so only a genuinely licensed, active terminal can trigger a
+//! call. This Rust side has no idea which AI vendor is behind the
+//! function at all, by design -- swapping vendors later is a Supabase
+//! Edge Function change only, never a rebuild of the app.
 use super::*;
 use base64::Engine;
 use std::path::PathBuf;
