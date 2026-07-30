@@ -121,9 +121,10 @@ pub trait AiProvider: Send + Sync {
 
 mod null;
 mod mock;
+mod remote;
 mod queue;
 pub mod commands;
 
-pub use null::NullAiProvider;
 pub use mock::MockAiProvider;
+pub use remote::RemoteAiProvider;
 pub use queue::UploadQueue;

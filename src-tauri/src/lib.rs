@@ -26,7 +26,6 @@ struct Db(Mutex<Connection>);
 use ai::commands::AppState;
 use ai::commands;
 use ai::MockAiProvider;
-use ai::NullAiProvider;
 use ai::UploadQueue;
 
 // `SCHEMA_SQL` (the `tauri_plugin_sql` lazy-migration constant that used to
@@ -240,10 +239,21 @@ pub fn run() {
             let queue_conn = Connection::open(&db_path).expect("Failed to open database for queue");
             set_busy_timeout(&queue_conn);
             let queue = UploadQueue::new_queue(queue_conn);
+            // 2026-07-27: real menu-photo extraction, proxied through
+            // Supabase (see ai/remote.rs's module doc for why this never
+            // calls the AI provider directly from the desktop binary).
+            // MockAiProvider stays available for `debug_assertions` builds
+            // only, so local dev/demo work doesn't need a real license or
+            // network call for every test upload.
+            let ai_license_dir = db_path.parent().expect("db_path must have a parent dir").to_path_buf();
             let provider: Box<dyn ai::AiProvider + Send + Sync> = if cfg!(debug_assertions) {
                 Box::new(MockAiProvider)
             } else {
-                Box::new(NullAiProvider)
+                Box::new(ai::RemoteAiProvider {
+                    license_dir: ai_license_dir,
+                    supabase_url: license::cloud::supabase_url(),
+                    supabase_anon_key: license::cloud::supabase_anon_key(),
+                })
             };
             let app_conn = Connection::open(&db_path).expect("Failed to open database for AppState");
             set_busy_timeout(&app_conn);
