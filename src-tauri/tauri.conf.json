@@ -52,7 +52,7 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://REPLACE-WITH-YOUR-CONTROL-DASHBOARD-DOMAIN/api/updates/{{target}}/{{arch}}/{{current_version}}"
+        "https://control-three-psi.vercel.app/api/updates/{{target}}/{{arch}}/{{current_version}}"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI0QjY2M0FDMDhEQTMwQTEKUldTaE1Ob0lyR08ydEQxNEtQb0pkWk1wKzBjRUtTNHpIYmxMMjRkckFKaWxwS0grb3ZuNitLOW0K"
     }
