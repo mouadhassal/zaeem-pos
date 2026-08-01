@@ -101,6 +101,15 @@ pub fn clear_uploads(state: State<AppState>, session_token: String) -> Result<us
     queue.clear_done().map_err(|e| e.to_string())
 }
 
+/// 2026-08-01: real per-item removal -- the review screen showed every
+/// upload ever made with no way to remove one, regardless of its status.
+#[tauri::command]
+pub fn delete_upload(state: State<AppState>, session_token: String, upload_id: String) -> Result<(), String> {
+    authenticate_ai_actor(&state, &session_token)?;
+    let mut queue = state.queue.lock().map_err(|e| e.to_string())?;
+    queue.delete_one(&upload_id).map_err(|e| e.to_string())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ApplyDraftRequest {
     pub session_token: String,

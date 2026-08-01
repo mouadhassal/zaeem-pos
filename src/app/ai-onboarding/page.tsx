@@ -122,6 +122,24 @@ export default function AiOnboardingPage() {
     setApplyResult(null);
   };
 
+  // 2026-08-01: the review strip kept every upload ever made forever, with
+  // no way to remove one -- clicking X deletes it outright (any status,
+  // not just done/failed), same as the request explicitly asked for.
+  const removeUpload = async (e: React.MouseEvent, id: string, idx: number) => {
+    e.stopPropagation();
+    try {
+      await invoke("delete_upload", { sessionToken: token, uploadId: id });
+      if (selectedIdx === idx) {
+        setSelectedIdx(null);
+        setEditing(false);
+        setEditedDraft(null);
+      }
+      await refreshUploads();
+    } catch (err) {
+      console.error("Failed to delete upload:", err);
+    }
+  };
+
   const startEditing = () => {
     const item = selectedIdx !== null ? uploads[selectedIdx] : null;
     if (!item?.draft_menu) return;
@@ -192,6 +210,16 @@ export default function AiOnboardingPage() {
       });
       setApplyResult(`✅ تم إنشاء ${result.categories_created} تصنيف و ${result.items_created} صنف بنجاح`);
       setEditing(false);
+      // Once applied, this upload has done its job -- the menu items are
+      // real now, no reason for the photo to keep sitting in the review
+      // strip forever (that was the actual complaint: uploads piling up
+      // with no way to clear them).
+      const appliedItem = selectedIdx !== null ? uploads[selectedIdx] : null;
+      if (appliedItem) {
+        await invoke("delete_upload", { sessionToken: token, uploadId: appliedItem.id });
+        setSelectedIdx(null);
+        await refreshUploads();
+      }
     } catch (e) {
       setApplyResult(`❌ فشل التطبيق: ${e}`);
     } finally {
@@ -269,32 +297,40 @@ export default function AiOnboardingPage() {
         {uploads.length > 0 && (
           <div className="bg-white border-b border-ink-200 px-4 py-2 flex gap-2 overflow-x-auto flex-shrink-0">
             {uploads.map((u, i) => (
-              <button
-                key={u.id}
-                onClick={() => selectUpload(i)}
-                className={`flex-shrink-0 w-16 h-16 rounded-sm border-2 transition-colors overflow-hidden relative ${
-                  selectedIdx === i
-                    ? "border-saffron-500"
-                    : "border-ink-200 hover:border-ink-400"
-                }`}
-              >
-                <div
-                  className={`w-full h-full flex items-center justify-center text-xs font-bold ${
-                    u.status === "DONE"
-                      ? "bg-ok-100 text-ok-700"
-                      : u.status === "FAILED"
-                      ? "bg-danger-100 text-danger-700"
-                      : u.status === "PROCESSING"
-                      ? "bg-warn-100 text-warn-700"
-                      : "bg-ink-100 text-ink-500"
+              <div key={u.id} className="relative flex-shrink-0 group">
+                <button
+                  onClick={() => selectUpload(i)}
+                  className={`w-16 h-16 rounded-sm border-2 transition-colors overflow-hidden relative ${
+                    selectedIdx === i
+                      ? "border-saffron-500"
+                      : "border-ink-200 hover:border-ink-400"
                   }`}
                 >
-                  {u.kind === "AUDIO" ? <Mic className="w-4 h-4" /> : <Camera className="w-4 h-4" />}
-                </div>
-                <div className="absolute bottom-0 left-0 right-0 text-[8px] text-center bg-black/50 text-white leading-tight truncate px-1">
-                  {u.status === "DONE" ? "تم" : u.status === "FAILED" ? "فشل" : u.status === "PROCESSING" ? "..." : "..."}
-                </div>
-              </button>
+                  <div
+                    className={`w-full h-full flex items-center justify-center text-xs font-bold ${
+                      u.status === "DONE"
+                        ? "bg-ok-100 text-ok-700"
+                        : u.status === "FAILED"
+                        ? "bg-danger-100 text-danger-700"
+                        : u.status === "PROCESSING"
+                        ? "bg-warn-100 text-warn-700"
+                        : "bg-ink-100 text-ink-500"
+                    }`}
+                  >
+                    {u.kind === "AUDIO" ? <Mic className="w-4 h-4" /> : <Camera className="w-4 h-4" />}
+                  </div>
+                  <div className="absolute bottom-0 left-0 right-0 text-[8px] text-center bg-black/50 text-white leading-tight truncate px-1">
+                    {u.status === "DONE" ? "تم" : u.status === "FAILED" ? "فشل" : u.status === "PROCESSING" ? "..." : "..."}
+                  </div>
+                </button>
+                <button
+                  onClick={(e) => removeUpload(e, u.id, i)}
+                  title="إزالة"
+                  className="absolute -top-1.5 -left-1.5 w-5 h-5 rounded-full bg-danger-600 text-white flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity hover:bg-danger-700"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
             ))}
           </div>
         )}

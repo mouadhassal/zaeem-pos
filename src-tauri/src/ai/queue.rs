@@ -216,4 +216,23 @@ impl UploadQueue {
         )?;
         Ok(count)
     }
+
+    /// 2026-08-01: the "X to remove one" the review screen never had --
+    /// `clear_done` only ever swept DONE/FAILED rows in bulk, and nothing
+    /// in the frontend even called that. Deletes exactly one row,
+    /// regardless of status (queued, processing, done, or failed), plus
+    /// its on-disk temp file (best-effort -- the DB row going away is
+    /// what actually matters; a leftover temp file in `zaeem-uploads` is
+    /// harmless clutter, not a correctness problem).
+    pub fn delete_one(&mut self, id: &str) -> Result<(), AiError> {
+        let file_path: Option<String> = self
+            .conn
+            .query_row("SELECT file_path FROM upload_queue WHERE id = ?1", params![id], |r| r.get(0))
+            .ok();
+        self.conn.execute("DELETE FROM upload_queue WHERE id = ?1", params![id])?;
+        if let Some(path) = file_path {
+            let _ = std::fs::remove_file(path);
+        }
+        Ok(())
+    }
 }

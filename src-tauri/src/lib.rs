@@ -528,6 +528,7 @@ pub fn run() {
             commands::process_queue,
             commands::reset_failed_uploads,
             commands::clear_uploads,
+            commands::delete_upload,
             commands::apply_draft,
             lan::get_lan_status_v3,
             lan::enable_hub_mode_v3,
