@@ -93,3 +93,14 @@ pub fn log_frontend_command_error(command: &str, error: &str) {
 pub fn log_lan_error(message: &str) {
     log::warn!("lan: {message} [uptime {}]", uptime_str());
 }
+
+/// 2026-07-27, first real update: the silent auto-updater's own
+/// success/failure previously only ever reached `console.*` (via the JS
+/// `logger` module) -- invisible in a packaged production build with no
+/// devtools open, meaning nobody, including whoever's debugging a report
+/// of "the update didn't work," had any way to see what actually
+/// happened. Routed into the same persisted, rotating log file
+/// everything else in this module writes to.
+pub fn log_update_event(message: &str) {
+    log::info!("updater: {message} [uptime {}]", uptime_str());
+}

@@ -175,6 +175,11 @@ fn log_frontend_command_error(command: String, error: String) {
     obslog::log_frontend_command_error(&command, &error);
 }
 
+#[tauri::command]
+fn log_update_event(message: String) {
+    obslog::log_update_event(&message);
+}
+
 // `verify_manager_override` (unscoped, unaudited, arbitrary-LIMIT-1-row)
 // removed -- replaced by `commands_v3::verify_manager_override_v3`
 // (Batch 3b, Slice B verification), which is session-scoped to the
@@ -348,6 +353,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             diagnose_db,
             log_frontend_command_error,
+            log_update_event,
             commands_v3::verify_manager_override_v3,
             commands_v3::login_v3,
             commands_v3::login_pin_v3,

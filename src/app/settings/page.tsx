@@ -5,6 +5,7 @@ import type { TaxMode } from "../../db/types";
 import { checkLicense, activateLicense, getDeviceId, backOfficeLocked, type LicenseStatus } from "../../lib/license";
 import { Pencil, Trash2 as Trash, ImagePlus, X } from "lucide-react";
 import NetworkTab from "./NetworkTab";
+import { checkForUpdatesManually } from "../../lib/autoUpdate";
 
 type SettingsTab = "general" | "printer" | "tax" | "branch" | "license" | "network" | "backup" | "about";
 
@@ -164,10 +165,36 @@ export default function SettingsPage() {
   const [activationSuccess, setActivationSuccess] = useState(false);
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [deviceIdCopied, setDeviceIdCopied] = useState(false);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateResult, setUpdateResult] = useState<string | null>(null);
 
   useEffect(() => {
     getDeviceId().then(setDeviceId).catch(() => {});
+    import("@tauri-apps/api/app").then((m) => m.getVersion()).then(setAppVersion).catch(() => {});
   }, []);
+
+  const handleCheckForUpdates = async () => {
+    setUpdateChecking(true);
+    setUpdateResult(null);
+    try {
+      const result = await checkForUpdatesManually();
+      if (result.kind === "up_to_date") {
+        setUpdateResult("أنت تستخدم أحدث إصدار بالفعل.");
+      } else if (result.kind === "installed") {
+        setUpdateResult(`تم العثور على تحديث (v${result.version}) وسيتم إعادة تشغيل التطبيق الآن...`);
+        // downloadAndInstall + relaunch already happened inside
+        // checkForUpdatesManually -- if execution reaches here at all
+        // (it may not, since relaunch() can tear the process down first),
+        // the message above is what a slower relaunch would still show
+        // briefly.
+      } else {
+        setUpdateResult(`فشل التحقق من التحديثات: ${result.message}`);
+      }
+    } finally {
+      setUpdateChecking(false);
+    }
+  };
 
   const copyDeviceId = async () => {
     if (!deviceId) return;
@@ -1096,11 +1123,7 @@ export default function SettingsPage() {
             <div className="bg-white rounded-md p-5 border border-ink-200 space-y-4">
               <div className="flex justify-between items-center">
                 <span className="text-sm text-ink-400 font-arabic">الإصدار</span>
-                <span className="font-mono font-bold text-ink-900">1.0.0</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-sm text-ink-400 font-arabic">آخر تحديث</span>
-                <span className="font-mono text-ink-900">2026-07-01</span>
+                <span className="font-mono font-bold text-ink-900">{appVersion ?? "..."}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-sm text-ink-400 font-arabic">نظام التشغيل</span>
@@ -1109,6 +1132,18 @@ export default function SettingsPage() {
               <div className="flex justify-between items-center">
                 <span className="text-sm text-ink-400 font-arabic">قاعدة البيانات</span>
                 <span className="font-mono text-ink-900">SQLite</span>
+              </div>
+              <div className="border-t border-ink-200 pt-4 space-y-2">
+                <button
+                  onClick={handleCheckForUpdates}
+                  disabled={updateChecking}
+                  className="h-10 px-6 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                >
+                  {updateChecking ? "جاري التحقق..." : "تحقق من التحديثات"}
+                </button>
+                {updateResult && (
+                  <p className="text-sm font-arabic text-ink-700">{updateResult}</p>
+                )}
               </div>
               <div className="border-t border-ink-200 pt-4">
                 <p className="text-sm font-arabic text-ink-900 mb-2">الدعم الفني</p>
