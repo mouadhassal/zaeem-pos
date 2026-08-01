@@ -8,12 +8,18 @@
 //! anyone can extract from an installer. Instead this proxies through a
 //! Supabase Edge Function (`ai-menu-extract`), which holds the real key
 //! server-side (currently Google Gemini's free tier -- see that
-//! function's own doc comment) and checks the caller's `device_token`
-//! against the `license` table first -- the same gate `sync-pos` already
-//! uses, so only a genuinely licensed, active terminal can trigger a
-//! call. This Rust side has no idea which AI vendor is behind the
-//! function at all, by design -- swapping vendors later is a Supabase
-//! Edge Function change only, never a rebuild of the app.
+//! function's own doc comment). This Rust side has no idea which AI
+//! vendor is behind the function at all, by design -- swapping vendors
+//! later is a Supabase Edge Function change only, never a rebuild of the
+//! app.
+//!
+//! `device_token` is sent along when this device happens to have one
+//! (from a cloud-aware activation) but is NOT required -- most real
+//! licenses today are minted offline via `license_signer` (a bare signed
+//! blob, no device_token, no Supabase row at all -- see
+//! `ai-menu-extract`'s own doc comment for why that function doesn't
+//! gate on it). Requiring it here would lock out every terminal actually
+//! licensed the way this business really issues licenses.
 use super::*;
 use base64::Engine;
 use std::path::PathBuf;
@@ -46,9 +52,7 @@ impl AiProvider for RemoteAiProvider {
             ));
         }
 
-        let device_token = self
-            .device_token()
-            .ok_or_else(|| AiError::Unavailable("no active license on this device -- activate a license first".into()))?;
+        let device_token = self.device_token();
 
         let bytes = std::fs::read(&m.path)?;
         let media_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
