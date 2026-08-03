@@ -1,0 +1,96 @@
+// Vendored from ../../packages/types/tailwind-preset.js -- this repo has
+// its own separate git history/remote (see AGENTS.md) and can't resolve
+// `@zaeem/types` as a workspace:* dependency when checked out standalone.
+/** @type {import('tailwindcss').Config} */
+const preset = {
+  darkMode: "class",
+  theme: {
+    extend: {
+      colors: {
+        canvas: "var(--bg)",
+        surface: "var(--surface)",
+        "surface-alt": "var(--surface-alt)",
+        "panel-footer": "var(--panel-footer)",
+        text: {
+          DEFAULT: "var(--text)",
+          2: "var(--text-2)",
+          3: "var(--text-3)",
+          muted: "var(--text-muted)",
+        },
+        line: {
+          DEFAULT: "var(--line)",
+          2: "var(--line-2)",
+        },
+        accent: {
+          DEFAULT: "var(--accent)",
+          soft: "var(--accent-soft)",
+          text: "var(--accent-text)",
+        },
+        ok: "var(--ok)",
+        warn: "var(--warn)",
+        danger: {
+          DEFAULT: "var(--danger)",
+          soft: "var(--danger-soft)",
+        },
+        ink: {
+          50: "var(--ink-50)",
+          100: "var(--ink-100)",
+          200: "var(--ink-200)",
+          300: "var(--ink-300)",
+          400: "var(--ink-400)",
+          500: "var(--ink-500)",
+          600: "var(--ink-600)",
+          700: "var(--ink-700)",
+          800: "var(--ink-800)",
+          900: "var(--ink-900)",
+        },
+        saffron: {
+          50: "var(--saffron-50)",
+          100: "var(--saffron-100)",
+          200: "var(--saffron-200)",
+          300: "var(--saffron-300)",
+          400: "var(--saffron-400)",
+          500: "var(--saffron-500)",
+          600: "var(--saffron-600)",
+          700: "var(--saffron-700)",
+          800: "var(--saffron-800)",
+          900: "var(--saffron-900)",
+        },
+        live: {
+          50: "var(--live-50)",
+          100: "var(--live-100)",
+          200: "var(--live-200)",
+          300: "var(--live-300)",
+          400: "var(--live-400)",
+          500: "var(--live-500)",
+          600: "var(--live-600)",
+          700: "var(--live-700)",
+          800: "var(--live-800)",
+          900: "var(--live-900)",
+        },
+      },
+      fontFamily: {
+        sans: ["Inter", "Tajawal", "system-ui", "sans-serif"],
+        arabic: ["Tajawal", "sans-serif"],
+        mono: ["JetBrains Mono", "IBM Plex Mono", "monospace"],
+        brand: ["Space Grotesk", "sans-serif"],
+      },
+      borderRadius: {
+        sm: "4px",
+        DEFAULT: "8px",
+        md: "8px",
+        lg: "12px",
+        xl: "12px",
+        "2xl": "16px",
+      },
+      boxShadow: {
+        "sh-1": "0 1px 2px rgba(28,25,23,.04)",
+        "sh-2": "0 1px 2px rgba(28,25,23,.04), 0 1px 3px rgba(28,25,23,.06)",
+        "sh-3": "0 20px 25px -5px rgba(28,25,23,.08), 0 10px 10px -5px rgba(28,25,23,.04)",
+      },
+    },
+  },
+  plugins: [],
+};
+
+module.exports = preset;

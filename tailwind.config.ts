@@ -1,5 +1,5 @@
 import type { Config } from "tailwindcss";
-import preset from "@zaeem/types/tailwind-preset";
+import preset from "./tailwind-preset.js";
 
 const config: Config = {
   presets: [preset],
