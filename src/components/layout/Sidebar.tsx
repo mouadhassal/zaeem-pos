@@ -1,6 +1,8 @@
+import { useEffect, useState } from "react";
 import { useAuthStore } from "../../stores/authStore";
 import { useShiftStore } from "../../stores/shiftStore";
 import { usePermissions } from "../../hooks/usePermissions";
+import { getBusinessMode } from "../../lib/orderService";
 import {
   IconLogout as LogOut,
   IconCashRegister, IconToolsKitchen2, IconClipboardList, IconBox,
@@ -48,7 +50,13 @@ export default function Sidebar({ active, onNavigate }: Props) {
   const logout = useAuthStore((s) => s.logout);
   const activeShiftId = useShiftStore((s) => s.activeShiftId);
   const { navItems } = usePermissions();
-  const items = navItems.filter((n) => n.allowed);
+  // 2026-08-03 "next phase" (see nextphase.md §2): a business with no
+  // kitchen has no use for the Kitchen Display System nav item at all.
+  const [hasKitchen, setHasKitchen] = useState(true);
+  useEffect(() => {
+    getBusinessMode().then((m) => setHasKitchen(m.has_kitchen)).catch(() => {});
+  }, []);
+  const items = navItems.filter((n) => n.allowed && (hasKitchen || n.id !== "kds"));
 
   return (
     // Narrow icon-rail, not a labelled panel -- it must not compete with the

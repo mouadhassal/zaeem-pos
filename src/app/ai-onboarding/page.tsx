@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
-import { Camera, Upload, Mic, Check, X, ChevronUp, RotateCcw, Plus, Trash2 } from "lucide-react";
+import { Camera, Upload, Mic, Check, X, ChevronUp, RotateCcw, Plus, Trash2, ImageIcon } from "lucide-react";
 import { useAuthStore } from "../../stores/authStore";
 
 interface DraftCategory {
@@ -66,6 +66,12 @@ export default function AiOnboardingPage() {
   const [editedDraft, setEditedDraft] = useState<DraftMenu | null>(null);
   const [applying, setApplying] = useState(false);
   const [applyResult, setApplyResult] = useState<string | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+  // Keyed by filename -- object URLs created client-side at upload time
+  // purely for display (the backend never sends photo bytes back), so a
+  // photo strip thumbnail shows the actual picture instead of a generic
+  // camera icon.
+  const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
 
@@ -81,9 +87,12 @@ export default function AiOnboardingPage() {
     }
   }, [selectedIdx, token]);
 
-  const handleFiles = async (files: FileList | null, kind: string) => {
+  const handleFiles = async (files: FileList | Array<File> | null, kind: string) => {
     if (!files) return;
     for (const file of Array.from(files)) {
+      if (kind === "PHOTO") {
+        setPreviewUrls((prev) => ({ ...prev, [file.name]: URL.createObjectURL(file) }));
+      }
       const buf = await file.arrayBuffer();
       const data = Array.from(new Uint8Array(buf));
       try {
@@ -101,6 +110,13 @@ export default function AiOnboardingPage() {
       }
     }
     await refreshUploads();
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(false);
+    const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("image/"));
+    if (files.length > 0) await handleFiles(files, "PHOTO");
   };
 
   const processAll = async () => {
@@ -129,6 +145,15 @@ export default function AiOnboardingPage() {
     e.stopPropagation();
     try {
       await invoke("delete_upload", { sessionToken: token, uploadId: id });
+      const filename = uploads[idx]?.filename;
+      if (filename && previewUrls[filename]) {
+        URL.revokeObjectURL(previewUrls[filename]);
+        setPreviewUrls((prev) => {
+          const next = { ...prev };
+          delete next[filename];
+          return next;
+        });
+      }
       if (selectedIdx === idx) {
         setSelectedIdx(null);
         setEditing(false);
@@ -169,6 +194,17 @@ export default function AiOnboardingPage() {
     if (target < 0 || target >= items.length) return;
     [items[idx], items[target]] = [items[target], items[idx]];
     setEditedDraft({ ...editedDraft, items });
+  };
+
+  // 2026-08-02: the AI can miss a dish on the source photo -- previously
+  // the only way to add it was to apply the draft as-is, then go create
+  // the item manually in the Menu page. confidence: 1 marks it as a real,
+  // human-entered fact, not a guess needing review (see confidenceColor/
+  // confidenceLabel below, which read this same field for every other item).
+  const addItem = (categoryName: string) => {
+    if (!editedDraft) return;
+    const newItem: DraftItem = { ar_name: "", en_name: null, price_cents: 0, category_name: categoryName, modifiers: [], confidence: 1 };
+    setEditedDraft({ ...editedDraft, items: [...editedDraft.items, newItem] });
   };
 
   const addModifier = (itemIdx: number) => {
@@ -300,27 +336,41 @@ export default function AiOnboardingPage() {
               <div key={u.id} className="relative flex-shrink-0 group">
                 <button
                   onClick={() => selectUpload(i)}
-                  className={`w-16 h-16 rounded-sm border-2 transition-colors overflow-hidden relative ${
+                  className={`w-16 h-16 rounded-md border-2 transition-all overflow-hidden relative ${
                     selectedIdx === i
-                      ? "border-saffron-500"
+                      ? "border-saffron-500 shadow-md"
                       : "border-ink-200 hover:border-ink-400"
                   }`}
                 >
+                  {u.kind === "PHOTO" && previewUrls[u.filename] ? (
+                    <img src={previewUrls[u.filename]} alt={u.filename} className="w-full h-full object-cover" />
+                  ) : (
+                    <div
+                      className={`w-full h-full flex items-center justify-center text-xs font-bold ${
+                        u.status === "DONE"
+                          ? "bg-ok-100 text-ok-700"
+                          : u.status === "FAILED"
+                          ? "bg-danger-100 text-danger-700"
+                          : u.status === "PROCESSING"
+                          ? "bg-warn-100 text-warn-700"
+                          : "bg-ink-100 text-ink-500"
+                      }`}
+                    >
+                      {u.kind === "AUDIO" ? <Mic className="w-4 h-4" /> : <ImageIcon className="w-4 h-4" />}
+                    </div>
+                  )}
                   <div
-                    className={`w-full h-full flex items-center justify-center text-xs font-bold ${
+                    className={`absolute bottom-0 left-0 right-0 text-[8px] text-center leading-tight truncate px-1 py-0.5 ${
                       u.status === "DONE"
-                        ? "bg-ok-100 text-ok-700"
+                        ? "bg-ok-600/90 text-white"
                         : u.status === "FAILED"
-                        ? "bg-danger-100 text-danger-700"
+                        ? "bg-danger-600/90 text-white"
                         : u.status === "PROCESSING"
-                        ? "bg-warn-100 text-warn-700"
-                        : "bg-ink-100 text-ink-500"
+                        ? "bg-warn-500/90 text-white"
+                        : "bg-black/50 text-white"
                     }`}
                   >
-                    {u.kind === "AUDIO" ? <Mic className="w-4 h-4" /> : <Camera className="w-4 h-4" />}
-                  </div>
-                  <div className="absolute bottom-0 left-0 right-0 text-[8px] text-center bg-black/50 text-white leading-tight truncate px-1">
-                    {u.status === "DONE" ? "تم" : u.status === "FAILED" ? "فشل" : u.status === "PROCESSING" ? "..." : "..."}
+                    {u.status === "DONE" ? "تم" : u.status === "FAILED" ? "فشل" : u.status === "PROCESSING" ? "جاري..." : "بانتظار"}
                   </div>
                 </button>
                 <button
@@ -341,13 +391,26 @@ export default function AiOnboardingPage() {
             <>
               {/* Photo preview */}
               <div className="w-1/3 border-l border-ink-200 bg-ink-50 p-4 flex items-center justify-center overflow-hidden">
-                <div className="text-center text-ink-400">
-                  <Camera className="w-16 h-16 mx-auto mb-2 opacity-30" />
-                  <p className="text-sm font-arabic">معاينة الصورة</p>
-                  {selectedItem.error && (
-                    <p className="text-xs text-danger-600 mt-2 font-arabic">{selectedItem.error}</p>
-                  )}
-                </div>
+                {selectedItem.kind === "PHOTO" && previewUrls[selectedItem.filename] ? (
+                  <div className="w-full h-full flex flex-col gap-2">
+                    <img
+                      src={previewUrls[selectedItem.filename]}
+                      alt={selectedItem.filename}
+                      className="w-full flex-1 object-contain rounded-md border border-ink-200 bg-white"
+                    />
+                    {selectedItem.error && (
+                      <p className="text-xs text-danger-600 text-center font-arabic">{selectedItem.error}</p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-center text-ink-400">
+                    <Camera className="w-16 h-16 mx-auto mb-2 opacity-30" />
+                    <p className="text-sm font-arabic">معاينة الصورة</p>
+                    {selectedItem.error && (
+                      <p className="text-xs text-danger-600 mt-2 font-arabic">{selectedItem.error}</p>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Extraction results */}
@@ -403,6 +466,15 @@ export default function AiOnboardingPage() {
                           {confidenceLabel(cat.confidence)}
                         </span>
                         <span className="text-ink-400 text-xs mr-auto">{items.length} صنف</span>
+                        {editing && (
+                          <button
+                            onClick={() => addItem(cat.name)}
+                            className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-full text-saffron-700 bg-saffron-50 hover:bg-saffron-100 transition-colors"
+                            title="إضافة صنف فاتته الأداة"
+                          >
+                            <Plus className="w-3 h-3" /> إضافة صنف
+                          </button>
+                        )}
                       </div>
 
                       <div className="divide-y divide-ink-100">
@@ -543,22 +615,31 @@ export default function AiOnboardingPage() {
               </div>
             </>
           ) : (
-            /* Empty state */
-            <div className="flex-1 flex items-center justify-center">
-              <div className="text-center text-ink-400 space-y-4">
-                <Camera className="w-20 h-20 mx-auto opacity-20" />
-                <h2 className="text-lg font-bold font-arabic text-ink-500">إعداد القائمة بالذكاء الاصطناعي</h2>
-                <p className="text-sm font-arabic max-w-md">
-                  ارفع صوراً لقائمة الطعام وسيقوم الذكاء الاصطناعي باستخراج الأصناف والأسعار تلقائياً.
-                  راجع البيانات وصححها قبل تطبيقها على النظام.
-                </p>
-                <div className="flex justify-center gap-3">
+            /* Empty state -- a real drop zone, not just an icon + buttons */
+            <div className="flex-1 flex items-center justify-center p-8">
+              <div
+                onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+                onDragLeave={() => setDragActive(false)}
+                onDrop={handleDrop}
+                className={`w-full max-w-xl rounded-lg border-2 border-dashed transition-colors p-10 text-center space-y-4 ${
+                  dragActive ? "border-saffron-500 bg-saffron-50" : "border-ink-300 bg-white"
+                }`}
+              >
+                <Upload className={`w-14 h-14 mx-auto ${dragActive ? "text-saffron-500" : "text-ink-300"}`} />
+                <div>
+                  <h2 className="text-lg font-bold font-arabic text-ink-700">اسحب صور القائمة هنا</h2>
+                  <p className="text-sm font-arabic text-ink-400 mt-1 max-w-md mx-auto">
+                    أو اضغط للاختيار من جهازك. سيقوم الذكاء الاصطناعي باستخراج الأصناف والأسعار تلقائياً،
+                    ويمكنك مراجعتها وتصحيحها قبل تطبيقها على النظام.
+                  </p>
+                </div>
+                <div className="flex justify-center gap-3 pt-1">
                   <button
                     onClick={() => fileInputRef.current?.click()}
                     className="h-10 px-6 rounded-sm bg-saffron-600 text-white text-sm flex items-center gap-2 hover:bg-saffron-700 transition-colors"
                   >
-                    <Upload className="w-4 h-4" />
-                    رفع صور القائمة
+                    <Camera className="w-4 h-4" />
+                    اختيار الصور
                   </button>
                   <button
                     onClick={() => audioInputRef.current?.click()}

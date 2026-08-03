@@ -38,6 +38,21 @@ impl DiscountCaps {
     }
 }
 
+/// 2026-08-02: replaces two hardcoded constants
+/// (`VOID_MANAGER_OVERRIDE_THRESHOLD_CENTS` in commands_v3.rs, and a
+/// client-only `DIFF_THRESHOLD_CENTS` in shift/page.tsx) that were both
+/// picked assuming small everyday prices -- wrong by orders of magnitude
+/// for a currency whose real menu prices run in the thousands. Now a real,
+/// Owner-configurable `chain_config` value, same shape as `DiscountCaps`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct ManagerThresholds {
+    /// A void of a line at or above this amount requires a manager PIN.
+    pub void_threshold_cents: i64,
+    /// A shift-close cash discrepancy at or above this magnitude (either
+    /// direction) requires a manager PIN.
+    pub shift_diff_threshold_cents: i64,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct DiscountOverCap {
     /// Ceiling percent, rounded up to a whole percent, so the error reads

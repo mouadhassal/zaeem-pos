@@ -739,6 +739,56 @@ pub fn delete_category_v3(state: State<Db>, license: State<crate::license::cloud
     Ok(())
 }
 
+/// 2026-08-02: real category photo upload, same shape as
+/// `upload_menu_item_photo_v3`/`delete_menu_item_photo_v3`/
+/// `get_menu_item_photo_v3` below -- categories previously only had a raw
+/// URL text field ("رابط الصورة"), inconsistent with menu items' real
+/// upload flow, and most owners don't have an image URL handy.
+#[tauri::command]
+pub fn upload_category_photo_v3(app: tauri::AppHandle, state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category_id: String, photo_bytes: Vec<u8>) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+
+    let app_data_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let file_path = crate::photos::store_photo(&app_data_dir, &actor.tenant_id, &category_id, &photo_bytes).map_err(|e| e.to_string())?;
+    let path_str = file_path.to_string_lossy().to_string();
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).set_category_photo(&actor.tenant_id, &category_id, Some(&path_str)).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "category", &category_id, None, Some(&serde_json::json!({ "photo_uploaded": true, "bytes": photo_bytes.len() }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_category_photo_v3(app: tauri::AppHandle, state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).set_category_photo(&actor.tenant_id, &category_id, None).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "category", &category_id, Some(&serde_json::json!({ "photo_uploaded": true })), Some(&serde_json::json!({ "photo_uploaded": false }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+
+    let app_data_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    crate::photos::delete_photo(&app_data_dir, &actor.tenant_id, &category_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_category_photo_v3(state: State<Db>, session_token: String, category_id: String) -> Result<Option<String>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let path = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        Repo::new(&conn).get_category_photo_path(&actor.tenant_id, &category_id).map_err(|e| e.to_string())?
+    };
+    Ok(path.as_deref().and_then(crate::photos::read_as_data_uri))
+}
+
 #[tauri::command]
 pub fn list_menu_items_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::MenuItemRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
@@ -1359,15 +1409,30 @@ fn open_shift_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseS
 }
 
 #[tauri::command]
-pub fn close_shift_v3(state: State<Db>, session_token: String, shift_id: String, ending_cash_cents: i64, difference_cents: i64) -> Result<(), String> {
-    close_shift_v3_impl(&state, session_token, shift_id, ending_cash_cents, difference_cents)
+pub fn close_shift_v3(state: State<Db>, session_token: String, shift_id: String, ending_cash_cents: i64, difference_cents: i64, manager_override_pin: Option<String>) -> Result<(), String> {
+    close_shift_v3_impl(&state, session_token, shift_id, ending_cash_cents, difference_cents, manager_override_pin)
 }
 
-fn close_shift_v3_impl(state: &Db, session_token: String, shift_id: String, ending_cash_cents: i64, difference_cents: i64) -> Result<(), String> {
+/// 2026-08-02: previously this threshold existed ONLY client-side
+/// (`shift/page.tsx`'s `DIFF_THRESHOLD_CENTS`) with no server enforcement
+/// at all -- a cashier calling this command directly (bypassing the UI)
+/// could close any shift with any discrepancy, no PIN, ever. Now checked
+/// here against the tenant's real `shift_diff_manager_threshold_cents`,
+/// same shape as `void_order_item_v3_impl`'s check.
+fn close_shift_v3_impl(state: &Db, session_token: String, shift_id: String, ending_cash_cents: i64, difference_cents: i64, manager_override_pin: Option<String>) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("close_shift_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ManageShift).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let threshold_cents = Repo::new(&conn).get_manager_thresholds(&actor.tenant_id).map_err(|e| e.to_string())?.shift_diff_threshold_cents;
+    if difference_cents.abs() >= threshold_cents {
+        let Some(pin) = manager_override_pin.as_deref() else {
+            return Err("closing a shift with a discrepancy over the manager-override threshold requires a manager PIN".to_string());
+        };
+        if !verify_manager_override_impl(&mut conn, &actor, pin)? {
+            return Err("manager PIN is not valid".to_string());
+        }
+    }
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     Repo::new(&tx).close_shift(&actor.scope(), &shift_id, ending_cash_cents, difference_cents).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::ShiftClosed, "shift", &shift_id, None, Some(&serde_json::json!({ "ending_cash_cents": ending_cash_cents, "difference_cents": difference_cents }))).map_err(|e| e.to_string())?;
@@ -1693,6 +1758,87 @@ pub fn get_sales_report_v3(state: State<Db>, license: State<crate::license::clou
     Repo::new(&conn).sales_report(&actor.scope(), &today_start_iso).map_err(|e| e.to_string())
 }
 
+/// 2026-08-02: fully-offline anomaly detection (void rate, cash variance,
+/// void-then-resell pattern) -- see anomaly.rs's module doc for why this
+/// deliberately never goes through an AI vendor. On-demand only (a
+/// "فحص الآن" button), not a background job -- Manager+, same rank as
+/// every other report.
+#[tauri::command]
+pub fn detect_anomalies_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::anomaly::AnomalyFinding>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::anomaly::detect_anomalies(&conn, &actor.scope(), 30).map_err(|e| e.to_string())
+}
+
+/// 2026-08-02: fully-offline demand forecasting (see forecast.rs's module
+/// doc) -- day-of-week average over the last 8 weeks, plus an ingredient
+/// tier for items that already have a recipe defined. On-demand only,
+/// same Manager+ rank as every other report.
+#[tauri::command]
+pub fn forecast_demand_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<crate::forecast::DemandForecast, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::forecast::forecast_demand(&conn, &actor.scope()).map_err(|e| e.to_string())
+}
+
+/// 2026-08-02: manual database backup (see backup.rs's module doc for
+/// why this exists at all -- there was previously no recovery path for
+/// a dead machine or a corrupted DB file). Owner+ only -- this exports
+/// every order/payment/customer record in the tenant, more sensitive
+/// than any report read. Deliberately NEVER gated on the license, same
+/// reasoning as the license commands themselves: an owner must always
+/// be able to get their own data out, especially a lapsed one about to
+/// lose service.
+#[tauri::command]
+pub fn backup_database_v3(state: State<Db>, session_token: String) -> Result<crate::backup::BackupInfo, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageBackups).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::backup::create_backup(&conn)
+}
+
+#[tauri::command]
+pub fn list_backups_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::backup::BackupInfo>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageBackups).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::backup::list_backups(&conn)
+}
+
+/// 2026-08-02: manual, opt-in "send a diagnostic report" -- see
+/// diagnostics.rs's module doc. No extra permission gate beyond being
+/// logged in at all: reporting a bug is something any floor role should
+/// be able to do, not just a manager, and the log text itself is never
+/// sensitive payment data.
+#[tauri::command]
+pub fn send_diagnostics_report_v3(app: tauri::AppHandle, state: State<Db>, session_token: String) -> Result<crate::diagnostics::DiagnosticsResult, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let log_dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
+    crate::diagnostics::send_report(
+        &log_dir,
+        &crate::license::cloud::supabase_url(),
+        &crate::license::cloud::supabase_anon_key(),
+        &actor.tenant_id,
+        &actor.device_id,
+        app.package_info().version.to_string().as_str(),
+    )
+}
+
+/// 2026-08-02: payment-reconciliation safety net -- see reconcile.rs's
+/// module doc. Manager+, same rank as every other report; on-demand only.
+#[tauri::command]
+pub fn reconcile_orders_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<crate::reconcile::ReconciliationReport, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::reconcile::reconcile(&conn, &actor.scope()).map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Batch 3b, slice 3, group 4 -- settings (currency/tax/branch/printer).
 // ---------------------------------------------------------------------------
@@ -1771,6 +1917,97 @@ pub fn update_discount_caps_v3(state: State<Db>, license: State<crate::license::
         &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
         audit::Action::SettingsChanged, "chain_config", "default",
         None, Some(&serde_json::json!({ "discount_cap_cashier_percent": cashier_percent, "discount_cap_manager_percent": manager_percent, "discount_cap_owner_percent": owner_percent })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// No `authorize` beyond being logged in -- `VoidItemModal`/the shift-close
+/// screen both need this value to render the right label/PIN prompt for
+/// every role, same reasoning as `get_discount_caps_v3`. Rust enforces the
+/// actual gate server-side regardless of what the frontend does with this.
+#[tauri::command]
+pub fn get_manager_thresholds_v3(state: State<Db>, session_token: String) -> Result<crate::pricing::ManagerThresholds, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).get_manager_thresholds(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
+/// Manager+ (`Permission::ManageSettings`, same gate as currency/tax/
+/// discount caps): lets a real restaurant tune these to their own actual
+/// prices instead of living with a number that was never right for them.
+#[tauri::command]
+pub fn update_manager_thresholds_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, void_threshold_cents: i64, shift_diff_threshold_cents: i64) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
+    if void_threshold_cents < 0 || shift_diff_threshold_cents < 0 {
+        return Err("thresholds must not be negative".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_manager_thresholds(&actor.tenant_id, void_threshold_cents, shift_diff_threshold_cents).map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
+        audit::Action::SettingsChanged, "chain_config", "default",
+        None, Some(&serde_json::json!({ "void_manager_threshold_cents": void_threshold_cents, "shift_diff_manager_threshold_cents": shift_diff_threshold_cents })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// No `authorize` beyond being logged in -- every page that renders the
+/// table bar, order-type picker, kitchen ticket flow, or printer-type list
+/// needs this on load, and it must never be blocked by a locked license
+/// (a dinner service, or a coffee counter, is never interrupted over
+/// licensing). See nextphase.md §2 for the full plan this implements.
+#[tauri::command]
+pub fn get_business_mode_v3(state: State<Db>, session_token: String) -> Result<crate::repo::BusinessMode, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).get_business_mode(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
+/// The one implicit table every branch gets when tables are turned off --
+/// `create_table_v3` is `ManageSettings`-gated (Manager+), so a cashier
+/// could never create this themselves; ensuring it here, inside the same
+/// transaction as the toggle flip, means a counter table is guaranteed to
+/// exist by the time anyone next opens the POS. Matched by exact name, so
+/// flipping the toggle off and back on never creates duplicates.
+const COUNTER_TABLE_NAME: &str = "المنضدة";
+
+fn ensure_counter_tables_exist(tx: &rusqlite::Transaction, tenant_id: &str) -> Result<(), String> {
+    let branches = Repo::new(tx).list_branches(tenant_id).map_err(|e| e.to_string())?;
+    for (branch_id, _name) in branches {
+        let has_counter: bool = tx.query_row(
+            "SELECT COUNT(*) > 0 FROM tables WHERE tenant_id = ?1 AND branch_id = ?2 AND name = ?3",
+            params![tenant_id, branch_id, COUNTER_TABLE_NAME],
+            |r| r.get(0),
+        ).map_err(|e| e.to_string())?;
+        if !has_counter {
+            Repo::new(tx).create_table(tenant_id, &branch_id, COUNTER_TABLE_NAME).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Manager+ (`Permission::ManageSettings`, same gate as currency/tax/
+/// discount caps/manager thresholds).
+#[tauri::command]
+pub fn update_business_mode_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, has_tables: bool, has_kitchen: bool) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_business_mode(&actor.tenant_id, has_tables, has_kitchen).map_err(|e| e.to_string())?;
+    if !has_tables {
+        ensure_counter_tables_exist(&tx, &actor.tenant_id)?;
+    }
+    audit::append(
+        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
+        audit::Action::SettingsChanged, "chain_config", "default",
+        None, Some(&serde_json::json!({ "has_tables": has_tables, "has_kitchen": has_kitchen })),
     ).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
@@ -3098,7 +3335,9 @@ fn create_full_order_v3_impl(
     delivery_address: Option<String>,
     delivery_fee_cents: i64,
     driver_id: Option<String>,
-    shift_id: Option<String>,
+    // No longer trusted -- see the real `shift_id` binding resolved
+    // server-side below, right before it's used.
+    _shift_id: Option<String>,
     manager_override_pin: Option<String>,
 ) -> Result<String, String> {
     crate::lan::reject_if_local_kitchen_satellite("create_full_order_v3")?;
@@ -3113,6 +3352,22 @@ fn create_full_order_v3_impl(
     }
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    // 2026-08-02 client walkthrough finding: nothing previously stopped a
+    // cashier from ringing up orders with no shift open at all -- the
+    // caller-supplied `shift_id` param was trusted as-is (or silently
+    // left null), so those sales never showed up in ANY shift's stats
+    // (`repo.rs`'s `shift_stats` filters `orders.shift_id = ?1`), breaking
+    // end-of-day cash reconciliation with zero warning. Never trust the
+    // caller's claim (R1) -- always resolve the actor's own real,
+    // currently-open shift server-side instead of using whatever
+    // `shift_id` this call happened to pass in.
+    let shift_id = Some(
+        Repo::new(&conn)
+            .get_active_shift(&actor.id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "لا توجد وردية مفتوحة -- يجب فتح وردية أولاً قبل البيع".to_string())?
+            .id,
+    );
     let override_used = enforce_discount_cap(&mut conn, &actor, &tenant_id, subtotal_cents, discount_cents, manager_override_pin.as_deref())?;
 
     let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
@@ -3414,17 +3669,18 @@ pub fn void_order_item_v3(state: State<Db>, license: State<crate::license::cloud
     void_order_item_v3_impl(&state, &license, session_token, item_id, reason, manager_override_pin)
 }
 
-/// WENZDES audit C5/H5: below `VOID_MANAGER_OVERRIDE_THRESHOLD_CENTS`, any
-/// actor holding `Permission::CreateOrder` (i.e. a cashier) may void a line
-/// on their own authority, same as before. At or above it, a valid
-/// manager PIN is required -- checked here, server-side, against the
-/// line's REAL price (`order_item_line_total_cents`, itself scope-checked),
-/// not whatever price the caller claims. Mirrors `enforce_discount_cap`'s
-/// established shape exactly: verify on the plain `Connection` before the
-/// write transaction opens, since `verify_manager_override_impl` needs
+/// WENZDES audit C5/H5, updated 2026-08-02: below the tenant's
+/// `void_manager_threshold_cents` (Owner-configurable via
+/// `update_manager_thresholds_v3` -- see pricing.rs's `ManagerThresholds`
+/// doc for why this replaced a hardcoded constant), any actor holding
+/// `Permission::CreateOrder` (i.e. a cashier) may void a line on their own
+/// authority, same as before. At or above it, a valid manager PIN is
+/// required -- checked here, server-side, against the line's REAL price
+/// (`order_item_line_total_cents`, itself scope-checked), not whatever
+/// price the caller claims. Mirrors `enforce_discount_cap`'s established
+/// shape exactly: verify on the plain `Connection` before the write
+/// transaction opens, since `verify_manager_override_impl` needs
 /// `&mut Connection`, not a `Transaction`.
-const VOID_MANAGER_OVERRIDE_THRESHOLD_CENTS: i64 = 2000;
-
 fn void_order_item_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String, reason: String, manager_override_pin: Option<String>) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("void_order_item_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
@@ -3433,7 +3689,8 @@ fn void_order_item_v3_impl(state: &Db, license: &crate::license::cloud::CloudLic
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let line_total_cents = Repo::new(&conn).order_item_line_total_cents(&scope, &item_id).map_err(|e| e.to_string())?;
-    let override_used = if line_total_cents >= VOID_MANAGER_OVERRIDE_THRESHOLD_CENTS {
+    let threshold_cents = Repo::new(&conn).get_manager_thresholds(&actor.tenant_id).map_err(|e| e.to_string())?.void_threshold_cents;
+    let override_used = if line_total_cents >= threshold_cents {
         let Some(pin) = manager_override_pin.as_deref() else {
             return Err("voiding an item over the manager-override threshold requires a manager PIN".to_string());
         };
@@ -3731,6 +3988,7 @@ fn sync_enqueue_supplier_payment(
         params![crate::hlc::next(), device_id, payment_id],
     ).map_err(|e| e.to_string())?;
 
+    #[allow(clippy::type_complexity)]
     let (supplier_id, purchase_order_id, entry_type, amount_cents, method, notes, created_at, rev): (String, Option<String>, String, i64, Option<String>, Option<String>, String, i64) = tx.query_row(
         "SELECT supplier_id, purchase_order_id, type, amount_cents, method, notes, created_at, rev FROM supplier_payments WHERE id = ?1",
         params![payment_id],
@@ -4105,7 +4363,8 @@ pub fn dispatch_lan_rpc(
             let shift_id: String = lan_arg(&args, "shiftId")?;
             let ending_cash_cents: i64 = lan_arg(&args, "endingCashCents")?;
             let difference_cents: i64 = lan_arg(&args, "differenceCents")?;
-            close_shift_v3_impl(db, session_token, shift_id, ending_cash_cents, difference_cents)?;
+            let manager_override_pin: Option<String> = lan_arg(&args, "managerOverridePin")?;
+            close_shift_v3_impl(db, session_token, shift_id, ending_cash_cents, difference_cents, manager_override_pin)?;
             serde_json::Value::Null
         }
         "get_shift_stats_v3" => {
@@ -4177,6 +4436,8 @@ mod tests {
         migrate_v3::run_staff_sync_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_lan_pairing_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_printer_system_name_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_manager_threshold_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_business_mode_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -4492,6 +4753,7 @@ mod tests {
 
             let db = real_db(&db_path);
             let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let items = vec![OrderItemInput {
                 menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 1000,
                 notes: None, combo_id: None, modifiers: vec![],
@@ -4507,6 +4769,46 @@ mod tests {
             assert_eq!(item_count, 1);
             let outbox_count: i64 = conn.query_row("SELECT COUNT(*) FROM sync_outbox WHERE tenant_id = ?1", params![tenant_id], |r| r.get(0)).unwrap();
             assert_eq!(outbox_count, 2, "one orders row + one order_items row must have been enqueued for sync, through the real wrapper body");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// 2026-08-02 client walkthrough finding: previously a cashier could
+        /// ring up orders with no shift open at all, and those sales would
+        /// never show up in any shift's stats -- silent, undiagnosable
+        /// end-of-day reconciliation breakage. Proves the fix: rejected
+        /// with no shift open, succeeds and correctly stamps the real
+        /// shift id once one is -- and, critically, a caller-supplied
+        /// `shiftId` claiming a DIFFERENT (non-existent) shift is ignored
+        /// in favor of the actor's real one, never trusted as-is.
+        #[test]
+        fn create_full_order_v3_requires_an_open_shift() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_requires_shift");
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier")
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+
+            let no_shift = create_full_order_v3_impl(
+                &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(), vec![],
+                0, 0, 0, 0, None, None, None, None, 0, None, Some("fake-shift-id".to_string()), None,
+            );
+            assert!(no_shift.is_err(), "creating an order with no real open shift must be rejected, even if a shiftId was claimed");
+
+            let real_shift_id = open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+            let order_id = create_full_order_v3_impl(
+                &db, &license, session, table_id, "DINE_IN".to_string(), vec![],
+                0, 0, 0, 0, None, None, None, None, 0, None, Some("some-other-claimed-id".to_string()), None,
+            ).expect("creating an order with a real open shift must succeed regardless of what shiftId was claimed");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let stamped_shift_id: String = conn.query_row("SELECT shift_id FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(stamped_shift_id, real_shift_id, "the order must be stamped with the actor's REAL active shift, never whatever shiftId the caller claimed");
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
@@ -4557,6 +4859,7 @@ mod tests {
 
             let db = real_db(&db_path);
             let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let items = vec![OrderItemInput {
                 menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
                 notes: None, combo_id: None, modifiers: vec![],
@@ -4604,6 +4907,7 @@ mod tests {
 
             let db = real_db(&db_path);
             let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             // The order must sit on the *target* table -- `merge_tables`
             // only reports back the order that was already on
             // `target_table_id`, not one being merged in from a source.
@@ -4758,6 +5062,7 @@ mod tests {
 
             let db = real_db(&db_path);
             let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let items = vec![OrderItemInput {
                 menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
                 notes: None, combo_id: None, modifiers: vec![],
@@ -4783,14 +5088,15 @@ mod tests {
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
-        /// WENZDES audit C5/H5: the 2000-cent void threshold used to live
-        /// ONLY in `VoidItemModal.tsx` -- `void_order_item_v3` had no
-        /// server-side check at all, so a cashier calling the command
-        /// directly (bypassing the modal, e.g. from devtools) could void
-        /// any line regardless of price with no manager involvement. Proves
-        /// the fix: a cashier voiding a line >= the threshold with no PIN
-        /// is rejected and the item stays un-voided; the same void with a
-        /// valid manager PIN succeeds.
+        /// WENZDES audit C5/H5, threshold made configurable 2026-08-02: the
+        /// void threshold used to live ONLY in `VoidItemModal.tsx` --
+        /// `void_order_item_v3` had no server-side check at all, so a
+        /// cashier calling the command directly (bypassing the modal, e.g.
+        /// from devtools) could void any line regardless of price with no
+        /// manager involvement. Proves the fix: a cashier voiding a line
+        /// at or above the tenant's real (now-configurable, default 20000)
+        /// threshold with no PIN is rejected and the item stays un-voided;
+        /// the same void with a valid manager PIN succeeds.
         #[test]
         fn void_order_item_v3_enforces_manager_pin_threshold_server_side() {
             let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_void_threshold");
@@ -4801,9 +5107,9 @@ mod tests {
                 Repo::new(&conn).create_staff(&tenant_id, Some(&branch_id), Some(&branch_id), "MANAGER", Role::Manager.rank(), "Manager", Some(&pin_hash), None).unwrap();
                 let repo = Repo::new(&conn);
                 let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
-                // Line total 5000 cents (qty 1 * unit_price 5000), well over
-                // the 2000-cent threshold.
-                let item_id = repo.create_menu_item(&tenant_id, "Expensive Item", &category_id, 5000, 2500, None, None).unwrap();
+                // Line total 50000 -- well over the default
+                // void_manager_threshold_cents (20000) chain_config seeds.
+                let item_id = repo.create_menu_item(&tenant_id, "Expensive Item", &category_id, 50000, 25000, None, None).unwrap();
                 (cashier_id, item_id)
             };
             let session = {
@@ -4813,14 +5119,15 @@ mod tests {
 
             let db = real_db(&db_path);
             let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let items = vec![OrderItemInput {
-                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 5000,
+                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 50000,
                 notes: None, combo_id: None, modifiers: vec![],
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license,
                 session.clone(), table_id, "DINE_IN".to_string(), items,
-                5000, 0, 5000, 0, None, None, None, None, 0, None, None, None,
+                50000, 0, 50000, 0, None, None, None, None, 0, None, None, None,
             ).unwrap();
             let item_db_id: String = {
                 let conn = Connection::open(&db_path).unwrap();
@@ -4831,7 +5138,7 @@ mod tests {
                 &db, &license,
                 session.clone(), item_db_id.clone(), "بدون سبب كافٍ".to_string(), None,
             );
-            assert!(no_pin.is_err(), "voiding a >=2000-cent line with no manager PIN must be rejected");
+            assert!(no_pin.is_err(), "voiding a line at/above the manager threshold with no PIN must be rejected");
 
             let wrong_pin = void_order_item_v3_impl(
                 &db, &license,
@@ -4852,6 +5159,142 @@ mod tests {
             let conn = Connection::open(&db_path).unwrap();
             let voided: i64 = conn.query_row("SELECT voided FROM order_items WHERE id = ?1", params![item_db_id], |r| r.get(0)).unwrap();
             assert_eq!(voided, 1);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// 2026-08-02: proves the manager thresholds are real, per-tenant,
+        /// Owner-configurable values -- not just a struct that always
+        /// echoes the migration's hardcoded defaults.
+        #[test]
+        fn manager_thresholds_default_then_update_round_trips() {
+            let (db_path, tenant_id, _branch_id, _table_id) = seeded_db("manager_thresholds_round_trip");
+            let conn = Connection::open(&db_path).unwrap();
+            let repo = Repo::new(&conn);
+
+            let defaults = repo.get_manager_thresholds(&tenant_id).unwrap();
+            assert_eq!(defaults.void_threshold_cents, 20000, "migration default must be seeded, not zero");
+            assert_eq!(defaults.shift_diff_threshold_cents, 50000);
+
+            repo.update_manager_thresholds(&tenant_id, 75000, 150000).unwrap();
+            let updated = repo.get_manager_thresholds(&tenant_id).unwrap();
+            assert_eq!(updated.void_threshold_cents, 75000);
+            assert_eq!(updated.shift_diff_threshold_cents, 150000);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// 2026-08-03 "next phase" (see nextphase.md §2): both switches
+        /// must default to true (an existing restaurant's behavior must
+        /// never change on upgrade), and each must be independently
+        /// settable -- not just an all-or-nothing pair.
+        #[test]
+        fn business_mode_defaults_true_and_each_switch_is_independent() {
+            let (db_path, tenant_id, _branch_id, _table_id) = seeded_db("business_mode_round_trip");
+            let conn = Connection::open(&db_path).unwrap();
+            let repo = Repo::new(&conn);
+
+            let defaults = repo.get_business_mode(&tenant_id).unwrap();
+            assert!(defaults.has_tables, "an existing restaurant must keep table management on upgrade");
+            assert!(defaults.has_kitchen, "an existing restaurant must keep the kitchen/KDS flow on upgrade");
+
+            repo.update_business_mode(&tenant_id, false, true).unwrap();
+            let kitchen_only = repo.get_business_mode(&tenant_id).unwrap();
+            assert!(!kitchen_only.has_tables);
+            assert!(kitchen_only.has_kitchen, "turning tables off must not also turn the kitchen off");
+
+            repo.update_business_mode(&tenant_id, true, false).unwrap();
+            let tables_only = repo.get_business_mode(&tenant_id).unwrap();
+            assert!(tables_only.has_tables, "turning kitchen off must not also turn tables off");
+            assert!(!tables_only.has_kitchen);
+
+            repo.update_business_mode(&tenant_id, false, false).unwrap();
+            let neither = repo.get_business_mode(&tenant_id).unwrap();
+            assert!(!neither.has_tables);
+            assert!(!neither.has_kitchen);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// 2026-08-03 "next phase": `create_table_v3` is Manager+-gated, so
+        /// a cashier could never create the implicit counter table
+        /// themselves -- proves `ensure_counter_tables_exist` creates
+        /// exactly one "المنضدة" table per branch, is idempotent (calling
+        /// it twice never creates a duplicate), and never touches branches
+        /// that already have one under that exact name.
+        #[test]
+        fn ensure_counter_tables_exist_creates_one_per_branch_and_is_idempotent() {
+            let (db_path, tenant_id, branch_a, _table_id) = seeded_db("counter_tables");
+            let branch_b = {
+                let conn = Connection::open(&db_path).unwrap();
+                Repo::new(&conn).create_branch(&tenant_id, "Branch B", "USD").unwrap()
+            };
+
+            let mut conn = Connection::open(&db_path).unwrap();
+            let tx = conn.transaction().unwrap();
+            ensure_counter_tables_exist(&tx, &tenant_id).unwrap();
+            tx.commit().unwrap();
+
+            let count_counters = |branch_id: &str| -> i64 {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.query_row(
+                    "SELECT COUNT(*) FROM tables WHERE tenant_id = ?1 AND branch_id = ?2 AND name = 'المنضدة'",
+                    params![tenant_id, branch_id],
+                    |r| r.get(0),
+                ).unwrap()
+            };
+            assert_eq!(count_counters(&branch_a), 1, "seeded_db's own default branch must get exactly one counter table");
+            assert_eq!(count_counters(&branch_b), 1, "a second branch on the same tenant must get its own counter table");
+
+            // Calling it again must not create a second one in either branch.
+            let mut conn = Connection::open(&db_path).unwrap();
+            let tx = conn.transaction().unwrap();
+            ensure_counter_tables_exist(&tx, &tenant_id).unwrap();
+            tx.commit().unwrap();
+            assert_eq!(count_counters(&branch_a), 1, "must be idempotent, not create a duplicate");
+            assert_eq!(count_counters(&branch_b), 1);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// 2026-08-02: this control used to exist ONLY in shift/page.tsx's
+        /// client-side `DIFF_THRESHOLD_CENTS` check -- calling
+        /// `close_shift_v3` directly (bypassing the UI) could close any
+        /// shift with any discrepancy, no PIN, ever. Proves the fix at the
+        /// same rigor as the void-threshold test above.
+        #[test]
+        fn close_shift_v3_enforces_manager_pin_threshold_server_side() {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("wrapper_shift_diff_threshold");
+            let pin_hash = bcrypt::hash("1234", bcrypt::DEFAULT_COST).unwrap();
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                Repo::new(&conn).create_staff(&tenant_id, Some(&branch_id), Some(&branch_id), "MANAGER", Role::Manager.rank(), "Manager", Some(&pin_hash), None).unwrap();
+                cashier_id
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            let shift_id = open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+
+            // -60000 is well past the default 50000-cent shift_diff threshold.
+            let no_pin = close_shift_v3_impl(&db, session.clone(), shift_id.clone(), 40000, -60000, None);
+            assert!(no_pin.is_err(), "closing with a discrepancy at/above the manager threshold with no PIN must be rejected");
+
+            let wrong_pin = close_shift_v3_impl(&db, session.clone(), shift_id.clone(), 40000, -60000, Some("0000".to_string()));
+            assert!(wrong_pin.is_err(), "closing with a wrong manager PIN must be rejected");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let still_open: Option<String> = conn.query_row("SELECT closed_at FROM shifts WHERE id = ?1", params![shift_id], |r| r.get(0)).unwrap();
+            assert!(still_open.is_none(), "the shift must remain open after both rejected attempts");
+            drop(conn);
+
+            close_shift_v3_impl(&db, session, shift_id.clone(), 40000, -60000, Some("1234".to_string()))
+                .expect("closing with a valid manager PIN must succeed");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let closed_at: Option<String> = conn.query_row("SELECT closed_at FROM shifts WHERE id = ?1", params![shift_id], |r| r.get(0)).unwrap();
+            assert!(closed_at.is_some());
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
@@ -4943,6 +5386,7 @@ mod tests {
 
             let db = real_db(&db_path);
             let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
 
             // Exactly the JSON body a Satellite cashier terminal's
             // `invoke("create_full_order_v3", {...})` would forward over
@@ -4999,6 +5443,452 @@ mod tests {
             let bad_args = dispatch_lan_rpc(&db, &license, "list_kitchen_orders_v3", serde_json::json!({}));
             assert!(bad_args.is_err(), "a missing sessionToken must be rejected, not treated as an empty/anonymous session");
 
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        // ---------------------------------------------------------------
+        // anomaly.rs (2026-08-02): built on real order/void/shift/payment
+        // data through the same command wrappers everything else here
+        // goes through, not hand-rolled INSERTs -- these prove the
+        // statistical thresholds actually separate a real outlier from a
+        // normal cashier on real data, not just that the SQL compiles.
+        // ---------------------------------------------------------------
+
+        #[test]
+        fn detect_high_void_rate_flags_outlier_not_average_cashier() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("anomaly_void_rate");
+            let (avg_cashier_id, high_void_cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let avg_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Average Cashier");
+                let high_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "High Void Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 500, 250, None, None).unwrap();
+                (avg_id, high_id, item_id)
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+
+            let items_of = |n: usize| -> Vec<OrderItemInput> {
+                (0..n)
+                    .map(|_| OrderItemInput {
+                        menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 500,
+                        notes: None, combo_id: None, modifiers: vec![],
+                    })
+                    .collect()
+            };
+
+            // Average cashier: 20 items sold, none voided.
+            let avg_session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &avg_cashier_id, "device-1").unwrap()
+            };
+            open_shift_v3_impl(&db, &license, avg_session.clone(), 10000, None).unwrap();
+            create_full_order_v3_impl(
+                &db, &license, avg_session, table_id.clone(), "DINE_IN".to_string(), items_of(20),
+                10000, 0, 10000, 0, None, None, None, None, 0, None, None, None,
+            ).unwrap();
+
+            // High-void cashier: 20 items sold, 10 of them voided -- well
+            // past both the 2x-branch-average ratio and the 10-point gap.
+            let high_session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &high_void_cashier_id, "device-1").unwrap()
+            };
+            open_shift_v3_impl(&db, &license, high_session.clone(), 10000, None).unwrap();
+            let high_order_id = create_full_order_v3_impl(
+                &db, &license, high_session.clone(), table_id, "DINE_IN".to_string(), items_of(20),
+                10000, 0, 10000, 0, None, None, None, None, 0, None, None, None,
+            ).unwrap();
+            let high_item_ids: Vec<String> = {
+                let conn = Connection::open(&db_path).unwrap();
+                let mut stmt = conn.prepare("SELECT id FROM order_items WHERE order_id = ?1").unwrap();
+                stmt.query_map(params![high_order_id], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect()
+            };
+            for id in high_item_ids.into_iter().take(10) {
+                void_order_item_v3_impl(&db, &license, high_session.clone(), id, "تالف".to_string(), None)
+                    .expect("voiding a 500-cent line needs no manager PIN");
+            }
+
+            let conn = Connection::open(&db_path).unwrap();
+            let scope = Scope::Branch { tenant_id, branch_id };
+            let findings = crate::anomaly::detect_anomalies(&conn, &scope, 30).unwrap();
+
+            let flagged: Vec<_> = findings.iter().filter(|f| f.kind == crate::anomaly::AnomalyKind::HighVoidRate).collect();
+            assert_eq!(
+                flagged.len(), 1,
+                "exactly the high-void cashier must be flagged, not the average one: {:?}",
+                findings.iter().map(|f| (&f.staff_name, &f.kind)).collect::<Vec<_>>()
+            );
+            assert_eq!(flagged[0].staff_id, high_void_cashier_id);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn detect_cash_variance_flags_consistent_shortfall_not_a_balanced_drawer() {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("anomaly_cash_variance");
+            let (short_cashier_id, fine_cashier_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let short_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Short Cashier");
+                let fine_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Fine Cashier");
+                (short_id, fine_id)
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+
+            // Three shifts, every one short by 1000 cents -- consistent,
+            // not a single bad night.
+            let short_session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &short_cashier_id, "device-1").unwrap()
+            };
+            for _ in 0..3 {
+                let shift_id = open_shift_v3_impl(&db, &license, short_session.clone(), 10000, None).unwrap();
+                close_shift_v3_impl(&db, short_session.clone(), shift_id, 9000, -1000, None).unwrap();
+            }
+
+            // Three shifts, every one balanced -- must never be flagged.
+            let fine_session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &fine_cashier_id, "device-1").unwrap()
+            };
+            for _ in 0..3 {
+                let shift_id = open_shift_v3_impl(&db, &license, fine_session.clone(), 10000, None).unwrap();
+                close_shift_v3_impl(&db, fine_session.clone(), shift_id, 10000, 0, None).unwrap();
+            }
+
+            let conn = Connection::open(&db_path).unwrap();
+            let scope = Scope::Branch { tenant_id, branch_id };
+            let findings = crate::anomaly::detect_anomalies(&conn, &scope, 30).unwrap();
+
+            let flagged: Vec<_> = findings.iter().filter(|f| f.kind == crate::anomaly::AnomalyKind::CashVariance).collect();
+            assert_eq!(
+                flagged.len(), 1,
+                "only the consistently-short cashier must be flagged: {:?}",
+                findings.iter().map(|f| (&f.staff_name, &f.kind)).collect::<Vec<_>>()
+            );
+            assert_eq!(flagged[0].staff_id, short_cashier_id);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn detect_void_resell_pattern_catches_same_item_cash_resell() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("anomaly_void_resell");
+            let (scammer_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let scammer_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Scammer");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 500, 250, None, None).unwrap();
+                (scammer_id, item_id)
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &scammer_id, "device-1").unwrap()
+            };
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+
+            // Twice: void a line, then ring up the exact same item for
+            // cash moments later -- the classic void-then-pocket-the-cash
+            // pattern. Two occurrences clears the Medium threshold.
+            for _ in 0..2 {
+                let voided_order_id = create_full_order_v3_impl(
+                    &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
+                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
+                    500, 0, 500, 0, None, None, None, None, 0, None, None, None,
+                ).unwrap();
+                let voided_item_db_id: String = {
+                    let conn = Connection::open(&db_path).unwrap();
+                    conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![voided_order_id], |r| r.get(0)).unwrap()
+                };
+                void_order_item_v3_impl(&db, &license, session.clone(), voided_item_db_id, "خطأ في الطلب".to_string(), None).unwrap();
+
+                let resale_order_id = create_full_order_v3_impl(
+                    &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
+                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
+                    500, 0, 500, 0, None, None, None, None, 0, None, None, None,
+                ).unwrap();
+                take_payment_v3_impl(&db, &license, session.clone(), resale_order_id, "CASH".to_string(), 500, 0, None).unwrap();
+            }
+
+            let conn = Connection::open(&db_path).unwrap();
+            let scope = Scope::Branch { tenant_id, branch_id };
+            let findings = crate::anomaly::detect_anomalies(&conn, &scope, 30).unwrap();
+
+            let flagged: Vec<_> = findings.iter().filter(|f| f.kind == crate::anomaly::AnomalyKind::VoidResellPattern).collect();
+            assert_eq!(flagged.len(), 1, "the scammer must be flagged: {:?}", findings.iter().map(|f| (&f.staff_name, &f.kind)).collect::<Vec<_>>());
+            assert_eq!(flagged[0].staff_id, scammer_id);
+            assert_eq!(flagged[0].severity, crate::anomaly::Severity::Medium, "2 occurrences must land at Medium severity");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        // ---------------------------------------------------------------
+        // forecast.rs (2026-08-02): built on real order data, deliberately
+        // backdated to simulate several weeks of weekly history (order
+        // creation always stamps "now" through the real command, so the
+        // only way to get multi-week history is to move `created_at` back
+        // afterward) -- proves the day-of-week average actually reflects
+        // real weekly sales, not just that the SQL runs.
+        // ---------------------------------------------------------------
+
+        #[test]
+        fn forecast_demand_predicts_from_weekly_history_and_ignores_low_volume_items() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("forecast_weekly_history");
+            let (cashier_id, popular_item_id, rare_item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let popular_item_id = repo.create_menu_item(&tenant_id, "Burger", &category_id, 500, 250, None, None).unwrap();
+                let rare_item_id = repo.create_menu_item(&tenant_id, "Rarely Ordered", &category_id, 500, 250, None, None).unwrap();
+                (cashier_id, popular_item_id, rare_item_id)
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+
+            // Popular item: sold 3 at a time, every week for the last 5
+            // weeks, same weekday as "today" -- total 15 (past
+            // MIN_TOTAL_QUANTITY), 5 distinct weeks of history.
+            for weeks_ago in 1..=5i64 {
+                let order_id = create_full_order_v3_impl(
+                    &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
+                    vec![OrderItemInput { menu_item_id: popular_item_id.clone(), name: None, quantity: 3, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
+                    1500, 0, 1500, 0, None, None, None, None, 0, None, None, None,
+                ).unwrap();
+                let backdated = (chrono::Utc::now() - chrono::Duration::days(7 * weeks_ago)).format("%Y-%m-%d %H:%M:%S").to_string();
+                let conn = Connection::open(&db_path).unwrap();
+                conn.execute("UPDATE orders SET created_at = ?1 WHERE id = ?2", params![backdated, order_id]).unwrap();
+            }
+
+            // Rarely-ordered item: only 2 total, one week ago -- must
+            // never produce a forecast (MIN_TOTAL_QUANTITY not met).
+            let rare_order_id = create_full_order_v3_impl(
+                &db, &license, session.clone(), table_id, "DINE_IN".to_string(),
+                vec![OrderItemInput { menu_item_id: rare_item_id.clone(), name: None, quantity: 2, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+            ).unwrap();
+            let backdated = (chrono::Utc::now() - chrono::Duration::days(7)).format("%Y-%m-%d %H:%M:%S").to_string();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.execute("UPDATE orders SET created_at = ?1 WHERE id = ?2", params![backdated, rare_order_id]).unwrap();
+            }
+
+            let conn = Connection::open(&db_path).unwrap();
+            let scope = Scope::Branch { tenant_id, branch_id };
+            let forecast = crate::forecast::forecast_demand(&conn, &scope).unwrap();
+
+            let popular_forecasts: Vec<_> = forecast.items.iter().filter(|f| f.menu_item_id == popular_item_id).collect();
+            assert_eq!(
+                popular_forecasts.len(), 1,
+                "only the one matching weekday (today + 7 days) falls inside the 7-day forecast window: {:?}",
+                forecast.items.iter().map(|f| (&f.menu_item_name, &f.date)).collect::<Vec<_>>()
+            );
+            let expected_date = (chrono::Utc::now().date_naive() + chrono::Duration::days(7)).to_string();
+            assert_eq!(popular_forecasts[0].date, expected_date);
+            assert!(
+                (popular_forecasts[0].predicted_quantity - 1.9).abs() < 0.01,
+                "15 sold over an 8-week lookback = 1.875, rounded to 1.9: got {}", popular_forecasts[0].predicted_quantity
+            );
+            assert_eq!(popular_forecasts[0].weeks_with_a_sale, 5);
+            assert_eq!(popular_forecasts[0].confidence, crate::forecast::Confidence::Medium);
+
+            assert!(
+                forecast.items.iter().all(|f| f.menu_item_id != rare_item_id),
+                "an item with only 2 total historical sales must never get a forecast"
+            );
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn forecast_demand_ingredient_tier_flags_projected_shortfall() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("forecast_ingredient_tier");
+            let (cashier_id, item_id, low_stock_ingredient_id, plenty_ingredient_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Burger", &category_id, 500, 250, None, None).unwrap();
+                // Every burger needs 1 bun and 0.1L of ketchup.
+                let low_stock_id = repo.create_ingredient(&tenant_id, &branch_id, "Buns", "pcs", 20, 2.0).unwrap();
+                let plenty_id = repo.create_ingredient(&tenant_id, &branch_id, "Ketchup", "L", 1000, 10.0).unwrap();
+                conn.execute("UPDATE ingredients SET current_stock = 5.0 WHERE id = ?1", params![low_stock_id]).unwrap();
+                conn.execute("UPDATE ingredients SET current_stock = 100.0 WHERE id = ?1", params![plenty_id]).unwrap();
+                // recipes.tenant_id is backfilled by the T1.1 expand
+                // migration but not NOT NULL-enforced -- unlike orders/
+                // order_items/payments, a raw INSERT that omits it leaves
+                // NULL, which `forecast.rs`'s tenant-scoped predicate
+                // (correctly) never matches. Set it explicitly.
+                conn.execute("INSERT INTO recipes (id, tenant_id, menu_item_id, ingredient_id, quantity_needed) VALUES ('r1', ?1, ?2, ?3, 1.0)", params![tenant_id, item_id, low_stock_id]).unwrap();
+                conn.execute("INSERT INTO recipes (id, tenant_id, menu_item_id, ingredient_id, quantity_needed) VALUES ('r2', ?1, ?2, ?3, 0.1)", params![tenant_id, item_id, plenty_id]).unwrap();
+                (cashier_id, item_id, low_stock_id, plenty_id)
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+
+            // 8 sold every week for the last 8 weeks -- fills the whole
+            // lookback window, so the predicted weekly quantity equals
+            // the actual weekly quantity: 8/8 = 8 for the one matching
+            // weekday in the forecast window.
+            for weeks_ago in 1..=8i64 {
+                let order_id = create_full_order_v3_impl(
+                    &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
+                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 8, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
+                    4000, 0, 4000, 0, None, None, None, None, 0, None, None, None,
+                ).unwrap();
+                let backdated = (chrono::Utc::now() - chrono::Duration::days(7 * weeks_ago)).format("%Y-%m-%d %H:%M:%S").to_string();
+                let conn = Connection::open(&db_path).unwrap();
+                conn.execute("UPDATE orders SET created_at = ?1 WHERE id = ?2", params![backdated, order_id]).unwrap();
+            }
+
+            let conn = Connection::open(&db_path).unwrap();
+            let scope = Scope::Branch { tenant_id, branch_id };
+            let forecast = crate::forecast::forecast_demand(&conn, &scope).unwrap();
+
+            // Predicted burger demand over the forecast window is 8 -- so
+            // buns (1 needed each, 5 in stock) must be flagged short,
+            // ketchup (0.1L each, 100L in stock) must not be.
+            let buns = forecast.ingredients.iter().find(|f| f.ingredient_id == low_stock_ingredient_id)
+                .expect("buns must appear in the ingredient forecast -- burger has a recipe row for it");
+            assert!(buns.will_run_short, "5 buns in stock against a projected need of ~8 must be flagged short: {buns:?}");
+            assert!((buns.predicted_consumption - 8.0).abs() < 0.01, "got {}", buns.predicted_consumption);
+
+            let ketchup = forecast.ingredients.iter().find(|f| f.ingredient_id == plenty_ingredient_id)
+                .expect("ketchup must appear in the ingredient forecast too");
+            assert!(!ketchup.will_run_short, "100L in stock against a projected need of ~0.8L must never be flagged short: {ketchup:?}");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        // ---------------------------------------------------------------
+        // reconcile.rs (2026-08-02): built on real orders through the same
+        // command wrappers everything else here goes through -- proves a
+        // genuinely abandoned order gets flagged, a normal in-progress one
+        // doesn't, and a normally-paid order is never mistaken for the
+        // (should-be-impossible) missing-payment case.
+        // ---------------------------------------------------------------
+
+        #[test]
+        fn reconcile_flags_stale_open_order_but_not_a_recent_one() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("reconcile_stale");
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier")
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+
+            // Abandoned: created, left PENDING, backdated 8 hours -- past
+            // the 6-hour staleness threshold, no payment ever taken.
+            let stale_order_id = create_order_v3_impl(
+                &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(), 1000, 0, 0, None,
+            ).unwrap();
+            let backdated = (chrono::Utc::now() - chrono::Duration::hours(8)).format("%Y-%m-%d %H:%M:%S").to_string();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.execute("UPDATE orders SET created_at = ?1 WHERE id = ?2", params![backdated, stale_order_id]).unwrap();
+            }
+
+            // Normal: created just now, still PENDING -- an active dine-in
+            // order mid-service, must never be flagged.
+            let fresh_order_id = create_order_v3_impl(
+                &db, &license, session, table_id, "DINE_IN".to_string(), 1000, 0, 0, None,
+            ).unwrap();
+
+            let conn = Connection::open(&db_path).unwrap();
+            let scope = Scope::Branch { tenant_id, branch_id };
+            let report = crate::reconcile::reconcile(&conn, &scope).unwrap();
+
+            let flagged_ids: Vec<&str> = report.stale_open_orders.iter().map(|o| o.order_id.as_str()).collect();
+            assert!(flagged_ids.contains(&stale_order_id.as_str()), "an 8-hour-old open order must be flagged: {flagged_ids:?}");
+            assert!(!flagged_ids.contains(&fresh_order_id.as_str()), "a fresh open order must never be flagged: {flagged_ids:?}");
+            assert!(report.paid_orders_missing_payment.is_empty());
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn reconcile_never_flags_a_normally_paid_order() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("reconcile_paid");
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier")
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+
+            let order_id = create_order_v3_impl(
+                &db, &license, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None,
+            ).unwrap();
+            finalize_order_with_payment_v3_impl(
+                &db, &license, session, order_id.clone(), "CASH".to_string(), 1000, 0, None, None,
+            ).unwrap();
+            // Old enough to have tripped the staleness check too, if the
+            // PAID/CANCELLED/VOIDED exclusion in the query were missing.
+            let backdated = (chrono::Utc::now() - chrono::Duration::hours(8)).format("%Y-%m-%d %H:%M:%S").to_string();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.execute("UPDATE orders SET created_at = ?1 WHERE id = ?2", params![backdated, order_id]).unwrap();
+            }
+
+            let conn = Connection::open(&db_path).unwrap();
+            let scope = Scope::Branch { tenant_id, branch_id };
+            let report = crate::reconcile::reconcile(&conn, &scope).unwrap();
+
+            assert!(report.stale_open_orders.iter().all(|o| o.order_id != order_id), "a real PAID order must never show up as stale-open");
+            assert!(report.paid_orders_missing_payment.iter().all(|o| o.order_id != order_id), "a real PAID order has a real payment row -- must never show up as missing one");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn reconcile_flags_a_paid_order_with_no_payment_row() {
+            // Exercises the should-be-impossible integrity branch directly
+            // via a raw UPDATE (bypassing finalize_order_with_payment,
+            // which would never allow this state) -- proves the query
+            // itself catches it if the invariant is ever broken by a
+            // future bug.
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("reconcile_paid_no_payment");
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier")
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+
+            let order_id = create_order_v3_impl(
+                &db, &license, session, table_id, "DINE_IN".to_string(), 1000, 0, 0, None,
+            ).unwrap();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.execute("UPDATE orders SET status = 'PAID' WHERE id = ?1", params![order_id]).unwrap();
+            }
+
+            let conn = Connection::open(&db_path).unwrap();
+            let scope = Scope::Branch { tenant_id, branch_id };
+            let report = crate::reconcile::reconcile(&conn, &scope).unwrap();
+
+            assert!(report.paid_orders_missing_payment.iter().any(|o| o.order_id == order_id), "a PAID order with zero payment rows must be flagged");
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
     }
@@ -6637,6 +7527,7 @@ mod tests {
             &tenant_id, &branch_id,
             crate::repo::NewOrder { table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".to_string(), subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0 },
         ).unwrap();
+        #[allow(clippy::drop_non_drop)] // ends `repo`'s borrow of `conn` before `conn` itself drops
         drop(repo);
         drop(conn);
         {
@@ -8698,12 +9589,13 @@ mod tests {
         /// order analytics (AI page). Every one of these must be BLOCKED
         /// when back-office is locked.
         const GATED: &[&str] = &[
-            "list_staff_v3", "get_sales_report_v3",
+            "list_staff_v3", "get_sales_report_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
             "create_branch_v3", "create_staff_v3", "update_staff_v3", "update_staff_profile_v3",
             "set_staff_active_v3", "list_branches_v3", "list_shifts_v3", "force_close_shift_v3",
             "list_attendance_v3",
             "create_category_v3", "update_category_v3", "delete_category_v3",
             "upload_menu_item_photo_v3", "delete_menu_item_photo_v3",
+            "upload_category_photo_v3", "delete_category_photo_v3",
             "create_menu_item_v3", "update_menu_item_v3", "delete_menu_item_v3", "set_menu_item_active_v3",
             "list_combo_meals_v3", "list_combo_meal_items_v3", "create_combo_meal_v3",
             "update_combo_meal_v3", "delete_combo_meal_v3",
@@ -8718,7 +9610,8 @@ mod tests {
             "list_debt_entries_v3", "record_debt_payment_v3",
             "get_finance_revenue_v3", "get_dashboard_summary_v3", "get_tax_collected_v3", "list_operational_costs_v3",
             "create_operational_cost_v3", "list_invoices_v3", "create_invoice_v3", "mark_invoice_paid_v3",
-            "update_chain_currency_v3", "update_chain_tax_v3", "update_discount_caps_v3",
+            "update_chain_currency_v3", "update_chain_tax_v3", "update_discount_caps_v3", "update_manager_thresholds_v3",
+            "update_business_mode_v3",
             "get_legacy_branch_v3", "save_legacy_branch_v3", "set_printer_active_v3",
             "update_printer_paper_width_v3", "update_printer_system_name_v3", "create_printer_v3", "list_printers_v3",
             "create_customer_v3", "list_customers_v3", "update_customer_v3", "delete_customer_v3",
@@ -8750,15 +9643,16 @@ mod tests {
             "login_v3", "login_pin_v3", "setup_owner_v3", "needs_setup_v3", "logout_v3",
             "change_own_password_v3",
             "get_cached_license_status_v3", "check_license_v3", "renew_license_v3", "activate_license_v3", "get_device_id_v3",
+            "backup_database_v3", "list_backups_v3", "send_diagnostics_report_v3",
             "create_order_v3", "update_order_status_v3", "take_payment_v3",
             "create_full_order_v3", "hold_order_v3", "retrieve_held_order_v3",
             "split_bill_v3", "merge_tables_v3", "unmerge_tables_v3", "void_order_item_v3",
             "transfer_order_v3", "schedule_delayed_order_v3", "activate_delayed_orders_v3",
             "finalize_order_with_payment_v3", "list_tables_v3",
-            "list_categories_v3", "list_menu_items_v3", "get_menu_item_photo_v3",
+            "list_categories_v3", "list_menu_items_v3", "get_menu_item_photo_v3", "get_category_photo_v3",
             "list_combo_components_v3", "resolve_menu_price_v3",
             "get_receipt_config_v3", "get_chain_config_v3", "list_active_printers_v3",
-            "get_discount_caps_v3", "list_debtors_v3",
+            "get_discount_caps_v3", "get_manager_thresholds_v3", "get_business_mode_v3", "list_debtors_v3",
             "verify_manager_override_v3",
             "lookup_loyalty_card_v3", "earn_loyalty_points_v3", "redeem_loyalty_reward_v3",
             "list_kitchen_orders_v3", "register_kds_terminal_v3",

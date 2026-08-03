@@ -461,6 +461,18 @@ pub struct ChainConfigRow {
     pub service_charge_rate_cents: i64,
 }
 
+/// 2026-08-03 "next phase" (see nextphase.md §2) -- lets the frontend
+/// decide whether to show table management / kitchen-ticket+KDS UI at
+/// all, independently. Both `true` is a full-service restaurant (today's
+/// only real behavior); `false`/`false` is a coffee counter or simple
+/// retail shop; the other two combinations cover a takeaway-only kitchen
+/// or a seated place that cooks nothing to order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct BusinessMode {
+    pub has_tables: bool,
+    pub has_kitchen: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LegacyBranchRow {
     pub id: String,
@@ -2116,6 +2128,52 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
+    /// Owner-configurable manager-PIN thresholds -- see
+    /// `migrate_v3.rs::run_manager_threshold_migration` for why these
+    /// replaced two hardcoded constants that were wrong by orders of
+    /// magnitude for a real currency's actual prices.
+    pub fn get_manager_thresholds(&self, tenant_id: &str) -> Result<crate::pricing::ManagerThresholds, RepoError> {
+        self.ensure_chain_config_row(tenant_id)?;
+        self.conn.query_row(
+            "SELECT void_manager_threshold_cents, shift_diff_manager_threshold_cents \
+             FROM chain_config WHERE tenant_id = ?1",
+            params![tenant_id],
+            |r| Ok(crate::pricing::ManagerThresholds { void_threshold_cents: r.get(0)?, shift_diff_threshold_cents: r.get(1)? }),
+        ).map_err(RepoError::from)
+    }
+
+    pub fn update_manager_thresholds(&self, tenant_id: &str, void_threshold_cents: i64, shift_diff_threshold_cents: i64) -> Result<(), RepoError> {
+        self.ensure_chain_config_row(tenant_id)?;
+        self.conn.execute(
+            "UPDATE chain_config SET void_manager_threshold_cents = ?1, shift_diff_manager_threshold_cents = ?2, \
+             last_modified = datetime('now') WHERE tenant_id = ?3",
+            params![void_threshold_cents, shift_diff_threshold_cents, tenant_id],
+        )?;
+        Ok(())
+    }
+
+    /// 2026-08-03 "next phase" (see nextphase.md §2): two independent,
+    /// Owner-configurable switches, both defaulting `true` so an existing
+    /// restaurant's experience never changes unless they opt out. Same
+    /// shape as `get_manager_thresholds`/`update_manager_thresholds` above.
+    pub fn get_business_mode(&self, tenant_id: &str) -> Result<BusinessMode, RepoError> {
+        self.ensure_chain_config_row(tenant_id)?;
+        self.conn.query_row(
+            "SELECT has_tables, has_kitchen FROM chain_config WHERE tenant_id = ?1",
+            params![tenant_id],
+            |r| Ok(BusinessMode { has_tables: r.get::<_, i64>(0)? != 0, has_kitchen: r.get::<_, i64>(1)? != 0 }),
+        ).map_err(RepoError::from)
+    }
+
+    pub fn update_business_mode(&self, tenant_id: &str, has_tables: bool, has_kitchen: bool) -> Result<(), RepoError> {
+        self.ensure_chain_config_row(tenant_id)?;
+        self.conn.execute(
+            "UPDATE chain_config SET has_tables = ?1, has_kitchen = ?2, last_modified = datetime('now') WHERE tenant_id = ?3",
+            params![has_tables as i64, has_kitchen as i64, tenant_id],
+        )?;
+        Ok(())
+    }
+
     pub fn get_legacy_branch(&self, tenant_id: &str) -> Result<Option<LegacyBranchRow>, RepoError> {
         self.conn.query_row(
             "SELECT id, name, address, phone, max_tables FROM branches WHERE tenant_id = ?1 LIMIT 1",
@@ -3061,6 +3119,25 @@ impl<'a> Repo<'a> {
             params![name, color, sort_order, image_path, category_id],
         )?;
         Ok(())
+    }
+
+    /// 2026-08-02: same shape as `set_menu_item_photo`/`get_menu_item_photo_path`
+    /// below -- categories previously only had a raw URL text field, while
+    /// menu items had a real upload flow. `photos::store_photo` is already
+    /// generic over the id it's keyed by, so no new storage code was needed.
+    pub fn set_category_photo(&self, tenant_id: &str, category_id: &str, image_path: Option<&str>) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("categories", category_id, tenant_id)?;
+        self.conn.execute(
+            "UPDATE categories SET image_path = ?1, last_modified = datetime('now') WHERE id = ?2",
+            params![image_path, category_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_category_photo_path(&self, tenant_id: &str, category_id: &str) -> Result<Option<String>, RepoError> {
+        self.assert_tenant_owns_row("categories", category_id, tenant_id)?;
+        self.conn.query_row("SELECT image_path FROM categories WHERE id = ?1", params![category_id], |r| r.get(0))
+            .map_err(RepoError::from)
     }
 
     pub fn delete_category(&self, tenant_id: &str, category_id: &str) -> Result<(), RepoError> {
@@ -4587,5 +4664,30 @@ mod tests {
         // A tenant with NO configured tiers gets a safe default, not a panic.
         assert_eq!(Repo::tier_for(9999, &[]), ("BRONZE".to_string(), 1.0));
         println!("[loyalty] tier_for correctly resolves all boundary points and defaults safely with zero configured tiers");
+    }
+
+    /// 2026-08-02: categories previously only had a raw URL text field
+    /// ("رابط الصورة"), inconsistent with menu items' real upload flow.
+    /// Proves the DB half of the fix -- the Tauri-command layer
+    /// (`upload_category_photo_v3`) needs a real `AppHandle` and is
+    /// exercised manually/in integration, but `set_category_photo`/
+    /// `get_category_photo_path` are plain Repo methods, same shape as
+    /// `set_menu_item_photo`/`get_menu_item_photo_path` right above.
+    #[test]
+    fn set_and_get_category_photo_round_trips_and_clears() {
+        let db_path = fresh_migrated_db("category_photo");
+        let conn = Connection::open(&db_path).unwrap();
+        let tenant_id: String = conn.query_row("SELECT tenant_id FROM branch LIMIT 1", [], |r| r.get(0)).unwrap();
+        let repo = Repo::new(&conn);
+        let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+
+        assert_eq!(repo.get_category_photo_path(&tenant_id, &category_id).unwrap(), None);
+
+        repo.set_category_photo(&tenant_id, &category_id, Some("/fake/path/photo.jpg")).unwrap();
+        assert_eq!(repo.get_category_photo_path(&tenant_id, &category_id).unwrap(), Some("/fake/path/photo.jpg".to_string()));
+
+        repo.set_category_photo(&tenant_id, &category_id, None).unwrap();
+        assert_eq!(repo.get_category_photo_path(&tenant_id, &category_id).unwrap(), None, "clearing must set it back to NULL, not leave the stale path");
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 }

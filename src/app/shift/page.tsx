@@ -7,7 +7,12 @@ import {
 import { useAuthStore } from "../../stores/authStore";
 import { useShiftStore } from "../../stores/shiftStore";
 
-const DIFF_THRESHOLD_CENTS = 5000;
+// 2026-08-02: was a hardcoded 5000 assuming small everyday prices -- wrong
+// by orders of magnitude for a currency whose real menu prices run in the
+// thousands. Now fetched from the tenant's real, Owner-configurable
+// threshold (see pricing.rs's ManagerThresholds); this constant is only
+// the fail-safe used for the brief moment before that fetch resolves.
+const FALLBACK_DIFF_THRESHOLD_CENTS = 50000;
 
 interface ActiveShift {
   id: string;
@@ -73,6 +78,7 @@ export default function ShiftPage() {
   const [managerPassword, setManagerPassword] = useState("");
   const [needsAuth, setNeedsAuth] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [diffThresholdCents, setDiffThresholdCents] = useState(FALLBACK_DIFF_THRESHOLD_CENTS);
 
   const [summary, setSummary] = useState<SummaryData | null>(null);
   const [message, setMessage] = useState<{ text: string; isError: boolean } | null>(null);
@@ -90,6 +96,9 @@ export default function ShiftPage() {
 
       const cfg = await invoke<{ currency: string }>("get_chain_config_v3", { sessionToken: token });
       if (cfg) setCurrency(cfg.currency);
+
+      const thresholds = await invoke<{ shift_diff_threshold_cents: number }>("get_manager_thresholds_v3", { sessionToken: token });
+      if (thresholds) setDiffThresholdCents(thresholds.shift_diff_threshold_cents);
 
       const shift = await invoke<ActiveShift | null>("get_active_shift_v3", { sessionToken: token });
 
@@ -177,7 +186,7 @@ export default function ShiftPage() {
       const diffCents = actualCashCents - expectedCashCents;
       const absDiff = Math.abs(diffCents);
 
-      if (absDiff > DIFF_THRESHOLD_CENTS && !needsAuth) {
+      if (absDiff >= diffThresholdCents && !needsAuth) {
         setNeedsAuth(true);
         setClosing(false);
         return;
@@ -201,7 +210,16 @@ export default function ShiftPage() {
         }
       }
 
-      await invoke("close_shift_v3", { sessionToken: token, shiftId: activeShift.id, endingCashCents: actualCashCents, differenceCents: diffCents });
+      await invoke("close_shift_v3", {
+        sessionToken: token,
+        shiftId: activeShift.id,
+        endingCashCents: actualCashCents,
+        differenceCents: diffCents,
+        // Rust now re-verifies this server-side (2026-08-02) -- this used
+        // to be a client-only gate with nothing stopping a direct command
+        // call from closing any shift with any discrepancy, no PIN, ever.
+        managerOverridePin: needsAuth ? managerPassword : null,
+      });
 
       setSummary({
         expectedCash: expectedCashCents,

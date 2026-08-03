@@ -197,6 +197,9 @@ export default function MenuPage() {
   const [categoryErrors, setCategoryErrors] = useState<Record<string, string>>({});
   const [deleteCategoryId, setDeleteCategoryId] = useState<string | null>(null);
   const [categoryItemCounts, setCategoryItemCounts] = useState<Record<string, number>>({});
+  const [categoryPhoto, setCategoryPhoto] = useState<string | null>(null);
+  const [uploadingCategoryPhoto, setUploadingCategoryPhoto] = useState(false);
+  const [categoryPhotoError, setCategoryPhotoError] = useState<string | null>(null);
   const [savingCategory, setSavingCategory] = useState(false);
 
   // Combos tab
@@ -426,6 +429,8 @@ export default function MenuPage() {
     setEditCategoryId(null);
     setCategoryForm(emptyCategoryForm);
     setCategoryErrors({});
+    setCategoryPhoto(null);
+    setCategoryPhotoError(null);
     setShowCategoryModal(true);
   };
 
@@ -438,7 +443,54 @@ export default function MenuPage() {
       image_path: cat.image_path ?? "",
     });
     setCategoryErrors({});
+    setCategoryPhotoError(null);
+    // Same lazy-fetch pattern as menu items -- see get_menu_item_photo_v3's
+    // doc comment for why the real photo isn't embedded in every list load.
+    if (cat.image_path) {
+      setCategoryPhoto(null);
+      invoke<string | null>("get_category_photo_v3", { sessionToken: token, categoryId: cat.id })
+        .then(setCategoryPhoto)
+        .catch(() => setCategoryPhoto(null));
+    } else {
+      setCategoryPhoto(null);
+    }
     setShowCategoryModal(true);
+  };
+
+  const uploadCategoryPhoto = async (file: File) => {
+    if (!editCategoryId) return; // a category must exist (be saved) before a photo can be attached to it
+    setCategoryPhotoError(null);
+    if (file.size > MAX_PHOTO_BYTES) {
+      setCategoryPhotoError("الصورة كبيرة جداً (الحد الأقصى 3 ميجابايت)");
+      return;
+    }
+    setUploadingCategoryPhoto(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const bytes = Array.from(new Uint8Array(buf));
+      await invoke("upload_category_photo_v3", { sessionToken: token, categoryId: editCategoryId, photoBytes: bytes });
+      const freshPhoto = await invoke<string | null>("get_category_photo_v3", { sessionToken: token, categoryId: editCategoryId });
+      setCategoryPhoto(freshPhoto);
+      await fetchAll();
+    } catch {
+      setCategoryPhotoError("فشل رفع الصورة -- تأكد أنها JPEG أو PNG أو WEBP");
+    } finally {
+      setUploadingCategoryPhoto(false);
+    }
+  };
+
+  const removeCategoryPhoto = async () => {
+    if (!editCategoryId) return;
+    setUploadingCategoryPhoto(true);
+    try {
+      await invoke("delete_category_photo_v3", { sessionToken: token, categoryId: editCategoryId });
+      setCategoryPhoto(null);
+      await fetchAll();
+    } catch {
+      setCategoryPhotoError("فشل حذف الصورة");
+    } finally {
+      setUploadingCategoryPhoto(false);
+    }
   };
 
   const saveCategory = async () => {
@@ -1362,14 +1414,54 @@ export default function MenuPage() {
 
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">
-                  رابط الصورة (اختياري)
+                  صورة التصنيف (اختياري)
                 </label>
-                <input
-                  type="text"
-                  value={categoryForm.image_path}
-                  onChange={(e) => setCategoryForm((p) => ({ ...p, image_path: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-600"
-                />
+                {editCategoryId ? (
+                  <div className="flex items-center gap-3">
+                    <div className="w-[62px] h-[62px] shrink-0 rounded-md overflow-hidden border border-ink-200 bg-ink-100 flex items-center justify-center">
+                      {categoryPhoto ? (
+                        <img src={categoryPhoto} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <span className="text-[10px] text-ink-400 font-arabic text-center px-1">
+                          بدون صورة
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="h-9 px-4 rounded-sm bg-saffron-600 text-white text-xs font-arabic flex items-center justify-center cursor-pointer hover:bg-saffron-700 transition-colors">
+                        {uploadingCategoryPhoto ? "جاري الرفع..." : categoryPhoto ? "تغيير الصورة" : "رفع صورة"}
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          className="hidden"
+                          disabled={uploadingCategoryPhoto}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) void uploadCategoryPhoto(file);
+                            e.target.value = "";
+                          }}
+                        />
+                      </label>
+                      {categoryPhoto && (
+                        <button
+                          type="button"
+                          onClick={removeCategoryPhoto}
+                          disabled={uploadingCategoryPhoto}
+                          className="h-9 px-4 rounded-sm bg-white text-ink-700 border border-ink-200 text-xs font-arabic hover:bg-ink-50 transition-colors disabled:opacity-50"
+                        >
+                          إزالة الصورة
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-ink-400 font-arabic">
+                    احفظ التصنيف أولاً، بعدها تقدر ترفع صورة له
+                  </p>
+                )}
+                {categoryPhotoError && (
+                  <p className="text-xs text-red-500 mt-1 font-arabic">{categoryPhotoError}</p>
+                )}
               </div>
 
               {categoryErrors._form && (

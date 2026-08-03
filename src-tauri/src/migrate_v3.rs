@@ -1629,6 +1629,79 @@ pub fn run_printer_system_name_migration(conn: &mut Connection, _db_path: &Path)
     Ok(())
 }
 
+pub const MIGRATION_M_VERSION: i64 = 17;
+
+/// 2026-08-02 client walkthrough finding: the manager-PIN thresholds for
+/// voiding an expensive line (`VOID_MANAGER_OVERRIDE_THRESHOLD_CENTS`,
+/// commands_v3.rs) and for a large shift-close cash discrepancy
+/// (`DIFF_THRESHOLD_CENTS`, shift/page.tsx, client-side only until this
+/// migration) were both flat hardcoded numbers picked assuming small
+/// everyday prices -- wrong by orders of magnitude for a currency whose
+/// real menu prices run in the thousands, which meant the gate either
+/// almost never fired or almost always fired depending on the currency.
+/// Same fix as discount caps (`run_discount_cap_migration`): make it a
+/// real, Owner-configurable `chain_config` column instead of a constant
+/// nobody without a rebuild can tune to their own actual prices. Defaults
+/// are a starting point, not a claim of correctness for every business --
+/// deliberately set to Settings-editable from day one.
+pub fn run_manager_threshold_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_M_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    if table_exists(&tx, "chain_config")? {
+        add_column_if_missing(&tx, "chain_config", "void_manager_threshold_cents", "INTEGER NOT NULL DEFAULT 20000")?;
+        add_column_if_missing(&tx, "chain_config", "shift_diff_manager_threshold_cents", "INTEGER NOT NULL DEFAULT 50000")?;
+    }
+    println!("v17_manager_thresholds: chain_config.{{void,shift_diff}}_manager_threshold_cents added (defaults 20000/50000, Owner-editable in Settings)");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_M_VERSION, "0017_manager_thresholds", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub const MIGRATION_N_VERSION: i64 = 18;
+
+/// 2026-08-03, "next phase" (see nextphase.md): the first step of scaling
+/// beyond restaurants. Not a rewrite -- two independent, Owner-configurable
+/// switches, both defaulting to true so every existing restaurant
+/// customer's experience is unchanged unless they explicitly opt out.
+/// `has_tables=false` means orders use one implicit "Counter" table
+/// instead of showing table-management UI at all; `has_kitchen=false`
+/// means no kitchen ticket is ever printed and the KDS/kitchen-printer
+/// UI disappears. See nextphase.md §2 for the full plan this implements.
+pub fn run_business_mode_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_N_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    if table_exists(&tx, "chain_config")? {
+        add_column_if_missing(&tx, "chain_config", "has_tables", "INTEGER NOT NULL DEFAULT 1")?;
+        add_column_if_missing(&tx, "chain_config", "has_kitchen", "INTEGER NOT NULL DEFAULT 1")?;
+    }
+    println!("v18_business_mode: chain_config.{{has_tables,has_kitchen}} added (both default 1/true -- zero behavior change for existing restaurants)");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_N_VERSION, "0018_business_mode", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

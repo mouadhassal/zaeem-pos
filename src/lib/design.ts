@@ -1,4 +1,8 @@
-import type { LicenseStatus } from "@zaeem/types";
+// Inlined from packages/types/src/license.ts -- this repo has its own git
+// history/remote separate from the monorepo root (see AGENTS.md), so it
+// can't resolve a `workspace:*` dependency when checked out standalone
+// (e.g. in GitHub Actions).
+type LicenseStatus = "active" | "expired" | "suspended" | "trial";
 
 export function getLicenseStatusColor(status: LicenseStatus): string {
   switch (status) {

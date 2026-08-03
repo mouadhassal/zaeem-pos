@@ -82,6 +82,18 @@ export async function listTables(): Promise<TableInfo[]> {
   return invoke<TableInfo[]>("list_tables_v3", { sessionToken: token() });
 }
 
+export interface BusinessMode {
+  has_tables: boolean;
+  has_kitchen: boolean;
+}
+
+// 2026-08-03 "next phase" (see nextphase.md §2): both default true, so an
+// existing restaurant's experience is unchanged unless they opt out in
+// Settings. Read on every POS/KDS/Settings load to decide what to show.
+export async function getBusinessMode(): Promise<BusinessMode> {
+  return invoke<BusinessMode>("get_business_mode_v3", { sessionToken: token() });
+}
+
 export async function getReceiptConfig(): Promise<ReceiptConfig> {
   return invoke<ReceiptConfig>("get_receipt_config_v3", { sessionToken: token() });
 }
@@ -165,6 +177,12 @@ export async function createOrder(
     managerOverridePin: managerOverridePin ?? null,
   });
 
+  // 2026-08-03 "next phase" (see nextphase.md §2): a business with no
+  // kitchen has nowhere to send this ticket at all -- skip the whole
+  // flow rather than print/queue-retry something nobody will ever see.
+  const { has_kitchen } = await getBusinessMode();
+  if (!has_kitchen) return orderId;
+
   const kitchenItems = items.map((i) => {
     const ki: { name: string; quantity: number; notes?: string; modifiers?: string[] } = {
       name: i.name ?? "", quantity: i.quantity,
@@ -174,9 +192,9 @@ export async function createOrder(
     return ki;
   });
 
+  const tables = await listTables();
+  const tableName = tables.find((t) => t.id === tableId)?.name ?? "";
   try {
-    const tables = await listTables();
-    const tableName = tables.find((t) => t.id === tableId)?.name ?? "";
     await printKitchenTicket({
       tableName,
       orderNumber: orderId.slice(0, 8),
@@ -184,10 +202,24 @@ export async function createOrder(
       items: kitchenItems,
     });
   } catch (err) {
+    // 2026-08-02: this used to fail completely silently -- logged only to
+    // `logger.error` (console-only, invisible in a packaged build with no
+    // devtools open) and queued for a background retry the cashier has no
+    // way to know is even needed. Meanwhile the kitchen never sees the
+    // order. `invoke`'s own wrapper already persists the underlying error
+    // to the real Rust-side log for every failed command -- what was
+    // actually missing is a VISIBLE signal, so the cashier can walk the
+    // order to the kitchen by hand right now instead of discovering it
+    // when a table asks where their food is.
     logger.error("Kitchen print failed, queued for retry", { error: String(err) });
     queuePrintJob(
-      { tableName: "", orderNumber: orderId.slice(0, 8), orderType, items: kitchenItems },
+      { tableName, orderNumber: orderId.slice(0, 8), orderType, items: kitchenItems },
       "kitchen"
+    );
+    window.dispatchEvent(
+      new CustomEvent("kitchen-print-failed", {
+        detail: { tableName, orderNumber: orderId.slice(0, 8), error: err instanceof Error ? err.message : String(err) },
+      })
     );
   }
 
@@ -419,20 +451,36 @@ export async function activateDelayedOrders(): Promise<void> {
     const activatedIds = await invoke<string[]>("activate_delayed_orders_v3", {
       sessionToken: token(),
     });
+    if (activatedIds.length === 0) return;
+    // 2026-08-03 "next phase": same reasoning as createOrder's kitchen-
+    // ticket skip -- checked once here, not per order, since this runs on
+    // a 30s background timer.
+    const { has_kitchen } = await getBusinessMode();
+    if (!has_kitchen) return;
     for (const orderId of activatedIds) {
       try {
         const held = await retrieveHeldOrder(orderId);
         if (!held) continue;
         const tables = await listTables();
         const orderTableId = tables.find((t) => t.status === "OCCUPIED" && t.current_order_id === orderId)?.id;
+        const tableName = orderTableId ? (tables.find((t) => t.id === orderTableId)?.name ?? "") : "";
         await printKitchenTicket({
-          tableName: orderTableId ? (tables.find((t) => t.id === orderTableId)?.name ?? "") : "",
+          tableName,
           orderNumber: orderId.slice(0, 8),
           orderType: "DINE_IN",
           items: held.items.map((i) => ({ name: i.name, quantity: i.quantity, ...(i.notes ? { notes: i.notes } : {}) })),
         });
       } catch (err) {
+        // A scheduled order that just came due and silently never reached
+        // the kitchen is at least as bad as the live-order case above --
+        // this runs unattended on a 30s timer, so a toast is the only way
+        // anyone finds out at all.
         logger.error("Delayed order kitchen print failed", { error: String(err), orderId });
+        window.dispatchEvent(
+          new CustomEvent("kitchen-print-failed", {
+            detail: { orderNumber: orderId.slice(0, 8), error: err instanceof Error ? err.message : String(err) },
+          })
+        );
       }
     }
   } catch (err) {

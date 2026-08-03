@@ -5,8 +5,9 @@
 //! values typed in by whoever is activating a restaurant, never its own
 //! hardware).
 //!
-//! Component gathering is Windows-only today (this fleet is Windows POS
-//! terminals). On any other OS `collect_raw()` returns all-`None`, which
+//! Component gathering is implemented for Windows and macOS (this fleet is
+//! mostly Windows POS terminals, with macOS as a secondary supported
+//! platform). On any other OS `collect_raw()` returns all-`None`, which
 //! `current()` turns into a fingerprint that cannot match a real license
 //! (by design -- fail closed, not silently "always active").
 
@@ -52,7 +53,37 @@ fn collect_raw() -> (Option<String>, Option<String>, Option<String>) {
     (cpu, disk, mac)
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn run_shell(script: &str) -> Option<String> {
+    let output = Command::new("sh").args(["-c", script]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() { None } else { Some(text) }
+}
+
+/// `IOPlatformSerialNumber`/`IOPlatformUUID` (from `ioreg`) are the two
+/// identifiers Apple itself treats as this machine's stable hardware
+/// identity -- both survive OS reinstalls and only change on a logic-board
+/// swap, on Intel and Apple Silicon alike. Used in place of a physical CPU
+/// serial and a physical disk serial (neither of which macOS exposes
+/// consistently across NVMe/SATA/Apple Silicon fabric storage) so the same
+/// "2 of 3 components must match" fuzzy-match logic in `license-core` still
+/// has two independent, genuinely hardware-bound values to compare.
+#[cfg(target_os = "macos")]
+fn collect_raw() -> (Option<String>, Option<String>, Option<String>) {
+    let cpu = run_shell(
+        "ioreg -rd1 -c IOPlatformExpertDevice | awk -F'\"' '/IOPlatformSerialNumber/{print $4}'",
+    );
+    let disk = run_shell(
+        "ioreg -rd1 -c IOPlatformExpertDevice | awk -F'\"' '/IOPlatformUUID/{print $4}'",
+    );
+    let mac = run_shell("ifconfig en0 | awk '/ether/{print $2}'");
+    (cpu, disk, mac)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn collect_raw() -> (Option<String>, Option<String>, Option<String>) {
     (None, None, None)
 }

@@ -169,6 +169,10 @@ pub enum Permission {
     /// locations is routine back-office work, not the cross-tenant
     /// provisioning `CreateBranch` guards.
     ManageBranches,
+    /// 2026-08-02: exporting a full copy of the tenant's database (every
+    /// order, payment, and customer record) is more sensitive than any
+    /// report read -- Owner+, not Manager+ like `ManageFinance`/`ViewReports`.
+    ManageBackups,
 }
 
 impl Permission {
@@ -190,6 +194,7 @@ impl Permission {
             Permission::ManageSettings => Role::Manager.rank(),
             Permission::UsePrinter => Role::Cashier.rank(),
             Permission::ManageBranches => Role::Owner.rank(),
+            Permission::ManageBackups => Role::Owner.rank(),
         }
     }
 }
@@ -400,6 +405,7 @@ pub fn authorize(actor: &Actor, perm: Permission) -> Result<(), SecurityError> {
                 Permission::ManageSettings => "ManageSettings",
                 Permission::UsePrinter => "UsePrinter",
                 Permission::ManageBranches => "ManageBranches",
+                Permission::ManageBackups => "ManageBackups",
             },
             reason: format!("role {:?} (rank {}) is below the minimum rank {} for this permission", actor.role, actor.role.rank(), perm.minimum_rank()),
         })

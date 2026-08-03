@@ -18,6 +18,11 @@ mod sync;
 mod obslog;
 mod lan;
 mod print;
+mod anomaly;
+mod forecast;
+mod backup;
+mod diagnostics;
+mod reconcile;
 
 use bcrypt::{hash, DEFAULT_COST};
 
@@ -72,6 +77,8 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_staff_sync_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_lan_pairing_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_printer_system_name_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_manager_threshold_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_business_mode_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -404,6 +411,9 @@ pub fn run() {
             commands_v3::upload_menu_item_photo_v3,
             commands_v3::delete_menu_item_photo_v3,
             commands_v3::get_menu_item_photo_v3,
+            commands_v3::upload_category_photo_v3,
+            commands_v3::delete_category_photo_v3,
+            commands_v3::get_category_photo_v3,
             commands_v3::export_pdf_v3,
             commands_v3::list_ingredients_v3,
             commands_v3::create_ingredient_v3,
@@ -452,11 +462,21 @@ pub fn run() {
             commands_v3::create_invoice_v3,
             commands_v3::mark_invoice_paid_v3,
             commands_v3::get_sales_report_v3,
+            commands_v3::detect_anomalies_v3,
+            commands_v3::forecast_demand_v3,
+            commands_v3::backup_database_v3,
+            commands_v3::list_backups_v3,
+            commands_v3::send_diagnostics_report_v3,
+            commands_v3::reconcile_orders_v3,
             commands_v3::get_chain_config_v3,
             commands_v3::update_chain_currency_v3,
             commands_v3::update_chain_tax_v3,
             commands_v3::get_discount_caps_v3,
             commands_v3::update_discount_caps_v3,
+            commands_v3::get_manager_thresholds_v3,
+            commands_v3::update_manager_thresholds_v3,
+            commands_v3::get_business_mode_v3,
+            commands_v3::update_business_mode_v3,
             commands_v3::get_legacy_branch_v3,
             commands_v3::save_legacy_branch_v3,
             commands_v3::set_printer_active_v3,

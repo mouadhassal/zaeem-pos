@@ -231,12 +231,6 @@ export default function InventoryPage() {
             onClose={() => setShowAddIngredient(false)}
             onSaved={() => { setShowAddIngredient(false); setRefreshKey((k) => k + 1); }}
           />
-          <button className="h-10 px-5 rounded-sm bg-white text-ink-900 text-sm font-medium border border-ink-200 hover:bg-saffron-50 hover:border-ink-300 active:scale-[0.98] transition-all duration-150">
-            جرد المخزون
-          </button>
-          <button className="h-10 px-4 rounded-sm text-ink-400 text-sm hover:bg-saffron-50 hover:text-ink-900 active:scale-[0.98] transition-all duration-150">
-            تقرير الهالك
-          </button>
         </div>
       </div>
 
@@ -1026,11 +1020,13 @@ function SuppliersTab() {
         }}
         onSaved={fetch}
       />
-      <NewOrderModal
-        supplier={showOrder}
-        onClose={() => setShowOrder(null)}
-        onSaved={fetch}
-      />
+      {showOrder && (
+        <CreatePOModal
+          initialSupplierId={showOrder.id}
+          onClose={() => setShowOrder(null)}
+          onSaved={() => { setShowOrder(null); fetch(); }}
+        />
+      )}
       {payTarget && (
         <PaySupplierModal
           supplier={payTarget}
@@ -1286,61 +1282,6 @@ function SupplierModal({
   );
 }
 
-function NewOrderModal({
-  supplier,
-  onClose,
-  onSaved,
-}: {
-  supplier: Supplier | null;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const token = useAuthStore((s) => s.token);
-  const [error, setError] = useState<string | null>(null);
-
-  if (!supplier) return null;
-
-  const handleCreate = async () => {
-    try {
-      await invoke("create_purchase_order_and_bump_supplier_v3", {
-        sessionToken: token,
-        supplierId: supplier.id,
-        notes: null,
-      });
-      onSaved();
-      onClose();
-    } catch {
-      setError("حدث خطأ في إنشاء الطلبية");
-    }
-  };
-
-  return (
-    <Modal open={!!supplier} onClose={onClose} title="طلبية جديدة">
-      <p className="text-sm text-ink-900">
-        إنشاء طلبية شراء للمورد: <span className="font-bold">{supplier.name}</span>
-      </p>
-      <p className="text-xs text-ink-500">
-        سيتم إنشاء طلبية بحالة "قيد الانتظار"
-      </p>
-      {error && <p className="text-sm text-red-500 font-arabic">{error}</p>}
-      <div className="flex gap-2 pt-2">
-        <button
-          onClick={handleCreate}
-          className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
-        >
-          إنشاء
-        </button>
-        <button
-          onClick={onClose}
-          className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors"
-        >
-          إلغاء
-        </button>
-      </div>
-    </Modal>
-  );
-}
-
 /* ============= TAB 5: طلبيات الشراء ============= */
 
 function PurchasesTab() {
@@ -1498,11 +1439,11 @@ function PurchasesTab() {
 }
 
 /* Create PO Modal */
-function CreatePOModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () => void; onSaved: () => void; initialSupplierId?: string }) {
   const token = useAuthStore((s) => s.token);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
-  const [selectedSupplier, setSelectedSupplier] = useState("");
+  const [selectedSupplier, setSelectedSupplier] = useState(initialSupplierId ?? "");
   const [items, setItems] = useState<{ ingredient_id: string; quantity_ordered: number; unit_cost_cents: number }[]>([]);
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -2006,6 +1947,12 @@ function AlertsTab() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [orderError, setOrderError] = useState<string | null>(null);
   const [creating, setCreating] = useState<string | null>(null);
+  // 2026-08-02: the previous version of this button always picked
+  // suppliers[0] blindly, with no way for the owner to pick a supplier
+  // who actually stocks the ingredient in question. A single "order from"
+  // picker here (rather than a per-click modal) keeps the one-click
+  // convenience of this button while fixing that.
+  const [selectedSupplierId, setSelectedSupplierId] = useState("");
 
   const fetch = useCallback(async () => {
     setLoading(true);
@@ -2015,6 +1962,7 @@ function AlertsTab() {
 
       const sup = await invoke<Supplier[]>("list_suppliers_v3", { sessionToken: token });
       setSuppliers(sup);
+      setSelectedSupplierId((prev) => prev || sup[0]?.id || "");
     } catch (err) {
       setLoadError(`حدث خطأ في تحميل البيانات: ${realErrorText(err)}`);
     } finally {
@@ -2026,23 +1974,26 @@ function AlertsTab() {
     fetch();
   }, [fetch]);
 
-  // Deliberately calls create_purchase_order_v3 (no total_orders bump) --
-  // the old AlertsTab never bumped it on auto-order, an inconsistency
-  // versus NewOrderModal/CreatePOModal's manual create paths, preserved
-  // as-is here, not "fixed" into consistency.
+  // 2026-08-02: this used to call create_purchase_order_v3 with NO items
+  // at all -- a real, empty purchase order an owner would later find
+  // nothing to receive against. Now uses create_purchase_order_with_items_v3
+  // with one real line (this ingredient, enough to restore it to its
+  // minimum stock level, at its last known unit cost) -- a real,
+  // receivable order, from the supplier the owner actually picked above.
   const handleAutoOrder = async (ingredient: Ingredient) => {
-    if (suppliers.length === 0) return;
+    if (!selectedSupplierId) return;
     setCreating(ingredient.id);
     try {
-      const preferred = suppliers[0];
-      await invoke("create_purchase_order_v3", {
+      const quantityOrdered = Math.max(ingredient.min_stock - ingredient.current_stock, ingredient.min_stock, 1);
+      await invoke("create_purchase_order_with_items_v3", {
         sessionToken: token,
-        supplierId: preferred.id,
+        supplierId: selectedSupplierId,
         notes: `طلبية تلقائية للمادة: ${ingredient.name}`,
+        items: [[ingredient.id, quantityOrdered, ingredient.cost_cents_per_unit]],
       });
       await fetch();
-    } catch {
-      setOrderError("حدث خطأ في إنشاء الطلبية التلقائية");
+    } catch (err) {
+      setOrderError(`حدث خطأ في إنشاء الطلبية التلقائية: ${realErrorText(err)}`);
     } finally {
       setCreating(null);
     }
@@ -2067,6 +2018,19 @@ function AlertsTab() {
       {suppliers.length === 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-sm p-4 text-sm text-amber-700 font-arabic">
           لا يوجد موردون. يرجى إضافة مورد أولاً لاستخدام خاصية الطلبيات التلقائية.
+        </div>
+      )}
+
+      {suppliers.length > 0 && lowStock.length > 0 && (
+        <div className="flex items-center gap-2">
+          <label className="text-sm font-arabic text-ink-500">الطلب من:</label>
+          <select
+            value={selectedSupplierId}
+            onChange={(e) => setSelectedSupplierId(e.target.value)}
+            className="h-9 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
+          >
+            {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
         </div>
       )}
 
@@ -2095,7 +2059,7 @@ function AlertsTab() {
           </div>
           <button
             onClick={() => handleAutoOrder(ing)}
-            disabled={creating === ing.id || suppliers.length === 0}
+            disabled={creating === ing.id || !selectedSupplierId}
             className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
             {creating === ing.id ? "جاري الإنشاء..." : "طلبية تلقائية"}

@@ -35,7 +35,7 @@ import { useOrderTypeStore } from "../../stores/orderTypeStore";
 import { useMenuStore } from "../../stores/menuStore";
 import { CURRENCY_SYMBOLS } from "../../hooks/useCurrency";
 import { useDiscountCap } from "../../hooks/useDiscountCap";
-import { createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, lookupLoyaltyCard, listActiveLoyaltyRewards, redeemLoyaltyReward } from "../../lib/orderService";
+import { createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, lookupLoyaltyCard, listActiveLoyaltyRewards, redeemLoyaltyReward, getBusinessMode } from "../../lib/orderService";
 import type { LoyaltyRewardOption } from "../../lib/orderService";
 import { enableBarcodeScanner, disableBarcodeScanner } from "../../lib/barcodeScanner";
 import { retryPrintQueue, printReceipt } from "../../lib/printer";
@@ -80,6 +80,10 @@ export default function POSPage() {
   const [voidTargetPrice, setVoidTargetPrice] = useState(0);
   const [currencySymbol, setCurrencySymbol] = useState("ل.س");
   const [showNumpad] = useState(false);
+  // 2026-08-03 "next phase" (see nextphase.md §2) -- default true matches
+  // the backend default, so the table bar/DINE_IN option never flash-hide
+  // before the real value loads.
+  const [hasTables, setHasTables] = useState(true);
 
   const { items, tableId, tableName, setTable, addItem, clearCart, voidItem, updateQuantity } = useCartStore();
   const { orderType, setOrderType, customerName, customerPhone, deliveryAddress, driverId, debtorId, debtorName, resetOrderInfo, setDriverId } = useOrderTypeStore();
@@ -112,6 +116,25 @@ export default function POSPage() {
   }, []);
 
   useEffect(() => {
+    getBusinessMode().then((m) => setHasTables(m.has_tables)).catch(() => {});
+  }, []);
+
+  // 2026-08-03 "next phase": when tables are off, the cashier never picks
+  // one -- the backend guarantees a "المنضدة" (Counter) table exists per
+  // branch (see ensure_counter_tables_exist in commands_v3.rs), this just
+  // silently attaches to it once, the first time no table is selected yet.
+  useEffect(() => {
+    if (!hasTables && !tableId) {
+      const counter = tables.find((t) => t.name === "المنضدة");
+      if (counter) setTable(counter.id, counter.name);
+    }
+  }, [hasTables, tables, tableId, setTable]);
+
+  useEffect(() => {
+    if (!hasTables && orderType === "DINE_IN") setOrderType("TAKEAWAY");
+  }, [hasTables, orderType, setOrderType]);
+
+  useEffect(() => {
     fetchTables();
     activateDelayedOrders();
     const interval = setInterval(() => {
@@ -127,6 +150,14 @@ export default function POSPage() {
         setReceiptData(detail.receipt);
         setShowOnScreenReceipt(true);
       }
+    };
+    // 2026-08-02: previously silent -- see orderService.ts's doc comment
+    // on this event. Long-lived (8s, not the usual 2-3s toast) since this
+    // needs a cashier to actually read and act on it, not just glance.
+    const handleKitchenPrintFailed = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { tableName?: string } | undefined;
+      setSuccessMsg(`⚠️ لم تصل الطلبية للمطبخ (${detail?.tableName ?? ""}) -- أبلغ المطبخ يدوياً، ستتم إعادة المحاولة تلقائياً`);
+      setTimeout(() => setSuccessMsg(null), 8000);
     };
     const handleBarcodeScanned = (e: Event) => {
       const code = (e as CustomEvent).detail as string;
@@ -150,11 +181,13 @@ export default function POSPage() {
       }
     };
     window.addEventListener("print-failed", handlePrintFailed);
+    window.addEventListener("kitchen-print-failed", handleKitchenPrintFailed);
     window.addEventListener("barcode-scanned", handleBarcodeScanned);
     return () => {
       clearInterval(interval);
       disableBarcodeScanner();
       window.removeEventListener("print-failed", handlePrintFailed);
+      window.removeEventListener("kitchen-print-failed", handleKitchenPrintFailed);
       window.removeEventListener("barcode-scanned", handleBarcodeScanned);
     };
   }, [fetchTables, addItem]);
@@ -173,9 +206,9 @@ export default function POSPage() {
       clearCart();
       resetOrderInfo();
       fetchTables();
-    } catch {
-      setSuccessMsg("تعذر حفظ الطلبية المعلّقة");
-      setTimeout(() => setSuccessMsg(null), 3000);
+    } catch (err) {
+      setSuccessMsg(`تعذر حفظ الطلبية المعلّقة: ${realErrorText(err)}`);
+      setTimeout(() => setSuccessMsg(null), 4000);
     }
   };
 
@@ -288,10 +321,10 @@ export default function POSPage() {
       resetOrderInfo();
       setLoyaltyCard(null);
       fetchTables();
-    } catch {
+    } catch (err) {
       setShowPayment(false);
-      setSuccessMsg("تعذر إنشاء الطلبية");
-      setTimeout(() => setSuccessMsg(null), 3000);
+      setSuccessMsg(`تعذر إنشاء الطلبية: ${realErrorText(err)}`);
+      setTimeout(() => setSuccessMsg(null), 4000);
     }
   };
 
@@ -306,9 +339,9 @@ export default function POSPage() {
       setTimeout(() => setSuccessMsg(null), 3000);
       clearCart();
       fetchTables();
-    } catch {
-      setSuccessMsg("تعذر تقسيم الفاتورة");
-      setTimeout(() => setSuccessMsg(null), 3000);
+    } catch (err) {
+      setSuccessMsg(`تعذر تقسيم الفاتورة: ${realErrorText(err)}`);
+      setTimeout(() => setSuccessMsg(null), 4000);
     }
   };
 
@@ -320,9 +353,9 @@ export default function POSPage() {
       setSuccessMsg("تم دمج الطاولات ✓");
       setTimeout(() => setSuccessMsg(null), 3000);
       fetchTables();
-    } catch {
-      setSuccessMsg("تعذر دمج الطاولات");
-      setTimeout(() => setSuccessMsg(null), 3000);
+    } catch (err) {
+      setSuccessMsg(`تعذر دمج الطاولات: ${realErrorText(err)}`);
+      setTimeout(() => setSuccessMsg(null), 4000);
     }
   };
 
@@ -333,9 +366,9 @@ export default function POSPage() {
       if (target.dbItemId) {
         try {
           await voidOrderItem(target.dbItemId, reason, managerOverridePin);
-        } catch {
-          setSuccessMsg("تعذر حفظ الإلغاء، حاول مجدداً");
-          setTimeout(() => setSuccessMsg(null), 3000);
+        } catch (err) {
+          setSuccessMsg(`تعذر حفظ الإلغاء: ${realErrorText(err)}`);
+          setTimeout(() => setSuccessMsg(null), 4000);
           setShowVoid(false);
           setVoidTargetItem(null);
           return;
@@ -358,9 +391,9 @@ export default function POSPage() {
       setTimeout(() => setSuccessMsg(null), 3000);
       clearCart();
       fetchTables();
-    } catch {
-      setSuccessMsg("تعذر نقل الطلبية");
-      setTimeout(() => setSuccessMsg(null), 3000);
+    } catch (err) {
+      setSuccessMsg(`تعذر نقل الطلبية: ${realErrorText(err)}`);
+      setTimeout(() => setSuccessMsg(null), 4000);
     }
   };
 
@@ -390,7 +423,12 @@ export default function POSPage() {
     DINE_IN: IconToolsKitchen2, TAKEAWAY: IconShoppingBag, DELIVERY: IconTruckDelivery, ONLINE: IconWorld, DEBT: IconWallet,
   };
   const OrderTypeIconComponent = ORDER_TYPE_ICONS[orderType] || IconToolsKitchen2;
-  const tableLabel = tableId
+  // 2026-08-03 "next phase": with tables off, `tableId` is always the
+  // implicit counter table -- showing "طاولة المنضدة" ("Table Counter")
+  // would be a confusing label for something the cashier never picked.
+  const tableLabel = !hasTables
+    ? `#${orderNumber}`
+    : tableId
     ? `طاولة ${tableName} / #${orderNumber}`
     : "اختر طاولة";
 
@@ -475,7 +513,7 @@ export default function POSPage() {
               <button
                 type="button"
                 onClick={() => setShowTransfer(true)}
-                disabled={!currentOrderId}
+                disabled={!currentOrderId || !hasTables}
                 title="نقل الطاولة"
                 className="h-9 rounded-[9px] bg-surface-alt text-text-2 flex items-center justify-center hover:bg-line transition-colors disabled:opacity-30 disabled:pointer-events-none"
               >
@@ -524,7 +562,11 @@ export default function POSPage() {
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Prominent Order Type Bar - always visible for fast switching */}
         <div className="h-11 shrink-0 bg-surface border-b border-line flex items-center gap-1 px-2" dir="rtl">
-          {(["DINE_IN", "TAKEAWAY", "DELIVERY", "DEBT"] as const).map((t) => {
+          {(["DINE_IN", "TAKEAWAY", "DELIVERY", "DEBT"] as const)
+            // 2026-08-03 "next phase": DINE_IN implies a dining room --
+            // meaningless once tables are off.
+            .filter((t) => hasTables || t !== "DINE_IN")
+            .map((t) => {
             const IconComp = ORDER_TYPE_ICONS[t] || IconToolsKitchen2;
             const isActive = orderType === t;
             return (
@@ -624,7 +666,7 @@ export default function POSPage() {
           />
         </div>
 
-        {tables.length > 0 && (
+        {hasTables && tables.length > 0 && (
           <TableBar
             tables={tables}
             selectedId={tableId}

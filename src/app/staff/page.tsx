@@ -5,7 +5,7 @@ import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import type { UserRole } from "../../db/types";
 import QRCode from "qrcode";
-import { IconDeviceMobile, IconPencil, IconLock, IconTrash } from "@tabler/icons-react";
+import { IconDeviceMobile, IconPencil, IconLock } from "@tabler/icons-react";
 /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 type Tab = "employees" | "shifts" | "attendance";
@@ -136,7 +136,7 @@ export default function StaffPage() {
   const [employeeErrors, setEmployeeErrors] = useState<Record<string, string>>({});
   const [savingEmployee, setSavingEmployee] = useState(false);
 
-  const [deleteEmployeeId, setDeleteEmployeeId] = useState<string | null>(null);
+  const [suspendEmployeeId, setSuspendEmployeeId] = useState<string | null>(null);
   const [qrDataUrls, setQrDataUrls] = useState<Record<string, string>>({});
 
   const [shiftDateFrom, setShiftDateFrom] = useState(() => {
@@ -301,14 +301,14 @@ export default function StaffPage() {
     }
   };
 
-  const confirmDeleteEmployee = async () => {
-    if (!deleteEmployeeId) return;
+  const confirmSuspendEmployee = async () => {
+    if (!suspendEmployeeId) return;
     try {
-      await invoke("set_staff_active_v3", { sessionToken: token, targetStaffId: deleteEmployeeId, isActive: false });
-      setDeleteEmployeeId(null);
+      await invoke("set_staff_active_v3", { sessionToken: token, targetStaffId: suspendEmployeeId, isActive: false });
+      setSuspendEmployeeId(null);
       await fetchEmployees();
     } catch {
-      setError("حدث خطأ في الحذف");
+      setError("حدث خطأ في التعليق");
     }
   };
 
@@ -467,7 +467,15 @@ export default function StaffPage() {
                           <IconPencil className="w-4 h-4" />
                         </button>
                         <button
-                          onClick={() => toggleEmployeeStatus(emp)}
+                          // 2026-08-02: this used to be two separate
+                          // buttons doing the exact same thing (set_staff_
+                          // active_v3 with isActive: false) -- one correctly
+                          // labeled "تعليق", one a trash-icon labeled "حذف"
+                          // even though nothing is actually deleted. Kept
+                          // just this one; suspending now confirms first
+                          // (it blocks someone's login), reactivating still
+                          // fires immediately (a safe, reversible action).
+                          onClick={() => (emp.is_active ? setSuspendEmployeeId(emp.id) : toggleEmployeeStatus(emp))}
                           className={`px-3 py-1 rounded-sm text-xs font-arabic transition-colors inline-flex items-center gap-1 ${
                             emp.is_active
                               ? "text-amber-600 hover:bg-amber-50"
@@ -475,13 +483,6 @@ export default function StaffPage() {
                           }`}
                         >
                           {emp.is_active ? <><IconLock className="w-3.5 h-3.5" /> تعليق</> : "تفعيل"}
-                        </button>
-                        <button
-                          onClick={() => setDeleteEmployeeId(emp.id)}
-                          className="p-1.5 rounded-sm text-ink-500 hover:text-red-500 hover:bg-red-50 transition-colors"
-                          title="حذف"
-                        >
-                          <IconTrash className="w-4 h-4" />
                         </button>
                       </div>
                     </td>
@@ -598,7 +599,7 @@ export default function StaffPage() {
                         </span>
                       </td>
                       <td className="p-3 text-center">
-                        {isOpen && user?.role === "MANAGER" && (
+                        {isOpen && (user?.role === "MANAGER" || user?.role === "OWNER") && (
                           <button
                             onClick={() => setForceCloseShiftId(shift.id)}
                             className="px-3 py-1 rounded-sm text-xs font-arabic text-amber-600 hover:bg-amber-50 transition-colors"
@@ -984,7 +985,7 @@ export default function StaffPage() {
       )}
 
       {/* Delete Employee Confirmation */}
-      {deleteEmployeeId && (
+      {suspendEmployeeId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-md shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
             <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد التعليق</h2>
@@ -993,13 +994,13 @@ export default function StaffPage() {
             </p>
             <div className="flex gap-3 justify-end">
               <button
-                onClick={() => setDeleteEmployeeId(null)}
+                onClick={() => setSuspendEmployeeId(null)}
                 className="h-10 px-6 rounded-sm bg-white border border-ink-200 text-ink-900 font-arabic text-sm hover:bg-ink-100 transition-colors"
               >
                 إلغاء
               </button>
               <button
-                onClick={confirmDeleteEmployee}
+                onClick={confirmSuspendEmployee}
                 className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
               >
                 تعليق

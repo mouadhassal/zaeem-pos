@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
+import { useCurrency } from "../../hooks/useCurrency";
 
 interface Props {
   itemName: string;
@@ -9,15 +10,35 @@ interface Props {
   onCancel: () => void;
 }
 
+// 2026-08-02: this used to be a hardcoded `itemPriceCents > 2000` -- a
+// number picked assuming small everyday prices, wrong by orders of
+// magnitude for a currency whose real menu prices run in the thousands
+// (which meant almost every void tripped the manager gate). Now reads the
+// tenant's real, Owner-configurable threshold (chain_config, see
+// pricing.rs's ManagerThresholds). Rust re-checks this server-side
+// regardless of what this modal decides -- this is UI affordance only.
 export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onCancel }: Props) {
+  const { fmt } = useCurrency();
   const [reason, setReason] = useState("");
   const [customReason, setCustomReason] = useState("");
   const [showPin, setShowPin] = useState(false);
   const [pin, setPin] = useState("");
   const [pinError, setPinError] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
+  const [thresholdCents, setThresholdCents] = useState<number | null>(null);
 
-  const needsManager = itemPriceCents > 2000;
+  useEffect(() => {
+    const token = useAuthStore.getState().token;
+    invoke<{ void_threshold_cents: number }>("get_manager_thresholds_v3", { sessionToken: token })
+      .then((r) => setThresholdCents(r.void_threshold_cents))
+      .catch(() => setThresholdCents(20000));
+  }, []);
+
+  // While the real threshold is still loading, default to requiring a
+  // manager (fail-safe, not fail-open) -- a false "needs manager" prompt
+  // that resolves itself in a moment is far better than a window where a
+  // large void could look like it needs no approval at all.
+  const needsManager = thresholdCents === null ? true : itemPriceCents >= thresholdCents;
 
   const handleConfirm = async () => {
     const finalReason = reason === "أخرى" ? customReason.trim() : reason.trim();
@@ -99,7 +120,7 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
           {showPin && (
             <div>
               <label className="font-arabic text-sm text-ink-500 mb-1.5 block">
-                كلمة مرور المدير (أكثر من ٢٠٠٠ د.ع)
+                كلمة مرور المدير {thresholdCents !== null && `(أكثر من ${fmt(thresholdCents)})`}
               </label>
               <input
                 type="password"

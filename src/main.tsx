@@ -2,7 +2,6 @@ import React, { useState, useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import SplashScreen from "./components/SplashScreen";
-import { createBackup, startAutoBackup } from "./lib/backup";
 import { checkForUpdatesSilently } from "./lib/autoUpdate";
 import { startMemoryMonitoring, measureStartup, startFpsMonitor } from "./lib/performance";
 import { logger } from "./lib/logger";
@@ -90,8 +89,9 @@ function Root() {
         // startup sequence simply runs again on the new version.
         await checkForUpdatesSilently();
 
-        await createBackup();
-        startAutoBackup();
+        // Real backups (backup_database_v3) need an authenticated Owner
+        // session, which doesn't exist yet at this pre-login splash step --
+        // see Settings > النسخ الاحتياطي for the actual backup trigger.
         startMemoryMonitoring();
         startFpsMonitor((fps) => {
           if (fps < 30) logger.warn("Low FPS", { fps });

@@ -6,6 +6,8 @@ import { checkLicense, activateLicense, getDeviceId, backOfficeLocked, type Lice
 import { Pencil, Trash2 as Trash, ImagePlus, X } from "lucide-react";
 import NetworkTab from "./NetworkTab";
 import { checkForUpdatesManually } from "../../lib/autoUpdate";
+import { createBackup, listBackups, type BackupInfo } from "../../lib/backup";
+import { realErrorText } from "../../lib/errors";
 
 type SettingsTab = "general" | "printer" | "tax" | "branch" | "license" | "network" | "backup" | "about";
 
@@ -107,6 +109,10 @@ export default function SettingsPage() {
 
   const [, setConfig] = useState<ChainConfig | null>(null);
   const [currency, setCurrency] = useState("SAR");
+  // 2026-08-03 "next phase" (see nextphase.md §2): both default true so an
+  // existing restaurant's experience never changes unless they opt out.
+  const [hasTables, setHasTables] = useState(true);
+  const [hasKitchen, setHasKitchen] = useState(true);
 
   const [printers, setPrinters] = useState<Printer[]>([]);
   const [systemPrinters, setSystemPrinters] = useState<{ systemName: string; name: string; isDefault: boolean }[]>([]);
@@ -121,6 +127,13 @@ export default function SettingsPage() {
 
   const [taxRate, setTaxRate] = useState("15");
   const [taxMode, setTaxMode] = useState<TaxMode>("exclusive");
+  // 2026-08-02: real, per-tenant manager-approval thresholds -- replaces
+  // two hardcoded constants that were wrong by orders of magnitude for a
+  // currency whose real menu prices run in the thousands. Stored/edited in
+  // major currency units here, converted to/from minor units at the
+  // invoke boundary (same convention as taxRate above).
+  const [voidThreshold, setVoidThreshold] = useState("200");
+  const [shiftDiffThreshold, setShiftDiffThreshold] = useState("500");
 
   const [branch, setBranch] = useState<Branch | null>(null);
   const [branchName, setBranchName] = useState("");
@@ -139,13 +152,14 @@ export default function SettingsPage() {
 
   const [branchLogo, setBranchLogo] = useState<string | null>(() => localStorage.getItem("zaeem_branch_logo"));
 
-  // Persisted to localStorage (not just component state) so the toggle and
-  // last-backup timestamp survive an app restart -- previously both were
-  // plain useState with no read/write anywhere, so "auto backup" did
-  // nothing and "last backup" reset to blank on every reload.
-  const [lastBackup, setLastBackup] = useState<string | null>(() => localStorage.getItem("zaeem_last_backup"));
+  // The "auto backup" toggle is persisted to localStorage so it survives
+  // an app restart; the actual backup list (lastBackup, size, path) comes
+  // from the real backend (backup_database_v3/list_backups_v3) now, not a
+  // fake localStorage snapshot -- see lib/backup.ts's doc comment.
+  const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [autoBackup, setAutoBackup] = useState(() => localStorage.getItem("zaeem_auto_backup_enabled") === "1");
   const [backingUp, setBackingUp] = useState(false);
+  const lastBackup = backups[0]?.created_at ?? null;
 
   const toggleAutoBackup = () => {
     const next = !autoBackup;
@@ -168,6 +182,8 @@ export default function SettingsPage() {
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateResult, setUpdateResult] = useState<string | null>(null);
+  const [diagnosticsSending, setDiagnosticsSending] = useState(false);
+  const [diagnosticsResult, setDiagnosticsResult] = useState<string | null>(null);
 
   useEffect(() => {
     getDeviceId().then(setDeviceId).catch(() => {});
@@ -193,6 +209,24 @@ export default function SettingsPage() {
       }
     } finally {
       setUpdateChecking(false);
+    }
+  };
+
+  // 2026-08-02: opt-in, on-demand only -- this is the one way any signal
+  // about a real error ever leaves the machine at all (see obslog.rs's
+  // module doc), so it's worth surfacing as a real, visible action rather
+  // than something silent/automatic.
+  const handleSendDiagnostics = async () => {
+    if (!token) return;
+    setDiagnosticsSending(true);
+    setDiagnosticsResult(null);
+    try {
+      await invoke("send_diagnostics_report_v3", { sessionToken: token });
+      setDiagnosticsResult("تم إرسال التقرير التشخيصي بنجاح");
+    } catch (e) {
+      setDiagnosticsResult(`فشل إرسال التقرير: ${e}`);
+    } finally {
+      setDiagnosticsSending(false);
     }
   };
 
@@ -251,6 +285,14 @@ export default function SettingsPage() {
       setCurrency(cfg.currency);
       setTaxMode(cfg.tax_mode);
       setTaxRate(String(cfg.tax_rate_cents / 100));
+
+      const thresholds = await invoke<{ void_threshold_cents: number; shift_diff_threshold_cents: number }>("get_manager_thresholds_v3", { sessionToken: token });
+      setVoidThreshold(String(thresholds.void_threshold_cents / 100));
+      setShiftDiffThreshold(String(thresholds.shift_diff_threshold_cents / 100));
+
+      const mode = await invoke<{ has_tables: boolean; has_kitchen: boolean }>("get_business_mode_v3", { sessionToken: token });
+      setHasTables(mode.has_tables);
+      setHasKitchen(mode.has_kitchen);
 
       const printerRows = await invoke<Printer[]>("list_printers_v3", { sessionToken: token });
       setPrinters(printerRows);
@@ -334,11 +376,44 @@ export default function SettingsPage() {
     }
   };
 
+  // 2026-08-03 "next phase": each switch saves (and takes effect)
+  // immediately on toggle -- no separate "save" button, matching how a
+  // real on/off setting should feel, not a form field.
+  const saveBusinessMode = async (nextHasTables: boolean, nextHasKitchen: boolean) => {
+    setHasTables(nextHasTables);
+    setHasKitchen(nextHasKitchen);
+    try {
+      await invoke("update_business_mode_v3", { sessionToken: token, hasTables: nextHasTables, hasKitchen: nextHasKitchen });
+      showMsg("تم حفظ نوع النشاط بنجاح");
+    } catch (err) {
+      showMsg(`حدث خطأ في الحفظ: ${realErrorText(err)}`);
+      // Revert the optimistic UI update -- the save didn't actually happen.
+      await fetchData();
+    }
+  };
+
   const saveTax = async () => {
     setSaving(true);
     try {
       await invoke("update_chain_tax_v3", { sessionToken: token, taxRateCents: Math.round(parseFloat(taxRate || "0") * 100), taxMode });
       showMsg("تم حفظ إعدادات الضريبة بنجاح");
+      fetchData();
+    } catch {
+      showMsg("حدث خطأ في الحفظ");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveThresholds = async () => {
+    setSaving(true);
+    try {
+      await invoke("update_manager_thresholds_v3", {
+        sessionToken: token,
+        voidThresholdCents: Math.round(parseFloat(voidThreshold || "0") * 100),
+        shiftDiffThresholdCents: Math.round(parseFloat(shiftDiffThreshold || "0") * 100),
+      });
+      showMsg("تم حفظ حدود موافقة المدير بنجاح");
       fetchData();
     } catch {
       showMsg("حدث خطأ في الحفظ");
@@ -371,21 +446,33 @@ export default function SettingsPage() {
     }
   };
 
+  const refreshBackups = useCallback(async () => {
+    if (!token) return;
+    try {
+      const list = await listBackups(token);
+      setBackups(list);
+    } catch (e) {
+      console.error("Failed to list backups:", e);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (tab === "backup") refreshBackups();
+  }, [tab, refreshBackups]);
+
   const handleBackup = useCallback(async (silent = false) => {
+    if (!token) return;
     setBackingUp(true);
     try {
-      const { createBackup } = await import("../../lib/backup");
-      await createBackup();
-      const now = new Date().toISOString();
-      setLastBackup(now);
-      localStorage.setItem("zaeem_last_backup", now);
+      await createBackup(token);
+      await refreshBackups();
       if (!silent) showMsg("تم إنشاء النسخة الاحتياطية بنجاح");
-    } catch {
-      if (!silent) showMsg("حدث خطأ في إنشاء النسخة الاحتياطية");
+    } catch (e) {
+      if (!silent) showMsg(`حدث خطأ في إنشاء النسخة الاحتياطية: ${e}`);
     } finally {
       setBackingUp(false);
     }
-  }, []);
+  }, [token, refreshBackups]);
 
   // Real scheduler: checked every 30 minutes while Settings is open, runs a
   // silent backup once 24h have actually elapsed since the last one. Only
@@ -395,8 +482,7 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!autoBackup) return;
     const checkAndRun = () => {
-      const last = localStorage.getItem("zaeem_last_backup");
-      const dueSince = last ? Date.now() - new Date(last).getTime() : Infinity;
+      const dueSince = lastBackup ? Date.now() - new Date(lastBackup).getTime() : Infinity;
       if (dueSince >= AUTO_BACKUP_INTERVAL_MS) {
         handleBackup(true);
       }
@@ -404,7 +490,7 @@ export default function SettingsPage() {
     checkAndRun();
     const interval = setInterval(checkAndRun, 30 * 60 * 1000);
     return () => clearInterval(interval);
-  }, [autoBackup, handleBackup]);
+  }, [autoBackup, handleBackup, lastBackup, AUTO_BACKUP_INTERVAL_MS]);
 
   const togglePrinterActive = async (printer: Printer) => {
     try {
@@ -533,6 +619,37 @@ export default function SettingsPage() {
                 </div>
               </div>
             </div>
+
+            <h2 className="text-lg font-bold text-ink-900 font-arabic">نوع النشاط</h2>
+            <div className="bg-white rounded-md p-5 border border-ink-200 space-y-4">
+              <p className="text-xs text-ink-400 font-arabic">
+                يناسب هذا مطعم كامل الخدمة افتراضياً. عطّل ما لا ينطبق على نشاطك -- مقهى بدون طاولات، متجر بدون مطبخ، أو الاثنين معاً
+              </p>
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm font-arabic text-ink-900 block">لدينا طاولات</span>
+                  <span className="text-xs font-arabic text-ink-400">إدارة الطاولات، الدمج، والتقسيم</span>
+                </div>
+                <button
+                  onClick={() => saveBusinessMode(!hasTables, hasKitchen)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${hasTables ? "bg-saffron-600" : "bg-ink-300"}`}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${hasTables ? "translate-x-6" : "translate-x-1"}`} />
+                </button>
+              </div>
+              <div className="flex items-center justify-between pt-2 border-t border-ink-200">
+                <div>
+                  <span className="text-sm font-arabic text-ink-900 block">لدينا مطبخ</span>
+                  <span className="text-xs font-arabic text-ink-400">طباعة تذاكر المطبخ وشاشة عرض المطبخ (KDS)</span>
+                </div>
+                <button
+                  onClick={() => saveBusinessMode(hasTables, !hasKitchen)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${hasKitchen ? "bg-saffron-600" : "bg-ink-300"}`}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${hasKitchen ? "translate-x-6" : "translate-x-1"}`} />
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -558,7 +675,9 @@ export default function SettingsPage() {
                   className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
                 />
                 <div className="flex gap-2">
-                  {(["RECEIPT", "KITCHEN", "LABEL"] as const).map((t) => (
+                  {/* 2026-08-03 "next phase": a business with no kitchen
+                      has no use for a kitchen printer type at all. */}
+                  {(["RECEIPT", "KITCHEN", "LABEL"] as const).filter((t) => hasKitchen || t !== "KITCHEN").map((t) => (
                     <button key={t} onClick={() => setNewPrinterType(t)} className={`flex-1 h-9 rounded-sm text-xs font-arabic transition-colors ${newPrinterType === t ? "bg-saffron-600 text-white" : "bg-white border-2 border-ink-200 text-ink-500"}`}>
                       {t === "RECEIPT" ? "إيصال" : t === "KITCHEN" ? "مطبخ" : "ملصق"}
                     </button>
@@ -762,6 +881,44 @@ export default function SettingsPage() {
                 className="h-10 px-6 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
                 حفظ إعدادات الضريبة
+              </button>
+            </div>
+
+            <h2 className="text-lg font-bold text-ink-900 font-arabic">حدود موافقة المدير</h2>
+            <div className="bg-white rounded-md p-5 border border-ink-200 space-y-4">
+              <p className="text-xs text-ink-400 font-arabic">
+                عند إلغاء صنف أو إغلاق وردية بفارق نقدي أكبر من الحد المحدد، يُطلب رمز مدير للتأكيد
+              </p>
+              <div>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">حد إلغاء الصنف ({currency})</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={voidThreshold}
+                  onChange={(e) => setVoidThreshold(e.target.value)}
+                  className="w-40 h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
+                  dir="ltr"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">حد فارق إغلاق الوردية ({currency})</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={shiftDiffThreshold}
+                  onChange={(e) => setShiftDiffThreshold(e.target.value)}
+                  className="w-40 h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
+                  dir="ltr"
+                />
+              </div>
+              <button
+                onClick={saveThresholds}
+                disabled={saving}
+                className="h-10 px-6 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+              >
+                حفظ حدود الموافقة
               </button>
             </div>
           </div>
@@ -1114,6 +1271,19 @@ export default function SettingsPage() {
                 </button>
               </div>
             </div>
+
+            {backups.length > 0 && (
+              <div className="bg-white rounded-md p-5 border border-ink-200 space-y-2">
+                <h3 className="text-sm font-bold text-ink-900 font-arabic mb-2">النسخ المحفوظة</h3>
+                {backups.map((b) => (
+                  <div key={b.path} className="flex items-center justify-between text-xs border-b border-ink-100 last:border-0 pb-2 last:pb-0">
+                    <span className="font-mono text-ink-500 truncate" dir="ltr" title={b.path}>{b.path}</span>
+                    <span className="text-ink-400 shrink-0 mr-2">{(b.size_bytes / 1024).toFixed(0)} KB</span>
+                  </div>
+                ))}
+                <p className="text-[10px] text-ink-300 font-arabic pt-1">يتم الاحتفاظ بآخر 20 نسخة فقط، ويتم حذف الأقدم تلقائياً</p>
+              </div>
+            )}
           </div>
         )}
 
@@ -1143,6 +1313,21 @@ export default function SettingsPage() {
                 </button>
                 {updateResult && (
                   <p className="text-sm font-arabic text-ink-700">{updateResult}</p>
+                )}
+              </div>
+              <div className="border-t border-ink-200 pt-4 space-y-2">
+                <button
+                  onClick={handleSendDiagnostics}
+                  disabled={diagnosticsSending}
+                  className="h-10 px-6 rounded-sm border border-ink-300 text-ink-700 text-sm font-bold hover:bg-ink-100 transition-colors disabled:opacity-50"
+                >
+                  {diagnosticsSending ? "جاري الإرسال..." : "إرسال تقرير تشخيصي"}
+                </button>
+                <p className="text-xs font-arabic text-ink-400">
+                  يرسل آخر سجل أخطاء من هذا الجهاز لفريق الدعم للمساعدة في حل مشكلة تواجهها -- لا يتم إرسال أي شيء تلقائياً
+                </p>
+                {diagnosticsResult && (
+                  <p className="text-sm font-arabic text-ink-700">{diagnosticsResult}</p>
                 )}
               </div>
               <div className="border-t border-ink-200 pt-4">

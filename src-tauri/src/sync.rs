@@ -197,6 +197,7 @@ fn build_orders_payload(
 ) -> Result<Vec<serde_json::Value>, rusqlite::Error> {
     let mut orders = Vec::new();
     for order_id in order_ids_in_batch(batch) {
+        #[allow(clippy::type_complexity)]
         let order_row: Option<(String, String, i64, i64, Option<String>, Option<String>, Option<String>, Option<String>, String)> = conn
             .query_row(
                 "SELECT o.status, o.order_type, o.total_cents, o.tax_cents, \
@@ -295,6 +296,7 @@ fn build_supplier_payload(
 
     let mut suppliers = Vec::new();
     for supplier_id in supplier_ids {
+        #[allow(clippy::type_complexity)]
         let row: Option<(String, Option<String>, Option<String>, i64, i64, i64)> = conn
             .query_row(
                 "SELECT name, phone, email, total_purchases_cents, total_paid_cents, balance_cents FROM suppliers WHERE id = ?1",
