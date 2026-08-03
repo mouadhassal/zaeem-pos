@@ -56,7 +56,11 @@ jobs:
         run: pnpm install --no-frozen-lockfile
 
       - name: Build app
-        run: pnpm tauri build --target ${{ matrix.target }}
+        # createUpdaterArtifacts (tauri.conf.json) is for the Windows
+        # auto-update flow and needs TAURI_SIGNING_PRIVATE_KEY, which this
+        # test build doesn't have/need -- overridden off here only, not in
+        # the checked-in config, so Windows builds are unaffected.
+        run: pnpm tauri build --target ${{ matrix.target }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Upload dmg
         uses: actions/upload-artifact@v4
