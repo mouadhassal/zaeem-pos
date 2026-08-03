@@ -10,6 +10,16 @@ env:
 
 jobs:
   build-macos:
+    strategy:
+      matrix:
+        # Built separately per-arch, not as a universal binary: Tauri's
+        # universal-apple-darwin build only lipo's the main "app" binary,
+        # not this package's second cargo bin target (license_signer),
+        # which then fails the bundling step looking for it under
+        # target/universal-apple-darwin/release/. Per-arch builds don't
+        # hit that since there's no lipo merge step.
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+
     runs-on: macos-latest
 
     steps:
@@ -18,7 +28,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.target }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -34,23 +44,23 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-${{ matrix.target }}-${{ hashFiles('src-tauri/Cargo.lock') }}
 
       - name: Cache cargo target
         uses: actions/cache@v4
         with:
           path: src-tauri/target
-          key: ${{ runner.os }}-cargo-target-${{ hashFiles('src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-target-${{ matrix.target }}-${{ hashFiles('src-tauri/Cargo.lock') }}
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: "Build app (universal binary: Apple Silicon + Intel)"
-        run: pnpm tauri build --target universal-apple-darwin
+      - name: Build app
+        run: pnpm tauri build --target ${{ matrix.target }}
 
       - name: Upload dmg
         uses: actions/upload-artifact@v4
         with:
-          name: wenzdes-pos-macos
-          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          name: wenzdes-pos-macos-${{ matrix.target }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
