@@ -63,7 +63,7 @@ export default function Sidebar({ active, onNavigate }: Props) {
   return (
     // Narrow icon-rail, not a labelled panel -- it must not compete with the
     // canvas/menu/order-panel for width or introduce its own background tint.
-    <aside className="w-[74px] bg-surface flex flex-col shrink-0 border-l border-line items-center" dir="rtl">
+    <aside className="w-[74px] bg-surface flex flex-col shrink-0 border-l border-line items-center" dir="rtl" data-testid="sidebar">
       <div className="h-14 flex items-center justify-center border-b border-line shrink-0 w-full">
         <div
           className="w-8 h-8 rounded-[9px] flex items-center justify-center text-white text-sm font-bold shrink-0"
@@ -81,6 +81,7 @@ export default function Sidebar({ active, onNavigate }: Props) {
             <button
               key={item.id}
               onClick={() => (item.id === "marketplace" ? openMarketplace() : onNavigate(item.id))}
+              data-testid={`sidebar-nav-${item.id}`}
               className={`w-full flex flex-col items-center gap-1 py-2 rounded-[10px] transition-all ${
                 isActive
                   ? "bg-accent-soft text-accent-text"

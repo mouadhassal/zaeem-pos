@@ -30,7 +30,7 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen w-full bg-canvas flex items-center justify-center" dir="rtl">
-      <div className="w-full max-w-xs flex flex-col items-center gap-8">
+      <div className="w-full max-w-xs flex flex-col items-center gap-8" data-testid="login-page">
         <div className="text-center">
           <div
             className="w-14 h-14 rounded-[13px] flex items-center justify-center text-white text-2xl font-bold mx-auto mb-4"
@@ -43,7 +43,7 @@ export default function LoginPage() {
         </div>
 
         {error && (
-          <div className="w-full p-3 rounded-[10px] bg-danger text-white text-sm text-center font-medium">
+          <div className="w-full p-3 rounded-[10px] bg-danger text-white text-sm text-center font-medium" data-testid="login-error">
             {error}
           </div>
         )}
@@ -68,6 +68,7 @@ export default function LoginPage() {
                 <button
                   key={k}
                   onClick={handleBackspace}
+                  data-testid="login-pin-backspace"
                   className="rounded-[12px] bg-surface-alt text-text-2 text-xl font-medium transition-all active:scale-95"
                   style={{ minHeight: 52, minWidth: 52 }}
                 >
@@ -80,6 +81,7 @@ export default function LoginPage() {
                 key={k}
                 onClick={() => handleDigit(k)}
                 disabled={loading}
+                data-testid={`login-pin-digit-${k}`}
                 className="rounded-[12px] bg-surface text-text text-xl font-medium transition-all active:scale-95 disabled:opacity-50"
                 style={{ minHeight: 52, minWidth: 52 }}
               >
@@ -102,6 +104,7 @@ export default function LoginPage() {
                 if (err) setError(err);
                 setLoading(false);
               }}
+              data-testid="login-dev-quick-login"
               className="text-sm text-text-3 underline hover:text-text-2"
             >
               دخول سريع (dev)
