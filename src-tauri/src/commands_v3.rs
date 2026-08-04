@@ -1758,6 +1758,42 @@ pub fn get_sales_report_v3(state: State<Db>, license: State<crate::license::clou
     Repo::new(&conn).sales_report(&actor.scope(), &today_start_iso).map_err(|e| e.to_string())
 }
 
+/// 2026-08-04: the business assistant -- "you ask, it answers from your
+/// own real data, and gives an actual recommendation, not just a number."
+/// Same Manager+ rank as every other report (real revenue data). Two
+/// separate Tauri-managed states: `Db` for the real snapshot query
+/// (crate::assistant::build_snapshot, same repo-layer pattern as every
+/// other `_v3` report command) and `ai::commands::AppState` for the AI
+/// provider call -- deliberately does NOT hold the `Db` mutex while the
+/// (up to 30s) network call to the AI service is in flight, so a slow/
+/// down AI backend can never block a sale on another terminal sharing
+/// this connection.
+#[tauri::command]
+pub fn ask_assistant_v3(
+    state: State<Db>,
+    ai_state: State<crate::ai::commands::AppState>,
+    license: State<crate::license::cloud::CloudLicenseState>,
+    session_token: String,
+    question: String,
+    start_iso: String,
+    end_iso: String,
+) -> Result<crate::ai::Answer, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
+
+    if question.trim().is_empty() {
+        return Err("السؤال فارغ".into());
+    }
+
+    let snapshot = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        crate::assistant::build_snapshot(&conn, &actor.scope(), &start_iso, &end_iso).map_err(|e| e.to_string())?
+    };
+
+    ai_state.provider.answer(&question, &snapshot).map_err(|e| e.to_string())
+}
+
 /// 2026-08-02: fully-offline anomaly detection (void rate, cash variance,
 /// void-then-resell pattern) -- see anomaly.rs's module doc for why this
 /// deliberately never goes through an AI vendor. On-demand only (a
@@ -7092,6 +7128,48 @@ mod tests {
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
+    /// crate::assistant::build_snapshot's core assembly: reuses
+    /// finance_revenue_summary internally (see that function's own doc
+    /// comment) -- this proves the snapshot actually reflects a real paid
+    /// order end to end, not just that the query parses.
+    #[test]
+    fn assistant_snapshot_reflects_a_real_paid_order() {
+        let (db_path, tenant_id, branch_id, table_id) = seeded_db("assistant");
+        let conn = Connection::open(&db_path).unwrap();
+        let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Assistant Cashier");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let repo = Repo::new(&conn);
+
+        let order_id = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
+            table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".into(),
+            subtotal_cents: 4000, tax_cents: 0, total_cents: 4000, discount_cents: 0,
+        }).unwrap();
+        repo.take_payment(&tenant_id, &branch_id, crate::repo::PaymentInput {
+            order_id, method: "CASH".to_string(), amount_cents: 4000, change_cents: 0, debtor_id: None, actor_id: cashier_id.clone(),
+        }).unwrap();
+
+        let far_past = "2000-01-01T00:00:00Z";
+        let far_future = "2100-01-01T00:00:00Z";
+        let snapshot = crate::assistant::build_snapshot(&conn, &scope, far_past, far_future).unwrap();
+
+        assert_eq!(snapshot.order_count, 1);
+        assert_eq!(snapshot.total_revenue_cents, 4000);
+        assert_eq!(snapshot.cash_cents, 4000);
+        assert_eq!(snapshot.card_cents, 0);
+        assert_eq!(snapshot.avg_order_cents, 4000);
+        assert!(snapshot.staff_performance.iter().any(|s| s.name == "Assistant Cashier" && s.total_cents == 4000));
+        assert_eq!(snapshot.void_count, 0);
+        println!("[assistant] snapshot reflects the real paid order: revenue=4000, cash=4000, 1 order, staff performance shows the cashier");
+
+        // Outside the date range -- must not show up at all.
+        let empty_snapshot = crate::assistant::build_snapshot(&conn, &scope, "1990-01-01T00:00:00Z", "1990-01-02T00:00:00Z").unwrap();
+        assert_eq!(empty_snapshot.order_count, 0);
+        assert_eq!(empty_snapshot.total_revenue_cents, 0);
+        println!("[assistant] a date range with no orders in it correctly returns an empty snapshot, not an error");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
     /// Batch 3b, slice 3, group 4: chain_config currency/tax updates,
     /// legacy `branches` upsert (create-then-update, distinct from T1.1's
     /// `branch` table), and printer active-toggle/paper-width.
@@ -9589,7 +9667,7 @@ mod tests {
         /// order analytics (AI page). Every one of these must be BLOCKED
         /// when back-office is locked.
         const GATED: &[&str] = &[
-            "list_staff_v3", "get_sales_report_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
+            "list_staff_v3", "get_sales_report_v3", "ask_assistant_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
             "create_branch_v3", "create_staff_v3", "update_staff_v3", "update_staff_profile_v3",
             "set_staff_active_v3", "list_branches_v3", "list_shifts_v3", "force_close_shift_v3",
             "list_attendance_v3",

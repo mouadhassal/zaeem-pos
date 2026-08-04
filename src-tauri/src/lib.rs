@@ -23,6 +23,7 @@ mod forecast;
 mod backup;
 mod diagnostics;
 mod reconcile;
+mod assistant;
 
 use bcrypt::{hash, DEFAULT_COST};
 
@@ -462,6 +463,7 @@ pub fn run() {
             commands_v3::create_invoice_v3,
             commands_v3::mark_invoice_paid_v3,
             commands_v3::get_sales_report_v3,
+            commands_v3::ask_assistant_v3,
             commands_v3::detect_anomalies_v3,
             commands_v3::forecast_demand_v3,
             commands_v3::backup_database_v3,

@@ -102,7 +102,48 @@ impl AiProvider for RemoteAiProvider {
         Err(AiError::Unavailable("anomaly detection is not implemented yet".into()))
     }
 
-    fn answer(&self, _q: &str, _s: &Snapshot) -> Result<Answer, AiError> {
-        Err(AiError::Unavailable("AI Q&A is not implemented yet".into()))
+    /// 2026-08-04: same proxy-through-Supabase shape as `menu_from_media`
+    /// above (real key stays server-side, this binary never sees it) --
+    /// posts the caller's question plus a bounded, already-computed
+    /// business snapshot (crate::assistant::build_snapshot) to a new edge
+    /// function, `ai-assistant`, and returns its free-text answer as-is.
+    /// No multi-turn tool-calling loop: one snapshot, one question, one
+    /// answer -- if the model needs a different date range it says so in
+    /// its own text, the owner re-asks, same as any other chat turn.
+    fn answer(&self, q: &str, s: &Snapshot) -> Result<Answer, AiError> {
+        let device_token = self.device_token();
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| AiError::Unavailable(e.to_string()))?;
+
+        let resp = client
+            .post(format!("{}/functions/v1/ai-assistant", self.supabase_url))
+            .header("apikey", &self.supabase_anon_key)
+            .header("Authorization", format!("Bearer {}", self.supabase_anon_key))
+            .json(&serde_json::json!({
+                "device_token": device_token,
+                "question": q,
+                "snapshot": s,
+            }))
+            .send()
+            .map_err(|e| AiError::Unavailable(format!("could not reach AI service: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            return Err(AiError::ExtractionFailed(format!("AI service returned {status}: {body}")));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct AssistantResponse {
+            answer: String,
+        }
+        let parsed: AssistantResponse = resp
+            .json()
+            .map_err(|e| AiError::ExtractionFailed(format!("invalid AI response shape: {e}")))?;
+
+        Ok(Answer { text: parsed.answer, confidence: 1.0 })
     }
 }

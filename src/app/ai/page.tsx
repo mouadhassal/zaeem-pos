@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
 import { Bot, Send, User, Sparkles } from "lucide-react";
-import { IconChartBar, IconPackage, IconUsers, IconMotorbike, IconTrophy, IconCreditCard } from "@tabler/icons-react";
+import { IconChartBar, IconPackage, IconTrophy, IconUsers, IconAlertTriangle, IconBulb } from "@tabler/icons-react";
 
 interface Message {
   id: string;
@@ -11,31 +11,50 @@ interface Message {
   timestamp: string;
 }
 
-const QUICK_ACTIONS = [
-  { label: "مبيعات اليوم", icon: IconChartBar, query: "عرض ملخص مبيعات اليوم" },
-  { label: "المخزون المنخفض", icon: IconPackage, query: "أظهر المواد منخفضة المخزون" },
-  { label: "حضور الموظفين", icon: IconUsers, query: "من الموظفون الحاضرون اليوم؟" },
-  { label: "الطلبات النشطة", icon: IconMotorbike, query: "عرض الطلبات النشطة حالياً" },
-  { label: "أعلى مبيعات", icon: IconTrophy, query: "ما هي أفضل الأصناف مبيعاً؟" },
-  { label: "الديون", icon: IconCreditCard, query: "عرض الديون المستحقة" },
-];
-
-function formatCurrency(cents: number): string {
-  return new Intl.NumberFormat("ar-SA", { style: "currency", currency: "SAR" }).format(cents / 100);
+interface AssistantAnswer {
+  text: string;
+  confidence: number;
 }
 
-function formatTime(iso: string | null): string {
-  if (!iso) return "---";
-  return new Date(iso).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" });
+const QUICK_ACTIONS = [
+  { label: "مبيعات اليوم", icon: IconChartBar, query: "كم بعنا اليوم وكم عدد الطلبات؟" },
+  { label: "المخزون المنخفض", icon: IconPackage, query: "ما هي المواد منخفضة المخزون حالياً؟" },
+  { label: "أفضل الأصناف", icon: IconTrophy, query: "ما هي أفضل الأصناف مبيعاً في هذه الفترة؟" },
+  { label: "أداء الموظفين", icon: IconUsers, query: "من هم الموظفون الأفضل أداءً في المبيعات؟" },
+  { label: "الإلغاءات", icon: IconAlertTriangle, query: "كم عدد عمليات الإلغاء وما تأثيرها على المبيعات؟" },
+  { label: "توصية", icon: IconBulb, query: "ما هي توصيتك لزيادة مبيعاتنا بناءً على هذه البيانات؟" },
+];
+
+type Range = "today" | "week" | "month";
+
+const RANGE_LABEL: Record<Range, string> = {
+  today: "اليوم",
+  week: "آخر 7 أيام",
+  month: "آخر 30 يوماً",
+};
+
+function rangeToIso(range: Range): { startIso: string; endIso: string } {
+  const now = new Date();
+  const end = now.toISOString();
+  const start = new Date(now);
+  if (range === "today") {
+    start.setHours(0, 0, 0, 0);
+  } else if (range === "week") {
+    start.setDate(start.getDate() - 7);
+  } else {
+    start.setDate(start.getDate() - 30);
+  }
+  return { startIso: start.toISOString(), endIso: end };
 }
 
 export default function AIPage() {
   const user = useAuthStore((s) => s.user);
   const token = useAuthStore((s) => s.token);
+  const [range, setRange] = useState<Range>("today");
   const [messages, setMessages] = useState<Message[]>([{
     id: "welcome",
     role: "assistant",
-    content: "مرحباً بك في المساعد الذكي للمطعم! يمكنني مساعدتك في:\n\n• عرض تقارير المبيعات والإيرادات\n• مراقبة المخزون والمواد منخفضة المخزون\n• متابعة حضور الموظفين\n• عرض الطلبات النشطة وحالة التوصيل\n• تحليل أفضل الأصناف مبيعاً\n• متابعة الديون والمستحقات\n\nاختر أحد الخيارات السريعة أدناه أو اكتب سؤالك مباشرة.",
+    content: "مرحباً! أنا مساعدك الذكي لمطعمك. اسألني عن مبيعاتك، أصنافك، أداء موظفيك، أو اطلب توصية -- وسأجيبك بالاعتماد على بياناتك الحقيقية فقط، للفترة المحددة أدناه.",
     timestamp: new Date().toISOString(),
   }]);
   const [input, setInput] = useState("");
@@ -45,97 +64,6 @@ export default function AIPage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
-
-  const executeQuery = async (query: string): Promise<string> => {
-    try {
-      const q = query.toLowerCase();
-
-      if (q.includes("مبيعات") || q.includes("إيرادات") || q.includes("اليوم")) {
-        const today = new Date().toISOString().slice(0, 10);
-        const revenue = await invoke<{ order_count: number; total: number }>(
-          "get_finance_revenue_v3", { sessionToken: token, startIso: `${today}T00:00:00`, endIso: `${today}T23:59:59` }
-        );
-        const avg = revenue.order_count > 0 ? revenue.total / revenue.order_count : 0;
-        return `📊 **ملخص مبيعات اليوم (${today})**\n\n• إجمالي المبيعات: ${formatCurrency(revenue.total)}\n• عدد الطلبات: ${revenue.order_count}\n• متوسط قيمة الطلب: ${formatCurrency(avg)}\n• الوقت: ${new Date().toLocaleTimeString("ar-SA")}`;
-      }
-
-      if (q.includes("مخزون") || q.includes("منخفض")) {
-        const items = await invoke<{ name: string; current_stock: number; min_stock: number; unit: string }[]>(
-          "list_low_stock_ingredients_v3", { sessionToken: token }
-        );
-        if (items.length === 0) return "✅ جميع المواد ضمن الحد الآمن. المخزون بحالة ممتازة.";
-        let resp = `⚠️ **المواد منخفضة المخزون (${items.length})**\n\n`;
-        for (const item of items) {
-          resp += `• ${item.name}: المخزون ${item.current_stock} / الحد الأدنى ${item.min_stock} ${item.unit}\n`;
-        }
-        return resp;
-      }
-
-      if (q.includes("حضور") || q.includes("موظف") || q.includes("الحاضر")) {
-        const today = new Date().toISOString().slice(0, 10);
-        const att = await invoke<{ user_name: string; clock_in: string | null; status: string }[]>(
-          "list_attendance_v3", { sessionToken: token, dateFrom: today, dateTo: today, userId: null }
-        );
-        if (att.length === 0) return "👥 لم يسجل أي موظف حضور اليوم بعد.";
-        const present = att.filter((a) => a.status === "PRESENT" || a.status === "LATE");
-        const late = att.filter((a) => a.status === "LATE");
-        let resp = `👥 **الحضور اليوم (${today})**\n\n`;
-        resp += `• إجمالي المسجلين: ${att.length}\n`;
-        resp += `• الحاضرون: ${present.length}\n`;
-        if (late.length > 0) resp += `• المتأخرون: ${late.length}\n\n`;
-        for (const a of present) {
-          resp += `• ${a.user_name}: ${formatTime(a.clock_in)}${a.status === "LATE" ? " ⚠️ متأخر" : ""}\n`;
-        }
-        return resp;
-      }
-
-      if (q.includes("طلب") || q.includes("نشط")) {
-        const orders = await invoke<{ id: string; status: string; order_type: string; total_cents: number }[]>(
-          "list_orders_v3", { sessionToken: token }
-        );
-        const active = orders.filter((o) => ["PENDING", "PREPARING", "READY"].includes(o.status)).slice(0, 20);
-        if (active.length === 0) return "📋 لا توجد طلبات نشطة حالياً.";
-        let resp = `📋 **الطلبات النشطة (${active.length})**\n\n`;
-        for (const o of active) {
-          const typeLabel = o.order_type === "DINE_IN" ? "داخلي" : o.order_type === "TAKEAWAY" ? "طلبية خارجية" : "توصيل";
-          resp += `• #${o.id.slice(0, 6)} | ${typeLabel} | ${formatCurrency(o.total_cents)} | ${o.status === "PENDING" ? "قيد الانتظار" : o.status === "PREPARING" ? "قيد التحضير" : "جاهز"}\n`;
-        }
-        return resp;
-      }
-
-      if (q.includes("أفضل") || q.includes("مبيع") || q.includes("الأصناف")) {
-        const today = new Date().toISOString().slice(0, 10);
-        const report = await invoke<{ top_items: { name: string; quantity: number }[] }>(
-          "get_sales_report_v3", { sessionToken: token, todayStartIso: `${today}T00:00:00` }
-        );
-        if (report.top_items.length === 0) return "🏆 لا توجد بيانات مبيعات كافية للتحليل.";
-        let resp = `🏆 **أفضل الأصناف مبيعاً**\n\n`;
-        report.top_items.forEach((item, i) => {
-          resp += `${i + 1}. ${item.name}: ${item.quantity} وحدة\n`;
-        });
-        return resp;
-      }
-
-      if (q.includes("ديون") || q.includes("مستحقات")) {
-        const debtors = await invoke<{ name: string; is_active: number; balance_cents: number }[]>(
-          "list_debtors_v3", { sessionToken: token }
-        );
-        const owing = debtors.filter((d) => d.is_active && d.balance_cents > 0).sort((a, b) => b.balance_cents - a.balance_cents).slice(0, 10);
-        if (owing.length === 0) return "💳 لا توجد ديون مستحقة. جميع الحسابات مسددة.";
-        const total = owing.reduce((a, d) => a + d.balance_cents, 0);
-        let resp = `💳 **الديون المستحقة (${owing.length} عميل)**\n\n`;
-        resp += `إجمالي الديون: ${formatCurrency(total)}\n\n`;
-        for (const d of owing) {
-          resp += `• ${d.name}: ${formatCurrency(d.balance_cents)}\n`;
-        }
-        return resp;
-      }
-
-      return "عذراً، لم أتمكن من فهم طلبك. يرجى اختيار أحد الخيارات السريعة أدناه أو إعادة صياغة السؤال.\n\nالخيارات المتاحة:\n• مبيعات اليوم\n• المخزون المنخفض\n• حضور الموظفين\n• الطلبات النشطة\n• أفضل الأصناف مبيعاً\n• الديون المستحقة";
-    } catch {
-      return "حدث خطأ أثناء تنفيذ الاستعلام. يرجى المحاولة مرة أخرى.";
-    }
-  };
 
   const handleSend = async (content?: string) => {
     const text = (content || input).trim();
@@ -151,25 +79,37 @@ export default function AIPage() {
     setInput("");
     setLoading(true);
 
-    const result = await executeQuery(text);
+    const { startIso, endIso } = rangeToIso(range);
+    let responseText: string;
+    try {
+      const answer = await invoke<AssistantAnswer>("ask_assistant_v3", {
+        sessionToken: token,
+        question: text,
+        startIso,
+        endIso,
+      });
+      responseText = answer.text;
+    } catch (err) {
+      responseText = `تعذّر الوصول إلى المساعد الذكي: ${String(err).replace(/^Error:\s*/, "")}`;
+    }
 
     const assistantMsg: Message = {
       id: crypto.randomUUID(),
       role: "assistant",
-      content: result,
+      content: responseText,
       timestamp: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, assistantMsg]);
     setLoading(false);
   };
 
-  if (user?.role !== "OWNER") {
+  if (user?.role !== "OWNER" && user?.role !== "MANAGER") {
     return (
       <div className="p-6 h-full flex items-center justify-center" dir="rtl">
         <div className="text-center space-y-4">
           <Bot className="w-16 h-16 mx-auto text-ink-300" />
           <h1 className="text-xl font-bold text-ink-900">المساعد الذكي</h1>
-          <p className="text-ink-500 font-arabic">هذه الميزة متاحة فقط لصاحب المنشأة. يرجى تسجيل الدخول بحساب المالك.</p>
+          <p className="text-ink-500 font-arabic">هذه الميزة متاحة فقط للمدير والمشرف.</p>
         </div>
       </div>
     );
@@ -181,12 +121,27 @@ export default function AIPage() {
         <Bot className="w-6 h-6" />
         <div>
           <h1 className="font-bold">المساعد الذكي للمطعم</h1>
-          <p className="text-saffron-100 text-xs">مدعوم بالذكاء الاصطناعي - إصدار المالك</p>
+          <p className="text-saffron-100 text-xs">مدعوم بالذكاء الاصطناعي -- يجيب من بيانات مطعمك الحقيقية فقط</p>
         </div>
         <div className="mr-auto flex items-center gap-1 bg-saffron-500/30 px-3 py-1 rounded-full text-xs">
           <Sparkles className="w-3 h-3" />
           <span>مميز</span>
         </div>
+      </div>
+
+      <div className="flex items-center gap-2 px-4 py-2 bg-white border-b border-ink-200">
+        <span className="text-xs text-ink-400">الفترة:</span>
+        {(Object.keys(RANGE_LABEL) as Range[]).map((r) => (
+          <button
+            key={r}
+            onClick={() => setRange(r)}
+            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+              range === r ? "bg-saffron-600 text-white" : "bg-ink-50 text-ink-500 hover:bg-ink-100"
+            }`}
+          >
+            {RANGE_LABEL[r]}
+          </button>
+        ))}
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-ink-50">
@@ -248,7 +203,7 @@ export default function AIPage() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSend()}
-            placeholder="اسأل عن المبيعات، المخزون، الموظفين..."
+            placeholder="اسأل عن المبيعات، المخزون، الموظفين، أو اطلب توصية..."
             className="flex-1 h-12 px-4 rounded-sm bg-white border border-ink-200 text-sm outline-none focus:border-saffron-500 font-arabic"
           />
           <button

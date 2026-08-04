@@ -25,9 +25,9 @@ const MANAGER_NAV: SidebarNavItem[] = [
   { id: "kds", label: "المطبخ", icon: "package", allowed: true },
   { id: "ai-onboarding", label: "إعداد القائمة AI", icon: "scan-line", allowed: true },
   { id: "inventory", label: "المخزون", icon: "package", allowed: true },
-  { id: "delivery", label: "التوصيل", icon: "truck", allowed: true },
   { id: "reports", label: "التقارير", icon: "bar-chart-3", allowed: true },
   { id: "staff", label: "الموظفين", icon: "users-round", allowed: true },
+  { id: "ai", label: "المساعد الذكي", icon: "bot", allowed: true },
   { id: "settings", label: "الإعدادات", icon: "settings", allowed: true },
 ];
 
@@ -49,7 +49,6 @@ const OWNER_NAV: SidebarNavItem[] = [
   { id: "inventory", label: "المخزون", icon: "package", allowed: true },
   { id: "reports", label: "التقارير", icon: "bar-chart-3", allowed: true },
   { id: "staff", label: "الموظفين", icon: "users-round", allowed: true },
-  { id: "delivery", label: "التوصيل", icon: "truck", allowed: true },
   { id: "branches", label: "الفروع", icon: "building-2", allowed: true },
   { id: "finance", label: "المالية", icon: "wallet", allowed: true },
   { id: "loyalty", label: "برنامج الولاء", icon: "award", allowed: true },

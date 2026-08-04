@@ -562,7 +562,15 @@ export default function POSPage() {
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Prominent Order Type Bar - always visible for fast switching */}
         <div className="h-11 shrink-0 bg-surface border-b border-line flex items-center gap-1 px-2" dir="rtl">
-          {(["DINE_IN", "TAKEAWAY", "DELIVERY", "DEBT"] as const)
+          {/* 2026-08-04: DELIVERY removed from this app's own order-type
+              picker on request -- the underlying delivery_service.ts/
+              DriverSelectModal.tsx/app/delivery/page.tsx code all still
+              exist and still work (deliberately not deleted), just
+              unreachable from here now. Every `orderType === "DELIVERY"`
+              branch below (customer/driver fields, payload building) is
+              consequently dead but harmless -- orderType can never become
+              "DELIVERY" via this picker anymore. */}
+          {(["DINE_IN", "TAKEAWAY", "DEBT"] as const)
             // 2026-08-03 "next phase": DINE_IN implies a dining room --
             // meaningless once tables are off.
             .filter((t) => hasTables || t !== "DINE_IN")

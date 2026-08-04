@@ -69,11 +69,12 @@ pub struct Answer {
     pub confidence: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Snapshot {
-    pub total_revenue_cents: i64,
-    pub order_count: i64,
-}
+/// 2026-08-04: `AssistantSnapshot` (crate::assistant) replaced this --
+/// real revenue/top-items/daily-trend/staff/void/stock data for a
+/// caller-chosen date range, instead of two placeholder fields nothing
+/// ever populated. Kept as a type alias so `AiProvider::answer()`'s
+/// signature didn't need touching everywhere it's referenced.
+pub use crate::assistant::AssistantSnapshot as Snapshot;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShiftWindow {
