@@ -981,6 +981,26 @@ pub fn set_menu_item_active_v3(state: State<Db>, license: State<crate::license::
     Ok(())
 }
 
+/// 2026-08-04: "mark an item out of stock mid-rush" -- deliberately a
+/// separate, lower-friction command from `set_menu_item_active_v3` above,
+/// not a relaxed permission on that one. Same underlying repo write
+/// (`Repo::set_menu_item_active`), but `set_menu_item_active_v3` is the
+/// full menu-management action (Manager+, license-gated) and this is
+/// floor work: Cashier/Kitchen rank, and deliberately NOT license-gated
+/// -- a locked back-office license must never stop the kitchen from
+/// pulling a sold-out item off the grid before someone orders it.
+#[tauri::command]
+pub fn toggle_menu_item_availability_v3(state: State<Db>, session_token: String, item_id: String, is_active: bool) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ToggleItemAvailability).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).set_menu_item_active(&actor.tenant_id, &item_id, is_active).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, None, Some(&serde_json::json!({ "is_active": is_active, "via": "kds_availability_toggle" }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn list_combo_meals_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::ComboMealRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
@@ -9733,7 +9753,7 @@ mod tests {
             "get_discount_caps_v3", "get_manager_thresholds_v3", "get_business_mode_v3", "list_debtors_v3",
             "verify_manager_override_v3",
             "lookup_loyalty_card_v3", "earn_loyalty_points_v3", "redeem_loyalty_reward_v3",
-            "list_kitchen_orders_v3", "register_kds_terminal_v3",
+            "list_kitchen_orders_v3", "register_kds_terminal_v3", "toggle_menu_item_availability_v3",
             "export_pdf_v3",
             "get_active_shift_v3", "open_shift_v3", "close_shift_v3", "get_shift_stats_v3",
             "list_shift_orders_v3", "clock_in_v3", "clock_out_v3",

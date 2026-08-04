@@ -106,10 +106,16 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
       return;
     }
     setProcessing(true);
-    try {
-      await openCashDrawer();
-    } catch {
-      // drawer may not be connected
+    // 2026-08-04: this used to fire for CARD/WALLET too -- there's no cash
+    // to give change on either of those, so the drawer had no reason to
+    // pop open other than announcing "someone just paid" to the whole
+    // dining room. Cash-only, matching what the drawer is actually for.
+    if (method === "CASH") {
+      try {
+        await openCashDrawer();
+      } catch {
+        // drawer may not be connected
+      }
     }
     onSuccess(method, method === "CASH" ? receivedCents : totalCents, method === "CASH" ? changeCents : 0);
     setProcessing(false);

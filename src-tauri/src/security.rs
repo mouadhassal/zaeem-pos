@@ -173,6 +173,14 @@ pub enum Permission {
     /// order, payment, and customer record) is more sensitive than any
     /// report read -- Owner+, not Manager+ like `ManageFinance`/`ViewReports`.
     ManageBackups,
+    /// 2026-08-04: deliberately NOT `ManageMenu` (Manager+, gated on the
+    /// license lock too) -- that permission also covers editing prices/
+    /// names/categories, real back-office changes. Marking an item out of
+    /// stock mid-service is floor work a Kitchen or Cashier role needs to
+    /// self-serve in the moment (same rank as `AdjustStock`/`ManageShift`),
+    /// and it must never be blocked by a locked license -- see
+    /// `toggle_menu_item_availability_v3`'s own doc comment.
+    ToggleItemAvailability,
 }
 
 impl Permission {
@@ -195,6 +203,7 @@ impl Permission {
             Permission::UsePrinter => Role::Cashier.rank(),
             Permission::ManageBranches => Role::Owner.rank(),
             Permission::ManageBackups => Role::Owner.rank(),
+            Permission::ToggleItemAvailability => Role::Cashier.rank(),
         }
     }
 }
@@ -406,6 +415,7 @@ pub fn authorize(actor: &Actor, perm: Permission) -> Result<(), SecurityError> {
                 Permission::UsePrinter => "UsePrinter",
                 Permission::ManageBranches => "ManageBranches",
                 Permission::ManageBackups => "ManageBackups",
+                Permission::ToggleItemAvailability => "ToggleItemAvailability",
             },
             reason: format!("role {:?} (rank {}) is below the minimum rank {} for this permission", actor.role, actor.role.rank(), perm.minimum_rank()),
         })

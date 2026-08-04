@@ -716,8 +716,18 @@ export default function POSPage() {
                           setLoyaltyCard(card);
                           useOrderTypeStore.getState().setCustomerName(card.customer_name);
                           listActiveLoyaltyRewards().then(setLoyaltyRewards).catch(() => setLoyaltyRewards([]));
+                        } else {
+                          // 2026-08-04: this used to do nothing at all on a
+                          // bad card number -- the cashier had no way to
+                          // tell "not found" apart from "I haven't pressed
+                          // Enter yet." Same shared toast every other error
+                          // in this file uses.
+                          setSuccessMsg("لم يتم العثور على بطاقة ولاء بهذا الرقم");
+                          (e.target as HTMLInputElement).value = "";
                         }
-                      } catch { /* silent */ }
+                      } catch (err) {
+                        setSuccessMsg(`تعذر البحث عن البطاقة: ${realErrorText(err)}`);
+                      }
                     }
                   }}
                 />

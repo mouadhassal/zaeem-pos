@@ -1,9 +1,10 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { IconChefHat, IconNote } from "@tabler/icons-react";
+import { IconChefHat, IconNote, IconBan } from "@tabler/icons-react";
 import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 import { connectLanChangeSocket } from "../../lib/lan";
+import { OutOfStockPanel } from "./OutOfStockPanel";
 
 interface KDSItem {
   name: string;
@@ -71,6 +72,7 @@ export default function KDSPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>("all");
+  const [showOutOfStock, setShowOutOfStock] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const playAlert = () => {
@@ -157,6 +159,13 @@ export default function KDSPage() {
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-bold text-ink-900">شاشة المطبخ</h1>
           <span className="text-xs text-ink-500 font-mono">تحديث تلقائي كل ١٠ ثوان</span>
+          <button
+            onClick={() => setShowOutOfStock(true)}
+            className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-danger-soft text-danger text-xs font-bold font-arabic hover:opacity-80 transition-opacity"
+          >
+            <IconBan className="w-4 h-4" stroke={2} />
+            نفاد صنف
+          </button>
         </div>
         <div className="flex gap-4">
           <div className="flex items-center gap-1 text-sm">
@@ -278,6 +287,8 @@ export default function KDSPage() {
           </div>
         )}
       </div>
+
+      {showOutOfStock && <OutOfStockPanel token={token} onClose={() => setShowOutOfStock(false)} />}
     </div>
   );
 }
