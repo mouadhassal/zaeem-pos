@@ -3,11 +3,12 @@ import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
-import { Package, Search, Edit3, ChevronDown, ChevronUp } from "lucide-react";
+import { Package, Search, Edit3, ChevronDown, ChevronUp, ShoppingCart } from "lucide-react";
 import { IconPencil, IconTrash, IconClipboardList, IconEye, IconPackageImport, IconX, IconCash } from "@tabler/icons-react";
 import EmptyState from "../../components/ui/EmptyState";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 import { useCurrency } from "../../hooks/useCurrency";
+import { openMarketplace } from "../../lib/marketplace";
 
 const editSchema = z.object({
   name: z.string().min(1, "الاسم مطلوب"),
@@ -429,6 +430,15 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
                   >
                     <Edit3 className="w-4 h-4" />
                   </button>
+                  {required > 0 && (
+                    <button
+                      onClick={() => openMarketplace()}
+                      className="p-2 rounded-sm text-ink-500 hover:text-saffron-600 hover:bg-saffron-50 transition-colors"
+                      title="اطلب من المتجر"
+                    >
+                      <ShoppingCart className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
               </div>
             );

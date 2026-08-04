@@ -62,6 +62,11 @@ printers = "2.3.0"
 # reinstall by the customer or the reseller.
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# 2026-08-04: marketplace integration -- "order supplies from inside the
+# POS" opens apps/marketplace in the system browser rather than an
+# in-app webview (a separate origin/session, no reason to fight the
+# CSP or embed a second app's UI inside this one's chrome).
+tauri-plugin-shell = "2"
 
 [dev-dependencies]
 tokio = { version = "1.53.0", features = ["time", "macros", "rt-multi-thread"] }

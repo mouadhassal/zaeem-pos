@@ -3,12 +3,13 @@ import { useAuthStore } from "../../stores/authStore";
 import { useShiftStore } from "../../stores/shiftStore";
 import { usePermissions } from "../../hooks/usePermissions";
 import { getBusinessMode } from "../../lib/orderService";
+import { openMarketplace } from "../../lib/marketplace";
 import {
   IconLogout as LogOut,
   IconCashRegister, IconToolsKitchen2, IconClipboardList, IconBox,
   IconChartBar, IconUsers, IconClock, IconReceipt2, IconWallet,
   IconTruck, IconBuilding, IconCoin, IconGift, IconRobot, IconWand,
-  IconSettings, IconTool, IconLayoutDashboard,
+  IconSettings, IconTool, IconLayoutDashboard, IconShoppingCart,
   type Icon,
 } from "@tabler/icons-react";
 
@@ -24,6 +25,7 @@ const ICON_BY_ID: Record<string, Icon> = {
   customers: IconReceipt2,
   debt: IconWallet,
   delivery: IconTruck,
+  marketplace: IconShoppingCart,
   branches: IconBuilding,
   finance: IconCoin,
   loyalty: IconGift,
@@ -78,7 +80,7 @@ export default function Sidebar({ active, onNavigate }: Props) {
           return (
             <button
               key={item.id}
-              onClick={() => onNavigate(item.id)}
+              onClick={() => (item.id === "marketplace" ? openMarketplace() : onNavigate(item.id))}
               className={`w-full flex flex-col items-center gap-1 py-2 rounded-[10px] transition-all ${
                 isActive
                   ? "bg-accent-soft text-accent-text"

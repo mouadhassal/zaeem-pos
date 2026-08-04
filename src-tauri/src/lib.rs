@@ -200,6 +200,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             // P0 follow-up (2026-07-23): a rotating, persisted log file in
             // every build (not just debug) -- the "database is not there

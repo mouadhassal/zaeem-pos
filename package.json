@@ -25,6 +25,7 @@
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-updater": "^2.0.0",
     "@tauri-apps/plugin-process": "^2.0.0",
+    "@tauri-apps/plugin-shell": "^2.0.0",
     "bcryptjs": "^2.4.3",
     "html2canvas": "^1.4.1",
     "jose": "^5.2.0",
