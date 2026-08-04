@@ -12,7 +12,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // proxy in front of it, so a normal WebdriverIO suite can drive the
 // actual compiled app.exe exactly like a user would (real clicks, real
 // Rust commands, real SQLite), not a mocked DOM.
-const APPLICATION = path.resolve(__dirname, "..", "src-tauri", "target", "debug", "app.exe");
+// PROFILE=release lets a test explicitly exercise the real AiProvider
+// (lib.rs uses MockAiProvider for any cfg(debug_assertions) build --
+// there is no way to see the real, Gemini-backed answer() path from a
+// debug build no matter how it's launched). Debug is still the default
+// here since it's faster to build for routine UI-only test runs.
+const PROFILE = process.env.PROFILE === "release" ? "release" : "debug";
+const APPLICATION = path.resolve(__dirname, "..", "src-tauri", "target", PROFILE, "app.exe");
 const NATIVE_DRIVER = path.resolve(__dirname, "drivers", "msedgedriver.exe");
 const TAURI_DRIVER = path.resolve(os.homedir(), ".cargo", "bin", "tauri-driver.exe");
 

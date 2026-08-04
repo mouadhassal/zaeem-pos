@@ -146,14 +146,14 @@ export default function AIPage() {
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-ink-50">
         {messages.map((msg) => (
-          <div key={msg.id} className={`flex gap-3 ${msg.role === "user" ? "justify-start flex-row-reverse" : ""}`}>
+          <div key={msg.id} className={`flex gap-3 ${msg.role === "user" ? "justify-start flex-row-reverse" : ""}`} data-testid={`ai-chat-message-${msg.role}`}>
             <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${msg.role === "assistant" ? "bg-saffron-100 text-saffron-600" : "bg-ink-100 text-ink-600"}`}>
               {msg.role === "assistant" ? <Bot className="w-4 h-4" /> : <User className="w-4 h-4" />}
             </div>
             <div className={`max-w-[80%] rounded-md p-4 text-sm leading-relaxed ${
               msg.role === "assistant" ? "bg-white border border-ink-200 text-ink-900" : "bg-saffron-600 text-white"
             }`}>
-              <div className="whitespace-pre-wrap font-arabic">{msg.content}</div>
+              <div className="whitespace-pre-wrap font-arabic" data-testid="ai-chat-message-text">{msg.content}</div>
               <p className={`text-xs mt-2 ${msg.role === "assistant" ? "text-ink-400" : "text-saffron-200"}`}>
                 {new Date(msg.timestamp).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" })}
               </p>
@@ -204,11 +204,13 @@ export default function AIPage() {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSend()}
             placeholder="اسأل عن المبيعات، المخزون، الموظفين، أو اطلب توصية..."
+            data-testid="ai-chat-input"
             className="flex-1 h-12 px-4 rounded-sm bg-white border border-ink-200 text-sm outline-none focus:border-saffron-500 font-arabic"
           />
           <button
             onClick={() => handleSend()}
             disabled={!input.trim() || loading}
+            data-testid="ai-chat-send"
             className="h-12 w-12 rounded-sm bg-saffron-600 text-white flex items-center justify-center hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
             <Send className="w-5 h-5" />
