@@ -1014,6 +1014,49 @@ impl<'a> Repo<'a> {
     /// any point before that final `tx.commit()` loses ALL of these writes
     /// together, never some subset of them (proven by
     /// `commands_v3::tests::kill_9_mid_payment_never_leaves_a_partial_payment`).
+    /// Deducts recipe-linked ingredient stock for every non-voided line item
+    /// on a paid order -- one aggregated `ingredients.current_stock` update
+    /// plus an `inventory_logs` fact row per ingredient, the same atomic
+    /// pair `adjust_stock` writes. Inlined here (not calling `adjust_stock`)
+    /// because that helper requires a `&Scope` for `assert_row_in_scope`;
+    /// the ingredient ids here are never client-supplied -- they're
+    /// resolved server-side from the order's own `order_items`, the same
+    /// trust boundary `receive_purchase_order`'s own inline stock writes
+    /// already rely on. Menu items with no `recipes` row are silently
+    /// skipped (recipes are opt-in, not required for every menu item).
+    /// Called from inside the caller's one payment transaction, same "if it
+    /// fails, the whole payment fails" rule as loyalty accrual above.
+    fn deplete_recipe_stock(&self, tenant_id: &str, branch_id: &str, order_id: &str, actor_id: &str, now: &str) -> Result<(), RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT r.ingredient_id, SUM(oi.quantity * r.quantity_needed) \
+             FROM order_items oi JOIN recipes r ON r.menu_item_id = oi.menu_item_id \
+             WHERE oi.order_id = ?1 AND oi.voided = 0 \
+             GROUP BY r.ingredient_id",
+        )?;
+        let needed: Vec<(String, f64)> = stmt
+            .query_map(params![order_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        for (ingredient_id, total_needed) in needed {
+            if total_needed <= 0.0 {
+                continue;
+            }
+            let change_amount = -total_needed;
+            let log_id = uuid::Uuid::now_v7().to_string();
+            self.conn.execute(
+                "UPDATE ingredients SET current_stock = current_stock + ?1, last_modified = ?2 WHERE id = ?3",
+                params![change_amount, now, ingredient_id],
+            )?;
+            self.conn.execute(
+                "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'بيع', ?6, ?7, ?7, 'pending')",
+                params![log_id, tenant_id, branch_id, ingredient_id, change_amount, actor_id, now],
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn take_payment(&self, tenant_id: &str, branch_id: &str, input: PaymentInput) -> Result<String, RepoError> {
         self.assert_scope_populated("payments", true)?;
         self.assert_scope_populated("orders", true)?;
@@ -1067,6 +1110,11 @@ impl<'a> Repo<'a> {
             "UPDATE orders SET status = 'PAID', closed_at = ?1, last_modified = ?1, sync_status = 'pending' WHERE id = ?2",
             params![now, input.order_id],
         )?;
+
+        // 2b. Recipe-based ingredient depletion -- same transaction, so a
+        //     failed deduction fails the whole payment rather than leaving
+        //     an order marked PAID with stock never touched.
+        self.deplete_recipe_stock(tenant_id, branch_id, &input.order_id, &input.actor_id, &now)?;
 
         // 3. Table -> FREE, unconditionally releasing whichever table this
         //    order was occupying (there is exactly one, by `current_order_id`).
@@ -4621,6 +4669,8 @@ impl<'a> Repo<'a> {
             "UPDATE orders SET status = 'PAID', closed_at = ?1, last_modified = ?1, sync_status = 'pending' WHERE id = ?2",
             params![now, order_id],
         ).map_err(RepoError::from)?;
+
+        self.deplete_recipe_stock(tenant_id, branch_id, order_id, actor_id, &now)?;
 
         self.conn.execute(
             "UPDATE tables SET status = 'FREE', current_order_id = NULL, last_modified = ?1, sync_status = 'pending' WHERE current_order_id = ?2",

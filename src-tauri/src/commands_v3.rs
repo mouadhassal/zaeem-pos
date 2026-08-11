@@ -5246,6 +5246,58 @@ mod tests {
         }
 
         #[test]
+        fn take_payment_v3_depletes_recipe_linked_ingredient_stock() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("take_payment_recipe_depletion");
+            let (cashier_id, item_id, bun_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Burger", &category_id, 500, 250, None, None).unwrap();
+                // 1 bun and 0.1L of ketchup per burger -- ketchup proves an
+                // order only touches ingredients it actually has a recipe
+                // row for, buns proves the depletion math itself.
+                let bun_id = repo.create_ingredient(&tenant_id, &branch_id, "Buns", "pcs", 20, 2.0).unwrap();
+                let ketchup_id = repo.create_ingredient(&tenant_id, &branch_id, "Ketchup", "L", 1000, 10.0).unwrap();
+                conn.execute("UPDATE ingredients SET current_stock = 50.0 WHERE id = ?1", params![bun_id]).unwrap();
+                conn.execute("UPDATE ingredients SET current_stock = 100.0 WHERE id = ?1", params![ketchup_id]).unwrap();
+                conn.execute("INSERT INTO recipes (id, tenant_id, menu_item_id, ingredient_id, quantity_needed) VALUES ('r1', ?1, ?2, ?3, 1.0)", params![tenant_id, item_id, bun_id]).unwrap();
+                conn.execute("INSERT INTO recipes (id, tenant_id, menu_item_id, ingredient_id, quantity_needed) VALUES ('r2', ?1, ?2, ?3, 0.1)", params![tenant_id, item_id, ketchup_id]).unwrap();
+                (cashier_id, item_id, bun_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+
+            // 3 burgers -> 3 buns and 0.3L ketchup must be deducted, and the
+            // deduction must show up as an `inventory_logs` fact row too.
+            let order_id = create_full_order_v3_impl(
+                &db, &license, session.clone(), table_id, "DINE_IN".to_string(),
+                vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 3, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
+                1500, 0, 1500, 0, None, None, None, None, 0, None, None, None,
+            ).unwrap();
+
+            take_payment_v3_impl(&db, &license, session, order_id.clone(), "CASH".to_string(), 1500, 0, None)
+                .expect("take_payment_v3 must succeed and deplete recipe-linked stock in the same transaction");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let bun_stock: f64 = conn.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![bun_id], |r| r.get(0)).unwrap();
+            assert!((bun_stock - 47.0).abs() < 0.001, "50 buns in stock minus 3 sold burgers must leave 47, got {bun_stock}");
+
+            let log_change: f64 = conn.query_row(
+                "SELECT change_amount FROM inventory_logs WHERE ingredient_id = ?1 AND reason = 'بيع' ORDER BY created_at DESC LIMIT 1",
+                params![bun_id], |r| r.get(0),
+            ).unwrap();
+            assert!((log_change + 3.0).abs() < 0.001, "the sale must log a -3.0 change_amount, got {log_change}");
+            println!("[recipes] take_payment_v3 correctly depleted 3 buns + logged the consumption fact");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
         fn void_order_item_v3_wrapper_succeeds_through_the_real_command() {
             let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_void_item");
             let (cashier_id, item_id) = {
