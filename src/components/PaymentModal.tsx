@@ -23,7 +23,7 @@ const QUICK_AMOUNTS = [1000, 5000, 10000, 25000, 50000, 60000, 75000, 100000];
 
 interface Props {
   onClose: () => void;
-  onSuccess: (method: string, receivedCents: number, changeCents: number, debtorId?: string) => void;
+  onSuccess: (method: string, receivedCents: number, changeCents: number, debtorId?: string) => void | Promise<void>;
   initialMethod?: PaymentMethod | undefined;
   initialDebtorId?: string | undefined;
   initialDebtorName?: string | undefined;
@@ -99,26 +99,41 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
       setError("المبلغ غير كافٍ");
       return;
     }
+    // 2026-08-09 audit fix: onSuccess (handlePaymentSuccess in pos/page.tsx)
+    // is the actual async order-create + finalize-payment + print call --
+    // this used to fire it without awaiting, then immediately flip
+    // `processing` back to false, re-enabling the Confirm button while that
+    // request was still in flight. A double-click (or just a slow DB round
+    // trip) created and paid the order twice, with duplicate receipts/
+    // kitchen tickets. Now genuinely blocks re-entry for the whole
+    // duration, success or failure.
     if (method === "CREDIT") {
       if (!debtorId) { setError("يرجى إدخال رقم هاتف صحيح"); return; }
       setProcessing(true);
-      onSuccess(method, totalCents, 0, debtorId);
+      try {
+        await onSuccess(method, totalCents, 0, debtorId);
+      } finally {
+        setProcessing(false);
+      }
       return;
     }
     setProcessing(true);
-    // 2026-08-04: this used to fire for CARD/WALLET too -- there's no cash
-    // to give change on either of those, so the drawer had no reason to
-    // pop open other than announcing "someone just paid" to the whole
-    // dining room. Cash-only, matching what the drawer is actually for.
-    if (method === "CASH") {
-      try {
-        await openCashDrawer();
-      } catch {
-        // drawer may not be connected
+    try {
+      // 2026-08-04: this used to fire for CARD/WALLET too -- there's no cash
+      // to give change on either of those, so the drawer had no reason to
+      // pop open other than announcing "someone just paid" to the whole
+      // dining room. Cash-only, matching what the drawer is actually for.
+      if (method === "CASH") {
+        try {
+          await openCashDrawer();
+        } catch {
+          // drawer may not be connected
+        }
       }
+      await onSuccess(method, method === "CASH" ? receivedCents : totalCents, method === "CASH" ? changeCents : 0);
+    } finally {
+      setProcessing(false);
     }
-    onSuccess(method, method === "CASH" ? receivedCents : totalCents, method === "CASH" ? changeCents : 0);
-    setProcessing(false);
   };
 
   return (

@@ -66,7 +66,7 @@ export default function CartPanel({
         {items.map((item) => (
           <div
             key={item.id}
-            className="flex items-center gap-3 mx-4 p-4 bg-white rounded-md border border-ink-200"
+            className="flex items-center gap-3 mx-4 p-4 zc-card"
           >
             <div className="w-12 h-12 rounded-lg bg-white flex-shrink-0 flex items-center justify-center">
               <span className="text-lg">

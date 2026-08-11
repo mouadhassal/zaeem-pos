@@ -135,26 +135,129 @@ pub fn login_pin_v3(state: State<Db>, pin: String, device_id: String) -> Result<
 /// doc comment for the confirmed `STATUS_ENTRYPOINT_NOT_FOUND` crash), so
 /// anything the LAN dispatcher needs to call has to be reachable without
 /// one.
+const LOGIN_PIN_MAX_ATTEMPTS: i64 = 5;
+const LOGIN_PIN_LOCKOUT_SECONDS: i64 = 5 * 60;
+const LOGIN_PIN_FAILURES_KEY: &str = "login_pin_failures";
+const LOGIN_PIN_LOCKED_UNTIL_KEY: &str = "login_pin_locked_until";
+
+/// Security audit finding (pre-launch pass): this used to scan every active
+/// staff row in the ENTIRE local `staff` table with no tenant filter and no
+/// lockout -- two staff picking the same PIN could cross-authenticate as
+/// each other, and the 10,000-combination 6-digit PIN space had no
+/// brute-force protection on an idle/physically-accessible terminal (unlike
+/// `verify_manager_override_impl`, which already had both). Fixed the same
+/// way: scope candidates to this device's one tenant (a terminal is licensed
+/// to exactly one tenant -- see `setup_owner_v3`), and apply the same
+/// device-wide lockout pattern (there's no authenticated actor yet to scope
+/// a per-actor lockout to; a device-wide one is exactly right here since
+/// this IS the login screen for that one physical terminal).
 fn login_pin_v3_impl(state: &Db, pin: String, device_id: String) -> Result<LoginV3Response, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     security::ensure_security_schema(&conn).map_err(|e| e.to_string())?;
 
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let locked_until_ms: i64 = conn
+        .query_row("SELECT value FROM app_settings WHERE key = ?1", params![LOGIN_PIN_LOCKED_UNTIL_KEY], |r| r.get::<_, String>(0))
+        .optional().map_err(|e| e.to_string())?
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if locked_until_ms > 0 && now_ms < locked_until_ms {
+        return Err("محاولات كثيرة فاشلة -- حاول مرة أخرى لاحقاً".to_string());
+    }
+    if locked_until_ms > 0 && now_ms >= locked_until_ms {
+        conn.execute("DELETE FROM app_settings WHERE key IN (?1, ?2)", params![LOGIN_PIN_FAILURES_KEY, LOGIN_PIN_LOCKED_UNTIL_KEY])
+            .map_err(|e| e.to_string())?;
+    }
+
+    // A device is licensed/set up for exactly one tenant (setup_owner_v3
+    // attaches the bootstrap owner to `SELECT id FROM tenant LIMIT 1`) --
+    // scoping candidates to that tenant is defense-in-depth even though a
+    // second tenant row should never exist in this local DB at all.
+    let tenant_id: Option<String> = conn
+        .query_row("SELECT id FROM tenant LIMIT 1", [], |r| r.get(0))
+        .optional().map_err(|e| e.to_string())?;
+
     let mut stmt = conn
-        .prepare("SELECT id, name, tenant_id, branch_id, role, pin_hash FROM staff WHERE pin_hash IS NOT NULL AND is_active = 1")
+        .prepare("SELECT id, name, tenant_id, branch_id, role, pin_hash FROM staff WHERE pin_hash IS NOT NULL AND is_active = 1 AND (?1 IS NULL OR tenant_id = ?1)")
         .map_err(|e| e.to_string())?;
     let candidates: Vec<(String, String, String, Option<String>, String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+        .query_map(params![tenant_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
     drop(stmt);
 
-    for (actor_id, name, tenant_id, branch_id, role_str, pin_hash) in candidates {
+    for (actor_id, name, staff_tenant_id, branch_id, role_str, pin_hash) in candidates {
         if verify(&pin, &pin_hash).unwrap_or(false) {
-            return login_response(&conn, &actor_id, &name, &role_str, tenant_id, branch_id, &device_id);
+            conn.execute("DELETE FROM app_settings WHERE key IN (?1, ?2)", params![LOGIN_PIN_FAILURES_KEY, LOGIN_PIN_LOCKED_UNTIL_KEY])
+                .map_err(|e| e.to_string())?;
+            return login_response(&conn, &actor_id, &name, &role_str, staff_tenant_id, branch_id, &device_id);
         }
     }
+
+    let failures: i64 = conn
+        .query_row("SELECT value FROM app_settings WHERE key = ?1", params![LOGIN_PIN_FAILURES_KEY], |r| r.get::<_, String>(0))
+        .optional().map_err(|e| e.to_string())?
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0) + 1;
+    if failures >= LOGIN_PIN_MAX_ATTEMPTS {
+        let until = now_ms + LOGIN_PIN_LOCKOUT_SECONDS * 1000;
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+            params![LOGIN_PIN_LOCKED_UNTIL_KEY, until.to_string()],
+        ).map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, '0') ON CONFLICT(key) DO UPDATE SET value = '0'",
+            params![LOGIN_PIN_FAILURES_KEY],
+        ).map_err(|e| e.to_string())?;
+    } else {
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+            params![LOGIN_PIN_FAILURES_KEY, failures.to_string()],
+        ).map_err(|e| e.to_string())?;
+    }
     Err("invalid PIN".to_string())
+}
+
+/// Server-side PIN format enforcement -- `create_staff_v3`/
+/// `update_staff_profile_v3` previously trusted the frontend's zod
+/// `/^\d{6}$/` check entirely; a direct Tauri IPC call (or a future
+/// frontend bug) could store a PIN of any shape.
+fn validate_pin_format(pin: &str) -> Result<(), String> {
+    if pin.len() != 6 || !pin.chars().all(|c| c.is_ascii_digit()) {
+        return Err("الرقم السري يجب أن يكون 6 أرقام".to_string());
+    }
+    Ok(())
+}
+
+/// Rejects a new/changed PIN that collides with another active staff
+/// member's PIN in the same tenant -- bcrypt hashes can't be compared
+/// directly, so this re-verifies the candidate plaintext against every
+/// existing hash the same way login itself does. Two staff sharing a PIN
+/// means whichever one SQLite returns first silently authenticates BOTH of
+/// them at login; this closes that off at the point the PIN is set, not by
+/// changing login's find-first behavior (which is what the underlying
+/// staff-identification model actually depends on).
+fn assert_pin_not_taken(conn: &rusqlite::Connection, tenant_id: &str, pin: &str, exclude_staff_id: Option<&str>) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("SELECT id, pin_hash FROM staff WHERE tenant_id = ?1 AND pin_hash IS NOT NULL AND is_active = 1")
+        .map_err(|e| e.to_string())?;
+    let candidates: Vec<(String, String)> = stmt
+        .query_map(params![tenant_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    for (staff_id, pin_hash) in candidates {
+        if Some(staff_id.as_str()) == exclude_staff_id {
+            continue;
+        }
+        if verify(pin, &pin_hash).unwrap_or(false) {
+            return Err("هذا الرقم السري مستخدم بالفعل من قبل موظف آخر -- اختر رقماً مختلفاً".to_string());
+        }
+    }
+    Ok(())
 }
 
 /// Bootstraps the very first OWNER. No actor/session can exist to authorize
@@ -285,8 +388,10 @@ pub fn create_staff_v3(
         }
     }
 
-    let pin_hash = hash(&pin, DEFAULT_COST).map_err(|e| e.to_string())?;
+    validate_pin_format(&pin)?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    assert_pin_not_taken(&conn, &actor.tenant_id, &pin, None)?;
+    let pin_hash = hash(&pin, DEFAULT_COST).map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let staff_id = Repo::new(&tx)
         .create_staff(
@@ -402,6 +507,10 @@ pub fn update_staff_profile_v3(state: State<Db>, license: State<crate::license::
         ));
     }
 
+    if let Some(ref p) = new_pin {
+        validate_pin_format(p)?;
+        assert_pin_not_taken(&conn, &target_tenant_id, p, Some(&target_staff_id))?;
+    }
     let new_pin_hash = new_pin.map(|p| hash(&p, DEFAULT_COST)).transpose().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     Repo::new(&tx).update_staff_profile(&target_staff_id, &name, new_pin_hash.as_deref()).map_err(|e| e.to_string())?;
@@ -1213,6 +1322,27 @@ pub fn get_tenant_today_stats_v3(state: State<Db>, license: State<crate::license
     Ok(TenantTodayStats { order_count, revenue_cents, staff_count })
 }
 
+/// Correctness audit finding (pre-launch pass): the branches page used to
+/// show tenant-wide totals identically on every branch card via
+/// `get_tenant_today_stats_v3` -- real per-branch numbers now.
+#[tauri::command]
+pub fn get_branch_today_stats_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<(String, i64, i64)>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).branch_today_stats(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_staff_counts_by_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<(String, i64)>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).staff_counts_by_branch(&actor.tenant_id).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_terminal_counts_by_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<(String, i64)>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
@@ -1308,11 +1438,17 @@ pub fn get_shift_stats_v3(state: State<Db>, session_token: String, shift_id: Str
     get_shift_stats_v3_impl(&state, session_token, shift_id)
 }
 
+/// Security audit finding (pre-launch pass): previously called only
+/// `authenticate_actor` (no `authorize`, and `shift_stats` itself took no
+/// scope) -- any logged-in staff member, any rank, could read any tenant's
+/// shift revenue by ID. Now requires the same permission `list_shift_orders_v3`
+/// implicitly relies on and scope-qualifies the query, matching that command.
 fn get_shift_stats_v3_impl(state: &Db, session_token: String, shift_id: String) -> Result<crate::repo::ShiftStatsRow, String> {
     crate::lan::reject_if_local_kitchen_satellite("get_shift_stats_v3")?;
-    authenticate_actor(state, &session_token)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    authorize(&actor, Permission::ManageShift).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).shift_stats(&shift_id).map_err(|e| e.to_string())
+    Repo::new(&conn).shift_stats(&shift_id, &actor.scope()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1399,6 +1535,15 @@ fn resolve_operating_branch(
     } else {
         vec![]
     };
+    // An unlicensed (or differently-licensed) Owner testing locally with
+    // exactly one branch on file has nothing ambiguous to pick between --
+    // don't force them through a branch selector that printer setup (and
+    // other Owner-testing call sites passing `None`) never actually offers.
+    if requested_branch_id.is_none() && tenant_branches.len() == 1 {
+        if let Scope::Tenant { tenant_id } = &scope {
+            return Ok((tenant_id.clone(), tenant_branches[0].0.clone()));
+        }
+    }
     resolve_branch_for_actor(scope, requested_branch_id, &tenant_branches)
 }
 
@@ -2240,8 +2385,8 @@ pub fn get_customer_detail_v3(state: State<Db>, license: State<crate::license::c
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let repo = Repo::new(&conn);
     Ok(CustomerDetailV3 {
-        orders: repo.customer_order_history(&phone).map_err(|e| e.to_string())?,
-        favorite_items: repo.customer_favorite_items(&phone).map_err(|e| e.to_string())?,
+        orders: repo.customer_order_history(&actor.tenant_id, &phone).map_err(|e| e.to_string())?,
+        favorite_items: repo.customer_favorite_items(&actor.tenant_id, &phone).map_err(|e| e.to_string())?,
     })
 }
 
@@ -3011,7 +3156,7 @@ pub fn list_driver_deliveries_v3(state: State<Db>, session_token: String, driver
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_driver_deliveries(&driver_id).map_err(|e| e.to_string())
+    Repo::new(&conn).list_driver_deliveries(&actor.scope(), &driver_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3618,9 +3763,9 @@ fn hold_order_v3_impl(
 /// Returns null if no DRAFT order with that ID exists.
 #[tauri::command]
 pub fn retrieve_held_order_v3(state: State<Db>, _session_token: String, order_id: String) -> Result<Option<HeldOrderResult>, String> {
-    let _actor = authenticate_actor(&state, &_session_token)?;
+    let actor = authenticate_actor(&state, &_session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).retrieve_held_order(&order_id).map_err(|e| e.to_string())
+    Repo::new(&conn).retrieve_held_order(&actor.scope(), &order_id).map_err(|e| e.to_string())
 }
 
 /// Split a PENDING order into child orders, moving items.
@@ -3891,9 +4036,9 @@ pub fn get_receipt_config_v3(state: State<Db>, license: State<crate::license::cl
 /// Look up a loyalty card by card_number.
 #[tauri::command]
 pub fn lookup_loyalty_card_v3(state: State<Db>, _session_token: String, card_number: String) -> Result<Option<LoyaltyCardLookup>, String> {
-    let _actor = authenticate_actor(&state, &_session_token)?;
+    let actor = authenticate_actor(&state, &_session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).lookup_loyalty_card(&card_number).map_err(|e| e.to_string())
+    Repo::new(&conn).lookup_loyalty_card(&actor.tenant_id, &card_number).map_err(|e| e.to_string())
 }
 
 /// Earn loyalty points after an order.
@@ -6764,7 +6909,7 @@ mod tests {
             }).unwrap();
         }
 
-        let stats = repo.shift_stats(&shift_id).unwrap();
+        let stats = repo.shift_stats(&shift_id, &scope).unwrap();
         assert_eq!(stats.order_count, 2);
         assert_eq!(stats.total_sales, 5500);
         assert_eq!(stats.cash_total, 2000);
@@ -6852,11 +6997,17 @@ mod tests {
 
         let owner = Actor { id: "owner-1".into(), tenant_id: "t1".into(), branch_id: None, role: Role::Owner, device_id: "dev-1".into() };
 
-        // Pre-activation: this terminal has no license yet, so there's
-        // nothing to auto-resolve from -- falls back to the original
-        // explicit-picker error, unchanged from before this fix.
+        // Pre-activation, with a SECOND branch also on file so there's a
+        // genuine ambiguity: no license yet to auto-resolve from, and more
+        // than one branch to pick between, so this must still fall back to
+        // the explicit-picker error (single-branch installs auto-resolve --
+        // see the printer-setup fix in resolve_operating_branch -- but that
+        // only applies when there's exactly one branch and nothing else to
+        // disambiguate with).
+        conn.execute("INSERT INTO branch (id, tenant_id, name) VALUES ('branch-x', 't1', 'Branch X')", []).unwrap();
         let err = resolve_operating_branch(&conn, &owner, &license, None).unwrap_err();
         assert_eq!(err, "select a branch first");
+        conn.execute("DELETE FROM branch WHERE id = 'branch-x'", []).unwrap();
 
         // Install a real signed license identifying THIS device as
         // branch-a's terminal.
@@ -6920,7 +7071,7 @@ mod tests {
             subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0,
         }).unwrap();
         conn.execute("UPDATE orders SET customer_phone = '0991112233' WHERE id = ?1", params![order_id]).unwrap();
-        let history = repo.customer_order_history("0991112233").unwrap();
+        let history = repo.customer_order_history(&tenant_id, "0991112233").unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].id, order_id);
         println!("[customers] order history matched by phone: 1 order found");
@@ -7581,7 +7732,7 @@ mod tests {
         let (_, points1) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &order1, "CASH", 4000, 0, None, &cashier_id, Some("CARD-001")).unwrap();
         assert_eq!(points1, Some(40), "BRONZE tier: floor(4000/100) * 1.0 = 40");
 
-        let card = repo.lookup_loyalty_card("CARD-001").unwrap().unwrap();
+        let card = repo.lookup_loyalty_card(&tenant_id, "CARD-001").unwrap().unwrap();
         assert_eq!(card.points, 40);
         assert_eq!(card.tier, "BRONZE");
 
@@ -7596,7 +7747,7 @@ mod tests {
         ).unwrap();
         let (_, points2) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &order2, "CASH", 4000, 0, None, &cashier_id, Some("CARD-001")).unwrap();
         assert_eq!(points2, Some(48), "SILVER tier: floor(4000/100 * 1.2) = 48");
-        let card_after = repo.lookup_loyalty_card("CARD-001").unwrap().unwrap();
+        let card_after = repo.lookup_loyalty_card(&tenant_id, "CARD-001").unwrap().unwrap();
         assert_eq!(card_after.points, 500 + 48);
         println!("[loyalty] tier-aware accrual: BRONZE order earned 40 (1x), SILVER order earned 48 (1.2x), atomically with payment");
 
@@ -7670,13 +7821,13 @@ mod tests {
             }
             other => panic!("expected InsufficientLoyaltyPoints, got {other:?}"),
         }
-        let card_unchanged = repo.lookup_loyalty_card("CARD-REDEEM").unwrap().unwrap();
+        let card_unchanged = repo.lookup_loyalty_card(&tenant_id, "CARD-REDEEM").unwrap().unwrap();
         assert_eq!(card_unchanged.points, 600, "a rejected redemption must not touch the balance");
 
         // Sufficient points: succeeds, decrements, tier recomputed (600-500=100, drops to BRONZE).
         let applied = repo.redeem_loyalty_reward(&tenant_id, &branch_id, "CARD-REDEEM", &reward_id, &manager_id).unwrap();
         assert_eq!(applied.name, "قهوة مجانية");
-        let card_after = repo.lookup_loyalty_card("CARD-REDEEM").unwrap().unwrap();
+        let card_after = repo.lookup_loyalty_card(&tenant_id, "CARD-REDEEM").unwrap().unwrap();
         assert_eq!(card_after.points, 100);
         assert_eq!(card_after.tier, "BRONZE", "100 points is below SILVER's 500 threshold -- tier must drop back down");
         println!("[loyalty] successful redemption decremented 600->100 and recomputed tier SILVER->BRONZE");
@@ -7775,7 +7926,7 @@ mod tests {
         assert_eq!(failed_entry.failure_reason.as_deref(), Some("العميل غير متواجد"));
         println!("[delivery] FAILED: driver freed but total_deliveries NOT bumped (only DELIVERED counts), failure_reason persisted");
 
-        let driver_deliveries = repo.list_driver_deliveries(&driver_id).unwrap();
+        let driver_deliveries = repo.list_driver_deliveries(&scope, &driver_id).unwrap();
         assert_eq!(driver_deliveries.len(), 2, "list_driver_deliveries must show both this driver's deliveries");
 
         // Soft delete.
@@ -7978,13 +8129,13 @@ mod tests {
         let customer_id = repo.create_customer(&tenant_id, "زبون وفي", Some("0999000111"), None, None, None, None).unwrap();
         let card_id = repo.issue_loyalty_card(&tenant_id, &customer_id, "CARD-001").unwrap();
 
-        let looked_up = repo.lookup_loyalty_card("CARD-001").unwrap().expect("card must be found by number alone, no is_active filter");
+        let looked_up = repo.lookup_loyalty_card(&tenant_id, "CARD-001").unwrap().expect("card must be found by number alone, no is_active filter");
         assert_eq!(looked_up.customer_name, "زبون وفي");
         assert_eq!(looked_up.points, 0);
         println!("[loyalty] lookup_loyalty_card found the card without referencing is_active");
 
         repo.earn_loyalty_points(&tenant_id, &branch_id, "CARD-001", 25, "order-123").unwrap();
-        let after = repo.lookup_loyalty_card("CARD-001").unwrap().unwrap();
+        let after = repo.lookup_loyalty_card(&tenant_id, "CARD-001").unwrap().unwrap();
         assert_eq!(after.points, 25, "earn_loyalty_points must bump the card's points");
 
         let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
@@ -9701,7 +9852,7 @@ mod tests {
             "delete_happy_hour_rule_v3", "set_happy_hour_rule_active_v3",
             "list_branches_full_v3", "create_branch_full_v3", "update_branch_full_v3",
             "set_branch_full_active_v3", "update_branch_detail_field_v3", "list_terminals_v3",
-            "get_tenant_today_stats_v3", "get_terminal_counts_by_branch_v3",
+            "get_tenant_today_stats_v3", "get_branch_today_stats_v3", "get_staff_counts_by_branch_v3", "get_terminal_counts_by_branch_v3",
             "list_ingredients_v3", "create_ingredient_v3", "update_ingredient_v3", "adjust_stock_v3",
             "list_inventory_logs_v3", "list_low_stock_ingredients_v3",
             "create_debtor_v3", "update_debtor_v3", "deactivate_debtor_v3",

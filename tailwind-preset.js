@@ -32,6 +32,9 @@ const preset = {
           DEFAULT: "var(--danger)",
           soft: "var(--danger-soft)",
         },
+        // Secondary accent only (tags, muted chart segments) -- never
+        // primary actions, per ZAEEM_DESIGN_SYSTEM.md §1's discipline rule.
+        brown: "var(--brown)",
         ink: {
           50: "var(--ink-50)",
           100: "var(--ink-100)",
@@ -70,10 +73,12 @@ const preset = {
         },
       },
       fontFamily: {
-        sans: ["Inter", "Tajawal", "system-ui", "sans-serif"],
-        arabic: ["Tajawal", "sans-serif"],
-        mono: ["JetBrains Mono", "IBM Plex Mono", "monospace"],
-        brand: ["Space Grotesk", "sans-serif"],
+        // ZAEEM_DESIGN_SYSTEM.md §2: Manrope/Cairo body, Poppins/Cairo
+        // headings, IBM Plex Mono for every numeral (always, even in RTL).
+        sans: ["Manrope", "Cairo", "system-ui", "sans-serif"],
+        arabic: ["Cairo", "sans-serif"],
+        heading: ["Poppins", "Cairo", "system-ui", "sans-serif"],
+        mono: ["IBM Plex Mono", "monospace"],
       },
       borderRadius: {
         sm: "4px",

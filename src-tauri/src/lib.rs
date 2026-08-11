@@ -406,6 +406,8 @@ pub fn run() {
             commands_v3::update_branch_detail_field_v3,
             commands_v3::list_terminals_v3,
             commands_v3::get_tenant_today_stats_v3,
+            commands_v3::get_branch_today_stats_v3,
+            commands_v3::get_staff_counts_by_branch_v3,
             commands_v3::get_terminal_counts_by_branch_v3,
             commands_v3::create_menu_item_v3,
             commands_v3::update_menu_item_v3,

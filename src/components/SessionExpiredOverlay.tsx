@@ -29,11 +29,28 @@ export default function SessionExpiredOverlay() {
     setError("");
     if (next.length === 6) {
       setLoading(true);
+      // 2026-08-10 audit fix: this used to accept ANY valid staff PIN and
+      // silently resume as that person, still showing whatever cart/order
+      // state the PREVIOUS person had on screen when their session
+      // expired -- if an owner unlocked a cashier's expired session, the
+      // app would carry on as the owner with the cashier's in-progress
+      // order still sitting there, no indication the identity changed.
+      // A different person re-authenticating here is a real user switch,
+      // not a resume -- clear stale state the same way a normal logout
+      // does before continuing.
+      const previousUserId = useAuthStore.getState().user?.id;
       const err = await loginWithPin(next);
       if (err) {
         setError(err);
         setPin("");
       } else {
+        const newUserId = useAuthStore.getState().user?.id;
+        if (newUserId && newUserId !== previousUserId) {
+          const { clearCart } = await import("../stores/cartStore").then((m) => m.useCartStore.getState());
+          const { resetOrderInfo } = await import("../stores/orderTypeStore").then((m) => m.useOrderTypeStore.getState());
+          clearCart();
+          resetOrderInfo();
+        }
         setExpired(false);
       }
       setLoading(false);

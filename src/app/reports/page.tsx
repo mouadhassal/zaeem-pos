@@ -115,6 +115,15 @@ export default function ReportsPage() {
   const [forecast, setForecast] = useState<DemandForecast | null>(null);
   const [forecastLoading, setForecastLoading] = useState(false);
   const [forecastError, setForecastError] = useState<string | null>(null);
+  // A tenant's full menu (often 30-50+ items) all clearing the "enough
+  // history" bar meant the old UI dumped every item for every one of the 7
+  // forecast days -- a wall of numbers, not something an owner could act
+  // on in 5 seconds. Each day's items already arrive sorted by predicted
+  // quantity descending (forecast.rs), so showing only the top N by
+  // default and letting a specific day be expanded on demand keeps the
+  // same data, just curated the way a manager actually scans it: "what's
+  // busy, what do I prep more of" first, full detail on request.
+  const [expandedForecastDates, setExpandedForecastDates] = useState<Set<string>>(new Set());
   const [reconciliation, setReconciliation] = useState<ReconciliationReport | null>(null);
   const [reconciliationLoading, setReconciliationLoading] = useState(false);
   const [reconciliationError, setReconciliationError] = useState<string | null>(null);
@@ -265,17 +274,17 @@ export default function ReportsPage() {
       </div>
 
       <div className="grid grid-cols-3 gap-4">
-        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-1">
+        <div className="zc-card p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic">إجمالي المبيعات اليوم</p>
           <p className="text-2xl font-bold text-saffron-600 font-mono">
             {fmt(Math.round(summary.totalSales * 100))}
           </p>
         </div>
-        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-1">
+        <div className="zc-card p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic">عدد الطلبات</p>
           <p className="text-2xl font-bold text-ink-900">{summary.orderCount}</p>
         </div>
-        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-1">
+        <div className="zc-card p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic">متوسط الفاتورة</p>
           <p className="text-2xl font-bold text-ink-900 font-mono">
             {fmt(Math.round(summary.avgTicket * 100))}
@@ -284,7 +293,7 @@ export default function ReportsPage() {
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-3">
+        <div className="zc-card p-4 space-y-3">
           <h2 className="font-bold text-ink-900 font-arabic">أفضل الأصناف</h2>
           {summary.topItems.map((item, i) => (
             <div key={i} className="flex justify-between text-sm">
@@ -294,7 +303,7 @@ export default function ReportsPage() {
           ))}
         </div>
 
-        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-3">
+        <div className="zc-card p-4 space-y-3">
           <h2 className="font-bold text-ink-900 font-arabic">أداء الموظفين</h2>
           {summary.staffPerformance.map((staff, i) => (
             <div key={i} className="flex justify-between text-sm">
@@ -305,7 +314,7 @@ export default function ReportsPage() {
         </div>
       </div>
 
-      <div className="bg-white rounded-md border border-ink-200 p-4 space-y-3">
+      <div className="zc-card p-4 space-y-3">
         <h2 className="font-bold text-ink-900 font-arabic">حالة المخزون</h2>
         {summary.inventoryStatus.map((inv, i) => (
           <div key={i} className="flex justify-between text-sm">
@@ -323,7 +332,7 @@ export default function ReportsPage() {
         ))}
       </div>
 
-      <div className="bg-white rounded-md border border-ink-200 p-4 space-y-3">
+      <div className="zc-card p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="font-bold text-ink-900 font-arabic">فحص الحالات غير الطبيعية</h2>
@@ -368,7 +377,7 @@ export default function ReportsPage() {
         )}
       </div>
 
-      <div className="bg-white rounded-md border border-ink-200 p-4 space-y-3">
+      <div className="zc-card p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="font-bold text-ink-900 font-arabic">توقع الطلب للأسبوع القادم</h2>
@@ -391,33 +400,82 @@ export default function ReportsPage() {
           <p className="text-sm text-ink-400 font-arabic">لا توجد بيانات مبيعات كافية لإجراء توقع بعد</p>
         )}
 
-        {forecast && forecast.items.length > 0 && (
-          <div className="space-y-4">
-            {Object.entries(
-              forecast.items.reduce<Record<string, ItemForecast[]>>((acc, item) => {
-                (acc[item.date] ??= []).push(item);
-                return acc;
-              }, {})
-            )
-              .sort(([a], [b]) => a.localeCompare(b))
-              .map(([date, dayItems]) => (
-                <div key={date}>
-                  <p className="text-sm font-bold text-ink-700 font-arabic mb-1.5">{formatForecastDate(date)}</p>
-                  <div className="space-y-1.5">
-                    {dayItems.map((item) => (
-                      <div key={item.menu_item_id} className="flex items-center justify-between text-sm border-b border-ink-100 last:border-0 pb-1.5 last:pb-0">
-                        <span className="text-ink-900">{item.menu_item_name}</span>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-ink-400 font-arabic">{CONFIDENCE_LABEL[item.confidence]}</span>
-                          <span className="font-mono font-bold text-ink-900">{item.predicted_quantity}</span>
-                        </div>
+        {forecast && forecast.items.length > 0 && (() => {
+          const TOP_ITEMS_PER_DAY = 5;
+          const byDate = Object.entries(
+            forecast.items.reduce<Record<string, ItemForecast[]>>((acc, item) => {
+              (acc[item.date] ??= []).push(item);
+              return acc;
+            }, {})
+          ).sort(([a], [b]) => a.localeCompare(b));
+
+          const toggleDate = (date: string) => {
+            setExpandedForecastDates((prev) => {
+              const next = new Set(prev);
+              if (next.has(date)) next.delete(date); else next.add(date);
+              return next;
+            });
+          };
+
+          return (
+            <div className="space-y-4">
+              {/* Week-at-a-glance: total predicted covers per day, so "how
+                  busy is next week" is answerable at a glance before
+                  drilling into any single item. */}
+              <div className="grid grid-cols-7 gap-1.5">
+                {byDate.map(([date, dayItems]) => {
+                  const dayTotal = dayItems.reduce((s, it) => s + it.predicted_quantity, 0);
+                  const maxTotal = Math.max(...byDate.map(([, d]) => d.reduce((s, it) => s + it.predicted_quantity, 0)), 1);
+                  return (
+                    <div key={date} className="text-center">
+                      <p className="text-[10px] text-ink-400 font-arabic mb-1">{formatForecastDate(date).split(" ")[0]}</p>
+                      <div className="h-14 flex items-end justify-center">
+                        <div
+                          className="w-6 rounded-t-sm bg-saffron-500"
+                          style={{ height: `${Math.max(8, (dayTotal / maxTotal) * 100)}%` }}
+                          title={`${dayTotal} صنف متوقع`}
+                        />
                       </div>
-                    ))}
+                      <p className="text-xs font-mono font-bold text-ink-900 mt-1">{Math.round(dayTotal)}</p>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {byDate.map(([date, dayItems]) => {
+                const expanded = expandedForecastDates.has(date);
+                const shown = expanded ? dayItems : dayItems.slice(0, TOP_ITEMS_PER_DAY);
+                const remaining = dayItems.length - shown.length;
+                return (
+                  <div key={date}>
+                    <p className="text-sm font-bold text-ink-700 font-arabic mb-1.5">{formatForecastDate(date)}</p>
+                    <div className="space-y-1.5">
+                      {shown.map((item) => (
+                        <div key={item.menu_item_id} className="flex items-center justify-between text-sm border-b border-ink-100 last:border-0 pb-1.5 last:pb-0">
+                          <span className="text-ink-900">{item.menu_item_name}</span>
+                          <div className="flex items-center gap-2">
+                            {item.confidence === "LOW" && (
+                              <span className="text-[10px] text-ink-400 font-arabic">{CONFIDENCE_LABEL[item.confidence]}</span>
+                            )}
+                            <span className="font-mono font-bold text-ink-900">{item.predicted_quantity}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {remaining > 0 && (
+                      <button
+                        onClick={() => toggleDate(date)}
+                        className="text-xs text-saffron-600 font-arabic mt-1.5 hover:underline"
+                      >
+                        {expanded ? "إخفاء" : `عرض ${remaining} صنف إضافي`}
+                      </button>
+                    )}
                   </div>
-                </div>
-              ))}
-          </div>
-        )}
+                );
+              })}
+            </div>
+          );
+        })()}
 
         {forecast && forecast.ingredients.length > 0 && (
           <div className="pt-3 border-t border-ink-200 space-y-2">
@@ -434,7 +492,7 @@ export default function ReportsPage() {
         )}
       </div>
 
-      <div className="bg-white rounded-md border border-ink-200 p-4 space-y-3">
+      <div className="zc-card p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="font-bold text-ink-900 font-arabic">تسوية الطلبات</h2>

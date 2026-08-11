@@ -1,7 +1,7 @@
 import { useCartStore } from "../../stores/cartStore";
 import { useOrderTypeStore } from "../../stores/orderTypeStore";
 import ActionButton from "../ui/ActionButton";
-import { Receipt, Printer, Clock, Split } from "lucide-react";
+import { IconReceipt as Receipt, IconPrinter as Printer, IconClock as Clock, IconArrowsSplit as Split } from "@tabler/icons-react";
 import { useCurrency } from "../../hooks/useCurrency";
 
 interface Props {

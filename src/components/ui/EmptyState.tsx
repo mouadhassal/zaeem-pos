@@ -1,4 +1,4 @@
-import { Package } from "lucide-react";
+import { IconPackage as Package } from "@tabler/icons-react";
 
 interface Props {
   title?: string;

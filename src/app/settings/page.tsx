@@ -3,7 +3,7 @@ import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
 import type { TaxMode } from "../../db/types";
 import { checkLicense, activateLicense, getDeviceId, backOfficeLocked, type LicenseStatus } from "../../lib/license";
-import { Pencil, Trash2 as Trash, ImagePlus, X } from "lucide-react";
+import { IconPencil as Pencil, IconTrash as Trash, IconPhotoPlus as ImagePlus, IconX as X } from "@tabler/icons-react";
 import NetworkTab from "./NetworkTab";
 import { checkForUpdatesManually } from "../../lib/autoUpdate";
 import { createBackup, listBackups, type BackupInfo } from "../../lib/backup";

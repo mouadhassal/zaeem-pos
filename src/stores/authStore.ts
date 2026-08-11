@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { invoke } from "../lib/invoke";
 import { logger } from "../lib/logger";
 import type { UserRole } from "../db/types";
+import { useCartStore } from "./cartStore";
+import { useOrderTypeStore } from "./orderTypeStore";
 
 // Matches Rust's `commands_v3::LoginV3Response` -- `staff` has no `username`
 // column and no `photo_path`, so those AuthUser fields from the old
@@ -95,19 +97,28 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
+  // 2026-08-10: this had no top-level try/finally -- if ANYTHING before the
+  // final `set()` threw (the dynamic imports this used to do, clearCart,
+  // resetOrderInfo, anything), the function aborted before ever clearing
+  // `isAuthenticated`, leaving the owner's session stuck active with no
+  // visible error: "I click logout and it doesn't go out." The actual
+  // sign-out (clearing the session) is now the one thing guaranteed to run
+  // no matter what else fails, since that's the security-relevant part --
+  // a stale cart/order-type left behind for the next PIN login is a much
+  // smaller problem than a logout button that silently doesn't log out.
   logout: async () => {
     const { token } = get();
-    if (token) {
-      try { await invoke("logout_v3", { sessionToken: token }); } catch { /* ignore */ }
+    try {
+      if (token) {
+        try { await invoke("logout_v3", { sessionToken: token }); } catch { /* ignore -- best-effort server-side revoke */ }
+      }
+      useCartStore.getState().clearCart();
+      useOrderTypeStore.getState().resetOrderInfo();
+    } finally {
+      localStorage.removeItem("zaeem_auth_token");
+      localStorage.removeItem("zaeem_user");
+      set({ user: null, token: null, isAuthenticated: false });
     }
-    localStorage.removeItem("zaeem_auth_token");
-    localStorage.removeItem("zaeem_user");
-    // Clear all app state so the next user doesn't see stale data
-    const { clearCart } = await import("./cartStore").then((m) => m.useCartStore.getState());
-    const { resetOrderInfo } = await import("./orderTypeStore").then((m) => m.useOrderTypeStore.getState());
-    clearCart();
-    resetOrderInfo();
-    set({ user: null, token: null, isAuthenticated: false });
   },
 
   checkSession: async () => {

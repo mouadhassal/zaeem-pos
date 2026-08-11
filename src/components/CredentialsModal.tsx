@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { X, Copy, Check, Eye, EyeOff } from "lucide-react";
+import { IconX as X, IconCopy as Copy, IconCheck as Check, IconEye as Eye, IconEyeOff as EyeOff } from "@tabler/icons-react";
 
 const credentials = [
   { role: "المدير", username: "owner", password: "admin123", access: "كل الصلاحيات", color: "text-amber-400", bg: "bg-amber-500/10" },

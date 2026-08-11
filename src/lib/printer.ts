@@ -5,6 +5,148 @@ function token() {
   return useAuthStore.getState().token ?? "";
 }
 
+// 2026-08-10: receipts/kitchen tickets used to be sent as ESC/POS TEXT,
+// which requires telling the printer which single-byte code page ("ESC t
+// n") the following bytes are in. That numeric id is NOT standardized
+// across manufacturers -- confirmed against Epson's own ESC/POS reference
+// (id 19 is PC858/Euro on Epson hardware, unrelated to Arabic; other
+// brands assign CP1256 to entirely different ids, e.g. Bixolon uses 40) --
+// so an id that tested fine on one printer silently garbles Arabic on the
+// next brand: ASCII (0x00-0x7F) is identical across every code page so it
+// still prints fine, but the Arabic bytes (0x80-0xFF) get interpreted
+// against whatever table that id actually maps to on THAT printer's
+// firmware. Worse: even the CORRECT codepage id only encodes isolated
+// Arabic letterforms -- ESC/POS text mode has no letter-joining/shaping
+// support at all, so text-mode Arabic can never look properly connected
+// regardless of which id is right.
+//
+// Both problems disappear by printing the receipt as a bitmap instead of
+// characters: the webview's own canvas text renderer shapes and joins
+// Arabic correctly (the same rendering engine that already draws this
+// app's UI), and a raster image is just black/white dots -- `GS v 0` means
+// the same thing on every ESC/POS-compatible printer ever made, no
+// codepage negotiation, no per-brand id to get wrong.
+
+/** 203dpi (8 dots/mm) is the near-universal thermal-printer resolution;
+ * these are the standard printable dot widths for the two paper sizes
+ * every ESC/POS printer on the market ships in -- a hardware constant, not
+ * a brand-specific guess like the old codepage id was. */
+function paperWidthDots(paperWidthMm: number): number {
+  return paperWidthMm === 58 ? 384 : 576;
+}
+
+interface CanvasBuilder {
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+  width: number;
+  y: number;
+}
+
+const ARABIC_FONT = "'Cairo','Noto Sans Arabic',sans-serif";
+
+function newCanvasBuilder(widthDots: number, maxHeightDots = 4000): CanvasBuilder {
+  const canvas = document.createElement("canvas");
+  canvas.width = widthDots;
+  canvas.height = maxHeightDots;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, widthDots, maxHeightDots);
+  ctx.fillStyle = "#000";
+  ctx.direction = "rtl";
+  return { canvas, ctx, width: widthDots, y: 12 };
+}
+
+function drawLine(
+  b: CanvasBuilder,
+  text: string,
+  opts: { size?: number; bold?: boolean; align?: "right" | "left" | "center" } = {}
+) {
+  const size = opts.size ?? 26;
+  b.ctx.font = `${opts.bold ? "bold " : ""}${size}px ${ARABIC_FONT}`;
+  b.ctx.textAlign = opts.align ?? "right";
+  b.ctx.textBaseline = "top";
+  b.ctx.direction = "rtl";
+  const x = opts.align === "left" ? 12 : opts.align === "center" ? b.width / 2 : b.width - 12;
+  b.ctx.fillText(text, x, b.y);
+  b.y += Math.round(size * 1.5);
+}
+
+/** RTL label on the right, LTR value (numbers/prices) on the left -- the
+ * standard receipt row shape, drawn as two independent text runs so the
+ * numeric side never gets mirrored by `direction: rtl`. */
+function drawTwoCol(
+  b: CanvasBuilder,
+  right: string,
+  left: string,
+  opts: { size?: number; bold?: boolean } = {}
+) {
+  const size = opts.size ?? 26;
+  b.ctx.font = `${opts.bold ? "bold " : ""}${size}px ${ARABIC_FONT}`;
+  b.ctx.textBaseline = "top";
+  b.ctx.direction = "rtl";
+  b.ctx.textAlign = "right";
+  b.ctx.fillText(right, b.width - 12, b.y);
+  b.ctx.direction = "ltr";
+  b.ctx.textAlign = "left";
+  b.ctx.fillText(left, 12, b.y);
+  b.y += Math.round(size * 1.5);
+}
+
+function drawRule(b: CanvasBuilder, dashed = false) {
+  b.ctx.strokeStyle = "#000";
+  b.ctx.lineWidth = 2;
+  b.ctx.beginPath();
+  b.ctx.setLineDash(dashed ? [6, 6] : []);
+  b.ctx.moveTo(8, b.y + 6);
+  b.ctx.lineTo(b.width - 8, b.y + 6);
+  b.ctx.stroke();
+  b.ctx.setLineDash([]);
+  b.y += 20;
+}
+
+/** Crops the (generously oversized) working canvas down to the content
+ * actually drawn -- avoids a two-pass layout just to learn the height. */
+function finalizeCanvas(b: CanvasBuilder): HTMLCanvasElement {
+  const out = document.createElement("canvas");
+  out.width = b.width;
+  out.height = b.y;
+  out.getContext("2d")!.drawImage(b.canvas, 0, 0, b.width, b.y, 0, 0, b.width, b.y);
+  return out;
+}
+
+/** Converts a canvas to ESC/POS `GS v 0` raster-image command bytes:
+ * threshold to 1bpp (MSB-first, 1 = black dot), chunked into <=255-row
+ * strips so no single command exceeds a conservative, universally-safe
+ * printer buffer size. */
+function canvasToEscPosRaster(canvas: HTMLCanvasElement): number[] {
+  const { width, height } = canvas;
+  const img = canvas.getContext("2d")!.getImageData(0, 0, width, height);
+  const widthBytes = Math.ceil(width / 8);
+
+  const bitmap = new Uint8Array(widthBytes * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      const r = img.data[idx], g = img.data[idx + 1], bch = img.data[idx + 2], a = img.data[idx + 3];
+      const luminance = r * 0.299 + g * 0.587 + bch * 0.114;
+      if (a > 128 && luminance < 200) {
+        bitmap[y * widthBytes + (x >> 3)] |= 0x80 >> (x & 7);
+      }
+    }
+  }
+
+  const out: number[] = [];
+  const GS = 0x1d;
+  const MAX_ROWS = 255;
+  for (let rowStart = 0; rowStart < height; rowStart += MAX_ROWS) {
+    const rows = Math.min(MAX_ROWS, height - rowStart);
+    out.push(GS, 0x76, 0x30, 0x00, widthBytes & 0xff, (widthBytes >> 8) & 0xff, rows & 0xff, (rows >> 8) & 0xff);
+    const start = rowStart * widthBytes;
+    for (let i = 0; i < rows * widthBytes; i++) out.push(bitmap[start + i]);
+  }
+  return out;
+}
+
 export interface ReceiptItem {
   name: string;
   quantity: number;
@@ -97,15 +239,12 @@ interface PrinterConfig {
   ipAddress?: string;
   port: number;
   paperWidthMm: number;
-  codePage: string;
   drawerPulseMs: number;
   isPrimary: number;
   isSecondary: number;
   /** Real OS print-queue name -- what a USB printer is actually reached by now. */
   systemPrinterName?: string;
 }
-
-
 
 const KNOWN_PRINTERS = [
   { vendorId: "0x0416", productId: "0x5011", name: "Epson TM-T88V" },
@@ -142,7 +281,6 @@ export async function discoverPrinters(): Promise<PrinterConfig[]> {
             productId: `0x${pid}`,
             port: 0,
             paperWidthMm: 80,
-            codePage: "CP864",
             drawerPulseMs: 200,
             isPrimary: results.length === 0 ? 1 : 0,
             isSecondary: 0,
@@ -157,47 +295,26 @@ export async function discoverPrinters(): Promise<PrinterConfig[]> {
   return results;
 }
 
-export function createEscPosBuffer(codePage: string, _paperWidthMm: number): {
-  write: (text?: string) => void;
+/** Bare ESC/POS command buffer -- init, cut, drawer-kick, and raw raster
+ * bytes. No text/codepage handling here anymore (see the module doc
+ * comment above); receipts and kitchen tickets are rendered as images. */
+function createEscPosCommandBuffer(): {
   writeCommand: (...bytes: number[]) => void;
-  setBold: (on: boolean) => void;
-  setFontSize: (w: number, h: number) => void;
-  setAlign: (align: 0 | 1 | 2) => void;
-  setCodePage: (cp: string) => void;
+  writeBytes: (bytes: number[]) => void;
   cut: () => void;
   openDrawer: (pulseMs: number) => void;
   getBuffer: () => Uint8Array;
 } {
   const ESC = 0x1b;
   const GS = 0x1d;
-  const bytes: number[] = [];
+  const bytes: number[] = [ESC, 0x40]; // init
 
-  const writer = {
-    write: (text?: string) => {
-      if (!text) return;
-      const encoder = new TextEncoder();
-      const encoded = encoder.encode(text);
-      for (const b of encoded) bytes.push(b);
-    },
+  return {
     writeCommand: (...cmds: number[]) => {
       for (const c of cmds) bytes.push(c);
     },
-    setBold: (on: boolean) => {
-      bytes.push(ESC, 0x45, on ? 1 : 0);
-    },
-    setFontSize: (w: number, h: number) => {
-      bytes.push(GS, 0x21, ((w - 1) << 4) | (h - 1));
-    },
-    setAlign: (align: 0 | 1 | 2) => {
-      bytes.push(ESC, 0x61, align);
-    },
-    setCodePage: (cp: string) => {
-      const pageTable: Record<string, number> = {
-        CP437: 0, CP850: 2, CP860: 3, CP863: 4, CP865: 5,
-        CP864: 17, CP1256: 19, CP1252: 255,
-      };
-      const page = pageTable[cp] ?? 17;
-      bytes.push(ESC, 0x74, page);
+    writeBytes: (data: number[]) => {
+      for (const b of data) bytes.push(b);
     },
     cut: () => {
       bytes.push(GS, 0x56, 0x00);
@@ -208,178 +325,105 @@ export function createEscPosBuffer(codePage: string, _paperWidthMm: number): {
     },
     getBuffer: () => new Uint8Array(bytes),
   };
-
-  writer.writeCommand(ESC, 0x40);
-  writer.setCodePage(codePage);
-  return writer;
 }
 
-function generateEscPosReceipt(data: ReceiptData, config: { codePage: string; paperWidthMm: number }): Uint8Array {
-  const pw = config.paperWidthMm === 58 ? 32 : 48;
-  const p = createEscPosBuffer(config.codePage, config.paperWidthMm);
+function renderReceiptCanvas(data: ReceiptData, paperWidthMm: number): HTMLCanvasElement {
+  const W = paperWidthDots(paperWidthMm);
+  const b = newCanvasBuilder(W);
   const currency = data.currency ?? "SAR";
+  const fmt = (c: number) => new Intl.NumberFormat("ar-SA", { style: "currency", currency }).format(c / 100);
 
-  p.setAlign(1);
-  p.setFontSize(2, 2);
-  p.setBold(true);
-  p.write(data.chainName + "\n");
-  p.setFontSize(1, 1);
-  p.setBold(false);
-  p.write(data.branchName + "\n");
-  p.setAlign(0);
-  p.write("=".repeat(pw) + "\n");
-  p.setAlign(1);
-  p.write(`التاريخ: ${new Date().toLocaleDateString("ar-SA")}\n`);
-  p.write(`الوقت: ${new Date().toLocaleTimeString("ar-SA")}\n`);
-  p.write(`رقم الطلب: ${data.orderNumber}\n`);
-  p.write(`طاولة: ${data.tableName}\n`);
+  drawLine(b, data.chainName, { size: 42, bold: true, align: "center" });
+  drawLine(b, data.branchName, { size: 24, align: "center" });
+  b.y += 6;
+  drawRule(b);
+
+  drawTwoCol(b, "التاريخ", new Date().toLocaleDateString("ar-SA"));
+  drawTwoCol(b, "الوقت", new Date().toLocaleTimeString("ar-SA"));
+  drawTwoCol(b, "رقم الطلب", data.orderNumber);
+  drawTwoCol(b, "طاولة", data.tableName);
 
   const typeLabels: Record<string, string> = {
     DINE_IN: "داخلي", TAKEAWAY: "سفري", DELIVERY: "توصيل", ONLINE: "أونلاين",
   };
-  p.write(`النوع: ${typeLabels[data.orderType] ?? data.orderType}\n`);
+  drawTwoCol(b, "النوع", typeLabels[data.orderType] ?? data.orderType);
 
-  if (data.customerName) {
-    p.write(`العميل: ${data.customerName}\n`);
-  }
-  if (data.deliveryAddress) {
-    p.write(`العنوان: ${data.deliveryAddress}\n`);
-  }
+  if (data.customerName) drawTwoCol(b, "العميل", data.customerName);
+  if (data.deliveryAddress) drawTwoCol(b, "العنوان", data.deliveryAddress);
 
-  p.setAlign(0);
-  p.write("=".repeat(pw) + "\n");
-
-  const colWidth = Math.floor((pw - 4) / 2);
-
-  p.setBold(true);
-  p.setFontSize(1, 1);
-  const header = "الصنف".padEnd(colWidth) + "الكمية".padEnd(6) + "السعر".padStart(colWidth);
-  p.write(header + "\n");
-  p.setBold(false);
-  p.write("-".repeat(pw) + "\n");
+  drawRule(b);
 
   for (const item of data.items) {
-    const name = item.name.slice(0, colWidth - 2);
-    const qty = String(item.quantity);
-    const price = new Intl.NumberFormat("ar-SA", {
-      style: "currency", currency,
-    }).format((item.priceCents * item.quantity) / 100);
-    p.write(`${name} ${" ".repeat(colWidth - name.length)}`);
-    p.write(`${qty}  ${price}\n`);
-
+    drawTwoCol(b, `${item.quantity} × ${item.name}`, fmt(item.priceCents * item.quantity), { bold: true });
     if (item.modifiers) {
       for (const mod of item.modifiers) {
-        const modLine = `  +${mod.name}`;
-        const modPrice = new Intl.NumberFormat("ar-SA", {
-          style: "currency", currency,
-        }).format(mod.priceCents / 100);
-        p.write(`${modLine}${" ".repeat(pw - modLine.length - modPrice.length)}${modPrice}\n`);
+        drawTwoCol(b, `  + ${mod.name}`, fmt(mod.priceCents), { size: 20 });
       }
     }
   }
 
-  p.write("-".repeat(pw) + "\n");
+  drawRule(b);
+  drawTwoCol(b, "المجموع الفرعي", fmt(data.subtotalCents));
+  if (data.serviceChargeCents > 0) drawTwoCol(b, "خدمة", fmt(data.serviceChargeCents));
+  drawTwoCol(b, "الضريبة", fmt(data.taxCents));
+  if (data.secondaryTaxCents > 0) drawTwoCol(b, "ضريبة إضافية", fmt(data.secondaryTaxCents));
+  if (data.discountCents > 0) drawTwoCol(b, "الخصم", `-${fmt(data.discountCents)}`);
+  if (data.savingsCents > 0) drawTwoCol(b, "وفرتم", fmt(data.savingsCents), { bold: true });
 
-  const fmtCent = (c: number) =>
-    new Intl.NumberFormat("ar-SA", { style: "currency", currency }).format(c / 100);
+  drawRule(b);
+  drawTwoCol(b, "الإجمالي", fmt(data.totalCents), { size: 34, bold: true });
+  drawRule(b);
 
-  const printLine = (label: string, value: string, bold?: boolean) => {
-    const spaced = pw - value.length - 2;
-    if (bold) p.setBold(true);
-    p.write(`${label}${" ".repeat(Math.max(0, spaced))}${value}\n`);
-    if (bold) p.setBold(false);
-  };
+  if (data.changeCents > 0) drawTwoCol(b, "الباقي", fmt(data.changeCents));
 
-  printLine("المجموع الفرعي", fmtCent(data.subtotalCents));
-  if (data.serviceChargeCents > 0) {
-    printLine("خدمة", fmtCent(data.serviceChargeCents));
-  }
-  printLine("الضريبة", fmtCent(data.taxCents));
-  if (data.secondaryTaxCents > 0) {
-    printLine("ضريبة إضافية", fmtCent(data.secondaryTaxCents));
-  }
-  if (data.discountCents > 0) {
-    printLine("الخصم", `-${fmtCent(data.discountCents)}`);
-  }
-  if (data.savingsCents > 0) {
-    printLine("وفرتم", fmtCent(data.savingsCents), true);
-  }
-  p.write("=".repeat(pw) + "\n");
-  p.setFontSize(2, 2);
-  p.setBold(true);
-  printLine("الإجمالي", fmtCent(data.totalCents));
-  p.setFontSize(1, 1);
-  p.setBold(false);
-  p.write("=".repeat(pw) + "\n");
+  b.y += 10;
+  drawLine(b, "شكراً لزيارتكم", { align: "center", size: 26 });
+  drawLine(b, "نتمنى لكم يوماً سعيداً", { align: "center", size: 22 });
+  b.y += 24;
 
-  if (data.changeCents > 0) {
-    printLine("الباقي", fmtCent(data.changeCents));
-  }
-
-  p.setAlign(1);
-  p.write("\nشكراً لزيارتكم\n");
-  p.write("نتمنى لكم يوماً سعيداً\n\n");
-
-  p.openDrawer(200);
-
-  return p.getBuffer();
+  return finalizeCanvas(b);
 }
 
-function generateEscPosKitchenTicket(data: KitchenTicketData, config: { codePage: string; paperWidthMm: number }): Uint8Array {
-  const pw = config.paperWidthMm === 58 ? 32 : 48;
-  const p = createEscPosBuffer(config.codePage, config.paperWidthMm);
+function renderKitchenTicketCanvas(data: KitchenTicketData, paperWidthMm: number): HTMLCanvasElement {
+  const W = paperWidthDots(paperWidthMm);
+  const b = newCanvasBuilder(W);
 
-  p.setAlign(1);
-  p.setFontSize(2, 2);
-  p.setBold(true);
-  p.write("*** المطبخ ***\n");
-  p.setFontSize(1, 1);
-  p.setBold(false);
-  p.write("=".repeat(pw) + "\n");
-  p.setAlign(0);
+  drawLine(b, "*** المطبخ ***", { size: 38, bold: true, align: "center" });
+  b.y += 6;
+  drawRule(b);
 
   const typeLabels: Record<string, string> = {
     DINE_IN: "داخلي", TAKEAWAY: "سفري", DELIVERY: "توصيل", ONLINE: "أونلاين",
   };
-  p.write(`طاولة: ${data.tableName}\n`);
-  p.write(`رقم: ${data.orderNumber}\n`);
-  p.write(`النوع: ${typeLabels[data.orderType] ?? data.orderType}\n`);
-  p.write(`التاريخ: ${new Date().toLocaleDateString("ar-SA")}\n`);
-  p.write(`الوقت: ${new Date().toLocaleTimeString("ar-SA")}\n`);
+  drawTwoCol(b, "طاولة", data.tableName);
+  drawTwoCol(b, "رقم", data.orderNumber);
+  drawTwoCol(b, "النوع", typeLabels[data.orderType] ?? data.orderType);
+  drawTwoCol(b, "التاريخ", new Date().toLocaleDateString("ar-SA"));
+  drawTwoCol(b, "الوقت", new Date().toLocaleTimeString("ar-SA"));
 
   if (data.scheduledAt) {
-    p.setBold(true);
-    p.write(`مجدول: ${new Date(data.scheduledAt).toLocaleTimeString("ar-SA")}\n`);
-    p.setBold(false);
+    drawTwoCol(b, "مجدول", new Date(data.scheduledAt).toLocaleTimeString("ar-SA"), { bold: true });
   }
 
-  p.write("-".repeat(pw) + "\n");
+  drawRule(b);
 
   for (const item of data.items) {
-    p.setFontSize(1, 1);
-    p.setBold(true);
-    p.write(`${item.quantity} × ${item.name}\n`);
-    p.setBold(false);
+    drawLine(b, `${item.quantity} × ${item.name}`, { bold: true, size: 28 });
     if (item.modifiers) {
       for (const mod of item.modifiers) {
-        p.write(`  + ${mod}\n`);
+        drawLine(b, `  + ${mod}`, { size: 22 });
       }
     }
     if (item.notes) {
-      p.write(`  ملاحظة: ${item.notes}\n`);
+      drawLine(b, `  ملاحظة: ${item.notes}`, { size: 22 });
     }
-    p.write("\n");
+    b.y += 6;
   }
 
-  p.write("-".repeat(pw) + "\n");
-  p.setAlign(1);
-  p.write("\n");
-  for (let i = 0; i < 3; i++) {
-    p.write("\x07");
-  }
-  p.write("\n");
+  drawRule(b);
+  b.y += 16;
 
-  return p.getBuffer();
+  return finalizeCanvas(b);
 }
 
 export async function printToDevice(data: Uint8Array, printer: PrinterConfig): Promise<void> {
@@ -421,6 +465,27 @@ export async function printToDevice(data: Uint8Array, printer: PrinterConfig): P
   URL.revokeObjectURL(url);
 }
 
+function buildReceiptJob(data: ReceiptData, paperWidthMm: number): Uint8Array {
+  const canvas = renderReceiptCanvas(data, paperWidthMm);
+  const buf = createEscPosCommandBuffer();
+  buf.writeBytes(canvasToEscPosRaster(canvas));
+  // 2026-08-10 audit fix (kept from the text-mode version): no
+  // unconditional drawer-kick here -- PaymentModal.tsx already opens the
+  // drawer explicitly, but only for CASH. The drawer is the caller's
+  // decision, not baked into every receipt.
+  buf.cut();
+  return buf.getBuffer();
+}
+
+function buildKitchenTicketJob(data: KitchenTicketData, paperWidthMm: number): Uint8Array {
+  const canvas = renderKitchenTicketCanvas(data, paperWidthMm);
+  const buf = createEscPosCommandBuffer();
+  buf.writeBytes(canvasToEscPosRaster(canvas));
+  for (let i = 0; i < 3; i++) buf.writeCommand(0x07); // kitchen bell, a raw control byte -- unaffected by any codepage
+  buf.cut();
+  return buf.getBuffer();
+}
+
 export async function printReceipt(data: ReceiptData): Promise<void> {
   const allPrinters = await invoke<PrinterRowV3[]>("list_active_printers_v3", { sessionToken: token() });
   const printers = allPrinters
@@ -428,21 +493,13 @@ export async function printReceipt(data: ReceiptData): Promise<void> {
     .sort((a, b) => (b.is_primary - a.is_primary) || (b.is_secondary - a.is_secondary));
 
   const chain = await invoke<ChainConfigV3>("get_chain_config_v3", { sessionToken: token() });
-
-  // chain_config has no code_page column in the real schema -- this
-  // fallback was already dead in practice (see PrinterRow's doc comment),
-  // preserved as-is, not "fixed".
-  const defaultCodePage = "CP864";
   const defaultPaperWidth = chain?.default_paper_width ?? 80;
 
   let lastError: string | null = null;
   for (const printerPartial of printers.slice(0, 2)) {
     const p = printerPartial as any;
     try {
-      const buf = generateEscPosReceipt(data, {
-        codePage: p.code_page ?? defaultCodePage,
-        paperWidthMm: p.paper_width_mm ?? defaultPaperWidth,
-      });
+      const buf = buildReceiptJob(data, p.paper_width_mm ?? defaultPaperWidth);
       await printToDevice(buf, {
         id: p.id,
         name: p.name,
@@ -452,7 +509,6 @@ export async function printReceipt(data: ReceiptData): Promise<void> {
         ipAddress: p.ip_address,
         port: p.port,
         paperWidthMm: p.paper_width_mm,
-        codePage: p.code_page,
         drawerPulseMs: p.drawer_pulse_ms,
         isPrimary: p.is_primary,
         isSecondary: p.is_secondary,
@@ -478,8 +534,6 @@ export async function printKitchenTicket(data: KitchenTicketData): Promise<void>
   const printers = allPrinters.filter((p) => p.printer_type === "KITCHEN");
 
   const chainK = await invoke<ChainConfigV3>("get_chain_config_v3", { sessionToken: token() });
-
-  const defaultCodePageK = "CP864";
   const defaultPaperWidthK = chainK?.default_paper_width ?? 80;
 
   let anyPrinted = false;
@@ -495,10 +549,7 @@ export async function printKitchenTicket(data: KitchenTicketData): Promise<void>
   for (const printerPartial of printers) {
     const p = printerPartial as any;
     try {
-      const buf = generateEscPosKitchenTicket(data, {
-        codePage: p.code_page ?? defaultCodePageK,
-        paperWidthMm: p.paper_width_mm ?? defaultPaperWidthK,
-      });
+      const buf = buildKitchenTicketJob(data, p.paper_width_mm ?? defaultPaperWidthK);
       await printToDevice(buf, {
         id: p.id,
         name: p.name,
@@ -508,7 +559,6 @@ export async function printKitchenTicket(data: KitchenTicketData): Promise<void>
         ipAddress: p.ip_address,
         port: p.port,
         paperWidthMm: p.paper_width_mm,
-        codePage: p.code_page,
         drawerPulseMs: p.drawer_pulse_ms,
         isPrimary: p.is_primary,
         isSecondary: p.is_secondary,
@@ -535,11 +585,10 @@ export async function openCashDrawer(pulseMs: number = 200): Promise<void> {
   if (!printer) return;
   const pr = printer as any;
 
-  const p = createEscPosBuffer(pr.code_page ?? "CP864", pr.paper_width_mm ?? 80);
-  p.openDrawer(pulseMs ?? pr.drawer_pulse_ms ?? 200);
-  const buf = p.getBuffer();
+  const buf = createEscPosCommandBuffer();
+  buf.openDrawer(pulseMs ?? pr.drawer_pulse_ms ?? 200);
 
-  await printToDevice(buf, {
+  await printToDevice(buf.getBuffer(), {
     id: pr.id,
     name: pr.name,
     printerType: "RECEIPT",
@@ -548,7 +597,6 @@ export async function openCashDrawer(pulseMs: number = 200): Promise<void> {
     ipAddress: pr.ip_address,
     port: pr.port,
     paperWidthMm: pr.paper_width_mm,
-    codePage: pr.code_page,
     drawerPulseMs: pr.drawer_pulse_ms,
     isPrimary: pr.is_primary,
     isSecondary: pr.is_secondary,

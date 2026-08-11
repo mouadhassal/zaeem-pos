@@ -115,6 +115,8 @@ export default function FinancePage() {
   const [invoiceDueDate, setInvoiceDueDate] = useState(() => {
     const d = new Date(); d.setMonth(d.getMonth() + 1); return d.toISOString().slice(0, 10);
   });
+  const [savingCost, setSavingCost] = useState(false);
+  const [savingInvoice, setSavingInvoice] = useState(false);
 
   const [taxInfo, setTaxInfo] = useState<TaxInfo | null>(null);
   const [taxCollectedToday, setTaxCollectedToday] = useState(0);
@@ -227,11 +229,13 @@ export default function FinancePage() {
   };
 
   const handleAddCost = async () => {
+    if (savingCost) return;
     const amount = Math.round(parseFloat(costAmount || "0") * 100);
     if (amount <= 0) {
       setMessage("يرجى إدخال مبلغ صحيح");
       return;
     }
+    setSavingCost(true);
     try {
       await invoke("create_operational_cost_v3", { sessionToken: token, category: costCategory, amountCents: amount, date: costDate, notes: costNotes || null });
       setShowAddCost(false);
@@ -241,12 +245,16 @@ export default function FinancePage() {
       fetchAll();
     } catch {
       setMessage("حدث خطأ في إضافة التكلفة");
+    } finally {
+      setSavingCost(false);
     }
   };
 
   const handleAddInvoice = async () => {
+    if (savingInvoice) return;
     const amount = Math.round(parseFloat(invoiceAmount || "0") * 100);
     if (amount <= 0) { setMessage("يرجى إدخال مبلغ صحيح"); return; }
+    setSavingInvoice(true);
     try {
       await invoke("create_invoice_v3", { sessionToken: token, periodStart: invoicePeriodStart, periodEnd: invoicePeriodEnd, amountCents: amount, dueDate: invoiceDueDate });
       setShowAddInvoice(false);
@@ -255,6 +263,8 @@ export default function FinancePage() {
       fetchAll();
     } catch {
       setMessage("حدث خطأ في إنشاء الفاتورة");
+    } finally {
+      setSavingInvoice(false);
     }
   };
 
@@ -372,7 +382,7 @@ export default function FinancePage() {
             </div>
           </div>
 
-          <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
+          <div className="zc-card overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-ink-200 bg-surface-alt text-ink-400 font-arabic">
@@ -425,7 +435,7 @@ export default function FinancePage() {
             </button>
           </div>
 
-          <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
+          <div className="zc-card overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-ink-200 bg-surface-alt text-ink-400 font-arabic">
@@ -477,7 +487,7 @@ export default function FinancePage() {
               + إنشاء فاتورة
             </button>
           </div>
-          <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
+          <div className="zc-card overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-ink-200 bg-surface-alt text-ink-400 font-arabic">
@@ -583,7 +593,7 @@ export default function FinancePage() {
             </div>
             <div className="flex gap-3 justify-end pt-2">
               <button onClick={() => setShowAddInvoice(false)} className="h-10 px-6 rounded-sm bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors">إلغاء</button>
-              <button onClick={handleAddInvoice} className="h-10 px-6 rounded-sm bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors">إنشاء الفاتورة</button>
+              <button onClick={handleAddInvoice} disabled={savingInvoice} className="h-10 px-6 rounded-sm bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-40">{savingInvoice ? "جاري..." : "إنشاء الفاتورة"}</button>
             </div>
           </div>
         </div>
@@ -674,9 +684,10 @@ export default function FinancePage() {
               </button>
               <button
                 onClick={handleAddCost}
-                className="h-10 px-6 rounded-sm bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors"
+                disabled={savingCost}
+                className="h-10 px-6 rounded-sm bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-40"
               >
-                إضافة
+                {savingCost ? "جاري..." : "إضافة"}
               </button>
             </div>
           </div>

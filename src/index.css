@@ -3,13 +3,14 @@
 @tailwind utilities;
 
 :root {
-  /* WENZDES Design System v1 — Warm Authority, Light Mode */
-  --bg: #FAF9F7;
+  /* ZAEEM_DESIGN_SYSTEM.md §1, Light mode (POS / kitchen displays /
+     bright-shopfront contexts) */
+  --bg: #F7F3EC;
   --panel-footer: #FFFFFF;
   --surface: #FFFFFF;
   --surface-alt: #F5F2EE;
 
-  --text: #1C1917;
+  --text: #1F1A16;
   --text-2: #292524;
   --text-3: #57534E;
   --text-muted: #A8A29E;
@@ -19,16 +20,30 @@
 
   --accent: #F4C430;
   --accent-soft: #FEF8E0;
+  /* Darkened saffron for any button/pill carrying white or dark text
+     directly on the accent fill -- §5's contrast rule: the light saffron
+     itself fails 4.5:1 with either black or white text on top of it. */
   --accent-text: #C2940A;
+
+  /* Secondary accent -- category tags, secondary chart segments only.
+     Never used for primary actions/active states; saffron owns that. */
+  --brown: #7A4E2D;
 
   --ok: #15803D;
   --warn: #C2410C;
   --danger: #B91C1C;
   --danger-soft: #FEE2E2;
 
-  --sh-1: 0 1px 2px rgba(28,25,23,.04);
-  --sh-2: 0 1px 2px rgba(28,25,23,.04), 0 1px 3px rgba(28,25,23,.06);
-  --sh-3: 0 20px 25px -5px rgba(28,25,23,.08), 0 10px 10px -5px rgba(28,25,23,.04);
+  /* 2026-08-12 design pass: the old --sh-1/2/3 scale existed but was never
+     actually applied anywhere -- every card in the app used a flat
+     `border` with zero shadow, which is exactly what reads as "cheap
+     template" rather than a real product. Re-tuned with a warm brown tint
+     (matching --text/#1F1A16) instead of neutral gray, and wired into
+     .zc-card below so it's actually used everywhere at once instead of
+     needing every page edited by hand. */
+  --sh-1: 0 1px 2px rgba(31,26,22,.05);
+  --sh-2: 0 2px 8px -2px rgba(31,26,22,.08), 0 1px 3px -1px rgba(31,26,22,.06);
+  --sh-3: 0 12px 28px -8px rgba(31,26,22,.16), 0 4px 10px -4px rgba(31,26,22,.08);
 
   /* Warm neutral ink scale (no blue tint) */
   --ink-50: #FAF9F7;
@@ -54,6 +69,17 @@
   --saffron-800: #A07A08;
   --saffron-900: #836407;
 
+  /* Brown sidebar rail -- the one dark surface in an otherwise light app,
+     so it needs its own contrast-safe text/active tokens rather than
+     reusing --text/--text-2 (tuned for the cream canvas, not this bg).
+     Dark brown (near-black), not the medium --brown secondary-accent tone
+     -- matches the same --bg-deep value the dark-mode apps use. */
+  --sidebar-bg: #1F1A16;
+  --sidebar-text: #F7F3EC;
+  --sidebar-text-muted: #D9C9BA;
+  --sidebar-active-bg: rgba(244, 196, 48, 0.18);
+  --sidebar-active-text: #F4C430;
+
   /* Live/green ramp */
   --live-50: #F0FDF4;
   --live-100: #DCFCE7;
@@ -71,20 +97,92 @@
   background: rgba(244, 196, 48, 0.14);
 }
 
+/* Default OS scrollbar is flat gray and clashes with every themed surface
+   (worst on the brown sidebar) -- thin, brand-toned, on-brand everywhere. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, currentColor 40%, transparent);
+}
+
 body {
   margin: 0;
   padding: 0;
   background-color: var(--bg);
   color: var(--text);
-  font-family: 'Inter', 'Tajawal', system-ui, sans-serif;
+  /* §2: Manrope for body Latin text, Cairo for Arabic -- geometric-to-
+     geometric pairing so both scripts read as one family. */
+  font-family: 'Manrope', 'Cairo', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+h1, h2, h3, h4, h5, h6, .font-heading {
+  font-family: 'Poppins', 'Cairo', system-ui, sans-serif;
+}
+
+/* §6: numerals stay LTR mono even inside RTL text -- always IBM Plex
+   Mono tabular, per §2's "All numerals" row. */
 .tabular {
-  font-family: 'JetBrains Mono', 'IBM Plex Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-variant-numeric: tabular-nums;
 }
 
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* §3: one stroke width for every Tabler icon, everywhere -- overriding at
+   the CSS level instead of passing stroke={1.75} to every call site. */
+.tabler-icon { stroke-width: 1.75px; }
+
+/* ---------------------------------------------------------------------
+   2026-08-12 design pass: real elevation + motion, applied once here so
+   every existing `zc-card` card across
+   the app (dozens of them) picks it up via a mechanical class swap to
+   .zc-card, rather than a flat-bordered-box look everywhere. This is the
+   single biggest lever for "feels premium vs feels like a template" --
+   depth + considered motion, not another color tweak.
+   --------------------------------------------------------------------- */
+.zc-card {
+  background: var(--surface);
+  border: 1px solid var(--ink-100);
+  border-radius: 12px;
+  box-shadow: var(--sh-1);
+  transition: box-shadow 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+.zc-card-hover:hover {
+  box-shadow: var(--sh-2);
+  transform: translateY(-1px);
+  border-color: var(--ink-200);
+}
+
+/* Every button/link/input gets a considered, consistent transition
+   instead of instant/no-op state changes -- one of the clearest tells of
+   an unfinished UI is snap-to-state hovers. */
+button, a, input, select, textarea {
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform 100ms ease, opacity 150ms ease;
+}
+button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+/* Typography rhythm -- headings previously had no letter-spacing/line-
+   height discipline beyond "bold Poppins"; this is what makes a heading
+   scale read as considered rather than default-browser-bold. */
+h1, .font-heading.text-xl, .font-heading.text-2xl {
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+h2, h3 {
+  letter-spacing: -0.005em;
+  line-height: 1.3;
+}

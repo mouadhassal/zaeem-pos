@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useAuthStore } from "../stores/authStore";
 import { invoke } from "../lib/invoke";
-import { UtensilsCrossed, AlertCircle, Eye, EyeOff, ImagePlus, X } from "lucide-react";
+import { IconToolsKitchen2 as UtensilsCrossed, IconAlertCircle as AlertCircle, IconEye as Eye, IconEyeOff as EyeOff, IconPhotoPlus as ImagePlus, IconX as X } from "@tabler/icons-react";
 
 const CURRENCIES = [
   { value: "SYP", label: "ليرة سورية (SYP)" },

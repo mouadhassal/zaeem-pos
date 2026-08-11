@@ -12,7 +12,7 @@
 //! rests entirely on this runtime check, not a schema constraint.
 
 use crate::security::Scope;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use std::fmt;
 
 #[derive(Debug)]
@@ -1414,26 +1414,31 @@ impl<'a> Repo<'a> {
     /// (same join key the old Kysely code used -- `orders.customer_phone`,
     /// not a foreign key to `customers.id`, since walk-in orders can carry a
     /// phone with no `customers` row at all).
-    pub fn customer_order_history(&self, phone: &str) -> Result<Vec<CustomerOrderRow>, RepoError> {
+    /// Security audit finding (pre-launch pass): previously filtered by
+    /// `customer_phone` only, no `tenant_id` -- a phone number reused across
+    /// tenants (same install) leaked that other tenant's order history to
+    /// whoever looked up the number here.
+    pub fn customer_order_history(&self, tenant_id: &str, phone: &str) -> Result<Vec<CustomerOrderRow>, RepoError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, status, total_cents, created_at, order_type FROM orders WHERE customer_phone = ?1 ORDER BY created_at DESC LIMIT 20",
+            "SELECT id, status, total_cents, created_at, order_type FROM orders WHERE customer_phone = ?1 AND tenant_id = ?2 ORDER BY created_at DESC LIMIT 20",
         )?;
-        let rows = stmt.query_map(params![phone], |r| {
+        let rows = stmt.query_map(params![phone, tenant_id], |r| {
             Ok(CustomerOrderRow { id: r.get(0)?, status: r.get(1)?, total_cents: r.get(2)?, created_at: r.get(3)?, order_type: r.get(4)? })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
 
-    pub fn customer_favorite_items(&self, phone: &str) -> Result<Vec<FavoriteItemRow>, RepoError> {
+    /// Same tenant-leak fix as customer_order_history.
+    pub fn customer_favorite_items(&self, tenant_id: &str, phone: &str) -> Result<Vec<FavoriteItemRow>, RepoError> {
         let mut stmt = self.conn.prepare(
             "SELECT menu_items.name, SUM(order_items.quantity) as qty \
              FROM order_items \
              INNER JOIN menu_items ON menu_items.id = order_items.menu_item_id \
              INNER JOIN orders ON orders.id = order_items.order_id \
-             WHERE orders.customer_phone = ?1 AND order_items.voided = 0 \
+             WHERE orders.customer_phone = ?1 AND orders.tenant_id = ?2 AND order_items.voided = 0 \
              GROUP BY menu_items.name ORDER BY qty DESC LIMIT 3",
         )?;
-        let rows = stmt.query_map(params![phone], |r| {
+        let rows = stmt.query_map(params![phone, tenant_id], |r| {
             Ok(FavoriteItemRow { name: r.get(0)?, quantity: r.get(1)? })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
@@ -2307,6 +2312,33 @@ impl<'a> Repo<'a> {
         Ok((order_count, revenue_cents, staff_count))
     }
 
+    /// Real per-branch today's order count/revenue/staff count -- replaces
+    /// the old `tenant_today_stats` quirk (see its doc comment) where the
+    /// branch list showed the SAME tenant-wide numbers on every branch
+    /// card. GROUP BY branch_id, one row per branch that has any orders
+    /// today; the caller fills in 0s for branches with none.
+    pub fn branch_today_stats(&self, tenant_id: &str) -> Result<Vec<(String, i64, i64)>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT branch_id, COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders \
+             WHERE tenant_id = ?1 AND created_at >= ?2 AND status NOT IN ('CANCELLED', 'VOIDED') \
+             GROUP BY branch_id",
+        )?;
+        let rows = stmt.query_map(
+            params![tenant_id, chrono::Utc::now().format("%Y-%m-%dT00:00:00").to_string()],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// Staff count per branch, for the same per-branch cards.
+    pub fn staff_counts_by_branch(&self, tenant_id: &str) -> Result<Vec<(String, i64)>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT branch_id, COUNT(*) FROM staff WHERE tenant_id = ?1 AND branch_id IS NOT NULL GROUP BY branch_id",
+        )?;
+        let rows = stmt.query_map(params![tenant_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
     /// Terminal count per branch, for the branch list's summary cards.
     pub fn terminal_counts_by_branch(&self, tenant_id: &str) -> Result<Vec<(String, i64)>, RepoError> {
         let mut stmt = self.conn.prepare(
@@ -2889,14 +2921,31 @@ impl<'a> Repo<'a> {
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
 
-    pub fn list_driver_deliveries(&self, driver_id: &str) -> Result<Vec<DriverDeliveryRow>, RepoError> {
-        let mut stmt = self.conn.prepare(
+    /// Security audit finding (pre-launch pass): previously no scope filter
+    /// at all -- a Manager with ManageDelivery in one tenant could pass
+    /// another tenant's driver_id and read that tenant's delivery records.
+    pub fn list_driver_deliveries(&self, scope: &Scope, driver_id: &str) -> Result<Vec<DriverDeliveryRow>, RepoError> {
+        // delivery_logs and orders both carry tenant_id/branch_id -- qualify
+        // with the "orders." alias explicitly so the join doesn't produce an
+        // ambiguous-column error (same reasoning as shift_stats above).
+        let (predicate, args): (&str, Vec<String>) = match scope {
+            Scope::Platform => ("1=1", vec![]),
+            Scope::Tenant { tenant_id } => ("orders.tenant_id = ?1", vec![tenant_id.clone()]),
+            Scope::Branch { tenant_id, branch_id } => {
+                ("orders.tenant_id = ?1 AND orders.branch_id = ?2", vec![tenant_id.clone(), branch_id.clone()])
+            }
+        };
+        let id_placeholder = format!("?{}", args.len() + 1);
+        let mut bind_args = args;
+        bind_args.push(driver_id.to_string());
+        let sql = format!(
             "SELECT delivery_logs.id, delivery_logs.status, delivery_logs.assigned_at, delivery_logs.delivered_at, \
                     orders.customer_name, orders.delivery_address, orders.total_cents \
              FROM delivery_logs INNER JOIN orders ON orders.id = delivery_logs.order_id \
-             WHERE delivery_logs.driver_id = ?1 ORDER BY delivery_logs.assigned_at DESC LIMIT 20",
-        )?;
-        let rows = stmt.query_map(params![driver_id], |r| {
+             WHERE delivery_logs.driver_id = {id_placeholder} AND {predicate} ORDER BY delivery_logs.assigned_at DESC LIMIT 20"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(bind_args.iter()), |r| {
             Ok(DriverDeliveryRow {
                 log_id: r.get(0)?, status: r.get(1)?, assigned_at: r.get(2)?, delivered_at: r.get(3)?,
                 customer_name: r.get(4)?, delivery_address: r.get(5)?, total_cents: r.get(6)?,
@@ -3487,22 +3536,53 @@ impl<'a> Repo<'a> {
     /// Order count/total plus a CASH/CARD payment breakdown for one shift --
     /// exactly what `fetchShiftData` computed with 2 separate Kysely queries
     /// (`orders` aggregate + `payments` grouped by method), now one method.
-    pub fn shift_stats(&self, shift_id: &str) -> Result<ShiftStatsRow, RepoError> {
+    /// Security audit finding (pre-launch pass): previously took no `Scope`
+    /// at all and the command handler called only `authenticate_actor`, no
+    /// `authorize` -- ANY logged-in staff member (including the lowest-rank
+    /// Kitchen role) could read any other tenant's cash/card revenue for any
+    /// shift by ID. Scope-qualified now, same pattern as `list_shift_orders`
+    /// right above.
+    pub fn shift_stats(&self, shift_id: &str, scope: &Scope) -> Result<ShiftStatsRow, RepoError> {
+        let (predicate, args) = Self::scope_predicate(scope);
+        let id_placeholder = format!("?{}", args.len() + 1);
+        let mut order_args = args.clone();
+        order_args.push(shift_id.to_string());
+
+        let sql = format!(
+            "SELECT COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders WHERE status = 'PAID' AND {predicate} AND shift_id = {id_placeholder}"
+        );
         let (order_count, total_sales): (i64, i64) = self.conn.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders WHERE status = 'PAID' AND shift_id = ?1",
-            params![shift_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            &sql, params_from_iter(order_args.iter()), |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let cash_total: i64 = self.conn.query_row(
+
+        // payments also has its own tenant_id/branch_id columns, so the
+        // bare scope_predicate() string is ambiguous once joined against
+        // orders -- qualify it with the "orders." alias explicitly rather
+        // than reusing the helper as-is.
+        let (qualified_predicate, qargs): (&str, Vec<String>) = match scope {
+            Scope::Platform => ("1=1", vec![]),
+            Scope::Tenant { tenant_id } => ("orders.tenant_id = ?1", vec![tenant_id.clone()]),
+            Scope::Branch { tenant_id, branch_id } => {
+                ("orders.tenant_id = ?1 AND orders.branch_id = ?2", vec![tenant_id.clone(), branch_id.clone()])
+            }
+        };
+        let id_placeholder2 = format!("?{}", qargs.len() + 1);
+        let mut cash_args = qargs.clone();
+        cash_args.push(shift_id.to_string());
+        let cash_sql = format!(
             "SELECT COALESCE(SUM(payments.amount_cents), 0) FROM payments INNER JOIN orders ON orders.id = payments.order_id \
-             WHERE payments.method = 'CASH' AND orders.status = 'PAID' AND orders.shift_id = ?1",
-            params![shift_id], |r| r.get(0),
-        )?;
-        let card_total: i64 = self.conn.query_row(
+             WHERE payments.method = 'CASH' AND orders.status = 'PAID' AND {qualified_predicate} AND orders.shift_id = {id_placeholder2}"
+        );
+        let cash_total: i64 = self.conn.query_row(&cash_sql, params_from_iter(cash_args.iter()), |r| r.get(0))?;
+
+        let mut card_args = qargs.clone();
+        card_args.push(shift_id.to_string());
+        let card_sql = format!(
             "SELECT COALESCE(SUM(payments.amount_cents), 0) FROM payments INNER JOIN orders ON orders.id = payments.order_id \
-             WHERE payments.method = 'CARD' AND orders.status = 'PAID' AND orders.shift_id = ?1",
-            params![shift_id], |r| r.get(0),
-        )?;
+             WHERE payments.method = 'CARD' AND orders.status = 'PAID' AND {qualified_predicate} AND orders.shift_id = {id_placeholder2}"
+        );
+        let card_total: i64 = self.conn.query_row(&card_sql, params_from_iter(card_args.iter()), |r| r.get(0))?;
+
         Ok(ShiftStatsRow { order_count, total_sales, cash_total, card_total })
     }
 
@@ -3942,10 +4022,20 @@ impl<'a> Repo<'a> {
 
     /// Read a DRAFT order with all items + modifiers + menu item names.
     /// Returns None if no DRAFT order with that ID exists.
-    pub fn retrieve_held_order(&self, order_id: &str) -> Result<Option<HeldOrderResult>, RepoError> {
+    /// Security audit finding (pre-launch pass): previously no scope filter
+    /// -- any authenticated staff member who obtained a DRAFT order's UUID
+    /// (UUIDv7 is time-ordered, so partially predictable) from any tenant
+    /// could read that order's customer name/phone/address and items.
+    pub fn retrieve_held_order(&self, scope: &Scope, order_id: &str) -> Result<Option<HeldOrderResult>, RepoError> {
+        let (predicate, mut args) = Self::scope_predicate(scope);
+        args.push(order_id.to_string());
+        let id_placeholder = format!("?{}", args.len());
+        let sql = format!(
+            "SELECT id, customer_name, customer_phone, delivery_address FROM orders WHERE id = {id_placeholder} AND status = 'DRAFT' AND {predicate}"
+        );
         let order: Option<(String, String, Option<String>, Option<String>)> = self.conn.query_row(
-            "SELECT id, customer_name, customer_phone, delivery_address FROM orders WHERE id = ?1 AND status = 'DRAFT'",
-            params![order_id],
+            &sql,
+            params_from_iter(args.iter()),
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         ).optional().map_err(RepoError::from)?;
 
@@ -4408,12 +4498,17 @@ impl<'a> Repo<'a> {
     /// in the real schema (DRIFT_REPORT.md Finding #5, already fixed once
     /// in slice 3's `LoyaltyCardRow`/`list_loyalty_cards`) -- found
     /// reintroduced here during Slice A verification and removed again.
-    pub fn lookup_loyalty_card(&self, card_number: &str) -> Result<Option<LoyaltyCardLookup>, RepoError> {
+    /// Security audit finding (pre-launch pass): previously had no
+    /// `tenant_id` filter at all -- `card_number` is only globally UNIQUE,
+    /// not tenant-namespaced, so any cashier could read (and, via
+    /// `earn_loyalty_points`, actually mutate) another tenant's customer's
+    /// loyalty balance just by entering that tenant's real card number.
+    pub fn lookup_loyalty_card(&self, tenant_id: &str, card_number: &str) -> Result<Option<LoyaltyCardLookup>, RepoError> {
         let result = self.conn.query_row(
             "SELECT lc.card_number, c.name, lc.points, lc.tier \
              FROM loyalty_cards lc INNER JOIN customers c ON c.id = lc.customer_id \
-             WHERE lc.card_number = ?1",
-            params![card_number],
+             WHERE lc.card_number = ?1 AND lc.tenant_id = ?2",
+            params![card_number, tenant_id],
             |r| Ok(LoyaltyCardLookup {
                 card_number: r.get(0)?,
                 customer_name: r.get(1)?,
@@ -4438,9 +4533,12 @@ impl<'a> Repo<'a> {
     /// `description` -- would have actually crashed the very first call.
     pub fn earn_loyalty_points(&self, tenant_id: &str, branch_id: &str, card_number: &str, points: i64, order_id: &str) -> Result<(), RepoError> {
         let now = chrono::Utc::now().to_rfc3339();
+        // Same tenant-leak fix as lookup_loyalty_card -- without this filter
+        // a cashier could bump ANY tenant's card balance just by knowing (or
+        // guessing) their card number.
         let card_id: String = self.conn.query_row(
-            "SELECT id FROM loyalty_cards WHERE card_number = ?1",
-            params![card_number],
+            "SELECT id FROM loyalty_cards WHERE card_number = ?1 AND tenant_id = ?2",
+            params![card_number, tenant_id],
             |r| r.get(0),
         ).map_err(RepoError::from)?;
 

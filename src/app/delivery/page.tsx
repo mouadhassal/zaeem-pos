@@ -2,10 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useCurrency } from "../../hooks/useCurrency";
 import * as deliveryService from "../../lib/deliveryService";
 import type { DriverStatus } from "../../db/types";
-import {
-  Truck, Users, MapPin, History, Plus, X, Phone, Car,
-  Navigation, Star,
-} from "lucide-react";
+import { IconTruckDelivery as Truck, IconUsers as Users, IconMapPin as MapPin, IconHistory as History, IconPlus as Plus, IconX as X, IconPhone as Phone, IconCar as Car, IconNavigation as Navigation, IconStar as Star } from "@tabler/icons-react";
 
 type Tab = "active" | "drivers" | "zones" | "history";
 

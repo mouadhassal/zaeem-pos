@@ -97,6 +97,7 @@ export default function DebtPage() {
   const [payModal, setPayModal] = useState<DebtorRow | null>(null);
   const [payAmount, setPayAmount] = useState("");
   const [payNotes, setPayNotes] = useState("");
+  const [paying, setPaying] = useState(false);
 
   const [exportingPdf, setExportingPdf] = useState(false);
 
@@ -180,9 +181,10 @@ export default function DebtPage() {
   };
 
   const handlePay = async () => {
-    if (!payModal) return;
+    if (!payModal || paying) return;
     const cents = Math.round(parseFloat(payAmount || "0") * 100);
     if (cents <= 0) return;
+    setPaying(true);
     try {
       await invoke("record_debt_payment_v3", { sessionToken: token, debtorId: payModal.id, amountCents: cents, notes: payNotes || null });
       setPayModal(null);
@@ -193,6 +195,7 @@ export default function DebtPage() {
         openDetail(payModal);
       }
     } catch (err) { setError(`حدث خطأ في تسجيل الدفعة: ${realErrorText(err)}`); }
+    finally { setPaying(false); }
   };
 
   const exportPdf = async () => {
@@ -247,7 +250,7 @@ export default function DebtPage() {
         className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
       />
 
-      <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
+      <div className="zc-card overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
@@ -355,7 +358,7 @@ export default function DebtPage() {
             <input type="number" min="0" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder="المبلغ" className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500" dir="ltr" />
             <input type="text" value={payNotes} onChange={(e) => setPayNotes(e.target.value)} placeholder="ملاحظات (اختياري)" className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500" />
             <div className="flex gap-2 pt-2">
-              <button onClick={handlePay} disabled={!payAmount || parseFloat(payAmount) <= 0} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">تسديد</button>
+              <button onClick={handlePay} disabled={!payAmount || parseFloat(payAmount) <= 0 || paying} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{paying ? "جاري..." : "تسديد"}</button>
               <button onClick={() => setPayModal(null)} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
             </div>
           </div>

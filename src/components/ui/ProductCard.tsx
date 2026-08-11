@@ -1,4 +1,4 @@
-import { ShoppingCart, Plus } from "lucide-react";
+import { IconShoppingCart as ShoppingCart, IconPlus as Plus } from "@tabler/icons-react";
 import { useCurrency } from "../../hooks/useCurrency";
 
 interface Props {

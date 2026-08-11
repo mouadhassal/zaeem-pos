@@ -297,7 +297,7 @@ export default function BranchesPage() {
             <div
               key={b.id}
               onClick={() => openDetail(b)}
-              className="bg-white rounded-md border border-ink-200 p-5 space-y-4 cursor-pointer hover:border-ink-300 transition-colors"
+              className="zc-card p-5 space-y-4 cursor-pointer hover:border-ink-300 transition-colors"
             >
               {/* Name & Status */}
               <div className="flex items-center justify-between">

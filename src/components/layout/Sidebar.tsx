@@ -61,10 +61,13 @@ export default function Sidebar({ active, onNavigate }: Props) {
   const items = navItems.filter((n) => n.allowed && (hasKitchen || n.id !== "kds"));
 
   return (
-    // Narrow icon-rail, not a labelled panel -- it must not compete with the
-    // canvas/menu/order-panel for width or introduce its own background tint.
-    <aside className="w-[74px] bg-surface flex flex-col shrink-0 border-l border-line items-center" dir="rtl" data-testid="sidebar">
-      <div className="h-14 flex items-center justify-center border-b border-line shrink-0 w-full">
+    // Narrow icon-rail, colored with the brand's brown secondary accent --
+    // a deliberate contrast anchor against the light cream canvas, not a
+    // decorative tint. Its own contrast-safe tokens (--sidebar-*), not the
+    // canvas-tuned --text/--text-2, since this is the one dark surface in
+    // an otherwise light app.
+    <aside className="w-[74px] flex flex-col shrink-0 items-center" dir="rtl" data-testid="sidebar" style={{ backgroundColor: "var(--sidebar-bg)", color: "var(--sidebar-text-muted)" }}>
+      <div className="h-14 flex items-center justify-center border-b shrink-0 w-full" style={{ borderColor: "rgba(255,255,255,0.12)" }}>
         <div
           className="w-8 h-8 rounded-[9px] flex items-center justify-center text-white text-sm font-bold shrink-0"
           style={{ backgroundColor: "var(--accent)" }}
@@ -82,11 +85,13 @@ export default function Sidebar({ active, onNavigate }: Props) {
               key={item.id}
               onClick={() => (item.id === "marketplace" ? openMarketplace() : onNavigate(item.id))}
               data-testid={`sidebar-nav-${item.id}`}
-              className={`w-full flex flex-col items-center gap-1 py-2 rounded-[10px] transition-all ${
-                isActive
-                  ? "bg-accent-soft text-accent-text"
-                  : "text-text-3 hover:text-text-2 hover:bg-surface-alt"
-              }`}
+              className="w-full flex flex-col items-center gap-1 py-2 rounded-[10px] transition-all"
+              style={{
+                backgroundColor: isActive ? "var(--sidebar-active-bg)" : "transparent",
+                color: isActive ? "var(--sidebar-active-text)" : "var(--sidebar-text-muted)",
+              }}
+              onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.color = "var(--sidebar-text)"; }}
+              onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.color = "var(--sidebar-text-muted)"; }}
             >
               {ItemIcon
                 ? <ItemIcon className="w-5 h-5 shrink-0" stroke={1.75} />
@@ -98,7 +103,7 @@ export default function Sidebar({ active, onNavigate }: Props) {
       </nav>
 
       {user && (
-        <div className="p-2 border-t border-line shrink-0 w-full flex flex-col items-center gap-1.5">
+        <div className="p-2 shrink-0 w-full flex flex-col items-center gap-1.5" style={{ borderTop: "1px solid rgba(255,255,255,0.12)" }}>
           <div
             className="w-8 h-8 rounded-[9px] flex items-center justify-center text-white text-sm font-bold shrink-0 relative"
             style={{ backgroundColor: "var(--accent)" }}
@@ -106,14 +111,15 @@ export default function Sidebar({ active, onNavigate }: Props) {
           >
             {user.name[0]}
             {activeShiftId && (
-              <span className="absolute -bottom-0.5 -left-0.5 w-2 h-2 rounded-full border-2 border-surface" style={{ backgroundColor: "var(--ok)" }} />
+              <span className="absolute -bottom-0.5 -left-0.5 w-2 h-2 rounded-full border-2" style={{ backgroundColor: "var(--ok)", borderColor: "var(--sidebar-bg)" }} />
             )}
           </div>
-          <p className="text-[9px] text-text-muted text-center leading-tight">{roleLabels[user.role] || user.role}</p>
+          <p className="text-[9px] text-center leading-tight" style={{ color: "var(--sidebar-text-muted)" }}>{roleLabels[user.role] || user.role}</p>
           <button
             onClick={logout}
             aria-label="تسجيل الخروج"
-            className="p-1 rounded-[7px] text-text-muted hover:text-danger transition-colors"
+            className="p-1 rounded-[7px] hover:text-danger transition-colors"
+            style={{ color: "var(--sidebar-text-muted)" }}
           >
             <LogOut className="w-3.5 h-3.5" />
           </button>

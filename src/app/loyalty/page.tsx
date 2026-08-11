@@ -3,7 +3,7 @@ import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 import { useCurrency } from "../../hooks/useCurrency";
-import { CreditCard, Plus, Search } from "lucide-react";
+import { IconCreditCard as CreditCard, IconPlus as Plus, IconSearch as Search } from "@tabler/icons-react";
 import { IconGift, IconTag, IconPencil, IconTrash } from "@tabler/icons-react";
 
 interface Customer { id: string; name: string; phone: string; loyalty_points: number; total_orders: number; total_spent_cents: number; }
@@ -135,6 +135,7 @@ export default function LoyaltyPage() {
   }, [fetchCards, fetchCustomers, fetchTransactions, fetchTiers, fetchRewards]);
 
   const [issueError, setIssueError] = useState<string | null>(null);
+  const [issuing, setIssuing] = useState(false);
   const [cardUid, setCardUid] = useState("");
   const [showNewCustomer, setShowNewCustomer] = useState(false);
   const [newCustomerName, setNewCustomerName] = useState("");
@@ -181,8 +182,9 @@ export default function LoyaltyPage() {
   };
 
   const handleIssueCard = async () => {
-    if (!selectedCustomer || !cardUid.trim()) return;
+    if (!selectedCustomer || !cardUid.trim() || issuing) return;
     setIssueError(null);
+    setIssuing(true);
     try {
       await invoke("issue_loyalty_card_v3", { sessionToken: token, customerId: selectedCustomer, cardNumber: cardUid.trim() });
       setShowIssue(false);
@@ -191,6 +193,8 @@ export default function LoyaltyPage() {
       await fetchCards();
     } catch (err) {
       setIssueError(typeof err === "string" && err.includes("UNIQUE") ? "رقم البطاقة (UID) مستخدم مسبقاً" : "حدث خطأ في إصدار البطاقة");
+    } finally {
+      setIssuing(false);
     }
   };
 
@@ -355,7 +359,7 @@ export default function LoyaltyPage() {
           );
         })}
         {sortedTiers.length === 0 && (
-          <div className="col-span-full text-center py-6 text-ink-500 font-arabic bg-white rounded-md border border-ink-200">
+          <div className="col-span-full text-center py-6 text-ink-500 font-arabic zc-card">
             لا توجد درجات ولاء بعد -- أضف واحدة من تبويب "الدرجات"
           </div>
         )}
@@ -443,7 +447,7 @@ export default function LoyaltyPage() {
               ))}
             </select>
           </div>
-          <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
+          <div className="zc-card overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-ink-200 bg-surface-alt text-ink-400 font-arabic">
@@ -493,7 +497,7 @@ export default function LoyaltyPage() {
           </div>
 
           {rewards.length === 0 ? (
-            <div className="text-center py-12 text-ink-500 font-arabic space-y-2 bg-white rounded-md border border-ink-200">
+            <div className="text-center py-12 text-ink-500 font-arabic space-y-2 zc-card">
               <IconGift className="w-10 h-10 mx-auto text-ink-300" />
               <p>لا توجد مكافآت بعد</p>
               <p className="text-xs text-ink-400">أضف مكافآت يستبدلها العملاء بنقاطهم</p>
@@ -501,7 +505,7 @@ export default function LoyaltyPage() {
           ) : (
             <div className="space-y-2">
               {rewards.map((reward) => (
-                <div key={reward.id} className={`bg-white rounded-md border border-ink-200 p-4 flex items-center gap-4 ${!reward.is_active ? "opacity-50" : ""}`}>
+                <div key={reward.id} className={`zc-card p-4 flex items-center gap-4 ${!reward.is_active ? "opacity-50" : ""}`}>
                   <div className="w-10 h-10 rounded-sm bg-saffron-100 flex items-center justify-center flex-shrink-0">
                     <IconTag className="w-5 h-5 text-saffron-600" />
                   </div>
@@ -555,7 +559,7 @@ export default function LoyaltyPage() {
               <Plus className="w-4 h-4" /> إضافة درجة
             </button>
           </div>
-          <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
+          <div className="zc-card overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-ink-200 bg-surface-alt text-ink-400 font-arabic">
@@ -686,7 +690,7 @@ export default function LoyaltyPage() {
               {issueError && <p className="text-xs text-danger-600 mt-1 font-arabic">{issueError}</p>}
             </div>
             <div className="flex gap-2 pt-2">
-              <button onClick={handleIssueCard} disabled={!selectedCustomer || !cardUid.trim()} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">إصدار البطاقة</button>
+              <button onClick={handleIssueCard} disabled={!selectedCustomer || !cardUid.trim() || issuing} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{issuing ? "جاري..." : "إصدار البطاقة"}</button>
               <button onClick={() => { setShowIssue(false); setCardUid(""); setIssueError(null); setSelectedCustomer(""); resetNewCustomerForm(); }} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
             </div>
           </div>

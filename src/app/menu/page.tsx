@@ -185,6 +185,7 @@ export default function MenuPage() {
   const [itemForm, setItemForm] = useState<MenuItemForm>(emptyMenuItemForm);
   const [itemErrors, setItemErrors] = useState<Record<string, string>>({});
   const [deleteItemId, setDeleteItemId] = useState<string | null>(null);
+  const [deletingItem, setDeletingItem] = useState(false);
   const [savingItem, setSavingItem] = useState(false);
   const [itemPhoto, setItemPhoto] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -196,6 +197,7 @@ export default function MenuPage() {
   const [categoryForm, setCategoryForm] = useState<CategoryForm>(emptyCategoryForm);
   const [categoryErrors, setCategoryErrors] = useState<Record<string, string>>({});
   const [deleteCategoryId, setDeleteCategoryId] = useState<string | null>(null);
+  const [deletingCategory, setDeletingCategory] = useState(false);
   const [categoryItemCounts, setCategoryItemCounts] = useState<Record<string, number>>({});
   const [categoryPhoto, setCategoryPhoto] = useState<string | null>(null);
   const [uploadingCategoryPhoto, setUploadingCategoryPhoto] = useState(false);
@@ -210,6 +212,7 @@ export default function MenuPage() {
   const [comboErrors, setComboErrors] = useState<Record<string, string>>({});
   const [savingCombo, setSavingCombo] = useState(false);
   const [deleteComboId, setDeleteComboId] = useState<string | null>(null);
+  const [deletingCombo, setDeletingCombo] = useState(false);
 
   // Happy Hour tab
   const [happyHourRules, setHappyHourRules] = useState<HappyHourRule[]>([]);
@@ -405,13 +408,16 @@ export default function MenuPage() {
   };
 
   const confirmDeleteItem = async () => {
-    if (!deleteItemId) return;
+    if (!deleteItemId || deletingItem) return;
+    setDeletingItem(true);
     try {
       await invoke("delete_menu_item_v3", { sessionToken: token, itemId: deleteItemId });
       setDeleteItemId(null);
       await fetchAll();
     } catch {
       setError("حدث خطأ في الحذف");
+    } finally {
+      setDeletingItem(false);
     }
   };
 
@@ -528,13 +534,16 @@ export default function MenuPage() {
   };
 
   const confirmDeleteCategory = async () => {
-    if (!deleteCategoryId) return;
+    if (!deleteCategoryId || deletingCategory) return;
+    setDeletingCategory(true);
     try {
       await invoke("delete_category_v3", { sessionToken: token, categoryId: deleteCategoryId });
       setDeleteCategoryId(null);
       await fetchAll();
     } catch {
       setError("حدث خطأ في الحذف");
+    } finally {
+      setDeletingCategory(false);
     }
   };
 
@@ -592,13 +601,16 @@ export default function MenuPage() {
   };
 
   const confirmDeleteCombo = async () => {
-    if (!deleteComboId) return;
+    if (!deleteComboId || deletingCombo) return;
+    setDeletingCombo(true);
     try {
       await invoke("delete_combo_meal_v3", { sessionToken: token, comboId: deleteComboId });
       setDeleteComboId(null);
       await fetchAll();
     } catch {
       setError("حدث خطأ في الحذف");
+    } finally {
+      setDeletingCombo(false);
     }
   };
 
@@ -796,7 +808,7 @@ export default function MenuPage() {
             </select>
           </div>
 
-          <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
+          <div className="zc-card overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
@@ -896,7 +908,7 @@ export default function MenuPage() {
             {categories.map((cat) => (
               <div
                 key={cat.id}
-                className="bg-white rounded-md border border-ink-200 p-4 flex items-center gap-4"
+                className="zc-card p-4 flex items-center gap-4"
               >
                 <div
                   className="w-10 h-10 rounded-full flex-shrink-0"
@@ -974,7 +986,7 @@ export default function MenuPage() {
                 return (
                   <div
                     key={combo.id}
-                    className="bg-white rounded-md border border-ink-200 p-4 space-y-3"
+                    className="zc-card p-4 space-y-3"
                   >
                     <div className="flex items-center justify-between">
                       <h3 className="font-arabic font-bold text-ink-900">{combo.name}</h3>
@@ -1033,7 +1045,7 @@ export default function MenuPage() {
           )}
 
           {offerSubTab === "happyhour" && (
-            <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
+            <div className="zc-card overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
@@ -1316,9 +1328,10 @@ export default function MenuPage() {
               </button>
               <button
                 onClick={confirmDeleteItem}
-                className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
+                disabled={deletingItem}
+                className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors disabled:opacity-40"
               >
-                حذف
+                {deletingItem ? "جاري..." : "حذف"}
               </button>
             </div>
           </div>
@@ -1342,9 +1355,10 @@ export default function MenuPage() {
               </button>
               <button
                 onClick={confirmDeleteCombo}
-                className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
+                disabled={deletingCombo}
+                className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors disabled:opacity-40"
               >
-                حذف
+                {deletingCombo ? "جاري..." : "حذف"}
               </button>
             </div>
           </div>
@@ -1505,9 +1519,10 @@ export default function MenuPage() {
               </button>
               <button
                 onClick={confirmDeleteCategory}
-                className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
+                disabled={deletingCategory}
+                className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors disabled:opacity-40"
               >
-                حذف
+                {deletingCategory ? "جاري..." : "حذف"}
               </button>
             </div>
           </div>

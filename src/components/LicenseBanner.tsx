@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { checkLicense, startLicensePolling, type LicenseStatus } from "../lib/license";
-import { AlertTriangle, Clock, Lock, X } from "lucide-react";
+import { IconAlertTriangle as AlertTriangle, IconClock as Clock, IconLock as Lock, IconX as X } from "@tabler/icons-react";
 
 interface Props {
   /** Fires whenever the resolved status changes, so a parent (PosLayout)

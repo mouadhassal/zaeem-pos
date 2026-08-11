@@ -357,7 +357,7 @@ export default function CustomersPage() {
       />
 
       {/* Table */}
-      <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
+      <div className="zc-card overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">

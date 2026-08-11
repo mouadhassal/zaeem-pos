@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
-import { Bot, Send, User, Sparkles } from "lucide-react";
+import { IconRobot as Bot, IconSend as Send, IconUser as User, IconSparkles as Sparkles } from "@tabler/icons-react";
 import { IconChartBar, IconPackage, IconTrophy, IconUsers, IconAlertTriangle, IconBulb } from "@tabler/icons-react";
 
 interface Message {
@@ -117,13 +117,21 @@ export default function AIPage() {
 
   return (
     <div className="h-full flex flex-col" dir="rtl">
-      <div className="bg-saffron-600 text-white px-6 py-4 flex items-center gap-3">
-        <Bot className="w-6 h-6" />
-        <div>
-          <h1 className="font-bold">المساعد الذكي للمطعم</h1>
-          <p className="text-saffron-100 text-xs">مدعوم بالذكاء الاصطناعي -- يجيب من بيانات مطعمك الحقيقية فقط</p>
+      {/* 2026-08-11: this used to be a full-bleed saffron-600 header bar --
+          the only page in the app styled that way (every other page uses
+          a plain canvas header, see dashboard/page.tsx), which read as
+          visually broken/inconsistent rather than "special." Matched to
+          the rest of the app's actual header pattern instead of inventing
+          a one-off "AI page" style. */}
+      <div className="px-6 py-4 flex items-center gap-3 bg-canvas border-b border-ink-200">
+        <div className="w-10 h-10 rounded-md bg-saffron-50 flex items-center justify-center shrink-0">
+          <Bot className="w-5 h-5 text-saffron-600" />
         </div>
-        <div className="mr-auto flex items-center gap-1 bg-saffron-500/30 px-3 py-1 rounded-full text-xs">
+        <div>
+          <h1 className="text-xl font-bold text-ink-900">المساعد الذكي للمطعم</h1>
+          <p className="text-ink-500 text-xs">مدعوم بالذكاء الاصطناعي -- يجيب من بيانات مطعمك الحقيقية فقط</p>
+        </div>
+        <div className="mr-auto flex items-center gap-1 bg-saffron-50 text-saffron-600 px-3 py-1 rounded-full text-xs font-medium">
           <Sparkles className="w-3 h-3" />
           <span>مميز</span>
         </div>
@@ -150,7 +158,7 @@ export default function AIPage() {
             <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${msg.role === "assistant" ? "bg-saffron-100 text-saffron-600" : "bg-ink-100 text-ink-600"}`}>
               {msg.role === "assistant" ? <Bot className="w-4 h-4" /> : <User className="w-4 h-4" />}
             </div>
-            <div className={`max-w-[80%] rounded-md p-4 text-sm leading-relaxed ${
+            <div className={`max-w-[80%] rounded-lg p-4 text-sm leading-relaxed shadow-sh-1 ${
               msg.role === "assistant" ? "bg-white border border-ink-200 text-ink-900" : "bg-saffron-600 text-white"
             }`}>
               <div className="whitespace-pre-wrap font-arabic" data-testid="ai-chat-message-text">{msg.content}</div>
@@ -166,7 +174,7 @@ export default function AIPage() {
             <div className="w-8 h-8 rounded-full bg-saffron-100 text-saffron-600 flex items-center justify-center">
               <Bot className="w-4 h-4" />
             </div>
-            <div className="bg-white rounded-md p-4 border border-ink-200">
+            <div className="bg-white rounded-lg p-4 border border-ink-200 shadow-sh-1">
               <div className="flex gap-1">
                 <span className="w-2 h-2 bg-saffron-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
                 <span className="w-2 h-2 bg-saffron-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
@@ -187,7 +195,7 @@ export default function AIPage() {
               <button
                 key={action.label}
                 onClick={() => handleSend(action.query)}
-                className="px-4 py-2 rounded-sm bg-white border border-ink-200 text-sm text-ink-700 font-arabic hover:border-saffron-300 hover:text-saffron-600 transition-colors inline-flex items-center gap-1.5"
+                className="px-4 py-2 rounded-lg bg-white border border-ink-200 text-sm text-ink-700 font-arabic hover:border-saffron-300 hover:text-saffron-600 transition-colors inline-flex items-center gap-1.5"
               >
                 <action.icon className="w-4 h-4" /> {action.label}
               </button>
@@ -205,13 +213,13 @@ export default function AIPage() {
             onKeyDown={(e) => e.key === "Enter" && handleSend()}
             placeholder="اسأل عن المبيعات، المخزون، الموظفين، أو اطلب توصية..."
             data-testid="ai-chat-input"
-            className="flex-1 h-12 px-4 rounded-sm bg-white border border-ink-200 text-sm outline-none focus:border-saffron-500 font-arabic"
+            className="flex-1 h-12 px-4 rounded-lg bg-white border border-ink-200 text-sm outline-none focus:border-saffron-500 font-arabic"
           />
           <button
             onClick={() => handleSend()}
             disabled={!input.trim() || loading}
             data-testid="ai-chat-send"
-            className="h-12 w-12 rounded-sm bg-saffron-600 text-white flex items-center justify-center hover:bg-saffron-700 transition-colors disabled:opacity-40"
+            className="h-12 w-12 rounded-lg bg-saffron-600 text-white flex items-center justify-center hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
             <Send className="w-5 h-5" />
           </button>

@@ -111,19 +111,19 @@ export default function DashboardPage() {
 
       {/* KPI row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-1">
+        <div className="zc-card p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic flex items-center gap-1"><IconTrendingUp className="w-4 h-4" /> الإيرادات</p>
           <p className="text-2xl font-bold text-saffron-600 font-mono">{fmt(summary.total_revenue_cents)}</p>
         </div>
-        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-1">
+        <div className="zc-card p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic flex items-center gap-1"><IconTrendingDown className="w-4 h-4" /> المصروفات</p>
           <p className="text-2xl font-bold text-red-500 font-mono">{fmt(summary.total_costs_cents)}</p>
         </div>
-        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-1">
+        <div className="zc-card p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic flex items-center gap-1"><IconCash className="w-4 h-4" /> صافي الربح</p>
           <p className={`text-2xl font-bold font-mono ${isProfitable ? "text-green-600" : "text-red-600"}`}>{fmt(summary.total_profit_cents)}</p>
         </div>
-        <div className="bg-white rounded-md border border-ink-200 p-4 space-y-1">
+        <div className="zc-card p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic">عدد الطلبات</p>
           <p className="text-2xl font-bold text-ink-900 font-mono">{summary.branches.reduce((a, b) => a + b.order_count, 0)}</p>
         </div>
@@ -131,7 +131,7 @@ export default function DashboardPage() {
 
       {/* Debt / supplier widgets */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-white rounded-md border border-ink-200 p-4 flex items-center justify-between">
+        <div className="zc-card p-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-red-50 flex items-center justify-center">
               <IconUsers className="w-5 h-5 text-red-500" />
@@ -142,7 +142,7 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
-        <div className="bg-white rounded-md border border-ink-200 p-4 flex items-center justify-between">
+        <div className="zc-card p-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center">
               <IconTruck className="w-5 h-5 text-amber-600" />

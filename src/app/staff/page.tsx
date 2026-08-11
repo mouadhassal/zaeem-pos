@@ -76,6 +76,14 @@ const employeeSchema = z.object({
   // required on create. Left blank on edit means "don't change the PIN".
   pin: z.string().regex(/^\d{6}$/, "الرقم السري يجب أن يكون 6 أرقام").or(z.literal("")),
   is_active: z.boolean(),
+  // 2026-08-09 audit fix: this used to be silently forced to whichever
+  // branch sorted first alphabetically, with no field in this form at all
+  // -- an owner running multiple branches could add a cashier meaning
+  // "Downtown" and have them silently land somewhere else, unable to clock
+  // in or take orders where intended. Optional here (single-branch
+  // installs -- the common case -- stay frictionless); required at submit
+  // time only when there's more than one branch to choose between.
+  branchId: z.string().or(z.literal("")),
 });
 
 type EmployeeForm = z.infer<typeof employeeSchema>;
@@ -85,6 +93,7 @@ const emptyEmployeeForm: EmployeeForm = {
   role: "CASHIER",
   pin: "",
   is_active: true,
+  branchId: "",
 };
 
 const DIFF_THRESHOLD_CENTS = 5000;
@@ -129,6 +138,7 @@ export default function StaffPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [attendance, setAttendance] = useState<Attendance[]>([]);
+  const [branches, setBranches] = useState<[string, string][]>([]);
 
   const [showEmployeeModal, setShowEmployeeModal] = useState(false);
   const [editEmployeeId, setEditEmployeeId] = useState<string | null>(null);
@@ -203,15 +213,25 @@ export default function StaffPage() {
     }
   }, [token, attendanceEmployeeFilter]);
 
+  const fetchBranches = useCallback(async () => {
+    try {
+      const rows = await invoke<[string, string][]>("list_branches_v3", { sessionToken: token });
+      setBranches(rows);
+    } catch {
+      // Branch picker degrades to "no selector, single-branch behavior" --
+      // not worth surfacing a top-level page error for.
+    }
+  }, [token]);
+
   const fetchAll = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      await Promise.all([fetchEmployees(), fetchShifts(), fetchAttendance()]);
+      await Promise.all([fetchEmployees(), fetchShifts(), fetchAttendance(), fetchBranches()]);
     } finally {
       setLoading(false);
     }
-  }, [fetchEmployees, fetchShifts, fetchAttendance]);
+  }, [fetchEmployees, fetchShifts, fetchAttendance, fetchBranches]);
 
   useEffect(() => {
     fetchAll();
@@ -242,6 +262,7 @@ export default function StaffPage() {
       role: emp.role as EmployeeForm["role"],
       pin: "",
       is_active: !!emp.is_active,
+      branchId: "",
     });
     setEmployeeErrors({});
     setShowEmployeeModal(true);
@@ -262,6 +283,10 @@ export default function StaffPage() {
       setEmployeeErrors({ pin: "الرقم السري مطلوب لموظف جديد" });
       return;
     }
+    if (!editEmployeeId && branches.length > 1 && !parsed.data.branchId) {
+      setEmployeeErrors({ branchId: "يرجى اختيار الفرع" });
+      return;
+    }
     setSavingEmployee(true);
     try {
       if (editEmployeeId) {
@@ -279,8 +304,12 @@ export default function StaffPage() {
           await invoke("set_staff_active_v3", { sessionToken: token, targetStaffId: editEmployeeId, isActive: parsed.data.is_active });
         }
       } else {
-        const branches = await invoke<[string, string][]>("list_branches_v3", { sessionToken: token });
-        const targetBranchId = branches[0]?.[0] ?? null;
+        // 2026-08-09 audit fix: previously always `branches[0]` (whichever
+        // sorted first alphabetically) with no way for the owner to pick.
+        // Single-branch installs (the common case) still need no selector
+        // at all; multi-branch owners now get a real dropdown, enforced
+        // above.
+        const targetBranchId = parsed.data.branchId || branches[0]?.[0] || null;
         const newId = await invoke<string>("create_staff_v3", {
           sessionToken: token,
           targetBranchId,
@@ -413,7 +442,7 @@ export default function StaffPage() {
       {/* TAB: Employees */}
       {tab === "employees" && (
         <div className="space-y-4">
-          <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
+          <div className="zc-card overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
@@ -537,7 +566,7 @@ export default function StaffPage() {
             </select>
           </div>
 
-          <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
+          <div className="zc-card overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
@@ -666,7 +695,7 @@ export default function StaffPage() {
                   return (
                     <div
                       key={emp.id}
-                      className="bg-white rounded-md border border-ink-200 p-5 space-y-3"
+                      className="zc-card p-5 space-y-3"
                     >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
@@ -732,7 +761,7 @@ export default function StaffPage() {
                 })}
               </div>
 
-              <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
+              <div className="zc-card overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
@@ -823,7 +852,7 @@ export default function StaffPage() {
                 </button>
               </div>
 
-              <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
+              <div className="zc-card overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
@@ -920,6 +949,25 @@ export default function StaffPage() {
                   <p className="text-xs text-red-500 mt-1 font-arabic">{employeeErrors.role}</p>
                 )}
               </div>
+
+              {!editEmployeeId && branches.length > 1 && (
+                <div>
+                  <label className="block text-sm font-arabic text-ink-900 mb-1">الفرع *</label>
+                  <select
+                    value={employeeForm.branchId}
+                    onChange={(e) => setEmployeeForm((p) => ({ ...p, branchId: e.target.value }))}
+                    className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+                  >
+                    <option value="">اختر الفرع...</option>
+                    {branches.map(([id, name]) => (
+                      <option key={id} value={id}>{name}</option>
+                    ))}
+                  </select>
+                  {employeeErrors.branchId && (
+                    <p className="text-xs text-red-500 mt-1 font-arabic">{employeeErrors.branchId}</p>
+                  )}
+                </div>
+              )}
 
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">

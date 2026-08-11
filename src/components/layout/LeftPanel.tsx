@@ -1,6 +1,6 @@
 import { useCartStore } from "../../stores/cartStore";
 import EmptyState from "../ui/EmptyState";
-import { Trash2, Plus, Minus, Hash } from "lucide-react";
+import { IconTrash as Trash2, IconPlus as Plus, IconMinus as Minus, IconHash as Hash } from "@tabler/icons-react";
 import { useCurrency } from "../../hooks/useCurrency";
 
 interface Props {

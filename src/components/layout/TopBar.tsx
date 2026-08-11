@@ -2,6 +2,10 @@ import { useState, useEffect } from "react";
 import { IconBell as Bell } from "@tabler/icons-react";
 import { useAuthStore } from "../../stores/authStore";
 
+const ROLE_LABEL: Record<string, string> = {
+  OWNER: "المالك", MANAGER: "المشرف", CASHIER: "الكاشير", KITCHEN: "المطبخ",
+};
+
 export default function TopBar() {
   const user = useAuthStore((s) => s.user);
   const [logo, setLogo] = useState<string | null>(null);
@@ -34,7 +38,18 @@ export default function TopBar() {
           >
             {user?.name?.[0] || "W"}
           </div>
-          <span className="text-sm text-text-2 hidden md:block">{user?.name || "W"}</span>
+          {/* 2026-08-10: this used to be `hidden md:block` -- on a narrow
+              window/small POS touchscreen, the ONLY indication of who's
+              logged in was a single-letter avatar (two staff whose names
+              start with the same letter were indistinguishable). Always
+              visible now; role shown underneath so "owner vs cashier on
+              the same device" is never ambiguous at a glance. */}
+          <div className="flex flex-col leading-tight">
+            <span className="text-sm text-text-2 font-medium">{user?.name || "W"}</span>
+            {user?.role && (
+              <span className="text-[10px] text-text-muted">{ROLE_LABEL[user.role] ?? user.role}</span>
+            )}
+          </div>
         </div>
       </div>
     </header>

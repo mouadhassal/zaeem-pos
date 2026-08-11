@@ -5,20 +5,17 @@ import SplashScreen from "./components/SplashScreen";
 import { checkForUpdatesSilently } from "./lib/autoUpdate";
 import { startMemoryMonitoring, measureStartup, startFpsMonitor } from "./lib/performance";
 import { logger } from "./lib/logger";
-import "@fontsource/inter/400.css";
-import "@fontsource/inter/500.css";
-import "@fontsource/inter/600.css";
-import "@fontsource/inter/700.css";
-import "@fontsource/tajawal/400.css";
-import "@fontsource/tajawal/500.css";
-import "@fontsource/tajawal/700.css";
-import "@fontsource/tajawal/800.css";
-import "@fontsource/jetbrains-mono/400.css";
-import "@fontsource/jetbrains-mono/500.css";
-import "@fontsource/jetbrains-mono/600.css";
-import "@fontsource/jetbrains-mono/700.css";
-import "@fontsource/space-grotesk/500.css";
-import "@fontsource/space-grotesk/700.css";
+// ZAEEM_DESIGN_SYSTEM.md §2: Poppins/Cairo for headings & UI, Manrope/Cairo
+// for body, IBM Plex Mono (tabular) for every numeral -- self-hosted via
+// @fontsource, not a CDN <link>, since this app must render correctly on a
+// shopfront machine with no reliable internet.
+import "@fontsource/poppins/500.css";
+import "@fontsource/poppins/600.css";
+import "@fontsource/manrope/400.css";
+import "@fontsource/manrope/500.css";
+import "@fontsource/cairo/400.css";
+import "@fontsource/cairo/500.css";
+import "@fontsource/cairo/600.css";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";

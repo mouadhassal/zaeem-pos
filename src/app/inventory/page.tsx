@@ -3,8 +3,8 @@ import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
-import { Package, Search, Edit3, ChevronDown, ChevronUp, ShoppingCart } from "lucide-react";
-import { IconPencil, IconTrash, IconClipboardList, IconEye, IconPackageImport, IconX, IconCash } from "@tabler/icons-react";
+import { IconPackage as Package, IconSearch as Search, IconEdit as Edit3, IconChevronDown as ChevronDown, IconChevronUp as ChevronUp, IconShoppingCart as ShoppingCart } from "@tabler/icons-react";
+import { IconPencil, IconTrash, IconClipboardList, IconEye, IconPackageImport, IconX, IconCash, IconTruckDelivery, IconAlertTriangle } from "@tabler/icons-react";
 import EmptyState from "../../components/ui/EmptyState";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 import { useCurrency } from "../../hooks/useCurrency";
@@ -207,6 +207,7 @@ type TabKey = "stock" | "suppliers" | "movements" | "alerts" | "purchases";
 export default function InventoryPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("stock");
   const [showAddIngredient, setShowAddIngredient] = useState(false);
+  const [showReceiveStock, setShowReceiveStock] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const { currency } = useCurrency();
   useEffect(() => { cachedCurrency = currency; }, [currency]);
@@ -224,6 +225,18 @@ export default function InventoryPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-ink-900">إدارة المخزون</h1>
         <div className="flex gap-2">
+          {/* 2026-08-11 fix: "receiving goods" (a formal purchase order ->
+              received stock -> supplier balance updates) previously had NO
+              entry point anywhere near the Stock tab -- the only way in was
+              Suppliers tab -> "طلبية جديدة" -> Purchase Orders tab -> small
+              receive icon, three tabs and zero labels away from where a
+              user naturally looks for "I just got a delivery, log it."
+              This button is that missing front door: one click, straight
+              into the same proven CreatePOModal/ReceivePOModal flow. */}
+          <button onClick={() => setShowReceiveStock(true)} className="h-10 px-5 rounded-sm bg-white border-2 border-saffron-600 text-saffron-600 text-sm font-bold hover:bg-saffron-50 active:scale-[0.98] transition-all duration-150 flex items-center gap-1.5">
+            <IconTruckDelivery className="w-4 h-4" />
+            استلام بضاعة
+          </button>
           <button onClick={() => setShowAddIngredient(true)} className="h-10 px-5 rounded-sm bg-saffron-600 text-white text-sm font-medium hover:bg-saffron-700 active:scale-[0.98] transition-all duration-150">
             + إضافة مادة
           </button>
@@ -237,11 +250,113 @@ export default function InventoryPage() {
 
       <TabBar tabs={tabs} active={activeTab} onChange={setActiveTab} />
 
-      {activeTab === "stock" && <StockTab refreshKey={refreshKey} />}
+      {activeTab === "stock" && <StockTab refreshKey={refreshKey} onReceiveStock={() => setShowReceiveStock(true)} />}
       {activeTab === "suppliers" && <SuppliersTab />}
       {activeTab === "alerts" && <AlertsTab />}
       {activeTab === "movements" && <MovementsTab />}
       {activeTab === "purchases" && <PurchasesTab />}
+
+      {showReceiveStock && (
+        <ReceiveStockEntryModal
+          onClose={() => setShowReceiveStock(false)}
+          onReceived={() => { setShowReceiveStock(false); setRefreshKey((k) => k + 1); }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* Entry point for "I got a delivery, log it" -- lists purchase orders
+   that are actually receivable (PENDING) so the user picks one instead of
+   having to know a PO must exist first; if none exist, offers to create
+   one right here rather than dead-ending. Reuses CreatePOModal/
+   ReceivePOModal as-is, so behavior stays identical to the existing
+   Purchase Orders tab flow -- this is purely a discoverability fix, not a
+   new receiving mechanism. */
+function ReceiveStockEntryModal({ onClose, onReceived }: { onClose: () => void; onReceived: () => void }) {
+  const token = useAuthStore((s) => s.token);
+  const [pending, setPending] = useState<PurchaseOrder[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [receiveTarget, setReceiveTarget] = useState<PurchaseOrder | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+
+  const fetchPending = useCallback(async () => {
+    setLoading(true);
+    try {
+      const rows = await invoke<PurchaseOrder[]>("list_purchase_orders_v3", { sessionToken: token });
+      setPending(rows.filter((po) => po.status === "PENDING"));
+    } catch (err) {
+      setLoadError(`حدث خطأ في تحميل الطلبيات: ${realErrorText(err)}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => { fetchPending(); }, [fetchPending]);
+
+  if (showCreate) {
+    return (
+      <CreatePOModal
+        onClose={() => setShowCreate(false)}
+        onSaved={() => { setShowCreate(false); fetchPending(); }}
+      />
+    );
+  }
+
+  if (receiveTarget) {
+    return (
+      <ReceivePOModal
+        po={receiveTarget}
+        onClose={() => setReceiveTarget(null)}
+        onSaved={onReceived}
+      />
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6 space-y-4" dir="rtl">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-bold text-ink-900">استلام بضاعة</h2>
+          <button onClick={onClose} className="text-ink-500 hover:text-ink-700"><IconX className="w-5 h-5" /></button>
+        </div>
+        <p className="text-sm text-ink-500">اختر طلبية الشراء التي وصلت لتسجيل الكميات المستلمة وتحديث المخزون تلقائياً.</p>
+        {loadError && <p className="text-sm text-red-500">{loadError}</p>}
+
+        {loading ? (
+          <div className="py-10 text-center text-ink-500 text-sm">جاري التحميل...</div>
+        ) : pending.length === 0 ? (
+          <div className="py-8 text-center space-y-3">
+            <p className="text-sm text-ink-500">لا توجد طلبيات شراء بانتظار الاستلام حالياً.</p>
+            <button onClick={() => setShowCreate(true)} className="h-10 px-5 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">
+              + إنشاء طلبية شراء جديدة
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {pending.map((po) => (
+              <button
+                key={po.id}
+                onClick={() => setReceiveTarget(po)}
+                className="w-full flex items-center justify-between p-3 rounded-sm border-2 border-ink-200 hover:border-saffron-600 hover:bg-saffron-50 transition-colors text-right"
+              >
+                <div>
+                  <div className="font-bold text-ink-900 text-sm">{po.supplier_name}</div>
+                  <div className="text-xs text-ink-400 font-mono">{po.created_at.slice(0, 10)} · #{po.id.slice(0, 8)}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono font-bold text-saffron-600">{formatCurrency(po.total_cents)}</span>
+                  <IconPackageImport className="w-5 h-5 text-saffron-600" />
+                </div>
+              </button>
+            ))}
+            <button onClick={() => setShowCreate(true)} className="w-full h-10 rounded-sm border-2 border-dashed border-ink-200 text-ink-500 text-sm font-medium hover:border-saffron-600 hover:text-saffron-600 transition-colors">
+              + طلبية جديدة لمورد آخر
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -276,7 +391,7 @@ function TabBar({
 
 /* ============= TAB 1: المخزون ============= */
 
-function StockTab({ refreshKey }: { refreshKey: number }) {
+function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiveStock: () => void }) {
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [filtered, setFiltered] = useState<Ingredient[]>([]);
   const [search, setSearch] = useState("");
@@ -339,6 +454,8 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
     );
   }
 
+  const lowStockCount = ingredients.filter((i) => i.current_stock <= i.min_stock).length;
+
   return (
     <div className="space-y-4">
       {loadError && (
@@ -346,6 +463,18 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
       )}
       {actionError && (
         <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{actionError}</div>
+      )}
+      {lowStockCount > 0 && (
+        <button
+          onClick={onReceiveStock}
+          className="w-full flex items-center justify-between p-3 rounded-sm bg-amber-50 border border-amber-200 hover:border-amber-400 transition-colors text-right"
+        >
+          <span className="flex items-center gap-2 text-sm text-amber-700 font-medium">
+            <IconAlertTriangle className="w-4 h-4" />
+            {lowStockCount} مادة عند الحد الأدنى أو أقل -- اضغط لاستلام بضاعة جديدة
+          </span>
+          <IconPackageImport className="w-4 h-4 text-amber-600" />
+        </button>
       )}
       <div className="relative max-w-sm">
         <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-500" />
@@ -358,7 +487,7 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
         />
       </div>
 
-      <div className="bg-white rounded-md border border-ink-200 overflow-hidden">
+      <div className="zc-card overflow-hidden">
         <div className="grid grid-cols-7 gap-4 px-6 py-3 bg-white/80 border-b border-ink-200">
           <div className="text-xs font-semibold text-ink-400">المادة</div>
           <div className="text-xs font-semibold text-ink-400">الوحدة</div>
@@ -412,14 +541,14 @@ function StockTab({ refreshKey }: { refreshKey: number }) {
                   <button
                     onClick={() => setAddTarget(ing)}
                     className="p-2 rounded-sm text-ink-500 hover:text-saffron-600 hover:bg-saffron-50 transition-colors"
-                    title="إضافة كمية"
+                    title="تعديل يدوي: إضافة كمية (بدون طلبية شراء)"
                   >
                     <ChevronUp className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => setRemoveTarget(ing)}
                     className="p-2 rounded-sm text-ink-500 hover:text-red-500 hover:bg-red-50 transition-colors"
-                    title="خصم كمية"
+                    title="تعديل يدوي: خصم كمية (تالف، هالك...)"
                   >
                     <ChevronDown className="w-4 h-4" />
                   </button>
@@ -495,10 +624,13 @@ function AddStockModal({
   };
 
   return (
-    <Modal open={!!target} onClose={onClose} title="إضافة كمية">
+    <Modal open={!!target} onClose={onClose} title="تعديل يدوي -- إضافة كمية">
       <div className="space-y-3">
         <p className="text-sm text-ink-900">
           المادة: <span className="font-bold">{target.name}</span>
+        </p>
+        <p className="text-xs text-ink-500 bg-amber-50 border border-amber-200 rounded-sm p-2">
+          هذا تعديل يدوي للمخزون فقط -- لا يرتبط بمورد ولا يسجّل تكلفة شراء. لاستلام بضاعة فعلية من مورد استخدم زر "استلام بضاعة" أعلى الصفحة.
         </p>
         <input
           type="number"
@@ -710,6 +842,7 @@ function EditIngredientModal({
   const [cost, setCost] = useState(0);
   const [minStock, setMinStock] = useState(0);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (target) {
@@ -718,6 +851,7 @@ function EditIngredientModal({
       setCost(target.cost_cents_per_unit);
       setMinStock(target.min_stock);
       setErrors({});
+      setSaving(false);
     }
   }, [target]);
 
@@ -739,6 +873,7 @@ function EditIngredientModal({
       setErrors(fieldErrors);
       return;
     }
+    setSaving(true);
     try {
       const token = useAuthStore.getState().token;
       await invoke("update_ingredient_v3", {
@@ -753,6 +888,8 @@ function EditIngredientModal({
       onClose();
     } catch {
       setErrors({ _form: "حدث خطأ في الحفظ" });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -813,9 +950,10 @@ function EditIngredientModal({
         <div className="flex gap-2 pt-2">
           <button
             onClick={handleSubmit}
-            className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+            disabled={saving}
+            className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
-            حفظ
+            {saving ? "جاري..." : "حفظ"}
           </button>
           <button
             onClick={onClose}
@@ -942,7 +1080,7 @@ function SuppliersTab() {
         </button>
       </div>
 
-      <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
+      <div className="zc-card overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
@@ -1187,6 +1325,7 @@ function SupplierModal({
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -1200,6 +1339,7 @@ function SupplierModal({
         setEmail("");
       }
       setErrors({});
+      setSaving(false);
     }
   }, [open, target]);
 
@@ -1218,6 +1358,7 @@ function SupplierModal({
       setErrors(fieldErrors);
       return;
     }
+    setSaving(true);
     try {
       if (isEdit) {
         await invoke("update_supplier_v3", {
@@ -1239,6 +1380,8 @@ function SupplierModal({
       onClose();
     } catch {
       setErrors({ _form: "حدث خطأ في الحفظ" });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -1276,9 +1419,10 @@ function SupplierModal({
         <div className="flex gap-2 pt-2">
           <button
             onClick={handleSubmit}
-            className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
+            disabled={saving}
+            className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
-            {isEdit ? "حفظ" : "إضافة"}
+            {saving ? "جاري..." : isEdit ? "حفظ" : "إضافة"}
           </button>
           <button
             onClick={onClose}
@@ -1377,7 +1521,7 @@ function PurchasesTab() {
         </button>
       </div>
 
-      <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
+      <div className="zc-card overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
@@ -1457,6 +1601,7 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
   const [items, setItems] = useState<{ ingredient_id: string; quantity_ordered: number; unit_cost_cents: number }[]>([]);
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -1480,7 +1625,17 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
   const total = items.reduce((sum, item) => sum + item.quantity_ordered * item.unit_cost_cents, 0);
 
   const handleCreate = async () => {
-    if (!selectedSupplier || items.length === 0) return;
+    if (!selectedSupplier || items.length === 0 || saving) return;
+    // 2026-08-09 audit fix: line items were sent to the backend completely
+    // unvalidated -- an unselected ingredient or a manually-typed negative
+    // quantity/cost (the HTML min="0" doesn't actually block typing "-5")
+    // went straight through to create_purchase_order_with_items_v3.
+    if (items.some((item) => !item.ingredient_id || item.quantity_ordered <= 0 || item.unit_cost_cents < 0)) {
+      setError("تأكد من اختيار مادة لكل صنف وأن الكمية أكبر من صفر والسعر غير سالب");
+      return;
+    }
+    setSaving(true);
+    setError(null);
     try {
       await invoke("create_purchase_order_with_items_v3", {
         sessionToken: token,
@@ -1491,6 +1646,8 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
       onSaved();
     } catch {
       setError("حدث خطأ في إنشاء الطلبية");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -1536,7 +1693,7 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
           </div>
 
           <div className="flex gap-2 pt-2">
-            <button onClick={handleCreate} disabled={!selectedSupplier || items.length === 0} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">إنشاء الطلبية</button>
+            <button onClick={handleCreate} disabled={!selectedSupplier || items.length === 0 || saving} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{saving ? "جاري..." : "إنشاء الطلبية"}</button>
             <button onClick={onClose} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors">إلغاء</button>
           </div>
         </div>
@@ -1554,6 +1711,7 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
   const [receiveError, setReceiveError] = useState<string | null>(null);
   const [amountPaid, setAmountPaid] = useState("");
   const [payMethod, setPayMethod] = useState<"CASH" | "BANK" | "CARD">("CASH");
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -1572,6 +1730,9 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
   };
 
   const handleReceive = async () => {
+    if (saving) return;
+    setSaving(true);
+    setReceiveError(null);
     try {
       const amountPaidCents = Math.round(parseFloat(amountPaid || "0") * 100);
       await invoke("receive_purchase_order_v3", {
@@ -1584,6 +1745,8 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
       onSaved();
     } catch (err) {
       setReceiveError(`حدث خطأ في الاستلام: ${realErrorText(err)}`);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -1637,7 +1800,7 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
           </div>
 
           <div className="flex gap-2 pt-2">
-            <button onClick={handleReceive} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">تأكيد الاستلام</button>
+            <button onClick={handleReceive} disabled={saving} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{saving ? "جاري..." : "تأكيد الاستلام"}</button>
             <button onClick={onClose} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors">إلغاء</button>
           </div>
         </div>
@@ -1880,7 +2043,7 @@ function MovementsTab() {
         </div>
       </div>
 
-      <div className="bg-white rounded-md border border-ink-200 overflow-x-auto">
+      <div className="zc-card overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
@@ -2053,7 +2216,7 @@ function AlertsTab() {
       {lowStock.map((ing) => (
         <div
           key={ing.id}
-          className="bg-white rounded-md border border-ink-200 p-4 flex items-center justify-between"
+          className="zc-card p-4 flex items-center justify-between"
         >
           <div className="space-y-1">
             <h3 className="font-bold text-ink-900">{ing.name}</h3>
