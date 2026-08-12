@@ -461,7 +461,11 @@ pub async fn run_tick(
     config_dir: &std::path::Path,
 ) -> Result<usize, rusqlite::Error> {
     let (batch, orders_payload, suppliers_payload, supplier_payments_payload, staff_payload) = {
-        let conn = db.lock().unwrap();
+        // Recovers from a poisoned lock instead of panicking -- this runs
+        // on a 30s background timer with no caller to catch a panic; once
+        // poisoned, a plain .unwrap() here would kill sync permanently for
+        // the rest of the process's life with no user-visible error at all.
+        let conn = db.lock().unwrap_or_else(|e| e.into_inner());
         let batch = due_batch(&conn, batch_limit)?;
         if batch.is_empty() {
             return Ok(0);
@@ -474,7 +478,7 @@ pub async fn run_tick(
 
     let result = send_batch(&orders_payload, &suppliers_payload, &supplier_payments_payload, &staff_payload, config_dir).await;
 
-    let conn = db.lock().unwrap();
+    let conn = db.lock().unwrap_or_else(|e| e.into_inner());
     match result {
         Ok(()) => {
             let ids: Vec<String> = batch.iter().map(|r| r.id.clone()).collect();

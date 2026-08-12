@@ -183,9 +183,16 @@ pub(crate) fn apply_draft_impl(conn: &mut rusqlite::Connection, session_token: &
     }
 
     for item in &draft.items {
+        // Was .expect("category should exist by now") -- trusted that every
+        // item.category_name in an LLM-drafted menu exactly matches a
+        // category name created a few lines above. Any mismatch (the model
+        // hallucinates, mis-cases, or varies whitespace on a category name)
+        // panicked mid-import, killing the transaction after some
+        // categories/items were already created. A real error lets the
+        // transaction roll back cleanly instead.
         let cat_id = cat_name_to_id
             .get(&item.category_name)
-            .expect("category should exist by now");
+            .ok_or_else(|| format!("Item '{}' references category '{}', which was not in the draft's category list", item.ar_name, item.category_name))?;
         repo.create_menu_item(&actor.tenant_id, &item.ar_name, cat_id, item.price_cents, 0, None, None)
             .map_err(|e| format!("Failed to create item '{}': {}", item.ar_name, e))?;
         items_created += 1;

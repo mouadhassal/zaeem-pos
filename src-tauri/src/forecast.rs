@@ -158,7 +158,11 @@ pub fn forecast_demand(conn: &Connection, scope: &Scope) -> Result<DemandForecas
             });
         }
     }
-    items.sort_by(|a, b| a.date.cmp(&b.date).then(b.predicted_quantity.partial_cmp(&a.predicted_quantity).unwrap()));
+    // unwrap_or(Equal) instead of unwrap() -- predicted_quantity can be NaN
+    // on a degenerate real-data case (e.g. a zero-weeks-with-data divisor
+    // upstream), which would otherwise panic this sort mid-command and
+    // kill whatever Tauri command surfaces the forecast to the UI.
+    items.sort_by(|a, b| a.date.cmp(&b.date).then(b.predicted_quantity.partial_cmp(&a.predicted_quantity).unwrap_or(std::cmp::Ordering::Equal)));
 
     let ingredients = forecast_ingredients(conn, scope, &items)?;
     Ok(DemandForecast { items, ingredients })

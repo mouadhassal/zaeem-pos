@@ -135,7 +135,13 @@ impl CloudLicenseState {
     /// Never touches the network -- just combines whatever the last
     /// `refresh_from_cloud` and the offline evaluator's own 6h timer computed.
     pub fn cached_status(&self) -> LicenseStatus {
-        let cache = self.cache.lock().unwrap();
+        // Recovers from a poisoned lock instead of panicking -- this is a
+        // pure in-process cache with no invariant a panic elsewhere could
+        // leave broken, and it's read by nearly every command's license
+        // gate, so a poisoned Mutex here (some unrelated thread panicking
+        // while holding it) would otherwise turn one panic into "every
+        // command in the app panics forever."
+        let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         combined_status(cache.last_successful_check_at_ms, cache.last_verdict.as_ref(), self.offline.cached_status(), now_ms())
     }
 
@@ -147,14 +153,14 @@ impl CloudLicenseState {
     /// hot path; meant for a periodic background timer (and an initial
     /// best-effort call at boot).
     pub async fn refresh_from_cloud(&self) {
-        let config = { self.config.lock().unwrap().clone() };
+        let config = { self.config.lock().unwrap_or_else(|e| e.into_inner()).clone() };
         let Some(config) = config else { return };
         let outcome = self.transport.check(&config.license_id, &config.device_token).await;
 
         match outcome {
             CloudCheckOutcome::Success(verdict, renewal) => {
                 {
-                    let mut cache = self.cache.lock().unwrap();
+                    let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
                     cache.last_successful_check_at_ms = Some(now_ms());
                     cache.last_verdict = Some(verdict);
                 }
@@ -211,14 +217,14 @@ impl CloudLicenseState {
     /// `activate_license_v3` so a freshly-pasted activation key starts
     /// cloud-checking immediately, without requiring an app restart.
     pub fn set_config(&self, config: CloudConfig) {
-        *self.config.lock().unwrap() = Some(config);
+        *self.config.lock().unwrap_or_else(|e| e.into_inner()) = Some(config);
     }
 
     /// Writes the current cloud config to `cloud_config.json` so the NEXT
     /// boot's `load_config_from_file` also picks it up -- `set_config` alone
     /// only affects the current process's in-memory state.
     pub fn persist_cloud_config(&self) -> std::io::Result<()> {
-        let config = self.config.lock().unwrap().clone();
+        let config = self.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let Some(config) = config else { return Ok(()) };
         #[derive(serde::Serialize)]
         struct Raw<'a> {

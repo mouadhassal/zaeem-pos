@@ -175,7 +175,10 @@ fn local_ip() -> Option<std::net::IpAddr> {
 /// time. Never called for `standalone`/`satellite` mode.
 pub fn start_hub_server(app: AppHandle, db_path: &std::path::Path) {
     {
-        let mut started = HUB_SERVER_STARTED.lock().unwrap();
+        // Recovers from a poisoned lock instead of panicking -- runs at
+        // every app boot for Hub-mode terminals; a poisoned flag here has
+        // no invariant worth protecting over just proceeding.
+        let mut started = HUB_SERVER_STARTED.lock().unwrap_or_else(|e| e.into_inner());
         if *started {
             return;
         }

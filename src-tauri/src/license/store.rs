@@ -55,14 +55,18 @@ impl LicenseState {
         let file = self.load_file();
         let current_machine = fingerprint::current();
         let status = evaluate(file.as_ref(), &self.pubkey, &current_machine, now_ms());
-        *self.cached.lock().unwrap() = status.clone();
+        // Recovers from a poisoned lock instead of panicking -- same
+        // reasoning as license/cloud.rs's cache: a pure in-process cache
+        // read on nearly every command's license gate, no invariant a
+        // panic elsewhere could leave broken.
+        *self.cached.lock().unwrap_or_else(|e| e.into_inner()) = status.clone();
         status
     }
 
     /// The fast path every other command reads. Never touches disk or does
     /// crypto -- just the last value `recheck()` computed.
     pub fn cached_status(&self) -> LicenseStatus {
-        self.cached.lock().unwrap().clone()
+        self.cached.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// This device's licensed (tenant_id, branch_id), if a validly signed,
