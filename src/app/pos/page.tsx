@@ -248,6 +248,25 @@ export default function POSPage() {
   }, [items.length, maxDiscountPercent, handleHold, clearCart]);
 
   const handleTableSelect = async (table: TableData) => {
+    // Switching tables mid-order used to silently keep whatever was in the
+    // cart and, if the new table was occupied, ADD its held items on top --
+    // no clear, no warning. Two unrelated orders (or one table's unsent
+    // items plus another table's held order) would end up merged into one
+    // cart and billed together with zero indication anything went wrong.
+    // Auto-hold whatever's here under its own table first (same as the
+    // "تعليق" button) so it's never lost or merged; if there's no table to
+    // hold under yet and the destination already has its own order, block
+    // instead of guessing which items belong to which bill.
+    const current = useCartStore.getState();
+    if (current.items.length > 0 && current.tableId !== table.id) {
+      if (current.tableId) {
+        await handleHold();
+      } else if (table.status === "OCCUPIED" && table.current_order_id) {
+        setSuccessMsg("لا يمكن تبديل الطاولة الآن -- أفرغ السلة الحالية أولاً أو علّقها");
+        setTimeout(() => setSuccessMsg(null), 4000);
+        return;
+      }
+    }
     setTable(table.id, table.name);
     if (table.status === "OCCUPIED" && table.current_order_id) {
       const held = await retrieveHeldOrder(table.current_order_id);
@@ -530,10 +549,19 @@ export default function POSPage() {
               </button>
               <button
                 type="button"
-                onClick={() => { if (items.length > 0) clearCart(); }}
+                onClick={() => {
+                  if (items.length === 0) return;
+                  // Sat next to Split/Transfer/Print with identical styling
+                  // and a hover-only danger cue (useless on a touch screen)
+                  // -- one mistimed tap wiped the whole in-progress order
+                  // with no undo. Every other destructive action in this
+                  // app (void item, cancel PO, suspend staff, force-close
+                  // shift) already confirms first; this one didn't.
+                  if (window.confirm("هل تريد إلغاء الطلبية الحالية بالكامل؟ لا يمكن التراجع عن ذلك.")) clearCart();
+                }}
                 disabled={items.length === 0}
                 title="إلغاء الطلبية"
-                className="h-9 rounded-[9px] bg-surface-alt text-text-2 flex items-center justify-center hover:text-danger transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                className="h-9 rounded-[9px] bg-danger-100 text-danger-600 flex items-center justify-center hover:bg-danger-600 hover:text-white transition-colors disabled:opacity-30 disabled:pointer-events-none"
               >
                 <Trash2 className="w-4 h-4" />
               </button>

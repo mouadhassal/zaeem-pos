@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useCurrency } from "../../hooks/useCurrency";
 import * as deliveryService from "../../lib/deliveryService";
 import type { DriverStatus } from "../../db/types";
+import { realErrorText } from "../../lib/errors";
 import { IconTruckDelivery as Truck, IconUsers as Users, IconMapPin as MapPin, IconHistory as History, IconPlus as Plus, IconX as X, IconPhone as Phone, IconCar as Car, IconNavigation as Navigation, IconStar as Star } from "@tabler/icons-react";
 
 type Tab = "active" | "drivers" | "zones" | "history";
@@ -81,6 +82,7 @@ export default function DeliveryPage() {
   const [showZoneForm, setShowZoneForm] = useState(false);
   const [editingDriver, setEditingDriver] = useState<DriverRow | null>(null);
   const [editingZone, setEditingZone] = useState<ZoneRow | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
 
   const loadActive = useCallback(async () => {
     try {
@@ -112,9 +114,17 @@ export default function DeliveryPage() {
   useEffect(() => { loadAll(); }, [loadAll]);
 
   const handleUpdateStatus = async (logId: string, status: string) => {
-    await deliveryService.updateDeliveryStatus(logId, status as any);
-    loadActive();
-    loadDrivers();
+    // Had no try/catch at all -- a failed status update (expired session,
+    // license lock) left the card sitting in its old state with zero
+    // indication whether the tap registered.
+    try {
+      await deliveryService.updateDeliveryStatus(logId, status as any);
+      loadActive();
+      loadDrivers();
+    } catch (err) {
+      setStatusError(`تعذر تحديث حالة التوصيل: ${realErrorText(err)}`);
+      setTimeout(() => setStatusError(null), 5000);
+    }
   };
 
   if (loading) {
@@ -126,7 +136,12 @@ export default function DeliveryPage() {
   }
 
   return (
-    <div className="h-full flex flex-col" dir="rtl">
+    <div className="h-full flex flex-col relative" dir="rtl">
+      {statusError && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-danger-100 text-danger-600 text-sm font-arabic rounded-md px-4 py-2 shadow-sh-2">
+          {statusError}
+        </div>
+      )}
       <div className="h-14 shrink-0 flex items-center justify-between px-6 border-b border-ink-200 bg-surface-alt">
         <div className="flex items-center gap-3">
           <Truck className="w-5 h-5 text-saffron-600" />

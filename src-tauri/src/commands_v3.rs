@@ -5298,6 +5298,74 @@ mod tests {
         }
 
         #[test]
+        fn holding_a_table_twice_never_orphans_the_first_draft() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("hold_twice_no_orphan");
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 500, 250, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+
+            // Hold once (cashier rings up 1 item, gets interrupted, holds).
+            hold_order_v3_impl(
+                &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
+                vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
+                500, 0, 500, None,
+            ).expect("first hold must succeed");
+
+            // Cashier comes back, retrieves it (frontend re-adds the held
+            // items into the cart), adds another item, holds again -- this
+            // must REPLACE the first DRAFT, not leave it sitting orphaned
+            // forever alongside a second one.
+            hold_order_v3_impl(
+                &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
+                vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 2, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
+                1000, 0, 1000, None,
+            ).expect("second hold on the same table must succeed");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let draft_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM orders WHERE table_id = ?1 AND status = 'DRAFT'",
+                params![table_id], |r| r.get(0),
+            ).unwrap();
+            assert_eq!(draft_count, 1, "re-holding the same table must leave exactly one DRAFT, not orphan the previous one");
+            let remaining_total: i64 = conn.query_row(
+                "SELECT total_cents FROM orders WHERE table_id = ?1 AND status = 'DRAFT'",
+                params![table_id], |r| r.get(0),
+            ).unwrap();
+            assert_eq!(remaining_total, 1000, "the surviving DRAFT must be the second (newer) one");
+
+            // Now pay it off entirely -- create_full_order_v3 (what the
+            // frontend calls after retrieving a held order and hitting Pay)
+            // must also supersede the DRAFT, leaving zero DRAFTs behind.
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+            let order_id = create_full_order_v3_impl(
+                &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
+                vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+            ).unwrap();
+            take_payment_v3_impl(&db, &license, session, order_id, "CASH".to_string(), 1000, 0, None).unwrap();
+
+            let conn = Connection::open(&db_path).unwrap();
+            let draft_count_after_pay: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM orders WHERE table_id = ?1 AND status = 'DRAFT'",
+                params![table_id], |r| r.get(0),
+            ).unwrap();
+            assert_eq!(draft_count_after_pay, 0, "paying off a held table must leave zero orphaned DRAFTs");
+            println!("[hold] re-hold and hold-then-pay both correctly supersede the prior DRAFT instead of orphaning it");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
         fn void_order_item_v3_wrapper_succeeds_through_the_real_command() {
             let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_void_item");
             let (cashier_id, item_id) = {

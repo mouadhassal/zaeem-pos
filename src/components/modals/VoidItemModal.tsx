@@ -26,12 +26,13 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
   const [pinError, setPinError] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
   const [thresholdCents, setThresholdCents] = useState<number | null>(null);
+  const [thresholdLoadFailed, setThresholdLoadFailed] = useState(false);
 
   useEffect(() => {
     const token = useAuthStore.getState().token;
     invoke<{ void_threshold_cents: number }>("get_manager_thresholds_v3", { sessionToken: token })
       .then((r) => setThresholdCents(r.void_threshold_cents))
-      .catch(() => setThresholdCents(20000));
+      .catch(() => { setThresholdCents(20000); setThresholdLoadFailed(true); });
   }, []);
 
   // While the real threshold is still loading, default to requiring a
@@ -85,6 +86,11 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
         </div>
 
         <div className="p-6 space-y-4">
+          {thresholdLoadFailed && (
+            <p className="font-arabic text-xs text-warn bg-warn/10 rounded-sm px-3 py-2">
+              تعذر تحميل حد الموافقة -- سيتم طلب تصريح المدير احتياطياً
+            </p>
+          )}
           <div>
             <label className="font-arabic text-sm text-ink-500 mb-1.5 block">سبب الإلغاء *</label>
             <select

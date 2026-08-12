@@ -441,8 +441,8 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
       const token = useAuthStore.getState().token;
       await invoke("adjust_stock_v3", { sessionToken: token, ingredientId: ingredient.id, changeAmount: change, reason });
       await fetch();
-    } catch {
-      setActionError("حدث خطأ في تعديل المخزون");
+    } catch (err) {
+      setActionError(`حدث خطأ في تعديل المخزون: ${realErrorText(err)}`);
     }
   };
 
@@ -795,7 +795,7 @@ function AddIngredientModal({
         minStock: parsed.data.min_stock,
       });
       onSaved();
-    } catch { setErrors({ _form: "حدث خطأ في الحفظ" }); }
+    } catch (err) { setErrors({ _form: `حدث خطأ في الحفظ: ${realErrorText(err)}` }); }
     finally { setSaving(false); }
   };
 
@@ -886,8 +886,8 @@ function EditIngredientModal({
       });
       onSaved();
       onClose();
-    } catch {
-      setErrors({ _form: "حدث خطأ في الحفظ" });
+    } catch (err) {
+      setErrors({ _form: `حدث خطأ في الحفظ: ${realErrorText(err)}` });
     } finally {
       setSaving(false);
     }
@@ -1002,11 +1002,16 @@ function SuppliersTab() {
   }, [fetch]);
 
   const handleDelete = async (id: string) => {
+    // Was one click, no confirmation, unlike every sibling destructive
+    // action on this same page (cancel PO, suspend staff, force-close
+    // shift) -- a supplier can carry purchase/balance history, arguably
+    // more consequential than those, not less.
+    if (!window.confirm("هل أنت متأكد من حذف هذا المورد؟")) return;
     try {
       await invoke("delete_supplier_v3", { sessionToken: token, supplierId: id });
       await fetch();
-    } catch {
-      setActionError("حدث خطأ في حذف المورد");
+    } catch (err) {
+      setActionError(`حدث خطأ في حذف المورد: ${realErrorText(err)}`);
     }
   };
 
@@ -1378,8 +1383,8 @@ function SupplierModal({
       }
       onSaved();
       onClose();
-    } catch {
-      setErrors({ _form: "حدث خطأ في الحفظ" });
+    } catch (err) {
+      setErrors({ _form: `حدث خطأ في الحفظ: ${realErrorText(err)}` });
     } finally {
       setSaving(false);
     }
@@ -1468,8 +1473,8 @@ function PurchasesTab() {
       await invoke("cancel_purchase_order_v3", { sessionToken: token, poId: id });
       setCancelTarget(null);
       await fetch();
-    } catch {
-      setCancelError("حدث خطأ في إلغاء الطلبية");
+    } catch (err) {
+      setCancelError(`حدث خطأ في إلغاء الطلبية: ${realErrorText(err)}`);
     }
   };
 
@@ -1644,8 +1649,8 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
         items: items.map((item) => [item.ingredient_id, item.quantity_ordered, item.unit_cost_cents]),
       });
       onSaved();
-    } catch {
-      setError("حدث خطأ في إنشاء الطلبية");
+    } catch (err) {
+      setError(`حدث خطأ في إنشاء الطلبية: ${realErrorText(err)}`);
     } finally {
       setSaving(false);
     }

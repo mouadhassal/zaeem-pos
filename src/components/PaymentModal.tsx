@@ -5,6 +5,7 @@ import { useCartStore } from "../stores/cartStore";
 import { openCashDrawer } from "../lib/printer";
 import { useAuthStore } from "../stores/authStore";
 import { useCurrency } from "../hooks/useCurrency";
+import { realErrorText } from "../lib/errors";
 
 interface DebtorRow {
   id: string;
@@ -324,8 +325,8 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
                         setError(null);
                         setShowNewDebtorForm(false);
                         setNewDebtorName("");
-                      } catch {
-                        setError("حدث خطأ في إضافة المدين");
+                      } catch (err) {
+                        setError(`حدث خطأ في إضافة المدين: ${realErrorText(err)}`);
                       }
                     }}
                     disabled={!newDebtorName.trim()}

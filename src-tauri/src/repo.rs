@@ -3939,10 +3939,44 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
+    /// If this table already has a DRAFT order sitting under it (from an
+    /// earlier "تعليق"/hold that's now being replaced -- by a re-hold, or
+    /// by finally paying after retrieving it), delete it and its items/
+    /// modifiers before inserting the new order row. Without this, every
+    /// hold -> retrieve -> hold-or-pay cycle -- a completely normal,
+    /// encouraged workflow -- silently orphaned the previous DRAFT forever
+    /// (never paid, never cancelled, just left sitting in the table),
+    /// polluting `reports`'s stale-open-orders reconciliation with false
+    /// positives on every single use of "hold." A DRAFT is never synced to
+    /// the cloud (`hold_order_v3` never enqueues a sync_outbox entry for
+    /// one -- intentional, it's a transient local cart snapshot, not a
+    /// business fact yet), so deleting a superseded one loses nothing
+    /// worth keeping. Matches on every DRAFT for this table rather than
+    /// assuming exactly one, so it's also self-healing against any
+    /// orphans left behind by data written before this fix existed.
+    fn supersede_existing_draft(&self, table_id: &str) -> Result<(), RepoError> {
+        self.conn.execute(
+            "DELETE FROM order_modifiers WHERE order_item_id IN (\
+                SELECT oi.id FROM order_items oi JOIN orders o ON o.id = oi.order_id \
+                WHERE o.table_id = ?1 AND o.status = 'DRAFT')",
+            params![table_id],
+        ).map_err(RepoError::from)?;
+        self.conn.execute(
+            "DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE table_id = ?1 AND status = 'DRAFT')",
+            params![table_id],
+        ).map_err(RepoError::from)?;
+        self.conn.execute(
+            "DELETE FROM orders WHERE table_id = ?1 AND status = 'DRAFT'",
+            params![table_id],
+        ).map_err(RepoError::from)?;
+        Ok(())
+    }
+
     pub fn create_full_order(&self, scope: &Scope, tenant_id: &str, branch_id: &str, input: FullOrderInput) -> Result<String, RepoError> {
         self.assert_scope_populated("orders", true)?;
         Self::validate_order_money_consistency(&input)?;
         let _ = scope; // populated-check already ran; write path is branch-pinned
+        self.supersede_existing_draft(&input.table_id)?;
         let id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
 
@@ -4012,6 +4046,7 @@ impl<'a> Repo<'a> {
         self.assert_scope_populated("orders", true)?;
         Self::validate_order_money_consistency(&input)?;
         let _ = scope;
+        self.supersede_existing_draft(&input.table_id)?;
         let id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
 

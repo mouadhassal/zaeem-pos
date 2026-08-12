@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
 import { IconCamera as Camera, IconUpload as Upload, IconMicrophone as Mic, IconCheck as Check, IconX as X, IconChevronUp as ChevronUp, IconRotate as RotateCcw, IconPlus as Plus, IconTrash as Trash2, IconPhoto as ImageIcon } from "@tabler/icons-react";
 import { useAuthStore } from "../../stores/authStore";
+import { realErrorText } from "../../lib/errors";
 
 interface DraftCategory {
   name: string;
@@ -72,6 +73,10 @@ export default function AiOnboardingPage() {
   // photo strip thumbnail shows the actual picture instead of a generic
   // camera icon.
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  // These invoke() failures used to only console.error -- a non-technical
+  // owner dragging in menu photos on a POS terminal (no dev console access)
+  // would see a photo silently fail to appear with zero explanation.
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
 
@@ -83,7 +88,7 @@ export default function AiOnboardingPage() {
         setSelectedIdx(null);
       }
     } catch (e) {
-      console.error("Failed to list uploads:", e);
+      setUploadError(`تعذر تحميل قائمة الملفات: ${realErrorText(e)}`);
     }
   }, [selectedIdx, token]);
 
@@ -106,7 +111,7 @@ export default function AiOnboardingPage() {
           },
         });
       } catch (e) {
-        console.error("Failed to queue media:", e);
+        setUploadError(`تعذر رفع ${file.name}: ${realErrorText(e)}`);
       }
     }
     await refreshUploads();
@@ -161,7 +166,7 @@ export default function AiOnboardingPage() {
       }
       await refreshUploads();
     } catch (err) {
-      console.error("Failed to delete upload:", err);
+      setUploadError(`تعذر حذف الملف: ${realErrorText(err)}`);
     }
   };
 
@@ -267,7 +272,13 @@ export default function AiOnboardingPage() {
   const displayDraft = editing ? editedDraft : selectedItem?.draft_menu ?? null;
 
   return (
-    <div className="h-full flex flex-col overflow-hidden" dir="rtl">
+    <div className="h-full flex flex-col overflow-hidden relative" dir="rtl">
+      {uploadError && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-danger-100 text-danger-600 text-sm font-arabic rounded-md px-4 py-2 shadow-sh-2 max-w-md text-center">
+          {uploadError}
+          <button onClick={() => setUploadError(null)} className="mr-2 font-bold">×</button>
+        </div>
+      )}
       {/* 2026-08-11: matched to the same plain-canvas header pattern every
           other page uses (dashboard/page.tsx) instead of a one-off
           full-bleed saffron bar -- see ai/page.tsx's identical fix. */}
