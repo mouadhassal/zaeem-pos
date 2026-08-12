@@ -217,6 +217,25 @@ pub fn run() {
                     .build(),
             )?;
 
+            // 2026-08-12: this app had NO panic hook at all -- a panic
+            // anywhere (the boot-time `.expect()`s immediately below on a
+            // disk-full/permissions/corrupt-DB machine, or anything else at
+            // runtime) printed to stderr, which no one watching a packaged
+            // Windows installer ever sees, and vanished. Same root problem
+            // this file's own P0 comment already describes for the "database
+            // is not there anymore" report ("never diagnosable after the
+            // fact because nothing was ever written down") -- this is that
+            // fix, generalized to every panic instead of just that one bug.
+            // Chains the default hook (still prints to stderr for a dev
+            // running `tauri dev`) so nothing existing changes, just adds a
+            // line in the same rotating log file `tauri_plugin_log` above
+            // just wired up, which support can actually ask a customer for.
+            let default_panic_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                log::error!("PANIC: {info}");
+                default_panic_hook(info);
+            }));
+
             // Must run before ANY Connection::open in this process (rusqlite's
             // own safety contract for config_log) -- see obslog.rs.
             obslog::install_sqlite_error_log();
