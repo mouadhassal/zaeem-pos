@@ -9,7 +9,7 @@ import {
   IconCashRegister, IconToolsKitchen2, IconClipboardList, IconBox,
   IconChartBar, IconUsers, IconClock, IconReceipt2, IconWallet,
   IconTruck, IconBuilding, IconCoin, IconGift, IconRobot, IconWand,
-  IconSettings, IconTool, IconLayoutDashboard, IconShoppingCart,
+  IconSettings, IconTool, IconLayoutDashboard, IconShoppingCart, IconCalendar,
   type Icon,
 } from "@tabler/icons-react";
 
@@ -21,6 +21,7 @@ const ICON_BY_ID: Record<string, Icon> = {
   inventory: IconBox,
   reports: IconChartBar,
   staff: IconUsers,
+  schedule: IconCalendar,
   shift: IconClock,
   customers: IconReceipt2,
   debt: IconWallet,
@@ -58,7 +59,23 @@ export default function Sidebar({ active, onNavigate }: Props) {
   useEffect(() => {
     getBusinessMode().then((m) => setHasKitchen(m.has_kitchen)).catch(() => {});
   }, []);
-  const items = navItems.filter((n) => n.allowed && (hasKitchen || n.id !== "kds"));
+  const items = navItems
+    .filter((n) => n.allowed && (hasKitchen || n.id !== "kds"))
+    // MANAGER_NAV/OWNER_NAV (lib/permissions.ts) hardcode "القائمة" (Menu)
+    // -- food-service copy that made no sense once has_tables/has_kitchen
+    // existed to say "this isn't necessarily a restaurant." A non-food
+    // business (pharmacy, retail) still uses this screen for its
+    // products/stock, just never sees the Menu framing. Same
+    // hasKitchen state this component already fetches for the KDS filter
+    // above, just also driving a label swap here instead of a second
+    // fetch.
+    .map((n) => (n.id === "menu" && !hasKitchen ? { ...n, label: "المنتجات" } : n))
+    // 2026-08-13: same gap as "menu" above -- "إعداد القائمة AI" (AI Menu
+    // Setup) kept its food-service label regardless of hasKitchen, so a
+    // retail/service tenant's first click during onboarding opened a
+    // screen literally titled "smart MENU setup" and inviting them to
+    // "drag menu photos here."
+    .map((n) => (n.id === "ai-onboarding" && !hasKitchen ? { ...n, label: "إعداد المنتجات AI" } : n));
 
   return (
     // Narrow icon-rail, colored with the brand's brown secondary accent --

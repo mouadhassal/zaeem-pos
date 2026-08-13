@@ -341,7 +341,11 @@ function renderReceiptCanvas(data: ReceiptData, paperWidthMm: number): HTMLCanva
   drawTwoCol(b, "التاريخ", new Date().toLocaleDateString("ar-SA"));
   drawTwoCol(b, "الوقت", new Date().toLocaleTimeString("ar-SA"));
   drawTwoCol(b, "رقم الطلب", data.orderNumber);
-  drawTwoCol(b, "طاولة", data.tableName);
+  // 2026-08-13 generalization fix: was drawn unconditionally -- a takeaway/
+  // delivery order (tableName = "") or ANY order from a has_tables=false
+  // business printed a "طاولة" row with nothing next to it, on every
+  // single receipt for a non-table business.
+  if (data.tableName) drawTwoCol(b, "طاولة", data.tableName);
 
   const typeLabels: Record<string, string> = {
     DINE_IN: "داخلي", TAKEAWAY: "سفري", DELIVERY: "توصيل", ONLINE: "أونلاين",
@@ -395,7 +399,7 @@ function renderKitchenTicketCanvas(data: KitchenTicketData, paperWidthMm: number
   const typeLabels: Record<string, string> = {
     DINE_IN: "داخلي", TAKEAWAY: "سفري", DELIVERY: "توصيل", ONLINE: "أونلاين",
   };
-  drawTwoCol(b, "طاولة", data.tableName);
+  if (data.tableName) drawTwoCol(b, "طاولة", data.tableName);
   drawTwoCol(b, "رقم", data.orderNumber);
   drawTwoCol(b, "النوع", typeLabels[data.orderType] ?? data.orderType);
   drawTwoCol(b, "التاريخ", new Date().toLocaleDateString("ar-SA"));
@@ -628,7 +632,7 @@ export function generateOnScreenReceiptHTML(data: ReceiptData): string {
         <tr><td>التاريخ</td><td style="text-align:left">${new Date().toLocaleDateString("ar-SA")}</td></tr>
         <tr><td>الوقت</td><td style="text-align:left">${new Date().toLocaleTimeString("ar-SA")}</td></tr>
         <tr><td>رقم الطلب</td><td style="text-align:left">${data.orderNumber}</td></tr>
-        <tr><td>طاولة</td><td style="text-align:left">${data.tableName}</td></tr>
+        ${data.tableName ? `<tr><td>طاولة</td><td style="text-align:left">${data.tableName}</td></tr>` : ""}
       </table>
       <hr/>
       <table style="width:100%;font-size:14px">
@@ -651,7 +655,7 @@ export function generateOnScreenReceiptHTML(data: ReceiptData): string {
 export async function testPrint(): Promise<void> {
   const cfg = await invoke<ChainConfigV3>("get_chain_config_v3", { sessionToken: token() });
   await printReceipt({
-    chainName: cfg?.chain_name ?? "مطعم التجربة",
+    chainName: cfg?.chain_name ?? "منشأة التجربة",
     branchName: "الفرع الرئيسي",
     currency: cfg?.currency ?? "SAR",
     orderNumber: "TEST-001",

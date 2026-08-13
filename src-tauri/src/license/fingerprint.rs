@@ -119,5 +119,5 @@ pub fn current() -> MachineFingerprint {
 pub fn device_id() -> String {
     let (cpu, disk, mac) = collect_raw_cached();
     let json = serde_json::json!({ "cpu": cpu, "disk": disk, "mac": mac });
-    license_core::b64::encode(serde_json::to_string(&json).expect("device id json always serializes").as_bytes())
+    license_core::b64::encode(serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string()).as_bytes())
 }

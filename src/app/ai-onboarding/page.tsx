@@ -1,8 +1,9 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { invoke } from "../../lib/invoke";
 import { IconCamera as Camera, IconUpload as Upload, IconMicrophone as Mic, IconCheck as Check, IconX as X, IconChevronUp as ChevronUp, IconRotate as RotateCcw, IconPlus as Plus, IconTrash as Trash2, IconPhoto as ImageIcon } from "@tabler/icons-react";
 import { useAuthStore } from "../../stores/authStore";
 import { realErrorText } from "../../lib/errors";
+import { getBusinessMode } from "../../lib/orderService";
 
 interface DraftCategory {
   name: string;
@@ -78,6 +79,14 @@ export default function AiOnboardingPage() {
   // would see a photo silently fail to appear with zero explanation.
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // 2026-08-13: same hasKitchen-driven label swap Sidebar.tsx already
+  // does for its nav entry -- without this, a non-food tenant's first
+  // click during onboarding opened a screen titled "smart MENU setup"
+  // inviting them to drag in menu photos.
+  const [hasKitchen, setHasKitchen] = useState(true);
+  useEffect(() => {
+    getBusinessMode().then((m) => setHasKitchen(m.has_kitchen)).catch(() => {});
+  }, []);
   const audioInputRef = useRef<HTMLInputElement>(null);
 
   const refreshUploads = useCallback(async () => {
@@ -286,7 +295,7 @@ export default function AiOnboardingPage() {
         <div className="w-9 h-9 rounded-md bg-saffron-50 flex items-center justify-center shrink-0">
           <Camera className="w-4 h-4 text-saffron-600" />
         </div>
-        <h1 className="text-xl font-bold text-ink-900">الإعداد الذكي للقائمة</h1>
+        <h1 className="text-xl font-bold text-ink-900">{hasKitchen ? "الإعداد الذكي للقائمة" : "الإعداد الذكي للمنتجات"}</h1>
         <span className="text-ink-400 text-xs">AI Onboarding</span>
       </header>
 
@@ -643,7 +652,7 @@ export default function AiOnboardingPage() {
               >
                 <Upload className={`w-14 h-14 mx-auto ${dragActive ? "text-saffron-500" : "text-ink-300"}`} />
                 <div>
-                  <h2 className="text-lg font-bold font-arabic text-ink-700">اسحب صور القائمة هنا</h2>
+                  <h2 className="text-lg font-bold font-arabic text-ink-700">{hasKitchen ? "اسحب صور القائمة هنا" : "اسحب صور المنتجات هنا"}</h2>
                   <p className="text-sm font-arabic text-ink-400 mt-1 max-w-md mx-auto">
                     أو اضغط للاختيار من جهازك. سيقوم الذكاء الاصطناعي باستخراج الأصناف والأسعار تلقائياً،
                     ويمكنك مراجعتها وتصحيحها قبل تطبيقها على النظام.

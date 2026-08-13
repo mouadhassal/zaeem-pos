@@ -102,7 +102,7 @@ pub struct LanConfig {
 }
 
 fn lan_config_path(db_path: &std::path::Path) -> std::path::PathBuf {
-    db_path.parent().expect("db_path must have a parent dir").join("lan_config.json")
+    db_path.parent().unwrap_or(db_path).join("lan_config.json")
 }
 
 /// Set once, early in `setup()`, so `resolve_actor_via_hub` -- called from

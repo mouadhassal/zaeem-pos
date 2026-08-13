@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
+import { getBusinessMode } from "../../lib/orderService";
 import { useAuthStore } from "../../stores/authStore";
 import { invalidateMenuItemPhotoCache } from "../../hooks/useMenuItemPhoto";
 import { z } from "zod";
@@ -174,6 +175,24 @@ export default function MenuPage() {
   const [offerSubTab, setOfferSubTab] = useState<OfferSubTab>("combos");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Combo meals ("وجبة مجمعة" -- bundle a burger+fries+drink) and happy
+  // hour (time-windowed discounts) are food-service merchandising
+  // concepts with no equivalent for a pharmacy/retail business -- unlike
+  // has_tables/has_kitchen's other effects (Sidebar's KDS filter,
+  // pos/page.tsx's table UI), this tab had no gate at all until now. Tied
+  // to has_kitchen specifically since that's the flag this codebase
+  // already uses to mean "is this a food-service business."
+  const [hasKitchen, setHasKitchen] = useState(true);
+  useEffect(() => {
+    getBusinessMode().then((m) => {
+      setHasKitchen(m.has_kitchen);
+      // Owner could have been sitting on "offers" before flipping the
+      // setting off in another tab/session -- bounce back to a tab that
+      // still exists rather than leave the content area stuck rendering
+      // a tab the bar no longer offers a button for.
+      setTab((t) => (!m.has_kitchen && t === "offers" ? "items" : t));
+    }).catch(() => {});
+  }, []);
 
   // Items tab
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
@@ -731,7 +750,7 @@ export default function MenuPage() {
   return (
     <div className="p-6 space-y-6 overflow-y-auto h-full bg-canvas" dir="rtl">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-ink-900">إدارة القائمة</h1>
+        <h1 className="text-xl font-bold text-ink-900">{hasKitchen ? "إدارة القائمة" : "إدارة المنتجات"}</h1>
         {tab === "items" && (
           <button
             onClick={openAddItem}
@@ -768,7 +787,7 @@ export default function MenuPage() {
 
       {/* Tabs */}
       <div className="flex gap-2 border-b border-ink-200 pb-2">
-        {(["items", "categories", "offers"] as Tab[]).map((t) => (
+        {(["items", "categories", ...(hasKitchen ? (["offers"] as Tab[]) : [])] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}

@@ -85,6 +85,44 @@ function formatForecastDate(dateStr: string): string {
   return `${WEEKDAY_LABEL_AR[d.getDay()]} ${dateStr}`;
 }
 
+// 2026-08-13: this page used to hardcode "today so far" with no way to see
+// any other period, while finance/page.tsx (same data class -- paid order
+// totals) already had today/week/month/custom. Same DateRange shape and
+// rangeStart/rangeEnd helpers as that page, kept local rather than shared
+// since finance's version also feeds cost/invoice/tax tabs this page
+// doesn't have.
+type DateRange = "today" | "week" | "month" | "custom";
+
+function rangeStart(range: DateRange, customStart?: string): Date {
+  const now = new Date();
+  if (range === "today") {
+    const d = new Date(now);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+  if (range === "week") {
+    const d = new Date(now);
+    d.setDate(d.getDate() - d.getDay());
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+  if (range === "month") {
+    const d = new Date(now);
+    d.setDate(1);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+  return new Date(customStart || now.toISOString().slice(0, 10));
+}
+
+function rangeEnd(range: DateRange, customEnd?: string): Date | null {
+  // null = "up to now" -- matches get_sales_report_v3's range_end_iso:
+  // None meaning, avoids sending a redundant "end = right now" bound on
+  // the three preset ranges.
+  if (range !== "custom") return null;
+  return new Date((customEnd || new Date().toISOString().slice(0, 10)) + "T23:59:59");
+}
+
 // Mirrors reconcile.rs's UnreconciledOrder/ReconciliationReport -- a
 // read-only report (no order is ever changed automatically), surfaced
 // on-demand so a manager can decide what actually happened to an order
@@ -102,9 +140,28 @@ interface ReconciliationReport {
   paid_orders_missing_payment: UnreconciledOrder[];
 }
 
+// Mirrors repo.rs's RefundableOrderRow -- see that struct's own doc
+// comment for why this is a purpose-built read model (table name +
+// refund status joined in) rather than reusing the bare OrderRow.
+interface RefundableOrder {
+  id: string;
+  table_name: string | null;
+  order_type: string;
+  total_cents: number;
+  refunded_cents: number;
+  created_at: string;
+}
+
+const ORDER_TYPE_LABEL: Record<string, string> = {
+  DINE_IN: "داخلي", TAKEAWAY: "سفري", DELIVERY: "توصيل", ONLINE: "أونلاين",
+};
+
 export default function ReportsPage() {
   const { fmt } = useCurrency();
   const token = useAuthStore((s) => s.token);
+  const [dateRange, setDateRange] = useState<DateRange>("today");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
   const [summary, setSummary] = useState<SalesSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -127,19 +184,32 @@ export default function ReportsPage() {
   const [reconciliation, setReconciliation] = useState<ReconciliationReport | null>(null);
   const [reconciliationLoading, setReconciliationLoading] = useState(false);
   const [reconciliationError, setReconciliationError] = useState<string | null>(null);
+  // 2026-08-13: refund_order_v3's UI -- see repo.rs's refund_order for
+  // what this actually reverses (stock/loyalty/debt, atomically). Loaded
+  // eagerly (not on-demand like anomalies/forecast/reconciliation above)
+  // since checking "can I refund this" is the whole point of a manager
+  // opening this section, not a heavier optional analysis.
+  const [refundableOrders, setRefundableOrders] = useState<RefundableOrder[] | null>(null);
+  const [refundableLoading, setRefundableLoading] = useState(true);
+  const [refundableError, setRefundableError] = useState<string | null>(null);
+  const [refundingId, setRefundingId] = useState<string | null>(null);
 
   const fetchReports = useCallback(async () => {
     setLoading(true);
     try {
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
+      const startDate = rangeStart(dateRange, customStart);
+      const endDate = rangeEnd(dateRange, customEnd);
 
       const report = await invoke<{
         total_sales: number; order_count: number;
         top_items: { name: string; quantity: number }[];
         staff_performance: { name: string; order_count: number }[];
         inventory_status: { name: string; current_stock: number; min_stock: number }[];
-      }>("get_sales_report_v3", { sessionToken: token, todayStartIso: todayStart.toISOString() });
+      }>("get_sales_report_v3", {
+        sessionToken: token,
+        todayStartIso: startDate.toISOString(),
+        rangeEndIso: endDate ? endDate.toISOString() : null,
+      });
 
       const totalSales = report.total_sales / 100;
       const orderCount = report.order_count;
@@ -159,7 +229,7 @@ export default function ReportsPage() {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, dateRange, customStart, customEnd]);
 
   useEffect(() => {
     fetchReports();
@@ -206,6 +276,42 @@ export default function ReportsPage() {
       setReconciliationLoading(false);
     }
   };
+
+  const fetchRefundableOrders = useCallback(async () => {
+    setRefundableLoading(true);
+    setRefundableError(null);
+    try {
+      const rows = await invoke<RefundableOrder[]>("list_recent_paid_orders_v3", { sessionToken: token });
+      setRefundableOrders(rows);
+    } catch (e) {
+      console.error("Refundable orders error:", e);
+      setRefundableError("تعذر تحميل الطلبات المدفوعة.");
+    } finally {
+      setRefundableLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    fetchRefundableOrders();
+  }, [fetchRefundableOrders]);
+
+  async function handleRefund(order: RefundableOrder) {
+    const reason = window.prompt("سبب الاسترداد (اختياري):");
+    // A cancelled prompt (null) must not proceed -- an empty string (user
+    // left it blank and hit OK) is a valid "no reason given" and should.
+    if (reason === null) return;
+    if (!window.confirm(`استرداد الطلب بمبلغ ${fmt(order.total_cents)}؟ سيتم إرجاع المخزون ونقاط الولاء والدين المرتبطين بهذا الطلب. لا يمكن التراجع عن هذا الإجراء.`)) return;
+    setRefundingId(order.id);
+    try {
+      await invoke("refund_order_v3", { sessionToken: token, orderId: order.id, reason: reason || null });
+      await fetchRefundableOrders();
+    } catch (e) {
+      console.error("Refund error:", e);
+      window.alert(`تعذر استرداد الطلب: ${e}`);
+    } finally {
+      setRefundingId(null);
+    }
+  }
 
   // Arabic PDF export -- see lib/pdfExport.ts's doc comment for why this
   // renders via html2canvas + doc.addImage() instead of jsPDF's own text
@@ -273,9 +379,41 @@ export default function ReportsPage() {
         </button>
       </div>
 
+      <div className="space-y-3">
+        <div className="flex gap-2">
+          {(["today", "week", "month", "custom"] as DateRange[]).map((r) => (
+            <button
+              key={r}
+              onClick={() => setDateRange(r)}
+              className={`px-4 py-2 rounded-lg font-arabic text-sm transition-colors ${
+                dateRange === r ? "bg-saffron-600 text-white" : "bg-white text-ink-500 hover:bg-ink-200"
+              }`}
+            >
+              {r === "today" ? "اليوم" : r === "week" ? "هذا الأسبوع" : r === "month" ? "هذا الشهر" : "مخصص"}
+            </button>
+          ))}
+        </div>
+        {dateRange === "custom" && (
+          <div className="flex gap-3">
+            <input
+              type="date"
+              value={customStart}
+              onChange={(e) => setCustomStart(e.target.value)}
+              className="h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+            />
+            <input
+              type="date"
+              value={customEnd}
+              onChange={(e) => setCustomEnd(e.target.value)}
+              className="h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+            />
+          </div>
+        )}
+      </div>
+
       <div className="grid grid-cols-3 gap-4">
         <div className="zc-card p-4 space-y-1">
-          <p className="text-ink-400 text-sm font-arabic">إجمالي المبيعات اليوم</p>
+          <p className="text-ink-400 text-sm font-arabic">إجمالي المبيعات</p>
           <p className="text-2xl font-bold text-saffron-600 font-mono">
             {fmt(Math.round(summary.totalSales * 100))}
           </p>
@@ -523,7 +661,7 @@ export default function ReportsPage() {
             <h3 className="text-sm font-bold text-red-600 font-arabic">طلبات مدفوعة بدون دفعة مسجلة</h3>
             {reconciliation.paid_orders_missing_payment.map((o) => (
               <div key={o.order_id} className="flex items-center justify-between text-sm border border-red-200 bg-red-50 rounded-sm p-2">
-                <span className="text-ink-900 font-arabic">{o.table_name}</span>
+                <span className="text-ink-900 font-arabic">{o.table_name || `#${o.order_id.slice(0, 6)}`}</span>
                 <span className="text-ink-400 font-mono">{fmt(o.total_cents)}</span>
               </div>
             ))}
@@ -536,12 +674,60 @@ export default function ReportsPage() {
             {reconciliation.stale_open_orders.map((o) => (
               <div key={o.order_id} className="flex items-center justify-between text-sm border border-amber-200 bg-amber-50 rounded-sm p-2">
                 <div>
-                  <span className="text-ink-900 font-arabic">{o.table_name}</span>
+                  <span className="text-ink-900 font-arabic">{o.table_name || `#${o.order_id.slice(0, 6)}`}</span>
                   <span className="text-ink-400 text-xs font-arabic mr-2">({o.status})</span>
                 </div>
                 <span className="text-ink-400 font-mono">{fmt(o.total_cents)}</span>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+
+      <div className="zc-card p-4 space-y-3">
+        <div>
+          <h2 className="font-bold text-ink-900 font-arabic">الطلبات المدفوعة (استرداد)</h2>
+          <p className="text-xs text-ink-400 font-arabic mt-0.5">
+            آخر 50 طلب مدفوع -- الاسترداد يعيد المخزون ونقاط الولاء والدين المرتبطين بالطلب تلقائياً
+          </p>
+        </div>
+
+        {refundableLoading && <p className="text-sm text-ink-400 font-arabic">جاري التحميل...</p>}
+        {refundableError && <p className="text-sm text-red-500 font-arabic">{refundableError}</p>}
+        {refundableOrders && refundableOrders.length === 0 && !refundableLoading && (
+          <p className="text-sm text-ink-400 font-arabic">لا توجد طلبات مدفوعة بعد</p>
+        )}
+
+        {refundableOrders && refundableOrders.length > 0 && (
+          <div className="space-y-1.5 max-h-96 overflow-y-auto">
+            {refundableOrders.map((o) => {
+              const isRefunded = o.refunded_cents > 0;
+              return (
+                <div key={o.id} className={`flex items-center justify-between text-sm border rounded-sm p-2 ${isRefunded ? "border-ink-200 bg-ink-50" : "border-ink-200 bg-white"}`}>
+                  <div>
+                    <span className={`font-arabic ${isRefunded ? "text-ink-400 line-through" : "text-ink-900"}`}>
+                      {o.table_name || ORDER_TYPE_LABEL[o.order_type] || o.order_type}
+                    </span>
+                    <span className="text-ink-400 text-xs font-arabic mr-2">
+                      {new Date(o.created_at).toLocaleString("ar-SA", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                    {isRefunded && <span className="text-[10px] text-red-500 font-arabic mr-2">تم الاسترداد</span>}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`font-mono ${isRefunded ? "text-ink-400 line-through" : "text-ink-700"}`}>{fmt(o.total_cents)}</span>
+                    {!isRefunded && (
+                      <button
+                        onClick={() => handleRefund(o)}
+                        disabled={refundingId === o.id}
+                        className="h-8 px-3 rounded-sm border border-red-200 text-red-600 text-xs font-bold font-arabic hover:bg-red-50 transition-colors disabled:opacity-50"
+                      >
+                        {refundingId === o.id ? "جارٍ..." : "استرداد"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

@@ -28,6 +28,7 @@ const MANAGER_NAV: SidebarNavItem[] = [
   { id: "marketplace", label: "متجر الموردين", icon: "shopping-cart", allowed: true },
   { id: "reports", label: "التقارير", icon: "bar-chart-3", allowed: true },
   { id: "staff", label: "الموظفين", icon: "users-round", allowed: true },
+  { id: "schedule", label: "جدول الدوام", icon: "calendar", allowed: true },
   { id: "ai", label: "المساعد الذكي", icon: "bot", allowed: true },
   { id: "settings", label: "الإعدادات", icon: "settings", allowed: true },
 ];
@@ -51,6 +52,7 @@ const OWNER_NAV: SidebarNavItem[] = [
   { id: "marketplace", label: "متجر الموردين", icon: "shopping-cart", allowed: true },
   { id: "reports", label: "التقارير", icon: "bar-chart-3", allowed: true },
   { id: "staff", label: "الموظفين", icon: "users-round", allowed: true },
+  { id: "schedule", label: "جدول الدوام", icon: "calendar", allowed: true },
   { id: "branches", label: "الفروع", icon: "building-2", allowed: true },
   { id: "finance", label: "المالية", icon: "wallet", allowed: true },
   { id: "loyalty", label: "برنامج الولاء", icon: "award", allowed: true },
@@ -111,6 +113,13 @@ export function canAccessReports(role: UserRole | undefined): boolean {
 }
 
 export function canAccessStaff(role: UserRole | undefined): boolean {
+  return role === "MANAGER" || role === "ADMIN" || role === "OWNER";
+}
+
+// HR_AND_GENERALIZATION_PLAN.md Part A -- same rank as canAccessStaff:
+// scheduling staff is the same class of back-office decision as
+// hiring/editing them (matches ManageRoster's Manager+ rank server-side).
+export function canAccessRoster(role: UserRole | undefined): boolean {
   return role === "MANAGER" || role === "ADMIN" || role === "OWNER";
 }
 

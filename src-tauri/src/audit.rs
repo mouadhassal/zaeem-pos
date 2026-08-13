@@ -109,6 +109,11 @@ pub enum Action {
     LoyaltyRewardChanged,
     /// T2.0 loyalty: points redeemed for a reward at checkout.
     LoyaltyPointsRedeemed,
+    /// 2026-08-13: a full-order refund -- reverses stock/loyalty/debt.
+    /// Real money leaving the business after the fact, same audit rigor
+    /// as SupplierPaymentRecorded/DiscountApplied (AGENTS.md prime
+    /// directive #4).
+    OrderRefunded,
 }
 
 impl Action {
@@ -147,6 +152,7 @@ impl Action {
             Action::LoyaltyTierChanged => "LoyaltyTierChanged",
             Action::LoyaltyRewardChanged => "LoyaltyRewardChanged",
             Action::LoyaltyPointsRedeemed => "LoyaltyPointsRedeemed",
+            Action::OrderRefunded => "OrderRefunded",
         }
     }
 }

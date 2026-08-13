@@ -181,6 +181,17 @@ pub enum Permission {
     /// and it must never be blocked by a locked license -- see
     /// `toggle_menu_item_availability_v3`'s own doc comment.
     ToggleItemAvailability,
+    /// HR_AND_GENERALIZATION_PLAN.md Part A -- managing the roster
+    /// calendar (who's scheduled to work when). Manager+, same rank as
+    /// `CreateStaff`/`UpdateStaff`: scheduling staff is the same class of
+    /// back-office decision as hiring/editing them, not floor work.
+    ManageRoster,
+    /// 2026-08-13: full-order refund -- reverses stock, loyalty, and debt
+    /// atomically (see repo.rs's refund_order). Manager+, same rank as
+    /// ManageFinance: giving money back is a back-office financial
+    /// decision, not floor work a Cashier should self-serve (unlike
+    /// TakePayment/ManageDebt, which ARE Cashier-rank).
+    RefundOrder,
 }
 
 impl Permission {
@@ -204,6 +215,8 @@ impl Permission {
             Permission::ManageBranches => Role::Owner.rank(),
             Permission::ManageBackups => Role::Owner.rank(),
             Permission::ToggleItemAvailability => Role::Cashier.rank(),
+            Permission::ManageRoster => Role::Manager.rank(),
+            Permission::RefundOrder => Role::Manager.rank(),
         }
     }
 }
@@ -416,6 +429,8 @@ pub fn authorize(actor: &Actor, perm: Permission) -> Result<(), SecurityError> {
                 Permission::ManageBranches => "ManageBranches",
                 Permission::ManageBackups => "ManageBackups",
                 Permission::ToggleItemAvailability => "ToggleItemAvailability",
+                Permission::ManageRoster => "ManageRoster",
+                Permission::RefundOrder => "RefundOrder",
             },
             reason: format!("role {:?} (rank {}) is below the minimum rank {} for this permission", actor.role, actor.role.rank(), perm.minimum_rank()),
         })

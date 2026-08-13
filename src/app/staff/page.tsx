@@ -140,6 +140,10 @@ export default function StaffPage() {
   const [attendance, setAttendance] = useState<Attendance[]>([]);
   const [branches, setBranches] = useState<[string, string][]>([]);
 
+  // 2026-08-13: the Shifts/Attendance tabs on this same page already have
+  // employee filters -- the Employees tab itself, the one most likely to
+  // grow large on a multi-branch/large-roster tenant, had none.
+  const [employeeSearch, setEmployeeSearch] = useState("");
   const [showEmployeeModal, setShowEmployeeModal] = useState(false);
   const [editEmployeeId, setEditEmployeeId] = useState<string | null>(null);
   const [employeeForm, setEmployeeForm] = useState<EmployeeForm>(emptyEmployeeForm);
@@ -442,6 +446,14 @@ export default function StaffPage() {
       {/* TAB: Employees */}
       {tab === "employees" && (
         <div className="space-y-4">
+          {employees.length > 8 && (
+            <input
+              value={employeeSearch}
+              onChange={(e) => setEmployeeSearch(e.target.value)}
+              placeholder="ابحث عن موظف بالاسم..."
+              className="w-full max-w-sm h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+            />
+          )}
           <div className="zc-card overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -454,7 +466,9 @@ export default function StaffPage() {
                 </tr>
               </thead>
               <tbody>
-                {employees.map((emp) => (
+                {employees
+                  .filter((emp) => !employeeSearch.trim() || emp.name.toLowerCase().includes(employeeSearch.trim().toLowerCase()))
+                  .map((emp) => (
                   <tr key={emp.id} className="border-b border-ink-200 hover:bg-saffron-50">
                     <td className="p-3 font-arabic text-ink-900 font-medium">
                       <span>{emp.name}</span>
@@ -521,6 +535,13 @@ export default function StaffPage() {
                   <tr>
                     <td colSpan={6} className="p-6 text-center text-ink-500 font-arabic">
                       لا يوجد موظفون
+                    </td>
+                  </tr>
+                )}
+                {employees.length > 0 && employeeSearch.trim() && !employees.some((emp) => emp.name.toLowerCase().includes(employeeSearch.trim().toLowerCase())) && (
+                  <tr>
+                    <td colSpan={6} className="p-6 text-center text-ink-500 font-arabic">
+                      لا يوجد موظفون مطابقون للبحث
                     </td>
                   </tr>
                 )}

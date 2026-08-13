@@ -51,6 +51,72 @@ pub enum RepoError {
     /// `Scope::Platform` -- the platform vendor has no branches of its own
     /// to summarize (that's apps/control's job, not this app's).
     DashboardRequiresTenantOrBranchScope,
+    /// HR_AND_GENERALIZATION_PLAN.md Part A -- a roster_entry id that
+    /// doesn't belong to the caller's tenant/branch (update/delete guard,
+    /// same reasoning as `TableOutOfScope`/`OrderOutOfScope`).
+    RosterEntryOutOfScope { id: String },
+    /// A roster entry's end_time must be strictly after its start_time --
+    /// checked here (not just client-side) since this is a SECURITY
+    /// DEFINER-equivalent boundary, same as every other server-side
+    /// invariant in this file.
+    InvalidRosterTimes { start: String, end: String },
+    /// 2026-08-13: create_roster_entry's branch_id comes from
+    /// resolve_operating_branch (the CALLER'S/terminal's branch), not from
+    /// the staff member being scheduled -- assert_staff_in_scope alone
+    /// only proves the staff row belongs to the same TENANT, which passes
+    /// for every staff member across every branch when the actor is an
+    /// Owner (Tenant-scoped). Without this check, an Owner on a Branch A
+    /// terminal could silently create a roster entry for a Branch B
+    /// employee that gets filed under Branch A -- invisible to Branch B's
+    /// own manager, and wrong data for anyone auditing Branch A's roster.
+    StaffBranchMismatch { staff_id: String, target_branch_id: String },
+    /// 2026-08-13: a purchase_order_items id that doesn't belong to the
+    /// purchase order it was submitted against in receive_purchase_order.
+    PurchaseOrderItemOutOfScope { item_id: String },
+    /// 2026-08-13: record_debt_payment had no check at all against the
+    /// debtor's current balance_cents -- unlike suppliers (which have an
+    /// explicit, UI-supported ADVANCE/overpayment state), there is no
+    /// "credit"/advance concept anywhere in debts/page.tsx for a debtor:
+    /// no badge, no messaging, nothing that would make a negative balance
+    /// meaningful to a manager looking at the debts list. A payment
+    /// exceeding what's actually owed is far more likely a fat-fingered
+    /// amount than a deliberate overpayment, so this rejects it outright
+    /// rather than silently producing a negative balance nothing in the
+    /// UI is built to explain.
+    DebtPaymentExceedsBalance { debtor_id: String, balance_cents: i64, amount_cents: i64 },
+    /// 2026-08-13: open_shift's own doc comment already admitted "the UI
+    /// never opens a second shift while one is active, but this is a
+    /// plain query, not an enforced constraint" -- a second terminal
+    /// logged in as the same staff member, or any client bug, could open
+    /// a concurrent shift; orders then get stamped with whichever shift_id
+    /// happened to be current, silently splitting one real shift's revenue
+    /// across two "open" shifts in reports.
+    ShiftAlreadyOpen { user_id: String, existing_shift_id: String },
+    /// close_shift had no `WHERE closed_at IS NULL` guard -- callable
+    /// repeatedly on the same shift, each call silently overwriting
+    /// ending_cash_cents/difference_cents with new numbers that are never
+    /// cross-checked against shift_stats' actual totals. A cash-drawer
+    /// discrepancy could be freely rewritten after the fact.
+    ShiftAlreadyClosed { shift_id: String },
+    /// earn_loyalty_points must never accept a non-positive amount --
+    /// see that function's own doc comment for why.
+    InvalidLoyaltyPoints { points: i64 },
+    /// Same shape as StaffBranchMismatch, for create_delivery_log's driver
+    /// cross-check.
+    DriverBranchMismatch { driver_id: String, target_branch_id: String },
+    /// 2026-08-13: refund_order guard -- only a PAID, not-yet-refunded
+    /// order can be refunded. `reason` carries the specific "why" (not
+    /// PAID vs. already refunded) since both are real, distinct failure
+    /// modes a manager needs to actually understand, not just "no").
+    OrderNotRefundable { order_id: String, reason: String },
+    /// 2026-08-13: void_order_item had no `voided = 0` guard at all --
+    /// calling it twice on the same item silently succeeded both times,
+    /// which (once voiding a PAID order's item started restoring stock,
+    /// see void_order_item's own doc comment) would have double-restored
+    /// stock on a second call.
+    OrderItemAlreadyVoided { item_id: String },
+    /// A manual adjust_stock call that would drive current_stock negative.
+    StockAdjustmentBelowZero { ingredient_id: String, current_stock: f64, change_amount: f64 },
 }
 
 impl fmt::Display for RepoError {
@@ -79,6 +145,28 @@ impl fmt::Display for RepoError {
             Self::PaymentAmountMismatch { order_id, expected_cents, got_cents } => write!(
                 f, "order {order_id}: amount tendered minus change ({got_cents}) does not equal the order total ({expected_cents})"
             ),
+            Self::RosterEntryOutOfScope { id } => write!(f, "roster entry {id} does not belong to the caller's tenant/branch"),
+            Self::InvalidRosterTimes { start, end } => write!(f, "end_time ({end}) must be after start_time ({start})"),
+            Self::StaffBranchMismatch { staff_id, target_branch_id } => write!(
+                f, "staff {staff_id} does not belong to branch {target_branch_id} -- cannot schedule them there"
+            ),
+            Self::PurchaseOrderItemOutOfScope { item_id } => write!(f, "purchase order item {item_id} does not belong to the specified purchase order"),
+            Self::DebtPaymentExceedsBalance { debtor_id, balance_cents, amount_cents } => write!(
+                f, "debtor {debtor_id} owes {balance_cents} cents -- a payment of {amount_cents} cents would overpay it"
+            ),
+            Self::ShiftAlreadyOpen { user_id, existing_shift_id } => write!(
+                f, "staff {user_id} already has an open shift ({existing_shift_id}) -- close it before opening another"
+            ),
+            Self::ShiftAlreadyClosed { shift_id } => write!(f, "shift {shift_id} is already closed -- refusing to overwrite its reconciliation numbers"),
+            Self::InvalidLoyaltyPoints { points } => write!(f, "points must be positive, got {points}"),
+            Self::DriverBranchMismatch { driver_id, target_branch_id } => write!(
+                f, "driver {driver_id} does not belong to branch {target_branch_id} -- cannot assign them there"
+            ),
+            Self::OrderNotRefundable { order_id, reason } => write!(f, "order {order_id} cannot be refunded: {reason}"),
+            Self::OrderItemAlreadyVoided { item_id } => write!(f, "order item {item_id} is already voided"),
+            Self::StockAdjustmentBelowZero { ingredient_id, current_stock, change_amount } => write!(
+                f, "ingredient {ingredient_id} has {current_stock} in stock -- a change of {change_amount} would drive it below zero"
+            ),
         }
     }
 }
@@ -104,6 +192,21 @@ pub struct OrderRow {
     pub status: String,
     pub order_type: String,
     pub total_cents: i64,
+}
+
+/// 2026-08-13: purpose-built read model for the refund UI -- OrderRow
+/// above has no created_at/table-name/refunded_cents, none of which a
+/// manager could recognize an order by or tell if it's already refunded.
+/// Same "join for display, don't make the frontend guess" pattern
+/// PurchaseOrderRow already established for supplier/staff names.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RefundableOrderRow {
+    pub id: String,
+    pub table_name: Option<String>,
+    pub order_type: String,
+    pub total_cents: i64,
+    pub refunded_cents: i64,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -304,6 +407,20 @@ pub struct AttendanceRow {
     pub clock_in: Option<String>,
     pub clock_out: Option<String>,
     pub status: String,
+}
+
+/// HR_AND_GENERALIZATION_PLAN.md Part A -- one planned work assignment.
+/// Distinct from `AttendanceRow` (what actually happened, same-day only):
+/// this is what's *scheduled*, any date past or future.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RosterEntryRow {
+    pub id: String,
+    pub staff_id: String,
+    pub staff_name: String,
+    pub work_date: String,
+    pub start_time: String,
+    pub end_time: String,
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -919,6 +1036,36 @@ impl<'a> Repo<'a> {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
+    /// The refund UI's data source -- recent PAID orders, most recent
+    /// first, capped (this is a "find the order to refund" lookup, not a
+    /// full history browser -- list_orders above stays the unbounded one
+    /// for whatever eventually needs full history). Left-joins `tables`
+    /// since a takeaway/delivery order (or any order at a has_tables=false
+    /// business) has no table at all.
+    pub fn list_recent_paid_orders(&self, scope: &Scope, limit: i64) -> Result<Vec<RefundableOrderRow>, RepoError> {
+        self.assert_scope_populated("orders", true)?;
+        let (pred, binds) = Self::scope_predicate(scope);
+        let pred = pred.replace("tenant_id", "orders.tenant_id").replace("branch_id", "orders.branch_id");
+        let limit_placeholder = format!("?{}", binds.len() + 1);
+        let sql = format!(
+            "SELECT orders.id, tables.name, orders.order_type, orders.total_cents, orders.refunded_cents, orders.created_at \
+             FROM orders LEFT JOIN tables ON tables.id = orders.table_id \
+             WHERE {pred} AND orders.status = 'PAID' \
+             ORDER BY orders.created_at DESC LIMIT {limit_placeholder}"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut all_binds = binds.clone();
+        all_binds.push(limit.to_string());
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = all_binds.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(bind_refs.as_slice(), |r| {
+            Ok(RefundableOrderRow {
+                id: r.get(0)?, table_name: r.get(1)?, order_type: r.get(2)?,
+                total_cents: r.get(3)?, refunded_cents: r.get(4)?, created_at: r.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
     /// `kds/page.tsx`'s kitchen display feed: every PENDING/PREPARING/READY
     /// order, oldest first, each with its non-voided items. Two queries
     /// (orders, then items for those same orders) grouped in Rust, same
@@ -973,7 +1120,22 @@ impl<'a> Repo<'a> {
     /// branch that isn't their own.
     pub fn create_order(&self, scope: &Scope, tenant_id: &str, branch_id: &str, input: NewOrder) -> Result<String, RepoError> {
         self.assert_scope_populated("orders", true)?;
-        let _ = scope; // populated-check already ran; write path is intentionally branch-pinned, see doc comment
+        // 2026-08-13: the doc comment above only ever covered branch_id
+        // itself (create_order never accepts one from the caller, always
+        // uses the actor's own resolved branch) -- it never covered
+        // table_id, a SEPARATE client-supplied foreign id with zero
+        // validation of its own. An Owner (Tenant-scoped, so
+        // assert_table_in_scope's own scope check alone wouldn't catch
+        // this either) on a Branch A terminal could pass a table_id
+        // belonging to Branch B, creating an order correctly pinned to
+        // Branch A but pointing at a table that lives in a different
+        // branch -- table-occupied/free state then goes out of sync
+        // across branches. Empty string means "no table" (takeaway/
+        // delivery orders, or a has_tables=false business) and is exempt,
+        // matching how the frontend already sends `tableId ?? ""`.
+        if !input.table_id.is_empty() {
+            self.assert_table_in_scope(&input.table_id, scope)?;
+        }
         let id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
 
@@ -1812,11 +1974,14 @@ impl<'a> Repo<'a> {
     /// also the more correct bookkeeping regardless of who's paying.
     pub fn record_debt_payment(&self, scope: &Scope, debtor_id: &str, amount_cents: i64, notes: Option<&str>, actor_id: &str) -> Result<String, RepoError> {
         self.assert_row_in_scope("debtors", debtor_id, scope)?;
-        let (tenant_id, branch_id): (String, String) = self.conn.query_row(
-            "SELECT tenant_id, branch_id FROM debtors WHERE id = ?1",
+        let (tenant_id, branch_id, balance_cents): (String, String, i64) = self.conn.query_row(
+            "SELECT tenant_id, branch_id, balance_cents FROM debtors WHERE id = ?1",
             params![debtor_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
+        if amount_cents > balance_cents {
+            return Err(RepoError::DebtPaymentExceedsBalance { debtor_id: debtor_id.to_string(), balance_cents, amount_cents });
+        }
         let id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
@@ -2024,33 +2189,58 @@ impl<'a> Repo<'a> {
     /// sales, all-time top-5 items (matching the old query's own scope,
     /// which never filtered items by date either), today's staff
     /// performance, and current inventory status.
-    pub fn sales_report(&self, scope: &Scope, today_start_iso: &str) -> Result<SalesReportRow, RepoError> {
+    /// `range_end_iso`: `None` means "up to now" (the original "since
+    /// today_start_iso" behavior, still used by the default un-dated view).
+    /// `Some(end)` scopes the report to a closed [start, end) window --
+    /// what the new date-range picker on the Reports page sends.
+    pub fn sales_report(&self, scope: &Scope, range_start_iso: &str, range_end_iso: Option<&str>) -> Result<SalesReportRow, RepoError> {
         let (pred, args) = Self::scope_predicate(scope);
-        let sql = format!("SELECT COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders WHERE {pred} AND status = 'PAID' AND closed_at >= ?{a}", a = args.len() + 1);
+        let end_clause = if range_end_iso.is_some() { format!(" AND closed_at < ?{}", args.len() + 2) } else { String::new() };
+        let sql = format!("SELECT COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders WHERE {pred} AND status = 'PAID' AND closed_at >= ?{a}{end_clause}", a = args.len() + 1);
         let mut all_args = args.clone();
-        all_args.push(today_start_iso.to_string());
+        all_args.push(range_start_iso.to_string());
+        if let Some(end) = range_end_iso { all_args.push(end.to_string()); }
         let params_refs: Vec<&dyn rusqlite::ToSql> = all_args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
         let (order_count, total_sales): (i64, i64) = self.conn.query_row(&sql, params_refs.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))?;
 
-        let mut stmt = self.conn.prepare(
+        // Was a completely unscoped, all-time query -- no WHERE clause at
+        // all, so "top items" silently meant "top items across every
+        // tenant and branch that ever used this install, for all of
+        // history," regardless of what date range or scope the rest of
+        // this same report respects. Joined to `orders` for both the scope
+        // predicate and the same date window as the totals above.
+        let (pred2, args2) = Self::scope_predicate(scope);
+        let pred2 = pred2.replace("tenant_id", "orders.tenant_id").replace("branch_id", "orders.branch_id");
+        let end_clause2 = if range_end_iso.is_some() { format!(" AND orders.closed_at < ?{}", args2.len() + 2) } else { String::new() };
+        let sql2 = format!(
             "SELECT menu_items.name, SUM(order_items.quantity) FROM order_items \
              INNER JOIN menu_items ON menu_items.id = order_items.menu_item_id \
+             INNER JOIN orders ON orders.id = order_items.order_id \
+             WHERE {pred2} AND orders.status = 'PAID' AND orders.closed_at >= ?{a}{end_clause2} \
              GROUP BY menu_items.name ORDER BY 2 DESC LIMIT 5",
-        )?;
-        let top_items: Vec<FavoriteItemRow> = stmt.query_map([], |r| Ok(FavoriteItemRow { name: r.get(0)?, quantity: r.get(1)? }))?.collect::<Result<Vec<_>, _>>()?;
+            a = args2.len() + 1,
+        );
+        let mut all_args2 = args2.clone();
+        all_args2.push(range_start_iso.to_string());
+        if let Some(end) = range_end_iso { all_args2.push(end.to_string()); }
+        let params_refs2: Vec<&dyn rusqlite::ToSql> = all_args2.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let mut stmt = self.conn.prepare(&sql2)?;
+        let top_items: Vec<FavoriteItemRow> = stmt.query_map(params_refs2.as_slice(), |r| Ok(FavoriteItemRow { name: r.get(0)?, quantity: r.get(1)? }))?.collect::<Result<Vec<_>, _>>()?;
 
         // Same ambiguity concern as above -- `staff` also carries tenant_id/
         // branch_id, so qualify with `orders.` (the report is scoped to the
         // orders, not to which staff exist).
         let (pred3, args3) = Self::scope_predicate(scope);
         let pred3 = pred3.replace("tenant_id", "orders.tenant_id").replace("branch_id", "orders.branch_id");
+        let end_clause3 = if range_end_iso.is_some() { format!(" AND orders.closed_at < ?{}", args3.len() + 2) } else { String::new() };
         let sql3 = format!(
             "SELECT staff.name, COUNT(orders.id) FROM orders INNER JOIN staff ON staff.id = orders.user_id \
-             WHERE {pred3} AND orders.status = 'PAID' AND orders.closed_at >= ?{a} GROUP BY staff.name",
+             WHERE {pred3} AND orders.status = 'PAID' AND orders.closed_at >= ?{a}{end_clause3} GROUP BY staff.name",
             a = args3.len() + 1,
         );
         let mut all_args3 = args3.clone();
-        all_args3.push(today_start_iso.to_string());
+        all_args3.push(range_start_iso.to_string());
+        if let Some(end) = range_end_iso { all_args3.push(end.to_string()); }
         let params_refs3: Vec<&dyn rusqlite::ToSql> = all_args3.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
         let mut stmt3 = self.conn.prepare(&sql3)?;
         let staff_performance: Vec<StaffPerformanceRow> = stmt3.query_map(params_refs3.as_slice(), |r| Ok(StaffPerformanceRow { name: r.get(0)?, order_count: r.get(1)? }))?.collect::<Result<Vec<_>, _>>()?;
@@ -2397,8 +2587,18 @@ impl<'a> Repo<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn create_purchase_order(&self, tenant_id: &str, branch_id: &str, supplier_id: &str, created_by: &str, notes: Option<&str>) -> Result<String, RepoError> {
+    pub fn create_purchase_order(&self, scope: &Scope, tenant_id: &str, branch_id: &str, supplier_id: &str, created_by: &str, notes: Option<&str>) -> Result<String, RepoError> {
         self.assert_scope_populated("purchase_orders", true)?;
+        // 2026-08-13: found while auditing for the same class of bug the
+        // roster_entry fix closed -- this took supplier_id straight from
+        // the client with NO scope check at all (not even tenant-level,
+        // unlike every other suppliers-table mutation in this file, which
+        // all call assert_row_in_scope("suppliers", ...)). A stale/wrong
+        // supplier_id (sync bug, restored/merged data, anything) would
+        // silently file a PO -- and in create_purchase_order_and_bump_supplier/
+        // _with_items below, bump total_orders -- on a supplier belonging to
+        // a completely different tenant.
+        self.assert_row_in_scope("suppliers", supplier_id, scope)?;
         let id = uuid::Uuid::now_v7().to_string();
         self.conn.execute(
             "INSERT INTO purchase_orders (id, tenant_id, branch_id, supplier_id, status, total_cents, created_by, notes, created_at, last_modified, sync_status) \
@@ -2414,8 +2614,8 @@ impl<'a> Repo<'a> {
     /// auto-order calls WITHOUT the bump) -- that's an existing behavior
     /// quirk in the old frontend (auto-order never bumped total_orders),
     /// preserved as-is per instruction, not "fixed" into consistency.
-    pub fn create_purchase_order_and_bump_supplier(&self, tenant_id: &str, branch_id: &str, supplier_id: &str, created_by: &str, notes: Option<&str>) -> Result<String, RepoError> {
-        let id = self.create_purchase_order(tenant_id, branch_id, supplier_id, created_by, notes)?;
+    pub fn create_purchase_order_and_bump_supplier(&self, scope: &Scope, tenant_id: &str, branch_id: &str, supplier_id: &str, created_by: &str, notes: Option<&str>) -> Result<String, RepoError> {
+        let id = self.create_purchase_order(scope, tenant_id, branch_id, supplier_id, created_by, notes)?;
         self.conn.execute(
             "UPDATE suppliers SET total_orders = total_orders + 1, last_modified = datetime('now') WHERE id = ?1",
             params![supplier_id],
@@ -2428,9 +2628,13 @@ impl<'a> Repo<'a> {
     /// one transaction (the caller wraps this whole call in a `tx`). Total
     /// is computed server-side from the items, never trusted from the
     /// client.
-    pub fn create_purchase_order_with_items(&self, tenant_id: &str, branch_id: &str, supplier_id: &str, created_by: &str, notes: Option<&str>, items: &[(String, f64, i64)]) -> Result<String, RepoError> {
+    pub fn create_purchase_order_with_items(&self, scope: &Scope, tenant_id: &str, branch_id: &str, supplier_id: &str, created_by: &str, notes: Option<&str>, items: &[(String, f64, i64)]) -> Result<String, RepoError> {
         self.assert_scope_populated("purchase_orders", true)?;
         self.assert_scope_populated("purchase_order_items", true)?;
+        self.assert_row_in_scope("suppliers", supplier_id, scope)?;
+        for (ingredient_id, _, _) in items {
+            self.assert_row_in_scope("ingredients", ingredient_id, scope)?;
+        }
         let total_cents: i64 = items.iter().map(|(_, qty, unit_cost)| (*qty * *unit_cost as f64).round() as i64).sum();
         let po_id = uuid::Uuid::now_v7().to_string();
         self.conn.execute(
@@ -2556,20 +2760,42 @@ impl<'a> Repo<'a> {
             return Err(RepoError::PurchaseOrderNotPending { po_id: po_id.to_string(), status });
         }
         let now = chrono::Utc::now().to_rfc3339();
-        for (item_id, ingredient_id, quantity_received) in items {
+        for (item_id, client_ingredient_id, quantity_received) in items {
+            // 2026-08-13: the client-supplied ingredient_id in `items` was
+            // trusted outright and used directly for the stock UPDATE/log
+            // below -- item_id itself is safely scoped (WHERE id = ?
+            // AND purchase_order_id = po_id, and po_id was already scope-
+            // checked above), but nothing ever confirmed that
+            // client_ingredient_id actually matches THIS item's real
+            // ingredient. A client bug (or tampering) pairing a real
+            // item_id with a different ingredient_id would inflate the
+            // WRONG ingredient's stock -- possibly one from a different
+            // branch/tenant entirely -- while still passing every existing
+            // scope check, since none of them ever cross-referenced the
+            // two ids against each other. Deriving the real ingredient_id
+            // from the row itself (server-side, authoritative) instead of
+            // trusting the client's copy closes that gap; a mismatched
+            // client_ingredient_id is simply ignored rather than acted on.
+            let real_ingredient_id: String = self.conn.query_row(
+                "SELECT ingredient_id FROM purchase_order_items WHERE id = ?1 AND purchase_order_id = ?2",
+                params![item_id, po_id],
+                |r| r.get(0),
+            ).optional()?.ok_or_else(|| RepoError::PurchaseOrderItemOutOfScope { item_id: item_id.to_string() })?;
+            let _ = client_ingredient_id; // superseded by real_ingredient_id above, kept only for the tuple's existing shape
+
             self.conn.execute(
                 "UPDATE purchase_order_items SET quantity_received = ?1, last_modified = ?2 WHERE id = ?3 AND purchase_order_id = ?4",
                 params![quantity_received, now, item_id, po_id],
             )?;
             self.conn.execute(
                 "UPDATE ingredients SET current_stock = current_stock + ?1, last_modified = ?2 WHERE id = ?3",
-                params![quantity_received, now, ingredient_id],
+                params![quantity_received, now, real_ingredient_id],
             )?;
             let log_id = uuid::Uuid::now_v7().to_string();
             self.conn.execute(
                 "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status) \
                  VALUES (?1, ?2, ?3, ?4, ?5, 'استلام طلبية شراء', ?6, ?7, ?7, 'pending')",
-                params![log_id, tenant_id, branch_id, ingredient_id, quantity_received, actor_id, now],
+                params![log_id, tenant_id, branch_id, real_ingredient_id, quantity_received, actor_id, now],
             )?;
         }
 
@@ -3138,6 +3364,22 @@ impl<'a> Repo<'a> {
         self.assert_scope_populated("delivery_logs", true)?;
         self.assert_order_in_scope(order_id, scope)?;
         self.assert_row_in_scope("drivers", driver_id, scope)?;
+        // 2026-08-13: same class of gap the create_roster_entry fix closed
+        // -- assert_row_in_scope alone only proves the driver belongs to
+        // the caller's TENANT (trivially true for every branch when the
+        // actor is a Tenant-scoped Owner). branch_id here is the CALLER's
+        // resolved operating branch, not necessarily the driver's own --
+        // an Owner on a Branch A terminal could assign a Branch B driver
+        // to a delivery filed under Branch A. NULL driver.branch_id is a
+        // deliberate wildcard, same convention as staff.branch_id.
+        let driver_branch_id: Option<String> = self.conn.query_row(
+            "SELECT branch_id FROM drivers WHERE id = ?1", params![driver_id], |r| r.get(0),
+        )?;
+        if let Some(db) = &driver_branch_id {
+            if db != branch_id {
+                return Err(RepoError::DriverBranchMismatch { driver_id: driver_id.to_string(), target_branch_id: branch_id.to_string() });
+            }
+        }
         let id = uuid::Uuid::now_v7().to_string();
         self.conn.execute(
             "INSERT INTO delivery_logs (id, tenant_id, branch_id, order_id, driver_id, status, assigned_at, created_at, last_modified, sync_status) \
@@ -3535,6 +3777,21 @@ impl<'a> Repo<'a> {
     pub fn adjust_stock(&self, scope: &Scope, tenant_id: &str, branch_id: &str, ingredient_id: &str, change_amount: f64, reason: &str, actor_id: &str) -> Result<String, RepoError> {
         self.assert_scope_populated("ingredients", true)?;
         self.assert_row_in_scope("ingredients", ingredient_id, scope)?;
+        // 2026-08-13: no floor at all -- a manual adjustment (a human
+        // typing a correction, spoilage writeoff, recount) could silently
+        // drive current_stock negative with a fat-fingered amount.
+        // Deliberately NOT applied to the automated sale-time depletion
+        // path (deplete_recipe_stock, called from finalize_order_with_
+        // payment) -- blocking an active checkout over a stock-bookkeeping
+        // inconsistency would be a far worse outcome than a temporarily
+        // negative count a report can catch; this guard only covers the
+        // one path where a human is directly, deliberately typing a number.
+        let current_stock: f64 = self.conn.query_row(
+            "SELECT current_stock FROM ingredients WHERE id = ?1", params![ingredient_id], |r| r.get(0),
+        )?;
+        if current_stock + change_amount < 0.0 {
+            return Err(RepoError::StockAdjustmentBelowZero { ingredient_id: ingredient_id.to_string(), current_stock, change_amount });
+        }
         let log_id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
@@ -3557,6 +3814,9 @@ impl<'a> Repo<'a> {
 
     pub fn open_shift(&self, tenant_id: &str, branch_id: &str, user_id: &str, starting_cash_cents: i64) -> Result<String, RepoError> {
         self.assert_scope_populated("shifts", true)?;
+        if let Some(existing) = self.get_active_shift(user_id)? {
+            return Err(RepoError::ShiftAlreadyOpen { user_id: user_id.to_string(), existing_shift_id: existing.id });
+        }
         let id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
@@ -3567,9 +3827,9 @@ impl<'a> Repo<'a> {
         Ok(id)
     }
 
-    /// The one currently-open shift for this staff member, if any -- there
-    /// is at most one (the UI never opens a second shift while one is
-    /// active), but this is a plain query, not an enforced constraint.
+    /// The one currently-open shift for this staff member, if any -- at
+    /// most one, enforced by open_shift's own ShiftAlreadyOpen check
+    /// (2026-08-13) rather than left to client-side UI convention alone.
     pub fn get_active_shift(&self, user_id: &str) -> Result<Option<ShiftRow>, RepoError> {
         self.conn
             .query_row(
@@ -3659,6 +3919,12 @@ impl<'a> Repo<'a> {
     /// ANY shift in the database by id, regardless of tenant/branch).
     pub fn close_shift(&self, scope: &Scope, shift_id: &str, ending_cash_cents: i64, difference_cents: i64) -> Result<(), RepoError> {
         self.assert_shift_in_scope(shift_id, scope)?;
+        let already_closed: bool = self.conn.query_row(
+            "SELECT closed_at IS NOT NULL FROM shifts WHERE id = ?1", params![shift_id], |r| r.get(0),
+        )?;
+        if already_closed {
+            return Err(RepoError::ShiftAlreadyClosed { shift_id: shift_id.to_string() });
+        }
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
             "UPDATE shifts SET closed_at = ?1, ending_cash_cents = ?2, difference_cents = ?3, last_modified = ?1 WHERE id = ?4",
@@ -3801,6 +4067,114 @@ impl<'a> Repo<'a> {
             "UPDATE attendance SET clock_out = ?1, status = ?2, last_modified = ?1 WHERE user_id = ?3 AND date = ?4",
             params![now_iso, status, user_id, today],
         )?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // HR_AND_GENERALIZATION_PLAN.md Part A -- roster (planned work
+    // assignments, any date). Unsynced for now, same posture as
+    // loyalty_tier/loyalty_reward -- see migrate_v3.rs's
+    // run_roster_entry_migration doc comment.
+    // -----------------------------------------------------------------
+
+    pub fn list_roster_entries(&self, scope: &Scope, date_from: &str, date_to: &str) -> Result<Vec<RosterEntryRow>, RepoError> {
+        self.assert_scope_populated("roster_entry", true)?;
+        let (predicate, args) = Self::scope_predicate(scope);
+        let predicate = predicate.replace("tenant_id", "roster_entry.tenant_id").replace("branch_id", "roster_entry.branch_id");
+        let sql = format!(
+            "SELECT roster_entry.id, roster_entry.staff_id, staff.name, roster_entry.work_date, roster_entry.start_time, roster_entry.end_time, roster_entry.notes \
+             FROM roster_entry INNER JOIN staff ON staff.id = roster_entry.staff_id \
+             WHERE {predicate} AND roster_entry.deleted_at IS NULL AND roster_entry.work_date >= ?{} AND roster_entry.work_date <= ?{} \
+             ORDER BY roster_entry.work_date ASC, roster_entry.start_time ASC",
+            args.len() + 1, args.len() + 2
+        );
+        let mut full_args: Vec<String> = args;
+        full_args.push(date_from.to_string());
+        full_args.push(date_to.to_string());
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = full_args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+            Ok(RosterEntryRow {
+                id: r.get(0)?, staff_id: r.get(1)?, staff_name: r.get(2)?,
+                work_date: r.get(3)?, start_time: r.get(4)?, end_time: r.get(5)?, notes: r.get(6)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// `roster_entry` belonging to another tenant/branch, or already
+    /// soft-deleted, does not exist as far as an update/delete is concerned
+    /// -- same "out of scope reads as not found" reasoning as
+    /// `assert_staff_in_scope`.
+    fn assert_roster_entry_in_scope(&self, entry_id: &str, scope: &Scope) -> Result<(), RepoError> {
+        let (predicate, args) = Self::scope_predicate(scope);
+        let id_placeholder = format!("?{}", args.len() + 1);
+        let sql = format!("SELECT 1 FROM roster_entry WHERE {predicate} AND id = {id_placeholder} AND deleted_at IS NULL");
+        let mut full_args: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        full_args.push(&entry_id);
+        self.conn.query_row(&sql, full_args.as_slice(), |r| r.get::<_, i64>(0))
+            .optional()?
+            .ok_or_else(|| RepoError::RosterEntryOutOfScope { id: entry_id.to_string() })?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_roster_entry(
+        &self, scope: &Scope, tenant_id: &str, branch_id: &str, staff_id: &str, created_by: &str,
+        work_date: &str, start_time: &str, end_time: &str, notes: Option<&str>, device_id: &str,
+    ) -> Result<String, RepoError> {
+        self.assert_staff_in_scope(staff_id, scope)?;
+        // assert_staff_in_scope only proves staff_id belongs to the caller's
+        // TENANT (trivially true for every branch when the actor is an
+        // Owner) -- this additionally proves it belongs to the specific
+        // branch_id the entry is about to be filed under. NULL staff.branch_id
+        // (floating/unassigned staff, e.g. a tenant-wide Owner-level role)
+        // is the one deliberate exception -- schedulable at any branch.
+        let staff_branch_id: Option<String> = self.conn.query_row(
+            "SELECT branch_id FROM staff WHERE id = ?1", params![staff_id], |r| r.get(0),
+        )?;
+        if let Some(sb) = &staff_branch_id {
+            if sb != branch_id {
+                return Err(RepoError::StaffBranchMismatch { staff_id: staff_id.to_string(), target_branch_id: branch_id.to_string() });
+            }
+        }
+        if end_time <= start_time {
+            return Err(RepoError::InvalidRosterTimes { start: start_time.to_string(), end: end_time.to_string() });
+        }
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO roster_entry (id, tenant_id, branch_id, staff_id, work_date, start_time, end_time, notes, created_by, created_at, updated_at_hlc, device_id, rev) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11, 1)",
+            params![id, tenant_id, branch_id, staff_id, work_date, start_time, end_time, notes, created_by, now, device_id],
+        )?;
+        Ok(id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_roster_entry(
+        &self, scope: &Scope, entry_id: &str, work_date: &str, start_time: &str, end_time: &str, notes: Option<&str>, device_id: &str,
+    ) -> Result<(), RepoError> {
+        self.assert_roster_entry_in_scope(entry_id, scope)?;
+        if end_time <= start_time {
+            return Err(RepoError::InvalidRosterTimes { start: start_time.to_string(), end: end_time.to_string() });
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE roster_entry SET work_date = ?1, start_time = ?2, end_time = ?3, notes = ?4, updated_at_hlc = ?5, device_id = ?6, rev = rev + 1 WHERE id = ?7",
+            params![work_date, start_time, end_time, notes, now, device_id, entry_id],
+        )?;
+        Ok(())
+    }
+
+    /// Hard delete -- no established soft-delete-and-filter convention
+    /// exists yet for any table in this codebase to copy (deleted_at is
+    /// carried on every synced table for a FUTURE tombstone convention,
+    /// but nothing currently uses it that way). A manager removing a
+    /// mis-scheduled entry expects it gone, not filtered.
+    pub fn delete_roster_entry(&self, scope: &Scope, entry_id: &str) -> Result<(), RepoError> {
+        self.assert_roster_entry_in_scope(entry_id, scope)?;
+        self.conn.execute("DELETE FROM roster_entry WHERE id = ?1", params![entry_id])?;
         Ok(())
     }
 
@@ -4398,13 +4772,64 @@ impl<'a> Repo<'a> {
     /// `item_id` is verified in-scope before the write -- found and fixed
     /// during Slice A verification (previously unscoped entirely, letting a
     /// Branch-scoped actor void any order item in the database by id).
-    pub fn void_order_item(&self, scope: &Scope, item_id: &str, reason: &str) -> Result<(), RepoError> {
+    ///
+    /// 2026-08-13, two fixes found during the deep audit: (1) there was no
+    /// `voided = 0` guard, so calling this twice on the same item silently
+    /// "succeeded" both times -- now rejected via OrderItemAlreadyVoided.
+    /// (2) if the item's PARENT ORDER is already PAID, its recipe stock was
+    /// already deducted at payment time (deplete_recipe_stock, called from
+    /// finalize_order_with_payment) and voiding it never gave that stock
+    /// back -- a manager fixing a mistake after checkout left the ingredient
+    /// count permanently short. Restored now, for exactly this one item's
+    /// quantity (not the whole order -- see refund_order for that). This
+    /// does NOT adjust the order's total_cents/loyalty/debt for the voided
+    /// item's value -- a manager needing money actually returned to the
+    /// customer should use refund_order, which is the single place all of
+    /// those reversals happen together; this closes the stock half of the
+    /// gap specifically, deliberately not the money half, to avoid guessing
+    /// at partial-refund-via-void semantics no one asked for.
+    pub fn void_order_item(&self, scope: &Scope, item_id: &str, reason: &str, actor_id: &str) -> Result<(), RepoError> {
         self.assert_order_item_in_scope(item_id, scope)?;
+        let (order_id, menu_item_id, quantity, already_voided): (String, String, i64, bool) = self.conn.query_row(
+            "SELECT order_id, menu_item_id, quantity, voided FROM order_items WHERE id = ?1",
+            params![item_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
+        if already_voided {
+            return Err(RepoError::OrderItemAlreadyVoided { item_id: item_id.to_string() });
+        }
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
             "UPDATE order_items SET voided = 1, void_reason = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
             params![reason, now, item_id],
         )?;
+
+        let (order_tenant_id, order_branch_id, order_status): (String, String, String) = self.conn.query_row(
+            "SELECT tenant_id, branch_id, status FROM orders WHERE id = ?1", params![order_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        if order_status == "PAID" {
+            let mut stmt = self.conn.prepare("SELECT ingredient_id, quantity_needed FROM recipes WHERE menu_item_id = ?1")?;
+            let recipe_rows: Vec<(String, f64)> = stmt
+                .query_map(params![menu_item_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            for (ingredient_id, qty_needed) in recipe_rows {
+                let restore = qty_needed * quantity as f64;
+                if restore <= 0.0 {
+                    continue;
+                }
+                self.conn.execute(
+                    "UPDATE ingredients SET current_stock = current_stock + ?1, last_modified = ?2 WHERE id = ?3",
+                    params![restore, now, ingredient_id],
+                )?;
+                let log_id = uuid::Uuid::now_v7().to_string();
+                self.conn.execute(
+                    "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'إلغاء صنف بعد الدفع', ?6, ?7, ?7, 'pending')",
+                    params![log_id, order_tenant_id, order_branch_id, ingredient_id, restore, actor_id, now],
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -4615,6 +5040,16 @@ impl<'a> Repo<'a> {
     /// (`loyalty_transactions` is `TENANT_BRANCH_TABLES`), which -- unlike
     /// `description` -- would have actually crashed the very first call.
     pub fn earn_loyalty_points(&self, tenant_id: &str, branch_id: &str, card_number: &str, points: i64, order_id: &str) -> Result<(), RepoError> {
+        // 2026-08-13: no floor at all on `points` -- this command is
+        // superseded by finalize_order_with_payment's own atomic,
+        // server-computed accrual (see this function's own doc comment
+        // above) and isn't called from any frontend page today, but it's
+        // still an exposed, license-gated command; a negative value here
+        // would silently drive a real card's points balance below zero
+        // with nothing else in the codebase expecting that to be possible.
+        if points <= 0 {
+            return Err(RepoError::InvalidLoyaltyPoints { points });
+        }
         let now = chrono::Utc::now().to_rfc3339();
         // Same tenant-leak fix as lookup_loyalty_card -- without this filter
         // a cashier could bump ANY tenant's card balance just by knowing (or
@@ -4754,6 +5189,138 @@ impl<'a> Repo<'a> {
         };
 
         Ok((payment_id, points_earned))
+    }
+
+    /// 2026-08-13: the actual missing piece -- full-order refund,
+    /// reversing everything `finalize_order_with_payment` did, atomically
+    /// (caller wraps this in one transaction, same convention as every
+    /// other multi-write method in this file). Full-order only for now
+    /// (amount is always the order's remaining un-refunded total, not a
+    /// caller-chosen partial amount) -- a partial dollar-only refund
+    /// (no stock/loyalty/debt reversal) is a real, separate future need,
+    /// deliberately not built here rather than guessing at ambiguous
+    /// which-items-does-this-cover semantics.
+    ///
+    /// Reverses, in order: recipe stock for every non-voided item (mirror
+    /// of `deplete_recipe_stock`, `+` instead of `-`), loyalty points
+    /// earned on this order (an `ADJUST` transaction, floored so the
+    /// card's points can never go negative from a refund), and the DEBT
+    /// entry if this order was CREDIT-financed (a `PAYMENT` entry zeroing
+    /// out exactly what this order added to the debtor's balance -- reuses
+    /// the same fact-pair convention `record_debt_payment` already uses,
+    /// not a special case). Records the `refunds` fact and bumps
+    /// `orders.refunded_cents` last, once every reversal has succeeded.
+    pub fn refund_order(&self, scope: &Scope, order_id: &str, actor_id: &str, reason: Option<&str>) -> Result<String, RepoError> {
+        self.assert_order_in_scope(order_id, scope)?;
+        let (tenant_id, branch_id, status, total_cents, refunded_cents): (String, String, String, i64, i64) = self.conn.query_row(
+            "SELECT tenant_id, branch_id, status, total_cents, refunded_cents FROM orders WHERE id = ?1",
+            params![order_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )?;
+        if status != "PAID" {
+            return Err(RepoError::OrderNotRefundable { order_id: order_id.to_string(), reason: format!("order status is {status}, not PAID") });
+        }
+        if refunded_cents > 0 {
+            return Err(RepoError::OrderNotRefundable { order_id: order_id.to_string(), reason: "already refunded".to_string() });
+        }
+
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Reverse recipe stock -- exact mirror of deplete_recipe_stock's
+        // own query, `+` instead of `-`.
+        let mut stmt = self.conn.prepare(
+            "SELECT r.ingredient_id, SUM(oi.quantity * r.quantity_needed) \
+             FROM order_items oi JOIN recipes r ON r.menu_item_id = oi.menu_item_id \
+             WHERE oi.order_id = ?1 AND oi.voided = 0 \
+             GROUP BY r.ingredient_id",
+        )?;
+        let needed: Vec<(String, f64)> = stmt
+            .query_map(params![order_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        for (ingredient_id, total_needed) in needed {
+            if total_needed <= 0.0 {
+                continue;
+            }
+            self.conn.execute(
+                "UPDATE ingredients SET current_stock = current_stock + ?1, last_modified = ?2 WHERE id = ?3",
+                params![total_needed, now, ingredient_id],
+            )?;
+            let log_id = uuid::Uuid::now_v7().to_string();
+            self.conn.execute(
+                "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'استرجاع بسبب استرداد', ?6, ?7, ?7, 'pending')",
+                params![log_id, tenant_id, branch_id, ingredient_id, total_needed, actor_id, now],
+            )?;
+        }
+
+        // Reverse loyalty points earned on this order, if any.
+        let earned: Option<(String, i64)> = self.conn.query_row(
+            "SELECT card_id, points FROM loyalty_transactions WHERE reference_type = 'order' AND reference_id = ?1 AND type = 'EARN'",
+            params![order_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?;
+        if let Some((card_id, points)) = earned {
+            let current_points: i64 = self.conn.query_row(
+                "SELECT points FROM loyalty_cards WHERE id = ?1", params![card_id], |r| r.get(0),
+            )?;
+            // Floored at 0 -- a card that already redeemed some of these
+            // points before the refund must not go negative; the customer
+            // keeps whatever they already redeemed, same reasoning
+            // InsufficientLoyaltyPoints already protects at redeem time.
+            let reversed = points.min(current_points);
+            if reversed > 0 {
+                let new_points = current_points - reversed;
+                let tiers = self.list_loyalty_tiers(&tenant_id)?;
+                let (new_tier, _) = Self::tier_for(new_points, &tiers);
+                self.conn.execute(
+                    "UPDATE loyalty_cards SET points = ?1, tier = ?2, last_modified = ?3 WHERE id = ?4",
+                    params![new_points, new_tier, now, card_id],
+                )?;
+                self.conn.execute(
+                    "INSERT INTO loyalty_transactions (id, tenant_id, branch_id, card_id, points, type, reference_type, reference_id, created_at, sync_version, last_modified, sync_status) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'ADJUST', 'order_refund', ?6, ?7, 1, ?7, 'pending')",
+                    params![uuid::Uuid::now_v7().to_string(), tenant_id, branch_id, card_id, -reversed, order_id, now],
+                )?;
+            }
+        }
+
+        // Reverse the debt entry, if this order was CREDIT-financed --
+        // same DEBT/PAYMENT fact-pair convention record_debt_payment uses,
+        // reusing the debtor_id/amount from this order's own DEBT entry
+        // rather than trusting a caller-supplied one.
+        let debt: Option<(String, i64)> = self.conn.query_row(
+            "SELECT debtor_id, amount_cents FROM debt_entries WHERE order_id = ?1 AND type = 'DEBT'",
+            params![order_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?;
+        if let Some((debtor_id, debt_amount)) = debt {
+            let debt_entry_id = uuid::Uuid::now_v7().to_string();
+            self.conn.execute(
+                "INSERT INTO debt_entries (id, tenant_id, branch_id, debtor_id, order_id, amount_cents, type, notes, created_by, created_at, sync_version, last_modified, sync_status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'PAYMENT', 'استرداد طلب', ?7, ?8, 1, ?8, 'pending')",
+                params![debt_entry_id, tenant_id, branch_id, debtor_id, order_id, debt_amount, actor_id, now],
+            )?;
+            self.conn.execute(
+                "UPDATE debtors SET total_paid_cents = total_paid_cents + ?1, balance_cents = balance_cents - ?1, last_transaction_at = ?2, last_modified = ?2 WHERE id = ?3",
+                params![debt_amount, now, debtor_id],
+            )?;
+        }
+
+        // Record the refund fact + bump the rollup, last -- everything
+        // above has already succeeded by this point.
+        let refund_id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO refunds (id, tenant_id, branch_id, order_id, amount_cents, reason, refunded_by, created_at, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, 'pending')",
+            params![refund_id, tenant_id, branch_id, order_id, total_cents, reason, actor_id, now],
+        )?;
+        self.conn.execute(
+            "UPDATE orders SET refunded_cents = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
+            params![total_cents, now, order_id],
+        )?;
+
+        Ok(refund_id)
     }
 }
 

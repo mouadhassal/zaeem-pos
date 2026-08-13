@@ -80,6 +80,8 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_printer_system_name_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_manager_threshold_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_business_mode_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_roster_entry_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_refund_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -278,7 +280,7 @@ pub fn run() {
             // MockAiProvider stays available for `debug_assertions` builds
             // only, so local dev/demo work doesn't need a real license or
             // network call for every test upload.
-            let ai_license_dir = db_path.parent().expect("db_path must have a parent dir").to_path_buf();
+            let ai_license_dir = db_path.parent().unwrap_or(&db_path).to_path_buf();
             let provider: Box<dyn ai::AiProvider + Send + Sync> = if cfg!(debug_assertions) {
                 Box::new(MockAiProvider)
             } else {
@@ -303,7 +305,7 @@ pub fn run() {
             // command that cares reads `cached_status()`, a Mutex read of
             // whatever was last computed, not a fresh network call or
             // signature check.
-            let license_dir = db_path.parent().expect("db_path must have a parent dir").to_path_buf();
+            let license_dir = db_path.parent().unwrap_or(&db_path).to_path_buf();
             let license_state = license::store::LicenseState::init(license_dir.clone(), license::compiled_public_key());
             let cloud_config = license::cloud::load_config_from_file(&license_dir.join("cloud_config.json"));
             let transport = license::cloud::SupabaseCloudTransport::new(license::cloud::supabase_url(), license::cloud::supabase_anon_key());
@@ -349,7 +351,7 @@ pub fn run() {
             // Never on the sale path: this is the ONLY thing that ever reads
             // `sync_outbox`.
             let sync_timer_handle = app.handle().clone();
-            let sync_config_dir = db_path.parent().expect("db_path must have a parent dir").to_path_buf();
+            let sync_config_dir = db_path.parent().unwrap_or(&db_path).to_path_buf();
             tauri::async_runtime::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -367,7 +369,7 @@ pub fn run() {
             // every boot -- an owner shouldn't have to re-enable Hub mode
             // after every restart. Never runs for `standalone`/
             // `satellite` mode.
-            let lan_dir = db_path.parent().expect("db_path must have a parent dir").to_path_buf();
+            let lan_dir = db_path.parent().unwrap_or(&db_path).to_path_buf();
             // Lets `authenticate_actor`'s Hub-fallback (see its own doc
             // comment) find this device's own lan_config.json from deep
             // inside a plain `fn` with no `AppHandle` in scope.
@@ -396,6 +398,7 @@ pub fn run() {
             commands_v3::update_staff_profile_v3,
             commands_v3::set_staff_active_v3,
             commands_v3::list_orders_v3,
+            commands_v3::list_recent_paid_orders_v3,
             commands_v3::list_kitchen_orders_v3,
             commands_v3::register_kds_terminal_v3,
             commands_v3::create_order_v3,
@@ -453,6 +456,10 @@ pub fn run() {
             commands_v3::list_attendance_v3,
             commands_v3::clock_in_v3,
             commands_v3::clock_out_v3,
+            commands_v3::list_roster_entries_v3,
+            commands_v3::create_roster_entry_v3,
+            commands_v3::update_roster_entry_v3,
+            commands_v3::delete_roster_entry_v3,
             commands_v3::resolve_menu_price_v3,
             commands_v3::create_customer_v3,
             commands_v3::list_customers_v3,
@@ -563,6 +570,7 @@ pub fn run() {
             commands_v3::lookup_loyalty_card_v3,
             commands_v3::earn_loyalty_points_v3,
             commands_v3::finalize_order_with_payment_v3,
+            commands_v3::refund_order_v3,
             commands_v3::get_cached_license_status_v3,
             commands_v3::check_license_v3,
             commands_v3::renew_license_v3,

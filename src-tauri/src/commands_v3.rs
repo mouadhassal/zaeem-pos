@@ -561,6 +561,20 @@ pub fn list_orders_v3(state: State<Db>, license: State<crate::license::cloud::Cl
     Repo::new(&conn).list_orders(&scope).map_err(|e| e.to_string())
 }
 
+/// Back-office command -- feeds the refund lookup UI (reports/page.tsx's
+/// "الطلبات المدفوعة" section). See Repo::list_recent_paid_orders's own
+/// doc comment for why this is capped and joined for display, not a reuse
+/// of list_orders_v3 above.
+#[tauri::command]
+pub fn list_recent_paid_orders_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::RefundableOrderRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::RefundOrder).map_err(|e| e.to_string())?;
+    let scope = actor.scope();
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_recent_paid_orders(&scope, 50).map_err(|e| e.to_string())
+}
+
 /// `kds/page.tsx`'s kitchen display feed.
 #[tauri::command]
 pub fn list_kitchen_orders_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::KdsOrderRow>, String> {
@@ -1681,6 +1695,71 @@ fn clock_out_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseSt
 }
 
 // ---------------------------------------------------------------------------
+// HR_AND_GENERALIZATION_PLAN.md Part A -- roster (planned work
+// assignments). Distinct from attendance (above): a roster entry can be
+// any date, past or future, and represents a plan, not a fact.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_roster_entries_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, date_from: String, date_to: String) -> Result<Vec<crate::repo::RosterEntryRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageRoster).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_roster_entries(&actor.scope(), &date_from, &date_to).map_err(|e| e.to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub fn create_roster_entry_v3(
+    state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String,
+    staff_id: String, work_date: String, start_time: String, end_time: String, notes: Option<String>,
+) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageRoster).map_err(|e| e.to_string())?;
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let id = Repo::new(&tx)
+        .create_roster_entry(&actor.scope(), &tenant_id, &branch_id, &staff_id, &actor.id, &work_date, &start_time, &end_time, notes.as_deref(), &actor.device_id)
+        .map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::SettingsChanged, "roster_entry", &id, None, Some(&serde_json::json!({ "action": "create", "staff_id": staff_id, "work_date": work_date }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub fn update_roster_entry_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, id: String, work_date: String, start_time: String, end_time: String, notes: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageRoster).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_roster_entry(&actor.scope(), &id, &work_date, &start_time, &end_time, notes.as_deref(), &actor.device_id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "roster_entry", &id, None, Some(&serde_json::json!({ "action": "update" }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_roster_entry_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageRoster).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).delete_roster_entry(&actor.scope(), &id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "roster_entry", &id, None, Some(&serde_json::json!({ "action": "delete" }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Batch 3b, slice 3, group 2 -- debt (بيع بالدين). DEBT-type entries are
 // already created by `take_payment_v3`; this group is debtor CRUD + payments.
 // ---------------------------------------------------------------------------
@@ -1914,13 +1993,16 @@ pub fn mark_invoice_paid_v3(state: State<Db>, license: State<crate::license::clo
 }
 
 /// Back-office command -- license-gated. See the note on `list_staff_v3`.
+/// `range_end_iso` is optional (`None` = "up to now") so the existing
+/// "today so far" call site keeps working unchanged; the Reports page's
+/// new date-range picker passes a real closed window.
 #[tauri::command]
-pub fn get_sales_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, today_start_iso: String) -> Result<crate::repo::SalesReportRow, String> {
+pub fn get_sales_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, today_start_iso: String, range_end_iso: Option<String>) -> Result<crate::repo::SalesReportRow, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
     require_license_not_locked(&license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).sales_report(&actor.scope(), &today_start_iso).map_err(|e| e.to_string())
+    Repo::new(&conn).sales_report(&actor.scope(), &today_start_iso, range_end_iso.as_deref()).map_err(|e| e.to_string())
 }
 
 /// 2026-08-04: the business assistant -- "you ask, it answers from your
@@ -2585,7 +2667,7 @@ pub fn create_purchase_order_v3(state: State<Db>, license: State<crate::license:
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let po_id = Repo::new(&tx)
-        .create_purchase_order(&tenant_id, &branch_id, &supplier_id, &actor.id, notes.as_deref())
+        .create_purchase_order(&actor.scope(), &tenant_id, &branch_id, &supplier_id, &actor.id, notes.as_deref())
         .map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
@@ -2609,7 +2691,7 @@ pub fn create_purchase_order_and_bump_supplier_v3(state: State<Db>, license: Sta
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let po_id = Repo::new(&tx)
-        .create_purchase_order_and_bump_supplier(&tenant_id, &branch_id, &supplier_id, &actor.id, notes.as_deref())
+        .create_purchase_order_and_bump_supplier(&actor.scope(), &tenant_id, &branch_id, &supplier_id, &actor.id, notes.as_deref())
         .map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
@@ -2636,7 +2718,7 @@ pub fn create_purchase_order_with_items_v3(state: State<Db>, license: State<crat
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let po_id = Repo::new(&tx)
-        .create_purchase_order_with_items(&tenant_id, &branch_id, &supplier_id, &actor.id, notes.as_deref(), &items)
+        .create_purchase_order_with_items(&actor.scope(), &tenant_id, &branch_id, &supplier_id, &actor.id, notes.as_deref(), &items)
         .map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
@@ -3904,7 +3986,7 @@ fn void_order_item_v3_impl(state: &Db, license: &crate::license::cloud::CloudLic
     };
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).void_order_item(&scope, &item_id, &reason).map_err(|e| e.to_string())?;
+    Repo::new(&tx).void_order_item(&scope, &item_id, &reason, &actor.id).map_err(|e| e.to_string())?;
 
     audit::append(
         &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
@@ -4139,6 +4221,41 @@ fn finalize_order_with_payment_v3_impl(
 
     tx.commit().map_err(|e| e.to_string())?;
     Ok(FinalizePaymentResult { payment_id, points_earned })
+}
+
+/// Back-office command -- license-gated (unlike void/payment: a refund
+/// happens AFTER the sale already closed, never mid-service, so it's not
+/// on the "must stay open during a locked license" list those are).
+/// Single function body, not a wrapper+impl split -- the license-gate
+/// coverage test scans this exact body's literal source text for the
+/// require_license_not_locked call, same constraint every other GATED
+/// command here follows (see list_staff_v3/create_roster_entry_v3's own
+/// notes on this).
+#[tauri::command]
+pub fn refund_order_v3(
+    state: State<Db>,
+    license: State<crate::license::cloud::CloudLicenseState>,
+    session_token: String,
+    order_id: String,
+    reason: Option<String>,
+) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::RefundOrder).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
+    let scope = actor.scope();
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let refund_id = Repo::new(&tx)
+        .refund_order(&scope, &order_id, &actor.id, reason.as_deref())
+        .map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
+        audit::Action::OrderRefunded, "order", &order_id,
+        None, Some(&serde_json::json!({ "refund_id": refund_id, "reason": reason })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(refund_id)
 }
 
 /// Stamps `payments.rev`/`updated_at_hlc`/`device_id` and queues the row --
@@ -4639,6 +4756,8 @@ mod tests {
         migrate_v3::run_printer_system_name_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_manager_threshold_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_business_mode_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_roster_entry_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_refund_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -5294,6 +5413,95 @@ mod tests {
             ).unwrap();
             assert!((log_change + 3.0).abs() < 0.001, "the sale must log a -3.0 change_amount, got {log_change}");
             println!("[recipes] take_payment_v3 correctly depleted 3 buns + logged the consumption fact");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// 2026-08-13: void_order_item's two fixes -- voiding an item on an
+        /// ALREADY-PAID order must restore that item's recipe stock (it was
+        /// depleted at payment time and never given back before), and
+        /// voiding the same item twice must be rejected, not silently
+        /// "succeed" a second time.
+        #[test]
+        fn void_order_item_restores_stock_after_payment_and_rejects_double_void() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("void_after_payment");
+            let conn = Connection::open(&db_path).unwrap();
+            let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Void Cashier");
+            let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+            let repo = Repo::new(&conn);
+
+            let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+            let item_id = repo.create_menu_item(&tenant_id, "Burger", &category_id, 1000, 400, None, None).unwrap();
+            let bun_id = repo.create_ingredient(&tenant_id, &branch_id, "Buns", "pcs", 20, 2.0).unwrap();
+            conn.execute("UPDATE ingredients SET current_stock = 50.0 WHERE id = ?1", params![bun_id]).unwrap();
+            conn.execute("INSERT INTO recipes (id, tenant_id, menu_item_id, ingredient_id, quantity_needed) VALUES ('r1', ?1, ?2, ?3, 1.0)", params![tenant_id, item_id, bun_id]).unwrap();
+
+            let order_id = repo.create_full_order(&scope, &tenant_id, &branch_id, crate::repo::FullOrderInput {
+                table_id, user_id: cashier_id.clone(), order_type: "DINE_IN".to_string(),
+                subtotal_cents: 2000, tax_cents: 0, total_cents: 2000, discount_cents: 0,
+                discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
+                delivery_fee_cents: 0, driver_id: None, shift_id: None,
+                items: vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] }],
+            }).unwrap();
+            let item_row_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CASH", 2000, 0, None, &cashier_id, None).unwrap();
+
+            let bun_after_sale: f64 = conn.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![bun_id], |r| r.get(0)).unwrap();
+            assert!((bun_after_sale - 48.0).abs() < 0.001, "2 burgers sold must deplete 2 buns (50 -> 48)");
+
+            // Void the item on the now-PAID order -- must restore its 2 buns.
+            repo.void_order_item(&scope, &item_row_id, "طلب العميل", &cashier_id).unwrap();
+            let bun_after_void: f64 = conn.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![bun_id], |r| r.get(0)).unwrap();
+            assert!((bun_after_void - 50.0).abs() < 0.001, "voiding after payment must restore the 2 buns (48 -> 50), got {bun_after_void}");
+            let restore_log: f64 = conn.query_row(
+                "SELECT change_amount FROM inventory_logs WHERE ingredient_id = ?1 AND reason = 'إلغاء صنف بعد الدفع' ORDER BY created_at DESC LIMIT 1",
+                params![bun_id], |r| r.get(0),
+            ).unwrap();
+            assert!((restore_log - 2.0).abs() < 0.001, "the restore must log a +2.0 change_amount, got {restore_log}");
+            println!("[void] voiding a PAID order's item correctly restored its 2 buns and logged the fact");
+
+            // Voiding the SAME item again must be rejected, not double-restore stock.
+            match repo.void_order_item(&scope, &item_row_id, "محاولة ثانية", &cashier_id) {
+                Err(RepoError::OrderItemAlreadyVoided { .. }) => println!("[void] a second void on the same item correctly rejected"),
+                other => panic!("expected OrderItemAlreadyVoided, got {other:?}"),
+            }
+            let bun_after_second_void: f64 = conn.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![bun_id], |r| r.get(0)).unwrap();
+            assert!((bun_after_second_void - 50.0).abs() < 0.001, "the rejected second void must not have touched stock again, got {bun_after_second_void}");
+
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// 2026-08-13: adjust_stock had no floor at all -- a manual
+        /// correction that would drive current_stock negative must be
+        /// rejected, while a change that lands exactly on zero (or stays
+        /// positive) must still work normally.
+        #[test]
+        fn adjust_stock_rejects_a_manual_change_that_would_go_negative() {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("adjust_stock_floor");
+            let conn = Connection::open(&db_path).unwrap();
+            let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Stock Manager");
+            let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+            let repo = Repo::new(&conn);
+
+            let ing_id = repo.create_ingredient(&tenant_id, &branch_id, "طماطم", "kg", 5, 2.0).unwrap();
+            conn.execute("UPDATE ingredients SET current_stock = 10.0 WHERE id = ?1", params![ing_id]).unwrap();
+
+            match repo.adjust_stock(&scope, &tenant_id, &branch_id, &ing_id, -15.0, "جرد خاطئ", &manager_id) {
+                Err(RepoError::StockAdjustmentBelowZero { current_stock, change_amount, .. }) => {
+                    assert_eq!(current_stock, 10.0);
+                    assert_eq!(change_amount, -15.0);
+                    println!("[stock] a manual adjustment that would go negative (10 - 15) correctly rejected");
+                }
+                other => panic!("expected StockAdjustmentBelowZero, got {other:?}"),
+            }
+            let stock_unchanged: f64 = conn.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![ing_id], |r| r.get(0)).unwrap();
+            assert_eq!(stock_unchanged, 10.0, "the rejected adjustment must not have touched stock at all");
+
+            // Landing exactly on zero must still succeed -- this is a floor, not a "stay positive" rule.
+            repo.adjust_stock(&scope, &tenant_id, &branch_id, &ing_id, -10.0, "استخدام كامل", &manager_id).unwrap();
+            let stock_at_zero: f64 = conn.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![ing_id], |r| r.get(0)).unwrap();
+            assert_eq!(stock_at_zero, 0.0, "an adjustment landing exactly on zero must be allowed");
+            println!("[stock] an adjustment landing exactly on zero correctly succeeded (floor, not a positive-only rule)");
+
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
@@ -6258,8 +6466,12 @@ mod tests {
         let scope_a = security::authenticate(&conn, &security::create_session(&conn, &cashier_a, "d1").unwrap()).unwrap().scope();
         let scope_b = security::authenticate(&conn, &security::create_session(&conn, &cashier_b, "d2").unwrap()).unwrap().scope();
 
+        // 2026-08-13: this used to reuse Branch A's table_id for Branch B's
+        // order too -- now correctly rejected by create_order's own
+        // assert_table_in_scope check, so Branch B needs its own real table.
+        let table_b = repo.create_table(&tenant_id, &branch_b, "Table B1").unwrap();
         repo.create_order(&scope_a, &tenant_id, &branch_a, NewOrder { table_id: table_id.clone(), user_id: cashier_a.clone(), order_type: "DINE_IN".into(), subtotal_cents: 500, tax_cents: 0, total_cents: 500, discount_cents: 0 }).unwrap();
-        repo.create_order(&scope_b, &tenant_id, &branch_b, NewOrder { table_id, user_id: cashier_b.clone(), order_type: "DINE_IN".into(), subtotal_cents: 700, tax_cents: 0, total_cents: 700, discount_cents: 0 }).unwrap();
+        repo.create_order(&scope_b, &tenant_id, &branch_b, NewOrder { table_id: table_b, user_id: cashier_b.clone(), order_type: "DINE_IN".into(), subtotal_cents: 700, tax_cents: 0, total_cents: 700, discount_cents: 0 }).unwrap();
 
         let orders_a = repo.list_orders(&scope_a).unwrap();
         let orders_b = repo.list_orders(&scope_b).unwrap();
@@ -6521,8 +6733,8 @@ mod tests {
         println!("[drift-groups] customer created and listed with address/notes/birthday -- Finding #5 columns round-trip");
 
         // purchase_orders (Finding #2): created_by/notes now exist.
-        conn.execute("INSERT INTO suppliers (id, name) VALUES ('sup-1', 'المورد الرئيسي')", []).unwrap();
-        let po_id = repo.create_purchase_order(&tenant_id, &branch_id, "sup-1", &manager.id, Some("طلبية عاجلة")).unwrap();
+        conn.execute("INSERT INTO suppliers (id, tenant_id, branch_id, name) VALUES ('sup-1', ?1, ?2, 'المورد الرئيسي')", params![tenant_id, branch_id]).unwrap();
+        let po_id = repo.create_purchase_order(&manager.scope(), &tenant_id, &branch_id, "sup-1", &manager.id, Some("طلبية عاجلة")).unwrap();
         let pos = repo.list_purchase_orders(&manager.scope()).unwrap();
         assert!(pos.iter().any(|p| p.id == po_id && p.created_by == manager.id && p.notes.as_deref() == Some("طلبية عاجلة")));
         println!("[drift-groups] purchase order created and listed with created_by/notes -- Finding #2 columns round-trip");
@@ -7042,6 +7254,45 @@ mod tests {
         assert!(closed_at.is_some());
         println!("[shifts] shift closed, no longer reported as active");
 
+        // 2026-08-13: closing an already-closed shift must be rejected, not
+        // silently overwrite the reconciliation numbers with new ones.
+        match repo.close_shift(&scope, &shift_id, 99999, 99999) {
+            Err(RepoError::ShiftAlreadyClosed { .. }) => println!("[shifts] re-closing an already-closed shift correctly rejected"),
+            other => panic!("expected ShiftAlreadyClosed, got {other:?}"),
+        }
+        let ending: i64 = conn.query_row("SELECT ending_cash_cents FROM shifts WHERE id = ?1", params![shift_id], |r| r.get(0)).unwrap();
+        assert_eq!(ending, 12000, "the rejected re-close must not have overwritten ending_cash_cents");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// 2026-08-13: open_shift used to be a plain INSERT with no check
+    /// against an already-open shift for the same staff member -- a second
+    /// terminal (or client bug) could open a concurrent shift and silently
+    /// split one real shift's revenue across two "open" shift rows.
+    #[test]
+    fn open_shift_rejects_a_second_concurrent_shift_for_the_same_staff() {
+        let (db_path, tenant_id, branch_id, _table_id) = seeded_db("shift_double_open");
+        let conn = Connection::open(&db_path).unwrap();
+        let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Double Open Cashier");
+        let repo = Repo::new(&conn);
+
+        let shift_id = repo.open_shift(&tenant_id, &branch_id, &cashier_id, 5000).unwrap();
+        match repo.open_shift(&tenant_id, &branch_id, &cashier_id, 8000) {
+            Err(RepoError::ShiftAlreadyOpen { existing_shift_id, .. }) => {
+                assert_eq!(existing_shift_id, shift_id, "the error must point at the actual already-open shift");
+                println!("[shifts] second concurrent open correctly rejected, pointing at the real open shift");
+            }
+            other => panic!("expected ShiftAlreadyOpen, got {other:?}"),
+        }
+
+        // Once the first shift is closed, opening a new one must work again.
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        repo.close_shift(&scope, &shift_id, 5000, 0).unwrap();
+        let shift2 = repo.open_shift(&tenant_id, &branch_id, &cashier_id, 6000).unwrap();
+        assert_ne!(shift2, shift_id);
+        println!("[shifts] opening a new shift after closing the old one still works");
+
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
@@ -7265,6 +7516,21 @@ mod tests {
         assert_eq!(d.balance_cents, 3000, "5000 debt - 2000 paid = 3000 remaining");
         println!("[debt] payment recorded: balance_cents now 3000 (5000 - 2000)");
 
+        // A payment exceeding the remaining balance (3000) must be rejected,
+        // not silently allowed to drive balance_cents negative -- no
+        // credit/advance concept exists anywhere in the debts UI, unlike
+        // suppliers' explicit ADVANCE state.
+        match repo.record_debt_payment(&scope, &debtor_id, 5000, None, &cashier_id) {
+            Err(RepoError::DebtPaymentExceedsBalance { balance_cents, amount_cents, .. }) => {
+                assert_eq!(balance_cents, 3000);
+                assert_eq!(amount_cents, 5000);
+                println!("[debt] overpayment correctly rejected -- balance stayed 3000, not driven negative");
+            }
+            other => panic!("expected DebtPaymentExceedsBalance, got {other:?}"),
+        }
+        let list = repo.list_debtors(&scope).unwrap();
+        assert_eq!(list.iter().find(|d| d.id == debtor_id).unwrap().balance_cents, 3000, "rejected overpayment must not have touched balance_cents");
+
         let entries = repo.list_debt_entries(&scope, &debtor_id).unwrap();
         assert_eq!(entries.len(), 2, "one DEBT entry (from take_payment) + one PAYMENT entry, both preserved as separate append-only facts");
         assert!(entries.iter().any(|e| e.id == entry_id && e.entry_type == "PAYMENT" && e.amount_cents == 2000));
@@ -7410,11 +7676,20 @@ mod tests {
         assert!(inv.paid_at.is_some());
         println!("[finance] invoice created PENDING, then marked PAID with paid_at set");
 
-        let report = repo.sales_report(&scope, far_past).unwrap();
+        let report = repo.sales_report(&scope, far_past, None).unwrap();
         assert_eq!(report.order_count, 2);
         assert_eq!(report.total_sales, 3500);
         assert!(report.staff_performance.iter().any(|s| s.name == "Finance Manager" && s.order_count == 2));
-        println!("[reports] sales_report: order_count=2, total_sales=3500, staff_performance shows the manager with 2 orders");
+        // No order_items seeded in this test (create_order alone doesn't add
+        // line items), so top_items is legitimately empty here -- this just
+        // proves the now-scoped+joined query still runs without error.
+        assert!(report.top_items.is_empty());
+        // A closed range that excludes both orders (both created "now",
+        // long after 2000) must report zero -- proves range_end_iso is a
+        // real upper bound, not silently ignored.
+        let empty_report = repo.sales_report(&scope, far_past, Some("2000-06-01T00:00:00Z")).unwrap();
+        assert_eq!(empty_report.order_count, 0);
+        println!("[reports] sales_report: order_count=2, total_sales=3500, staff_performance shows the manager with 2 orders; range_end_iso correctly excludes out-of-range orders");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
@@ -7536,12 +7811,12 @@ mod tests {
         assert_eq!(repo.list_suppliers(&scope).unwrap()[0].name, "مورد الخضار والفواكه");
 
         // Bare create + bump path (NewOrderModal quick-create).
-        let po1 = repo.create_purchase_order_and_bump_supplier(&tenant_id, &branch_id, &supplier_id, &manager_id, None).unwrap();
+        let po1 = repo.create_purchase_order_and_bump_supplier(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, None).unwrap();
         assert_eq!(repo.list_suppliers(&scope).unwrap()[0].total_orders, 1, "quick-create must bump total_orders");
 
         // Bare create WITHOUT bump (AlertsTab auto-order) -- deliberately
         // preserves the old inconsistency, not "fixed".
-        let _po_auto = repo.create_purchase_order(&tenant_id, &branch_id, &supplier_id, &manager_id, Some("طلبية تلقائية")).unwrap();
+        let _po_auto = repo.create_purchase_order(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, Some("طلبية تلقائية")).unwrap();
         assert_eq!(repo.list_suppliers(&scope).unwrap()[0].total_orders, 1, "auto-order must NOT bump total_orders, matching the old frontend's existing behavior");
         println!("[po] quick-create bumps total_orders, auto-order does not -- both preserved as-is");
 
@@ -7559,7 +7834,7 @@ mod tests {
         let ing1 = repo.create_ingredient(&tenant_id, &branch_id, "بندورة", "kg", 100, 5.0).unwrap();
         let ing2 = repo.create_ingredient(&tenant_id, &branch_id, "بصل", "kg", 80, 10.0).unwrap();
         let items = vec![(ing1.clone(), 10.0, 100i64), (ing2.clone(), 20.0, 80i64)];
-        let po2 = repo.create_purchase_order_with_items(&tenant_id, &branch_id, &supplier_id, &manager_id, Some("طلبية أسبوعية"), &items).unwrap();
+        let po2 = repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, Some("طلبية أسبوعية"), &items).unwrap();
         let po2_row = repo.list_purchase_orders(&scope).unwrap().into_iter().find(|p| p.id == po2).unwrap();
         assert_eq!(po2_row.total_cents, 10 * 100 + 20 * 80, "total_cents must be computed server-side from the items, not trusted from the client");
         assert_eq!(po2_row.supplier_name, "مورد الخضار والفواكه", "list_purchase_orders must join supplier name");
@@ -7640,7 +7915,7 @@ mod tests {
             let repo = Repo::new(&conn);
             let supplier_id = repo.create_supplier(&tenant_id, &branch_id, "مورد", None, None).unwrap();
             let ing_id = repo.create_ingredient(&tenant_id, &branch_id, "سكر", "kg", 50, 5.0).unwrap();
-            let po_id = repo.create_purchase_order_with_items(&tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), 15.0, 50)]).unwrap();
+            let po_id = repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), 15.0, 50)]).unwrap();
             let item_id = repo.list_purchase_order_items(&po_id, &scope).unwrap()[0].id.clone();
             (supplier_id, ing_id, po_id, item_id)
         };
@@ -7688,7 +7963,7 @@ mod tests {
 
         let supplier_id = repo.create_supplier(&tenant_id, &branch_id, "مورد اللحوم", None, None).unwrap();
         let ing_id = repo.create_ingredient(&tenant_id, &branch_id, "لحم", "kg", 100, 5.0).unwrap();
-        let po_id = repo.create_purchase_order_with_items(&tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), 10.0, 1000i64)]).unwrap();
+        let po_id = repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), 10.0, 1000i64)]).unwrap();
         let item_id = repo.list_purchase_order_items(&po_id, &scope).unwrap()[0].id.clone();
 
         // total_cents = 10 * 1000 = 10000; pay only 4000 of it.
@@ -7745,7 +8020,7 @@ mod tests {
 
         // UNPAID: amount_paid_cents = 0, no PAYMENT fact, no operational_costs row.
         let ing1 = repo.create_ingredient(&tenant_id, &branch_id, "مكون1", "kg", 100, 1.0).unwrap();
-        let po1 = repo.create_purchase_order_with_items(&tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing1.clone(), 1.0, 1000i64)]).unwrap();
+        let po1 = repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing1.clone(), 1.0, 1000i64)]).unwrap();
         let item1 = repo.list_purchase_order_items(&po1, &scope).unwrap()[0].id.clone();
         let (ids1, cost1) = repo.receive_purchase_order(&tenant_id, &branch_id, &po1, &manager_id, &scope, &[(item1, ing1, 1.0)], 0, None).unwrap();
         assert_eq!(ids1.len(), 1, "UNPAID: only the CHARGE fact, no PAYMENT fact");
@@ -7754,14 +8029,14 @@ mod tests {
 
         // PAID: amount_paid_cents == total_cents exactly.
         let ing2 = repo.create_ingredient(&tenant_id, &branch_id, "مكون2", "kg", 100, 1.0).unwrap();
-        let po2 = repo.create_purchase_order_with_items(&tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing2.clone(), 1.0, 2000i64)]).unwrap();
+        let po2 = repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing2.clone(), 1.0, 2000i64)]).unwrap();
         let item2 = repo.list_purchase_order_items(&po2, &scope).unwrap()[0].id.clone();
         repo.receive_purchase_order(&tenant_id, &branch_id, &po2, &manager_id, &scope, &[(item2, ing2, 1.0)], 2000, Some("CASH")).unwrap();
         assert_eq!(repo.list_purchase_orders(&scope).unwrap().into_iter().find(|p| p.id == po2).unwrap().payment_status, "PAID");
 
         // ADVANCE: amount_paid_cents > total_cents (a real overpayment).
         let ing3 = repo.create_ingredient(&tenant_id, &branch_id, "مكون3", "kg", 100, 1.0).unwrap();
-        let po3 = repo.create_purchase_order_with_items(&tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing3.clone(), 1.0, 1000i64)]).unwrap();
+        let po3 = repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing3.clone(), 1.0, 1000i64)]).unwrap();
         let item3 = repo.list_purchase_order_items(&po3, &scope).unwrap()[0].id.clone();
         repo.receive_purchase_order(&tenant_id, &branch_id, &po3, &manager_id, &scope, &[(item3, ing3, 1.0)], 1500, Some("CASH")).unwrap();
         assert_eq!(repo.list_purchase_orders(&scope).unwrap().into_iter().find(|p| p.id == po3).unwrap().payment_status, "ADVANCE");
@@ -7793,7 +8068,7 @@ mod tests {
         let supplier_id = repo.create_supplier(&tenant_id, &branch_id, "مورد قديم", None, None).unwrap();
         // Give the supplier an outstanding balance via a receive with no payment.
         let ing_id = repo.create_ingredient(&tenant_id, &branch_id, "مكون", "kg", 100, 1.0).unwrap();
-        let po_id = repo.create_purchase_order_with_items(&tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), 1.0, 5000i64)]).unwrap();
+        let po_id = repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), 1.0, 5000i64)]).unwrap();
         let item_id = repo.list_purchase_order_items(&po_id, &scope).unwrap()[0].id.clone();
         repo.receive_purchase_order(&tenant_id, &branch_id, &po_id, &manager_id, &scope, &[(item_id, ing_id, 1.0)], 0, None).unwrap();
         assert_eq!(repo.list_suppliers(&scope).unwrap()[0].balance_cents, 5000);
@@ -7911,6 +8186,90 @@ mod tests {
         let order4_status: String = conn3.query_row("SELECT status FROM orders WHERE id = ?1", params![order4], |r| r.get(0)).unwrap();
         assert_eq!(order4_status, "PENDING", "when the CALLER wraps this in one transaction (as finalize_order_with_payment_v3_impl does) and the loyalty lookup fails, the payment must roll back too -- no partial apply");
         println!("[loyalty] within a caller-managed transaction, a failed accrual correctly rolls back the payment too");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// 2026-08-13: refund_order's real acceptance criterion -- a
+    /// CREDIT-financed, loyalty-earning order with recipe-linked stock,
+    /// refunded, must atomically reverse ALL THREE (stock back up, points
+    /// back down, debt zeroed) plus record the refund fact and roll up
+    /// orders.refunded_cents, then correctly reject a second refund
+    /// attempt and reject refunding a never-paid order.
+    #[test]
+    fn refund_order_reverses_stock_loyalty_and_debt_atomically() {
+        let (db_path, tenant_id, branch_id, table_id) = seeded_db("refund_order");
+        let conn = Connection::open(&db_path).unwrap();
+        let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Refund Manager");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let repo = Repo::new(&conn);
+
+        let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+        let item_id = repo.create_menu_item(&tenant_id, "Burger", &category_id, 1000, 400, None, None).unwrap();
+        let bun_id = repo.create_ingredient(&tenant_id, &branch_id, "Buns", "pcs", 20, 2.0).unwrap();
+        conn.execute("UPDATE ingredients SET current_stock = 50.0 WHERE id = ?1", params![bun_id]).unwrap();
+        conn.execute("INSERT INTO recipes (id, tenant_id, menu_item_id, ingredient_id, quantity_needed) VALUES ('r1', ?1, ?2, ?3, 1.0)", params![tenant_id, item_id, bun_id]).unwrap();
+
+        let customer_id = repo.create_customer(&tenant_id, "عميل استرداد", Some("0501234567"), None, None, None, None).unwrap();
+        let card_id = repo.issue_loyalty_card(&tenant_id, &customer_id, "REFUND-CARD").unwrap();
+        let _ = card_id;
+        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "دائن استرداد", Some("0509999999"), None, None, None).unwrap();
+
+        // 2 burgers, 2000 cents total, paid on CREDIT with a loyalty card attached.
+        let order_id = repo.create_full_order(&scope, &tenant_id, &branch_id, crate::repo::FullOrderInput {
+            table_id: table_id.clone(), user_id: manager_id.clone(), order_type: "DINE_IN".to_string(),
+            subtotal_cents: 2000, tax_cents: 0, total_cents: 2000, discount_cents: 0,
+            discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
+            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 2, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] }],
+        }).unwrap();
+        repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CREDIT", 2000, 0, Some(&debtor_id), &manager_id, Some("REFUND-CARD")).unwrap();
+
+        let bun_after_sale: f64 = conn.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![bun_id], |r| r.get(0)).unwrap();
+        assert!((bun_after_sale - 48.0).abs() < 0.001, "2 burgers sold must deplete 2 buns (50 -> 48), got {bun_after_sale}");
+        let card_after_sale = repo.lookup_loyalty_card(&tenant_id, "REFUND-CARD").unwrap().unwrap();
+        assert_eq!(card_after_sale.points, 20, "floor(2000/100) * 1.0 (BRONZE) = 20 points earned");
+        let debtor_after_sale = repo.list_debtors(&scope).unwrap().into_iter().find(|d| d.id == debtor_id).unwrap();
+        assert_eq!(debtor_after_sale.balance_cents, 2000, "CREDIT payment must have raised the debt");
+        println!("[refund] pre-refund state confirmed: stock depleted, points earned, debt raised");
+
+        // The actual refund.
+        let refund_id = repo.refund_order(&scope, &order_id, &manager_id, Some("العميل غير راضٍ")).unwrap();
+        assert!(!refund_id.is_empty());
+
+        let bun_after_refund: f64 = conn.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![bun_id], |r| r.get(0)).unwrap();
+        assert!((bun_after_refund - 50.0).abs() < 0.001, "refund must restore the 2 buns (48 -> 50), got {bun_after_refund}");
+        let card_after_refund = repo.lookup_loyalty_card(&tenant_id, "REFUND-CARD").unwrap().unwrap();
+        assert_eq!(card_after_refund.points, 0, "refund must reverse the 20 earned points back to 0");
+        let debtor_after_refund = repo.list_debtors(&scope).unwrap().into_iter().find(|d| d.id == debtor_id).unwrap();
+        assert_eq!(debtor_after_refund.balance_cents, 0, "refund must zero out the debt this order added");
+        let refunded_cents: i64 = conn.query_row("SELECT refunded_cents FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+        assert_eq!(refunded_cents, 2000, "orders.refunded_cents rollup must equal the order's total");
+        let refund_row_amount: i64 = conn.query_row("SELECT amount_cents FROM refunds WHERE id = ?1", params![refund_id], |r| r.get(0)).unwrap();
+        assert_eq!(refund_row_amount, 2000, "the refunds fact row must record the real amount");
+        println!("[refund] post-refund state confirmed: stock restored, points reversed to 0, debt zeroed, refund fact + rollup both correct");
+
+        // A second refund attempt on the same (already-refunded) order must fail.
+        match repo.refund_order(&scope, &order_id, &manager_id, None) {
+            Err(crate::repo::RepoError::OrderNotRefundable { reason, .. }) => {
+                assert!(reason.contains("already refunded"));
+                println!("[refund] a second refund attempt correctly rejected: {reason}");
+            }
+            other => panic!("expected OrderNotRefundable, got {other:?}"),
+        }
+
+        // A never-paid order cannot be refunded either.
+        let unpaid_order_id = repo.create_order(&scope, &tenant_id, &branch_id, crate::repo::NewOrder {
+            table_id, user_id: manager_id.clone(), order_type: "DINE_IN".to_string(),
+            subtotal_cents: 500, tax_cents: 0, total_cents: 500, discount_cents: 0,
+        }).unwrap();
+        match repo.refund_order(&scope, &unpaid_order_id, &manager_id, None) {
+            Err(crate::repo::RepoError::OrderNotRefundable { reason, .. }) => {
+                assert!(reason.contains("PENDING"));
+                println!("[refund] a never-paid (PENDING) order correctly rejected: {reason}");
+            }
+            other => panic!("expected OrderNotRefundable, got {other:?}"),
+        }
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
@@ -8102,7 +8461,7 @@ mod tests {
         assert_eq!(item_ids.len(), 2);
 
         // void_order_item -- soft-void the cheaper item.
-        repo.void_order_item(&scope, &item_ids[0], "نفذت الكمية").unwrap();
+        repo.void_order_item(&scope, &item_ids[0], "نفذت الكمية", &cashier_id).unwrap();
         let voided: i64 = conn.query_row("SELECT voided FROM order_items WHERE id = ?1", params![item_ids[0]], |r| r.get(0)).unwrap();
         assert_eq!(voided, 1);
         println!("[pos-flow] void_order_item: item soft-voided");
@@ -8194,7 +8553,7 @@ mod tests {
         let item_b_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_b], |r| r.get(0)).unwrap();
 
         // Branch A's actor must NOT be able to touch Branch B's order/item/table by id.
-        match repo.void_order_item(&scope_a, &item_b_id, "unauthorized void") {
+        match repo.void_order_item(&scope_a, &item_b_id, "unauthorized void", &cashier_a) {
             Err(RepoError::OrderItemOutOfScope { .. }) => println!("[scope] void_order_item correctly rejected Branch A voiding Branch B's item"),
             other => panic!("expected OrderItemOutOfScope, got {other:?}"),
         }
@@ -8226,7 +8585,7 @@ mod tests {
         println!("[scope] unmerge_tables correctly left Branch B's merge group untouched when called from Branch A's scope");
 
         // And the positive case still works: Branch B's own actor CAN operate on its own order.
-        repo.void_order_item(&scope_b, &item_b_id, "legitimate void").unwrap();
+        repo.void_order_item(&scope_b, &item_b_id, "legitimate void", &cashier_b).unwrap();
         println!("[scope] void_order_item still succeeds for the owning branch's own actor (not over-broadened)");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
@@ -8667,6 +9026,92 @@ mod tests {
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
+    /// HR_AND_GENERALIZATION_PLAN.md Part A -- roster (planned work
+    /// assignments). Mirrors the attendance test just above: cross-branch
+    /// rejection, correct scoping, plus the two roster-specific rules
+    /// (invalid time range, delete actually removes the row since there's
+    /// no soft-delete convention to filter by yet).
+    #[test]
+    fn roster_entry_crud_scoping_and_validation() {
+        let (db_path, tenant_id, branch_a, _table_id) = seeded_db("roster_entry");
+        let conn = Connection::open(&db_path).unwrap();
+        let repo = Repo::new(&conn);
+        let branch_b = repo.create_branch(&tenant_id, "Branch B", "USD").unwrap();
+
+        let manager_a = seed_staff(&conn, &tenant_id, Some(&branch_a), Role::Manager, "Manager A");
+        let cashier_a = seed_staff(&conn, &tenant_id, Some(&branch_a), Role::Cashier, "Cashier A");
+        let cashier_b = seed_staff(&conn, &tenant_id, Some(&branch_b), Role::Cashier, "Cashier B");
+        let scope_a = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_a.clone() };
+        let scope_b = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_b.clone() };
+
+        // A manager scheduling a staff member from another branch must be rejected.
+        match repo.create_roster_entry(&scope_a, &tenant_id, &branch_a, &cashier_b, &manager_a, "2026-08-20", "09:00", "17:00", None, "test-device") {
+            Err(RepoError::TenantOwnershipViolation { .. }) => println!("[roster] create correctly rejected scheduling Branch B's staff from Branch A's scope"),
+            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
+        }
+
+        // The gap the check above does NOT cover: an Owner is Tenant-scoped,
+        // so assert_staff_in_scope alone passes for Branch B's staff too --
+        // this is the actual bug found 2026-08-13 (StaffBranchMismatch).
+        // scope_predicate for Scope::Tenant has no branch_id term at all, so
+        // this call must be rejected by the NEW check specifically, not by
+        // assert_staff_in_scope.
+        let owner = seed_staff(&conn, &tenant_id, None, Role::Owner, "Owner");
+        let scope_owner = crate::security::Scope::Tenant { tenant_id: tenant_id.clone() };
+        match repo.create_roster_entry(&scope_owner, &tenant_id, &branch_a, &cashier_b, &owner, "2026-08-20", "09:00", "17:00", None, "test-device") {
+            Err(RepoError::StaffBranchMismatch { .. }) => println!("[roster] create correctly rejected an Owner filing Branch B's staff under Branch A"),
+            other => panic!("expected StaffBranchMismatch, got {other:?}"),
+        }
+        // The same Owner scheduling Branch A's own staff under branch_a must
+        // still work -- this check must not over-reject the normal case.
+        let owner_entry_id = repo.create_roster_entry(&scope_owner, &tenant_id, &branch_a, &cashier_a, &owner, "2026-08-22", "09:00", "17:00", None, "test-device").unwrap();
+        repo.delete_roster_entry(&scope_owner, &owner_entry_id).unwrap();
+        println!("[roster] Owner scheduling their own branch's staff still works");
+
+        // An end_time at or before start_time must be rejected.
+        match repo.create_roster_entry(&scope_a, &tenant_id, &branch_a, &cashier_a, &manager_a, "2026-08-20", "17:00", "09:00", None, "test-device") {
+            Err(RepoError::InvalidRosterTimes { .. }) => println!("[roster] create correctly rejected end_time before start_time"),
+            other => panic!("expected InvalidRosterTimes, got {other:?}"),
+        }
+
+        let entry_id = repo.create_roster_entry(&scope_a, &tenant_id, &branch_a, &cashier_a, &manager_a, "2026-08-20", "09:00", "17:00", Some("افتتاح"), "test-device").unwrap();
+        let entries_a = repo.list_roster_entries(&scope_a, "2026-08-01", "2026-08-31").unwrap();
+        assert_eq!(entries_a.len(), 1);
+        assert_eq!(entries_a[0].staff_name, "Cashier A");
+        assert_eq!(entries_a[0].notes.as_deref(), Some("افتتاح"));
+        println!("[roster] created and listed within Branch A's scope, with the right staff name joined in");
+
+        // Outside the requested date range, it must not appear.
+        assert_eq!(repo.list_roster_entries(&scope_a, "2026-09-01", "2026-09-30").unwrap().len(), 0, "a September query must not see an August entry");
+
+        // Not visible from Branch B's scope at all.
+        assert_eq!(repo.list_roster_entries(&scope_b, "2026-08-01", "2026-08-31").unwrap().len(), 0, "Branch B's scope must not see Branch A's roster entry");
+
+        // Branch B's own actor cannot update/delete Branch A's entry.
+        match repo.update_roster_entry(&scope_b, &entry_id, "2026-08-21", "10:00", "18:00", None, "test-device") {
+            Err(RepoError::RosterEntryOutOfScope { .. }) => println!("[roster] update correctly rejected Branch B touching Branch A's entry"),
+            other => panic!("expected RosterEntryOutOfScope, got {other:?}"),
+        }
+        match repo.delete_roster_entry(&scope_b, &entry_id) {
+            Err(RepoError::RosterEntryOutOfScope { .. }) => println!("[roster] delete correctly rejected Branch B touching Branch A's entry"),
+            other => panic!("expected RosterEntryOutOfScope, got {other:?}"),
+        }
+
+        // Branch A's own actor can update it.
+        repo.update_roster_entry(&scope_a, &entry_id, "2026-08-20", "10:00", "18:00", Some("تعديل"), "test-device").unwrap();
+        let entries_a = repo.list_roster_entries(&scope_a, "2026-08-01", "2026-08-31").unwrap();
+        assert_eq!(entries_a[0].start_time, "10:00");
+        assert_eq!(entries_a[0].notes.as_deref(), Some("تعديل"));
+        println!("[roster] update correctly applied within the owning branch's scope");
+
+        // Delete actually removes it (no soft-delete/filter convention exists yet, see the repo method's own doc comment).
+        repo.delete_roster_entry(&scope_a, &entry_id).unwrap();
+        assert_eq!(repo.list_roster_entries(&scope_a, "2026-08-01", "2026-08-31").unwrap().len(), 0, "a deleted roster entry must not appear in subsequent listings");
+        println!("[roster] delete removed the row entirely");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
     /// Slice C, `branches/page.tsx`'s multi-branch admin CRUD (the LEGACY
     /// `branches` table, distinct from T1.1's `branch`). Full CRUD +
     /// terminal listing + tenant-wide today stats, plus cross-tenant
@@ -8778,7 +9223,7 @@ mod tests {
             ],
         }).unwrap();
         let fries_item_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1 AND menu_item_id = ?2", params![order_a, fries_id], |r| r.get(0)).unwrap();
-        repo.void_order_item(&scope_a, &fries_item_id, "نفذت الكمية").unwrap();
+        repo.void_order_item(&scope_a, &fries_item_id, "نفذت الكمية", &cashier_a).unwrap();
 
         // Branch A: a PAID order that must NOT appear on the kitchen feed.
         let order_a_paid = repo.create_full_order(&scope_a, &tenant_id, &branch_a, FullOrderInput {
@@ -8860,6 +9305,10 @@ mod tests {
         let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "دائن محلي", Some("0992220000"), None, None, None).unwrap();
         repo.update_debtor(&scope, &debtor_id, "دائن محلي محدث", "0992220000", None, None, None).unwrap();
         repo.list_debt_entries(&scope, &debtor_id).unwrap();
+        // This test is purely about scope isolation, not debt amounts --
+        // give the debtor a real balance first so a 100-cent payment isn't
+        // an overpayment (2026-08-13's DebtPaymentExceedsBalance guard).
+        conn.execute("UPDATE debtors SET total_debt_cents = 100, balance_cents = 100 WHERE id = ?1", params![debtor_id]).unwrap();
         repo.record_debt_payment(&scope, &debtor_id, 100, None, &manager_id).unwrap();
         println!("[t1.9] debtor writes succeed for an in-scope debtor");
         let other_debtor = "other-tenant-debtor";
@@ -9136,8 +9585,13 @@ mod tests {
         let (_db_path, tenant1, branch1a, table1a) = seeded_db_shared(tag, conn);
         let repo = Repo::new(conn);
         let branch1b = repo.create_branch(&tenant1, "Tenant1 Branch B", "SYP").unwrap();
+        // 2026-08-13: these three used to insert into `tables` with no
+        // tenant_id/branch_id at all -- harmless before create_order
+        // started scope-checking table_id (assert_table_in_scope), but a
+        // NULL-scoped table row would never match any scope predicate
+        // once it did. Scoped to their real owning branch now.
         let table1b = "tbl-1b".to_string();
-        conn.execute("INSERT INTO tables (id, name) VALUES (?1, 'Table 1B')", params![table1b]).unwrap();
+        conn.execute("INSERT INTO tables (id, tenant_id, branch_id, name) VALUES (?1, ?2, ?3, 'Table 1B')", params![table1b, tenant1, branch1b]).unwrap();
 
         let tenant2 = uuid::Uuid::now_v7().to_string();
         conn.execute("INSERT INTO tenant (id, name, base_currency) VALUES (?1, 'Tenant Two', 'USD')", params![tenant2]).unwrap();
@@ -9145,8 +9599,8 @@ mod tests {
         let branch2b = repo.create_branch(&tenant2, "Tenant2 Branch B", "USD").unwrap();
         let table2a = "tbl-2a".to_string();
         let table2b = "tbl-2b".to_string();
-        conn.execute("INSERT INTO tables (id, name) VALUES (?1, 'Table 2A')", params![table2a]).unwrap();
-        conn.execute("INSERT INTO tables (id, name) VALUES (?1, 'Table 2B')", params![table2b]).unwrap();
+        conn.execute("INSERT INTO tables (id, tenant_id, branch_id, name) VALUES (?1, ?2, ?3, 'Table 2A')", params![table2a, tenant2, branch2a]).unwrap();
+        conn.execute("INSERT INTO tables (id, tenant_id, branch_id, name) VALUES (?1, ?2, ?3, 'Table 2B')", params![table2b, tenant2, branch2b]).unwrap();
 
         TwoTenantFixture { tenant1, branch1a, branch1b, table1a, table1b, tenant2, branch2a, branch2b, table2a, table2b }
     }
@@ -9162,7 +9616,7 @@ mod tests {
         let table_id = "tbl-1".to_string();
         let exists: bool = conn.query_row("SELECT COUNT(*) > 0 FROM tables WHERE id = ?1", params![table_id], |r| r.get(0)).unwrap();
         if !exists {
-            conn.execute("INSERT INTO tables (id, name) VALUES (?1, 'Table 1')", params![table_id]).unwrap();
+            conn.execute("INSERT INTO tables (id, tenant_id, branch_id, name) VALUES (?1, ?2, ?3, 'Table 1')", params![table_id, tenant_id, branch_id]).unwrap();
         }
         (PathBuf::new(), tenant_id, branch_id, table_id)
     }
@@ -9413,7 +9867,7 @@ mod tests {
         let repo = Repo::new(&conn);
         let branch_b = repo.create_branch(&tenant_id, "Attack Branch B", "SYP").unwrap();
         let table_b = "tbl-attack-b".to_string();
-        conn.execute("INSERT INTO tables (id, name) VALUES (?1, 'Table Attack B')", params![table_b]).unwrap();
+        conn.execute("INSERT INTO tables (id, tenant_id, branch_id, name) VALUES (?1, ?2, ?3, 'Table Attack B')", params![table_b, tenant_id, branch_b]).unwrap();
 
         let owner_id = seed_staff(&conn, &tenant_id, None, Role::Owner, "Attack Owner");
         let manager_a = seed_staff(&conn, &tenant_id, Some(&branch_a), Role::Manager, "Manager A");
@@ -9473,7 +9927,7 @@ mod tests {
             items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![] }],
         }).unwrap();
         let item_b_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_b], |r| r.get(0)).unwrap();
-        match repo.void_order_item(&scope_a, &item_b_id, "محاولة إبطال من فرع آخر") {
+        match repo.void_order_item(&scope_a, &item_b_id, "محاولة إبطال من فرع آخر", &cashier_a) {
             Err(RepoError::OrderItemOutOfScope { .. }) => println!("[attack-5] Cashier A (Branch A) voiding Cashier B's item (Branch B): REJECTED"),
             other => panic!("[attack-5] expected OrderItemOutOfScope, got {other:?}"),
         }
@@ -9558,7 +10012,7 @@ mod tests {
             items: vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![] }],
         }).unwrap();
         let item_for_void: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_for_void], |r| r.get(0)).unwrap();
-        repo.void_order_item(&scope_a, &item_for_void, injection).unwrap();
+        repo.void_order_item(&scope_a, &item_for_void, injection, &cashier_a).unwrap();
         let stored_reason: String = conn.query_row("SELECT void_reason FROM order_items WHERE id = ?1", params![item_for_void], |r| r.get(0)).unwrap();
         assert_eq!(stored_reason, injection, "the injection string in void_reason must be stored LITERALLY, not executed");
         let staff_still_exists_2: bool = conn.query_row("SELECT COUNT(*) > 0 FROM staff WHERE id = ?1", params![cashier_a], |r| r.get(0)).unwrap();
@@ -9838,7 +10292,10 @@ mod tests {
 
         for i in 0..100u32 {
             let table_id = format!("tbl-kill9-{i}");
-            conn.execute("INSERT INTO tables (id, name) VALUES (?1, ?2)", params![table_id, format!("Table Kill9 {i}")]).unwrap();
+            conn.execute(
+                "INSERT INTO tables (id, tenant_id, branch_id, name) VALUES (?1, ?2, ?3, ?4)",
+                params![table_id, tenant_id, branch_id, format!("Table Kill9 {i}")],
+            ).unwrap();
 
             let amount = 1000 + (i as i64 * 37);
             let (method, debtor) = match i % 3 {
@@ -9900,7 +10357,7 @@ mod tests {
         // Iteration 101 -- the commit-SUCCEEDS case, proving this isn't
         // vacuously true because writes just never happen at all.
         let table_id_ok = "tbl-kill9-committed".to_string();
-        conn.execute("INSERT INTO tables (id, name) VALUES (?1, 'Table Kill9 Committed')", params![table_id_ok]).unwrap();
+        conn.execute("INSERT INTO tables (id, tenant_id, branch_id, name) VALUES (?1, ?2, ?3, 'Table Kill9 Committed')", params![table_id_ok, tenant_id, branch_id]).unwrap();
         let order_id_ok = {
             let tx = conn.transaction().unwrap();
             let id = Repo::new(&tx).create_order(&scope, &tenant_id, &branch_id, NewOrder {
@@ -9962,6 +10419,7 @@ mod tests {
             "create_branch_v3", "create_staff_v3", "update_staff_v3", "update_staff_profile_v3",
             "set_staff_active_v3", "list_branches_v3", "list_shifts_v3", "force_close_shift_v3",
             "list_attendance_v3",
+            "list_roster_entries_v3", "create_roster_entry_v3", "update_roster_entry_v3", "delete_roster_entry_v3",
             "create_category_v3", "update_category_v3", "delete_category_v3",
             "upload_menu_item_photo_v3", "delete_menu_item_photo_v3",
             "upload_category_photo_v3", "delete_category_photo_v3",
@@ -9998,6 +10456,7 @@ mod tests {
             "list_delivery_zones_v3", "list_delivery_history_v3",
             "list_orders_v3",
             "create_table_v3", "rename_table_v3", "delete_table_v3",
+            "refund_order_v3", "list_recent_paid_orders_v3",
         ];
 
         /// The selling path: order/table/payment/print, the menu reads the

@@ -333,7 +333,7 @@ impl SupabaseCloudTransport {
         let client = reqwest::Client::builder()
             .timeout(CLOUD_CHECK_TIMEOUT)
             .build()
-            .expect("reqwest client with a fixed timeout always builds");
+            .unwrap_or_default();
         Self { base_url, anon_key, client }
     }
 }

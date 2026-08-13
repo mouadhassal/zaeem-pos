@@ -1702,6 +1702,119 @@ pub fn run_business_mode_migration(conn: &mut Connection, _db_path: &Path) -> Re
     Ok(())
 }
 
+pub const MIGRATION_O_VERSION: i64 = 19;
+
+/// HR_AND_GENERALIZATION_PLAN.md Part A -- a manager-facing calendar of
+/// who's scheduled to work when. Deliberately named "roster", not "shift":
+/// `shift` already means the cash-drawer open/close session
+/// (open_shift_v3/close_shift_v3), and `attendance` already means
+/// same-day clock-in/clock-out -- neither has any concept of a
+/// *planned, forward-looking* work assignment. This table is that concept,
+/// with no name collision. Not synced to the cloud yet (same as
+/// loyalty_tier/loyalty_reward/paired_terminal before it) -- see
+/// commands_v3.rs's roster commands for why that's a deliberate, deferred
+/// decision, not an oversight.
+pub fn run_roster_entry_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_O_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS roster_entry (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            branch_id TEXT NOT NULL REFERENCES branch(id),
+            staff_id TEXT NOT NULL REFERENCES staff(id),
+            work_date TEXT NOT NULL,
+            start_time TEXT NOT NULL,
+            end_time TEXT NOT NULL,
+            notes TEXT,
+            created_by TEXT NOT NULL REFERENCES staff(id),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at_hlc TEXT NOT NULL DEFAULT '',
+            device_id TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT,
+            rev INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_roster_entry_tenant ON roster_entry(tenant_id);
+        CREATE INDEX IF NOT EXISTS idx_roster_entry_branch_date ON roster_entry(branch_id, work_date);
+        CREATE INDEX IF NOT EXISTS idx_roster_entry_staff ON roster_entry(staff_id, work_date);"
+    )?;
+
+    println!("v19_roster_entry: roster_entry created -- the manager calendar's backing table, unsynced for now (same posture as loyalty_tier/loyalty_reward)");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_O_VERSION, "0019_roster_entry", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub const MIGRATION_P_VERSION: i64 = 20;
+
+/// 2026-08-13: closes a real structural gap found during the deep POS
+/// audit -- there was no refund/reversal path anywhere in this backend at
+/// all (grep for "refund" across the whole crate returned zero matches).
+/// Voiding an item never reversed stock/loyalty either. `refunds` is an
+/// append-only fact table, same shape as `debt_entries`/`supplier_payments`
+/// (never mutated, only inserted); `orders.refunded_cents` is the
+/// denormalized rollup for fast reads, same pairing as
+/// `debtors.balance_cents` alongside `debt_entries`. Deliberately does NOT
+/// touch `orders.status`'s CHECK constraint (no 'REFUNDED' value added) --
+/// a refunded order genuinely WAS paid, that fact shouldn't be erased from
+/// its own status; refunded_cents = total_cents is what "fully refunded"
+/// means, exactly how debtors.balance_cents = 0 means "no longer owed"
+/// without debtors having a status column either. Unsynced to
+/// sync_outbox for now, same deliberate posture as roster_entry above.
+pub fn run_refund_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_P_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+
+    if !column_exists(&tx, "orders", "refunded_cents")? {
+        tx.execute("ALTER TABLE orders ADD COLUMN refunded_cents INTEGER NOT NULL DEFAULT 0", [])?;
+    }
+
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS refunds (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            branch_id TEXT NOT NULL,
+            order_id TEXT NOT NULL REFERENCES orders(id),
+            amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+            reason TEXT,
+            refunded_by TEXT NOT NULL REFERENCES staff(id),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_modified TEXT NOT NULL DEFAULT (datetime('now')),
+            sync_status TEXT NOT NULL DEFAULT 'pending'
+        );
+        CREATE INDEX IF NOT EXISTS idx_refunds_tenant ON refunds(tenant_id);
+        CREATE INDEX IF NOT EXISTS idx_refunds_order ON refunds(order_id);"
+    )?;
+
+    println!("v20_refunds: refunds table + orders.refunded_cents created -- full-order refund now reverses stock/loyalty/debt atomically (see repo.rs's refund_order)");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_P_VERSION, "0020_refunds", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
