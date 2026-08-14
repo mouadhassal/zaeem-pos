@@ -470,6 +470,19 @@ export default function ReportsPage() {
         ))}
       </div>
 
+      {/* 2026-08-15: anomaly detection, demand forecasting, and order
+          reconciliation used to just appear one after another with no
+          visual grouping, indistinguishable from the descriptive report
+          sections above them (top items, staff, inventory). All three
+          are the same kind of thing -- a statistical read on data that
+          already exists, not a new report -- so they get one shared
+          eyebrow label instead of reading as three unrelated features
+          bolted onto the page over time. */}
+      <div className="pt-2">
+        <h2 className="text-xs font-bold tracking-[0.15em] text-ink-400 font-arabic uppercase">الرؤى</h2>
+        <p className="text-xs text-ink-300 font-arabic mt-0.5">فحوصات إحصائية محلية بالكامل -- بدون ذكاء اصطناعي</p>
+      </div>
+
       <div className="zc-card p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div>
@@ -682,6 +695,10 @@ export default function ReportsPage() {
             ))}
           </div>
         )}
+      </div>
+
+      <div className="pt-2">
+        <h2 className="text-xs font-bold tracking-[0.15em] text-ink-400 font-arabic uppercase">الإجراءات</h2>
       </div>
 
       <div className="zc-card p-4 space-y-3">
