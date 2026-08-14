@@ -15,6 +15,17 @@ export function backOfficeLocked(status: LicenseStatus): boolean {
   return status.kind === "LockedBackOffice" || status.kind === "Invalid";
 }
 
+// 2026-08-14 pricing tiers: 'pos_lite' is the sell-and-print terminal
+// without the CRM/ERP layer (reports, loyalty, debt, roster/HR, anomaly/
+// forecast/reconciliation) -- mirrors commands_v3.rs's
+// require_plan_includes_management, which is the REAL enforcement; this
+// is only the UI-level hide so a pos_lite terminal doesn't show a nav
+// item that would just reject it server-side. `Invalid` has no verified
+// plan to read, same fail-open reasoning as the Rust side.
+export function isPosLite(status: LicenseStatus): boolean {
+  return status.kind !== "Invalid" && status.plan === "pos_lite";
+}
+
 /** Fast cached read -- no disk I/O or crypto, safe to call often. */
 export async function getCachedLicenseStatus(): Promise<LicenseStatus> {
   return invoke<LicenseStatus>("get_cached_license_status_v3");

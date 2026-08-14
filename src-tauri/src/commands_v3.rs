@@ -67,6 +67,34 @@ fn require_license_not_locked(license: &crate::license::cloud::CloudLicenseState
     Ok(())
 }
 
+/// 2026-08-14 pricing tiers: 'pos_lite' is the sell-and-print terminal
+/// without the CRM/ERP layer (reports, loyalty, debt, roster/HR, anomaly/
+/// forecast/reconciliation) -- that's the actual product difference from
+/// 'full', priced accordingly. Reads `plan` off the SAME already-verified
+/// license payload `require_license_not_locked` reads `back_office_locked`
+/// from -- no new trust boundary, just a second check on data that's
+/// already there. An `Invalid`/no-license status has no plan to read; that
+/// case is left to `require_license_not_locked` (called first at every
+/// existing call site) to reject, so this only ever runs against a
+/// verified payload. Any plan string other than the literal "pos_lite"
+/// passes -- this fails OPEN for unrecognized/legacy plan values
+/// (including every already-issued license, whose payload predates this
+/// field's meaning) rather than silently locking out a paying customer on
+/// an unrecognized string, same reasoning as this repo's licensing
+/// incidents already documented in README.md #6.
+fn require_plan_includes_management(license: &crate::license::cloud::CloudLicenseState) -> Result<(), String> {
+    let plan = match license.cached_status() {
+        license_core::signed::LicenseStatus::Active { plan, .. }
+        | license_core::signed::LicenseStatus::Grace { plan, .. }
+        | license_core::signed::LicenseStatus::LockedBackOffice { plan, .. } => plan,
+        license_core::signed::LicenseStatus::Invalid { .. } => return Ok(()),
+    };
+    if plan == "pos_lite" {
+        return Err("هذه الباقة (POS خفيف) لا تشمل هذه الميزة -- تواصل معنا للترقية إلى الباقة الكاملة".to_string());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Serialize)]
 pub struct LoginV3Response {
     pub token: String,
@@ -1704,6 +1732,7 @@ fn clock_out_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseSt
 pub fn list_roster_entries_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, date_from: String, date_to: String) -> Result<Vec<crate::repo::RosterEntryRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageRoster).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_roster_entries(&actor.scope(), &date_from, &date_to).map_err(|e| e.to_string())
@@ -1737,6 +1766,7 @@ pub fn create_roster_entry_v3(
 pub fn update_roster_entry_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, id: String, work_date: String, start_time: String, end_time: String, notes: Option<String>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageRoster).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1750,6 +1780,7 @@ pub fn update_roster_entry_v3(state: State<Db>, license: State<crate::license::c
 pub fn delete_roster_entry_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageRoster).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1785,6 +1816,7 @@ pub fn list_debtors_v3(state: State<Db>, session_token: String) -> Result<Vec<cr
 pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>, initial_debt_cents: Option<i64>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
     let phone = phone.filter(|p| !p.trim().is_empty());
     let email = email.filter(|e| !e.trim().is_empty());
@@ -1820,6 +1852,7 @@ pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::cloud::
 pub fn update_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1833,6 +1866,7 @@ pub fn update_debtor_v3(state: State<Db>, license: State<crate::license::cloud::
 pub fn deactivate_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1846,6 +1880,7 @@ pub fn deactivate_debtor_v3(state: State<Db>, license: State<crate::license::clo
 pub fn list_debt_entries_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String) -> Result<Vec<crate::repo::DebtEntryRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_debt_entries(&actor.scope(), &debtor_id).map_err(|e| e.to_string())
@@ -1868,6 +1903,7 @@ pub fn list_debt_entries_v3(state: State<Db>, license: State<crate::license::clo
 pub fn record_debt_payment_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String, amount_cents: i64, notes: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
     if amount_cents <= 0 {
         return Err("payment amount must be positive".to_string());
@@ -2001,6 +2037,7 @@ pub fn get_sales_report_v3(state: State<Db>, license: State<crate::license::clou
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).sales_report(&actor.scope(), &today_start_iso, range_end_iso.as_deref()).map_err(|e| e.to_string())
 }
@@ -2051,6 +2088,7 @@ pub fn detect_anomalies_v3(state: State<Db>, license: State<crate::license::clou
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     crate::anomaly::detect_anomalies(&conn, &actor.scope(), 30).map_err(|e| e.to_string())
 }
@@ -2064,6 +2102,7 @@ pub fn forecast_demand_v3(state: State<Db>, license: State<crate::license::cloud
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     crate::forecast::forecast_demand(&conn, &actor.scope()).map_err(|e| e.to_string())
 }
@@ -2118,6 +2157,7 @@ pub fn reconcile_orders_v3(state: State<Db>, license: State<crate::license::clou
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     crate::reconcile::reconcile(&conn, &actor.scope()).map_err(|e| e.to_string())
 }
@@ -2481,6 +2521,7 @@ pub fn get_customer_detail_v3(state: State<Db>, license: State<crate::license::c
 pub fn list_loyalty_cards_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::LoyaltyCardRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_loyalty_cards(&actor.tenant_id).map_err(|e| e.to_string())
@@ -2493,6 +2534,7 @@ pub fn list_loyalty_cards_v3(state: State<Db>, license: State<crate::license::cl
 pub fn issue_loyalty_card_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, customer_id: String, card_number: String) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     if card_number.trim().is_empty() {
         return Err("رقم البطاقة مطلوب".to_string());
@@ -2511,6 +2553,7 @@ pub fn issue_loyalty_card_v3(state: State<Db>, license: State<crate::license::cl
 pub fn list_loyalty_transactions_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, card_id: Option<String>) -> Result<Vec<crate::repo::LoyaltyTxRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_loyalty_transactions(&actor.scope(), card_id.as_deref()).map_err(|e| e.to_string())
@@ -2526,6 +2569,7 @@ pub fn list_loyalty_transactions_v3(state: State<Db>, license: State<crate::lice
 pub fn list_loyalty_tiers_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::LoyaltyTierRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_loyalty_tiers(&actor.tenant_id).map_err(|e| e.to_string())
@@ -2535,6 +2579,7 @@ pub fn list_loyalty_tiers_v3(state: State<Db>, license: State<crate::license::cl
 pub fn create_loyalty_tier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, min_points: i64, points_multiplier: f64, sort_order: i64) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     if min_points < 0 || points_multiplier <= 0.0 {
         return Err("الحد الأدنى للنقاط ومضاعف النقاط يجب أن يكونا موجبين".to_string());
@@ -2552,6 +2597,7 @@ pub fn create_loyalty_tier_v3(state: State<Db>, license: State<crate::license::c
 pub fn update_loyalty_tier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, tier_id: String, name: String, min_points: i64, points_multiplier: f64, sort_order: i64) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     if min_points < 0 || points_multiplier <= 0.0 {
         return Err("الحد الأدنى للنقاط ومضاعف النقاط يجب أن يكونا موجبين".to_string());
@@ -2568,6 +2614,7 @@ pub fn update_loyalty_tier_v3(state: State<Db>, license: State<crate::license::c
 pub fn delete_loyalty_tier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, tier_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -2581,6 +2628,7 @@ pub fn delete_loyalty_tier_v3(state: State<Db>, license: State<crate::license::c
 pub fn list_loyalty_rewards_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::LoyaltyRewardRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_loyalty_rewards(&actor.tenant_id).map_err(|e| e.to_string())
@@ -2591,6 +2639,7 @@ pub fn list_loyalty_rewards_v3(state: State<Db>, license: State<crate::license::
 pub fn create_loyalty_reward_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, points_cost: i64, reward_type: String, value_cents: Option<i64>, value_percent_bps: Option<i64>, linked_menu_item_id: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     if points_cost <= 0 {
         return Err("تكلفة المكافأة بالنقاط يجب أن تكون موجبة".to_string());
@@ -2610,6 +2659,7 @@ pub fn create_loyalty_reward_v3(state: State<Db>, license: State<crate::license:
 pub fn set_loyalty_reward_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, reward_id: String, is_active: bool) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -2623,6 +2673,7 @@ pub fn set_loyalty_reward_active_v3(state: State<Db>, license: State<crate::lice
 pub fn delete_loyalty_reward_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, reward_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;

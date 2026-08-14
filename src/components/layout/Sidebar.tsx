@@ -4,6 +4,7 @@ import { useShiftStore } from "../../stores/shiftStore";
 import { usePermissions } from "../../hooks/usePermissions";
 import { getBusinessMode } from "../../lib/orderService";
 import { openMarketplace } from "../../lib/marketplace";
+import { getCachedLicenseStatus, isPosLite } from "../../lib/license";
 import {
   IconLogout as LogOut,
   IconCashRegister, IconToolsKitchen2, IconClipboardList, IconBox,
@@ -59,8 +60,20 @@ export default function Sidebar({ active, onNavigate }: Props) {
   useEffect(() => {
     getBusinessMode().then((m) => setHasKitchen(m.has_kitchen)).catch(() => {});
   }, []);
+  // 2026-08-14 pricing tiers: 'pos_lite' is the sell-and-print terminal
+  // without the CRM/ERP layer -- this is only the UI-level hide, mirroring
+  // hasKitchen's pattern above. The real enforcement is server-side
+  // (commands_v3.rs's require_plan_includes_management); a pos_lite
+  // terminal that somehow still navigated here would just get rejected on
+  // the backend call, same as any other permission gate in this app.
+  const [posLite, setPosLite] = useState(false);
+  useEffect(() => {
+    getCachedLicenseStatus().then((s) => setPosLite(isPosLite(s))).catch(() => {});
+  }, []);
+  const CRM_ERP_NAV_IDS = new Set(["reports", "loyalty", "debt", "schedule"]);
   const items = navItems
     .filter((n) => n.allowed && (hasKitchen || n.id !== "kds"))
+    .filter((n) => !posLite || !CRM_ERP_NAV_IDS.has(n.id))
     // MANAGER_NAV/OWNER_NAV (lib/permissions.ts) hardcode "القائمة" (Menu)
     // -- food-service copy that made no sense once has_tables/has_kitchen
     // existed to say "this isn't necessarily a restaurant." A non-food
