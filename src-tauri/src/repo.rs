@@ -2303,8 +2303,17 @@ impl<'a> Repo<'a> {
             "SELECT COUNT(*) > 0 FROM chain_config WHERE tenant_id = ?1", params![tenant_id], |r| r.get(0),
         )?;
         if !exists {
+            // void/shift_diff_manager_threshold_cents explicitly set here
+            // rather than left to the schema DEFAULT (20000/50000, i.e.
+            // 200/500 currency units) -- see
+            // migrate_v3::run_manager_threshold_syp_rescale_migration's doc
+            // comment for why that default is unusable for SYP (real menu
+            // prices run in the thousands, so nearly every void/shift-close
+            // trips it) and why SQLite's lack of `ALTER COLUMN SET DEFAULT`
+            // means this insert-time override is how a brand-new tenant
+            // gets the realistic value instead of a second migration.
             self.conn.execute(
-                "INSERT INTO chain_config (id, tenant_id) VALUES (?1, ?2)",
+                "INSERT INTO chain_config (id, tenant_id, void_manager_threshold_cents, shift_diff_manager_threshold_cents) VALUES (?1, ?2, 5000000, 10000000)",
                 params![uuid::Uuid::now_v7().to_string(), tenant_id],
             )?;
         }

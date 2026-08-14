@@ -1815,6 +1815,51 @@ pub fn run_refund_migration(conn: &mut Connection, _db_path: &Path) -> Result<()
     Ok(())
 }
 
+pub const MIGRATION_Q_VERSION: i64 = 21;
+
+/// 2026-08-14 backend hardening pass (README.md #8's known-gaps list):
+/// `run_manager_threshold_migration` (v17) already made these Owner-
+/// configurable, but its OWN doc comment already flagged the picked
+/// defaults (20000/50000, i.e. 200/500 currency units at the legacy
+/// `_cents` convention's implicit x100 scale) as "a starting point, not a
+/// claim of correctness" -- for SYP, whose real menu prices run in the
+/// thousands (`price_cents` for a 5,000 SYP item is 500,000, per
+/// menu/page.tsx's `toCents`), 200/500 trips on nearly every void and
+/// every shift close, exactly as the audit found. Two parts: (1) any
+/// `chain_config` row still sitting at the untouched original default
+/// gets bumped to a SYP-realistic one (50,000 / 100,000 SYP ->
+/// 5,000,000 / 10,000,000 cents) -- rows an Owner already customized via
+/// `update_manager_thresholds_v3` have a different value and are
+/// deliberately left alone; (2) `ensure_chain_config_row` (repo.rs) is
+/// updated so brand-new tenants get the realistic default from day one,
+/// since SQLite has no `ALTER COLUMN ... SET DEFAULT` -- changing the
+/// column's schema-level default would need a full table rebuild, which
+/// this avoids by overriding it explicitly at insert time instead, same
+/// technique already used for `secondary_tax_rate_cents`'s COALESCE.
+pub fn run_manager_threshold_syp_rescale_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_Q_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    if table_exists(&tx, "chain_config")? {
+        tx.execute("UPDATE chain_config SET void_manager_threshold_cents = 5000000 WHERE void_manager_threshold_cents = 20000", [])?;
+        tx.execute("UPDATE chain_config SET shift_diff_manager_threshold_cents = 10000000 WHERE shift_diff_manager_threshold_cents = 50000", [])?;
+    }
+    println!("v21_manager_threshold_syp_rescale: untouched chain_config thresholds bumped to SYP-realistic defaults (50,000/100,000 SYP); customized rows left alone");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_Q_VERSION, "0021_manager_threshold_syp_rescale", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

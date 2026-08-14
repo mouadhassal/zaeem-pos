@@ -39,6 +39,7 @@ import { createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, splitBill, me
 import type { LoyaltyRewardOption } from "../../lib/orderService";
 import { enableBarcodeScanner, disableBarcodeScanner } from "../../lib/barcodeScanner";
 import { retryPrintQueue, printReceipt } from "../../lib/printer";
+import { assignDriver, getZones } from "../../lib/deliveryService";
 import type { ReceiptData } from "../../lib/printer";
 import type { SplitItem } from "../../stores/cartStore";
 
@@ -86,7 +87,7 @@ export default function POSPage() {
   const [hasTables, setHasTables] = useState(true);
 
   const { items, tableId, tableName, setTable, addItem, clearCart, voidItem, updateQuantity } = useCartStore();
-  const { orderType, setOrderType, customerName, customerPhone, deliveryAddress, driverId, debtorId, debtorName, resetOrderInfo, setDriverId } = useOrderTypeStore();
+  const { orderType, setOrderType, customerName, customerPhone, deliveryAddress, driverId, deliveryZoneId, deliveryFeeCents, debtorId, debtorName, resetOrderInfo, setDriverId, setDeliveryZone } = useOrderTypeStore();
   const user = useAuthStore((s) => s.user);
   const shiftId = useShiftStore((s) => s.activeShiftId);
   // Real, server-enforced cap (chain_config via get_discount_caps_v3) --
@@ -117,6 +118,17 @@ export default function POSPage() {
 
   useEffect(() => {
     getBusinessMode().then((m) => setHasTables(m.has_tables)).catch(() => {});
+  }, []);
+
+  // 2026-08-14 backend hardening pass: delivery zones (fee/minimum/ETA)
+  // were fully configurable in Settings but never reachable from checkout
+  // at all -- no zone-matching UI existed anywhere, so the fee was always
+  // silently 0 regardless of what an Owner configured. No geo-matching
+  // exists in this app, so the cashier picks the zone by name (same
+  // manual-selection pattern as picking a table or a driver).
+  const [zones, setZones] = useState<{ id: string; name: string; fee_cents: number }[]>([]);
+  useEffect(() => {
+    getZones().then((z) => setZones(z as { id: string; name: string; fee_cents: number }[])).catch(() => {});
   }, []);
 
   // 2026-08-03 "next phase": when tables are off, the cashier never picks
@@ -303,8 +315,30 @@ export default function POSPage() {
         state.savings(), shiftId ?? undefined,
         orderType === "DELIVERY" ? driverId : undefined,
         discountOverridePin ?? undefined,
+        orderType === "DELIVERY" ? deliveryFeeCents : 0,
       );
       setDiscountOverridePin(null);
+
+      // 2026-08-14 backend hardening pass (README.md #8's known-gaps
+      // list): driverId was captured here and threaded into
+      // create_full_order_v3 (a display-only field on `orders`) but
+      // nothing ever created the actual `delivery_log` row --
+      // assign_driver_to_delivery_v3 (already atomic: log row + driver ->
+      // BUSY in one transaction, see deliveryService.ts's assignDriver
+      // doc comment) existed and worked, it just had no caller at
+      // checkout. The order never appeared in Delivery -> Active
+      // Deliveries and its status could never be updated. Non-fatal by
+      // design, same reasoning as the printing failure just below --
+      // a delivery-assignment hiccup must never block a completed sale.
+      if (orderType === "DELIVERY" && driverId) {
+        try {
+          await assignDriver(orderId, driverId);
+        } catch {
+          setSuccessMsg("تم البيع، لكن تعذر تعيين السائق -- عيّنه يدوياً من صفحة التوصيل");
+          setTimeout(() => setSuccessMsg(null), 5000);
+        }
+      }
+
       const cfg = await getReceiptConfig();
       const receipt: ReceiptData = {
         chainName: cfg.chain_name, branchName: cfg.branch_name,
@@ -313,7 +347,7 @@ export default function POSPage() {
         items: items.filter((i) => !i.voided).map((i) => ({ name: i.name, quantity: i.quantity, priceCents: i.unitPriceCents, modifiers: i.modifiers, ...(i.comboId ? { comboId: i.comboId } : {}) })),
         subtotalCents: state.subtotal(), taxCents: t.taxCents, secondaryTaxCents: t.secondaryTaxCents,
         serviceChargeCents: t.serviceChargeCents, discountCents: state.discountCents,
-        savingsCents: state.savings(), totalCents: state.total(), paymentMethod: method, changeCents,
+        savingsCents: state.savings(), totalCents: state.total() + (orderType === "DELIVERY" ? deliveryFeeCents : 0), paymentMethod: method, changeCents,
         ...(orderType !== "DINE_IN" && orderType !== "DEBT" && customerName ? { customerName } : {}),
         ...(orderType !== "DINE_IN" && orderType !== "DEBT" && customerPhone ? { customerPhone } : {}),
         ...(orderType === "DELIVERY" && deliveryAddress ? { deliveryAddress } : {}),
@@ -429,7 +463,12 @@ export default function POSPage() {
     })),
   [items, menuItemsById]);
 
-  const totalCents = useCartStore((s) => s.total());
+  const cartTotalCents = useCartStore((s) => s.total());
+  // Delivery fee folded in here so OrderPanel's displayed total always
+  // matches what PaymentModal collects and what orderService.ts's
+  // createOrder records as total_cents -- three separate reads of the
+  // same underlying number, now all consistent.
+  const totalCents = cartTotalCents + (orderType === "DELIVERY" ? deliveryFeeCents : 0);
   const subtotalCents = useCartStore((s) => s.subtotal());
   const discountCents = useCartStore((s) => s.discountCents);
   const orderNumber = useMemo(() => tableId?.slice(0, 8) || "0000", [tableId]);
@@ -484,7 +523,7 @@ export default function POSPage() {
       items: items.filter((i) => !i.voided).map((i) => ({ name: i.name, quantity: i.quantity, priceCents: i.unitPriceCents, modifiers: i.modifiers, ...(i.comboId ? { comboId: i.comboId } : {}) })),
       subtotalCents: state.subtotal(), taxCents: t.taxCents, secondaryTaxCents: t.secondaryTaxCents,
       serviceChargeCents: t.serviceChargeCents, discountCents: state.discountCents,
-      savingsCents: state.savings(), totalCents: state.total(), paymentMethod: "", changeCents: 0,
+      savingsCents: state.savings(), totalCents: state.total() + (orderType === "DELIVERY" ? deliveryFeeCents : 0), paymentMethod: "", changeCents: 0,
       ...(orderType !== "DINE_IN" && customerName ? { customerName } : {}),
       ...(orderType !== "DINE_IN" && customerPhone ? { customerPhone } : {}),
       ...(orderType === "DELIVERY" && deliveryAddress ? { deliveryAddress } : {}),
@@ -679,6 +718,21 @@ export default function POSPage() {
                 placeholder="عنوان التوصيل"
                 className="h-7 px-2 rounded-[7px] border border-line text-xs flex-1 min-w-[100px] bg-surface-alt focus:outline-none focus:border-accent font-arabic"
               />
+              {zones.length > 0 && (
+                <select
+                  value={deliveryZoneId}
+                  onChange={(e) => {
+                    const zone = zones.find((z) => z.id === e.target.value);
+                    setDeliveryZone(zone?.id ?? "", zone?.fee_cents ?? 0);
+                  }}
+                  className="h-7 px-2 rounded-[7px] border border-line text-xs bg-surface-alt focus:outline-none focus:border-accent font-arabic"
+                >
+                  <option value="">بدون منطقة</option>
+                  {zones.map((z) => (
+                    <option key={z.id} value={z.id}>{z.name} ({(z.fee_cents / 100).toFixed(0)})</option>
+                  ))}
+                </select>
+              )}
               <button
                 onClick={() => setShowDriverSelect(true)}
                 className={`h-7 px-2 rounded-[7px] text-xs font-bold transition-all flex items-center gap-1 ${

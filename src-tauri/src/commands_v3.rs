@@ -4809,6 +4809,7 @@ mod tests {
         migrate_v3::run_business_mode_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_roster_entry_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_refund_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_manager_threshold_syp_rescale_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -5687,9 +5688,10 @@ mod tests {
                 Repo::new(&conn).create_staff(&tenant_id, Some(&branch_id), Some(&branch_id), "MANAGER", Role::Manager.rank(), "Manager", Some(&pin_hash), None).unwrap();
                 let repo = Repo::new(&conn);
                 let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
-                // Line total 50000 -- well over the default
-                // void_manager_threshold_cents (20000) chain_config seeds.
-                let item_id = repo.create_menu_item(&tenant_id, "Expensive Item", &category_id, 50000, 25000, None, None).unwrap();
+                // Line total 6,000,000 -- well over the default
+                // void_manager_threshold_cents (5,000,000, per the 2026-08-14
+                // SYP rescale) chain_config seeds.
+                let item_id = repo.create_menu_item(&tenant_id, "Expensive Item", &category_id, 6000000, 3000000, None, None).unwrap();
                 (cashier_id, item_id)
             };
             let session = {
@@ -5701,13 +5703,13 @@ mod tests {
             let license = never_checked_license(&db_path);
             open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let items = vec![OrderItemInput {
-                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 50000,
+                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 6000000,
                 notes: None, combo_id: None, modifiers: vec![],
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license,
                 session.clone(), table_id, "DINE_IN".to_string(), items,
-                50000, 0, 50000, 0, None, None, None, None, 0, None, None, None,
+                6000000, 0, 6000000, 0, None, None, None, None, 0, None, None, None,
             ).unwrap();
             let item_db_id: String = {
                 let conn = Connection::open(&db_path).unwrap();
@@ -5752,8 +5754,10 @@ mod tests {
             let repo = Repo::new(&conn);
 
             let defaults = repo.get_manager_thresholds(&tenant_id).unwrap();
-            assert_eq!(defaults.void_threshold_cents, 20000, "migration default must be seeded, not zero");
-            assert_eq!(defaults.shift_diff_threshold_cents, 50000);
+            // 2026-08-14 SYP rescale (migrate_v3::run_manager_threshold_syp_rescale_migration):
+            // was 20000/50000, bumped to realistic SYP-scale defaults.
+            assert_eq!(defaults.void_threshold_cents, 5000000, "migration default must be seeded, not zero");
+            assert_eq!(defaults.shift_diff_threshold_cents, 10000000);
 
             repo.update_manager_thresholds(&tenant_id, 75000, 150000).unwrap();
             let updated = repo.get_manager_thresholds(&tenant_id).unwrap();
@@ -5857,11 +5861,12 @@ mod tests {
             let license = never_checked_license(&db_path);
             let shift_id = open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
 
-            // -60000 is well past the default 50000-cent shift_diff threshold.
-            let no_pin = close_shift_v3_impl(&db, session.clone(), shift_id.clone(), 40000, -60000, None);
+            // -12,000,000 is well past the default 10,000,000-cent
+            // shift_diff threshold (per the 2026-08-14 SYP rescale).
+            let no_pin = close_shift_v3_impl(&db, session.clone(), shift_id.clone(), 40000, -12000000, None);
             assert!(no_pin.is_err(), "closing with a discrepancy at/above the manager threshold with no PIN must be rejected");
 
-            let wrong_pin = close_shift_v3_impl(&db, session.clone(), shift_id.clone(), 40000, -60000, Some("0000".to_string()));
+            let wrong_pin = close_shift_v3_impl(&db, session.clone(), shift_id.clone(), 40000, -12000000, Some("0000".to_string()));
             assert!(wrong_pin.is_err(), "closing with a wrong manager PIN must be rejected");
 
             let conn = Connection::open(&db_path).unwrap();
@@ -5869,7 +5874,7 @@ mod tests {
             assert!(still_open.is_none(), "the shift must remain open after both rejected attempts");
             drop(conn);
 
-            close_shift_v3_impl(&db, session, shift_id.clone(), 40000, -60000, Some("1234".to_string()))
+            close_shift_v3_impl(&db, session, shift_id.clone(), 40000, -12000000, Some("1234".to_string()))
                 .expect("closing with a valid manager PIN must succeed");
 
             let conn = Connection::open(&db_path).unwrap();

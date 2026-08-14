@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "../lib/invoke";
 import { IconX, IconCash, IconCreditCard, IconWallet, IconCircleCheck } from "@tabler/icons-react";
 import { useCartStore } from "../stores/cartStore";
+import { useOrderTypeStore } from "../stores/orderTypeStore";
 import { openCashDrawer } from "../lib/printer";
 import { useAuthStore } from "../stores/authStore";
 import { useCurrency } from "../hooks/useCurrency";
@@ -31,7 +32,15 @@ interface Props {
 }
 
 export default function PaymentModal({ onClose, onSuccess, initialMethod, initialDebtorId, initialDebtorName }: Props) {
-  const totalCents = useCartStore((s) => s.total());
+  // 2026-08-14 backend hardening pass: delivery zone fees were fully
+  // configurable but never actually charged -- this is the amount the
+  // cashier collects and change is computed against, so it has to be
+  // folded in here, not just recorded on the order afterward (a mismatch
+  // between what's collected and what orderService.ts's createOrder
+  // records as total_cents would be a real cash-drawer discrepancy).
+  const cartTotalCents = useCartStore((s) => s.total());
+  const deliveryFeeCents = useOrderTypeStore((s) => (s.orderType === "DELIVERY" ? s.deliveryFeeCents : 0));
+  const totalCents = cartTotalCents + deliveryFeeCents;
   const { fmt, symbol } = useCurrency();
   const [method, setMethod] = useState<PaymentMethod>(initialMethod ?? "CASH");
   const [receivedStr, setReceivedStr] = useState("");

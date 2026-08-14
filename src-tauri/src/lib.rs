@@ -82,6 +82,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_business_mode_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_roster_entry_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_refund_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_manager_threshold_syp_rescale_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 

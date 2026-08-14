@@ -142,9 +142,14 @@ export async function createOrder(
   _savingsCents?: number,
   shiftId?: string,
   driverId?: string,
-  managerOverridePin?: string
+  managerOverridePin?: string,
+  deliveryFeeCents = 0
 ): Promise<string> {
-  const totalWithTax = subtotalCents + taxCents + secondaryTaxCents + serviceChargeCents - discountCents;
+  // deliveryFeeCents folded into the charged total here -- previously
+  // always 0 so this omission was invisible; now that a real zone fee can
+  // flow through, leaving it out of the total would silently record the
+  // fee without ever actually charging the customer for it.
+  const totalWithTax = subtotalCents + taxCents + secondaryTaxCents + serviceChargeCents + deliveryFeeCents - discountCents;
 
   const inputItems: OrderItemInput[] = items.map((i) => ({
     menu_item_id: i.menuItemId,
@@ -169,7 +174,7 @@ export async function createOrder(
     customerName: customerName ?? null,
     customerPhone: customerPhone ?? null,
     deliveryAddress: deliveryAddress ?? null,
-    deliveryFeeCents: 0,
+    deliveryFeeCents,
     driverId: driverId ?? null,
     shiftId: shiftId ?? null,
     // Re-verified server-side inside create_full_order_v3 (via
