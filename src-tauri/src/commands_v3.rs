@@ -694,6 +694,15 @@ fn create_order_v3_impl(
     let total_cents = std::cmp::max(0, subtotal_cents + tax_cents - discount_cents);
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    // Same shift-required gate `create_full_order_v3_impl` already
+    // enforces (2026-08-02 finding) -- this older, simpler command
+    // (superseded by create_full_order_v3 for the real POS UI, but still
+    // a registered, directly-invokable Tauri command) had never received
+    // the same fix, a real gap a devtools/console caller could still hit.
+    Repo::new(&conn)
+        .get_active_shift(&actor.id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "لا توجد وردية مفتوحة -- يجب فتح وردية أولاً قبل البيع".to_string())?;
     let override_used = enforce_discount_cap(&mut conn, &actor, &tenant_id, subtotal_cents, discount_cents, manager_override_pin.as_deref())?;
 
     let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
@@ -5096,6 +5105,7 @@ mod tests {
 
             let db = real_db(&db_path);
             let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let order_id = create_order_v3_impl(
                 &db, &license, session, table_id, "DINE_IN".to_string(),
                 0, 0, 0, None,
@@ -5324,6 +5334,7 @@ mod tests {
 
             let db = real_db(&db_path);
             let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let order_id = create_order_v3_impl(&db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(), 0, 0, 0, None).unwrap();
 
             transfer_order_v3_impl(&db, session, order_id.clone(), table_id, table_2_id.clone())
@@ -5374,6 +5385,7 @@ mod tests {
 
             let db = real_db(&db_path);
             let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let order_id = create_order_v3_impl(&db, &license, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None).unwrap();
 
             let result = finalize_order_with_payment_v3_impl(
@@ -5405,6 +5417,7 @@ mod tests {
 
             let db = real_db(&db_path);
             let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let order_id = create_order_v3_impl(&db, &license, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None).unwrap();
 
             let payment_id = take_payment_v3_impl(&db, &license, session, order_id, "CASH".to_string(), 1000, 0, None)
@@ -6376,6 +6389,7 @@ mod tests {
             };
             let db = real_db(&db_path);
             let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
 
             // Abandoned: created, left PENDING, backdated 8 hours -- past
             // the 6-hour staleness threshold, no payment ever taken.
@@ -6418,6 +6432,7 @@ mod tests {
             };
             let db = real_db(&db_path);
             let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
 
             let order_id = create_order_v3_impl(
                 &db, &license, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None,
@@ -6460,6 +6475,7 @@ mod tests {
             };
             let db = real_db(&db_path);
             let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
 
             let order_id = create_order_v3_impl(
                 &db, &license, session, table_id, "DINE_IN".to_string(), 1000, 0, 0, None,
