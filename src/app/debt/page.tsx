@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
 import { useCurrency } from "../../hooks/useCurrency";
+import { parseMoneyInput } from "../../lib/money";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import { IconCash, IconPencil, IconTrash, IconX } from "@tabler/icons-react";
@@ -153,7 +154,7 @@ export default function DebtPage() {
       if (editId) {
         await invoke("update_debtor_v3", { ...args, debtorId: editId });
       } else {
-        const initialDebtCents = Math.round(parseFloat(parsed.data.initialDebt || "0") * 100) || null;
+        const initialDebtCents = parseMoneyInput(parsed.data.initialDebt) || null;
         await invoke("create_debtor_v3", { ...args, initialDebtCents });
       }
       setShowModal(false);
@@ -169,7 +170,7 @@ export default function DebtPage() {
       await invoke("deactivate_debtor_v3", { sessionToken: token, debtorId: deleteId });
       setDeleteId(null);
       await fetchAll();
-    } catch { setError("حدث خطأ في الحذف"); }
+    } catch (err) { setError(`حدث خطأ في الحذف: ${realErrorText(err)}`); }
   };
 
   const openDetail = async (debtor: DebtorRow) => {
@@ -182,7 +183,7 @@ export default function DebtPage() {
 
   const handlePay = async () => {
     if (!payModal || paying) return;
-    const cents = Math.round(parseFloat(payAmount || "0") * 100);
+    const cents = parseMoneyInput(payAmount);
     if (cents <= 0) return;
     setPaying(true);
     try {

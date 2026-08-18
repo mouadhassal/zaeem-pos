@@ -7,6 +7,8 @@ import { openCashDrawer } from "../lib/printer";
 import { useAuthStore } from "../stores/authStore";
 import { useCurrency } from "../hooks/useCurrency";
 import { realErrorText } from "../lib/errors";
+import { parseMoneyInput } from "../lib/money";
+import Typeahead from "./ui/Typeahead";
 
 interface DebtorRow {
   id: string;
@@ -29,9 +31,19 @@ interface Props {
   initialMethod?: PaymentMethod | undefined;
   initialDebtorId?: string | undefined;
   initialDebtorName?: string | undefined;
+  /**
+   * Split-bill payment flow: when set, this exact amount is what's owed
+   * instead of the live cart total (the split order this modal is paying
+   * was already created server-side with its own fixed total_cents --
+   * reading from the cart here would be wrong once the cart's been cleared
+   * or has moved on to the next split in the queue).
+   */
+  totalOverrideCents?: number | undefined;
+  /** Shown under the total, e.g. "الفاتورة ١ (١ من ٢)" for split payments. */
+  subtitleOverride?: string | undefined;
 }
 
-export default function PaymentModal({ onClose, onSuccess, initialMethod, initialDebtorId, initialDebtorName }: Props) {
+export default function PaymentModal({ onClose, onSuccess, initialMethod, initialDebtorId, initialDebtorName, totalOverrideCents, subtitleOverride }: Props) {
   // 2026-08-14 backend hardening pass: delivery zone fees were fully
   // configurable but never actually charged -- this is the amount the
   // cashier collects and change is computed against, so it has to be
@@ -40,7 +52,7 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
   // records as total_cents would be a real cash-drawer discrepancy).
   const cartTotalCents = useCartStore((s) => s.total());
   const deliveryFeeCents = useOrderTypeStore((s) => (s.orderType === "DELIVERY" ? s.deliveryFeeCents : 0));
-  const totalCents = cartTotalCents + deliveryFeeCents;
+  const totalCents = totalOverrideCents ?? (cartTotalCents + deliveryFeeCents);
   const { fmt, symbol } = useCurrency();
   const [method, setMethod] = useState<PaymentMethod>(initialMethod ?? "CASH");
   const [receivedStr, setReceivedStr] = useState("");
@@ -52,31 +64,20 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
   const [debtorId, setDebtorId] = useState<string | null>(initialDebtorId ?? null);
   const [showNewDebtorForm, setShowNewDebtorForm] = useState(false);
   const [newDebtorName, setNewDebtorName] = useState("");
-  const receivedCents = Math.round((parseFloat(receivedStr) || 0) * 100);
+  const receivedCents = parseMoneyInput(receivedStr);
   const changeCents = Math.max(0, receivedCents - totalCents);
   const sufficient = method === "CARD" || method === "WALLET" || (method === "CREDIT" && !!debtorId) || receivedCents >= totalCents;
 
-  const handleKey = useCallback((key: string) => {
-    setReceivedStr((prev) => {
-      if (key === "backspace") return prev.slice(0, -1);
-      if (key === "clear") return "";
-      if (key === ".") {
-        if (prev.includes(".")) return prev;
-        return prev + ".";
-      }
-      if (prev.includes(".") && prev.split(".")[1]?.length >= 2) return prev;
-      const next = prev + key;
-      return next;
-    });
-  }, []);
-
+  // 2026-08-18 numpad double-digit fix: this used to also handle digit and
+  // backspace keys, which duplicated the controlled `<input onChange>`
+  // below -- a typed digit hit both this listener's own state update AND
+  // the input's onChange, appending the character twice. The input is the
+  // single source of truth for its own value now; this listener only
+  // covers the two keys nothing else handles (Escape to close, Enter to
+  // confirm once the amount is sufficient).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key >= "0" && e.key <= "9") {
-        handleKey(e.key);
-      } else if (e.key === "Backspace") {
-        handleKey("backspace");
-      } else if (e.key === "Escape") {
+      if (e.key === "Escape") {
         onClose();
       } else if (e.key === "Enter" && sufficient) {
         handleConfirm();
@@ -84,25 +85,24 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [sufficient, handleKey, onClose]);
+  }, [sufficient, onClose]);
+
+  // list_debtors_v3 takes no query param (returns the tenant's whole debtor
+  // list) -- fetchSuggestions below re-fetches on each debounce tick (same
+  // 300ms timing this replaced) and filters by phone-prefix client-side, so
+  // this stays genuinely "fetch mode" (not pre-loaded into component state)
+  // rather than an in-memory filter over a one-time load.
+  const fetchDebtorSuggestions = useCallback(async (query: string): Promise<DebtorRow[]> => {
+    const token = useAuthStore.getState().token;
+    const debtors = await invoke<DebtorRow[]>("list_debtors_v3", { sessionToken: token });
+    return debtors.filter((row) => row.phone.includes(query));
+  }, []);
 
   useEffect(() => {
-    if (method === "CREDIT" && debtorPhone.trim().length >= 8) {
-      const timer = setTimeout(() => {
-        const token = useAuthStore.getState().token;
-        invoke<DebtorRow[]>("list_debtors_v3", { sessionToken: token }).then((debtors) => {
-          const d = debtors.find((row) => row.phone === debtorPhone.trim());
-          if (d) { setDebtorName(d.name); setDebtorId(d.id); setError(null); }
-          else { setDebtorName(null); setDebtorId(null); setError("رقم الهاتف غير موجود"); }
-        }).catch(() => {
-          setError("تعذر البحث عن المدين");
-        });
-      }, 300);
-      return () => clearTimeout(timer);
-    } else if (method === "CREDIT") {
+    if (method !== "CREDIT") {
       setDebtorName(null); setDebtorId(null); setError(null);
     }
-  }, [debtorPhone, method]);
+  }, [method]);
 
   const handleConfirm = async () => {
     if (!sufficient) {
@@ -167,10 +167,14 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
             </span>
           </div>
           <div className="font-arabic text-xs text-ink-500">
-            {useCartStore.getState().tableName
-              ? `طاولة ${useCartStore.getState().tableName} · `
-              : ""}
-            {useCartStore.getState().items.length} أصناف
+            {subtitleOverride ?? (
+              <>
+                {useCartStore.getState().tableName
+                  ? `طاولة ${useCartStore.getState().tableName} · `
+                  : ""}
+                {useCartStore.getState().items.length} أصناف
+              </>
+            )}
           </div>
         </div>
 
@@ -223,7 +227,7 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
               {QUICK_AMOUNTS.map((amt) => (
                 <button
                   key={amt}
-                  onClick={() => setReceivedStr((amt / 100).toString())}
+                  onClick={() => setReceivedStr(String(amt))}
                   className="h-10 rounded-lg bg-surface-alt font-mono font-medium text-ink-900 hover:bg-accent-soft hover:text-accent-text transition-colors"
                 >
                   {formatCompact(amt)}
@@ -274,13 +278,29 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
               <label className="font-arabic text-sm text-ink-500 mb-1.5 block">
                 رقم هاتف العميل
               </label>
-              <input
-                type="text"
-                inputMode="numeric"
+              <Typeahead<DebtorRow>
                 value={debtorPhone}
-                onChange={(e) => setDebtorPhone(e.target.value)}
-                className="w-full h-14 text-right font-mono text-lg bg-white border-2 border-ink-200 rounded-sm px-4 focus:border-accent outline-none transition-all"
+                onChange={(v) => {
+                  setDebtorPhone(v);
+                  // Typing again invalidates whatever was previously
+                  // selected/resolved -- matches the old effect's behavior
+                  // of clearing debtorName/debtorId until a fresh match.
+                  setDebtorName(null);
+                  setDebtorId(null);
+                  setError(null);
+                }}
+                fetchSuggestions={fetchDebtorSuggestions}
+                minChars={3}
+                getKey={(d) => d.id}
+                onSelect={(d) => { setDebtorName(d.name); setDebtorId(d.id); setError(null); setShowNewDebtorForm(false); }}
+                renderItem={(d) => (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-ink-900 font-medium">{d.name}</span>
+                    <span className="font-mono text-ink-500 text-xs" dir="ltr">{d.phone}</span>
+                  </div>
+                )}
                 placeholder="٠٧٧٠xxxxxxx"
+                emptyMessage="رقم الهاتف غير موجود"
                 autoFocus
                 dir="ltr"
               />

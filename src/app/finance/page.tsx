@@ -4,6 +4,9 @@ import { useAuthStore } from "../../stores/authStore";
 import type { TaxMode } from "../../db/types";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 import { IconEye, IconCreditCard, IconX } from "@tabler/icons-react";
+import DatePicker from "../../components/ui/DatePicker";
+import { formatMoney, parseMoneyInput } from "../../lib/money";
+import { realErrorText } from "../../lib/errors";
 
 type Tab = "revenue" | "costs" | "invoices" | "taxes";
 type DateRange = "today" | "week" | "month" | "custom";
@@ -70,17 +73,6 @@ function rangeEnd(range: DateRange, customEnd?: string): Date {
   return new Date(customEnd || now.toISOString().slice(0, 10) + "T23:59:59");
 }
 
-function fmtCents(c: number): string {
-  return (c / 100).toFixed(2);
-}
-
-function fmtCurrency(cents: number, curr: string = "SAR"): string {
-  return new Intl.NumberFormat("ar-SA", {
-    style: "currency",
-    currency: curr,
-  }).format(cents / 100);
-}
-
 const CATEGORY_OPTIONS = ["إيجار", "رواتب", "كهرباء", "مياه", "إنترنت", "صيانة", "مستلزمات", "تسويق", "أخرى"];
 
 export default function FinancePage() {
@@ -89,7 +81,6 @@ export default function FinancePage() {
   const [dateRange, setDateRange] = useState<DateRange>("today");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
-  const [currency, setCurrency] = useState("SAR");
 
   const [revenueData, setRevenueData] = useState<RevenueRow[]>([]);
   const [totalRevenue, setTotalRevenue] = useState(0);
@@ -131,7 +122,6 @@ export default function FinancePage() {
         "get_chain_config_v3", { sessionToken: token }
       );
       if (config) {
-        setCurrency(config.currency);
         setTaxInfo({ tax_mode: config.tax_mode, tax_rate_cents: config.tax_rate_cents });
       }
 
@@ -167,8 +157,8 @@ export default function FinancePage() {
       todayS.setHours(0, 0, 0, 0);
       const totalTax = await invoke<number>("get_tax_collected_v3", { sessionToken: token, sinceIso: todayS.toISOString() });
       setTaxCollectedToday(totalTax);
-    } catch {
-      setMessage("حدث خطأ في تحميل البيانات");
+    } catch (err) {
+      setMessage(`حدث خطأ في تحميل البيانات: ${realErrorText(err)}`);
     } finally {
       setLoading(false);
     }
@@ -192,19 +182,19 @@ export default function FinancePage() {
         tableHtml = pdfTableHtml(
           "الإيرادات",
           ["التاريخ", "عدد الطلبات", "نقدي", "بطاقة", "محفظة", "إجمالي"],
-          revenueData.map((r) => [r.date, String(r.orderCount), fmtCents(r.cash), fmtCents(r.card), fmtCents(r.wallet), fmtCents(r.total)])
+          revenueData.map((r) => [r.date, String(r.orderCount), formatMoney(r.cash), formatMoney(r.card), formatMoney(r.wallet), formatMoney(r.total)])
         );
       } else if (tab === "costs") {
         tableHtml = pdfTableHtml(
           "التكاليف",
           ["التاريخ", "البند", "التكلفة", "الملاحظات"],
-          costs.map((c) => [c.date, c.category, fmtCents(c.amount_cents), c.notes ?? ""])
+          costs.map((c) => [c.date, c.category, formatMoney(c.amount_cents), c.notes ?? ""])
         );
       } else if (tab === "invoices") {
         tableHtml = pdfTableHtml(
           "الفواتير",
           ["رقم الفاتورة", "الفترة", "المبلغ", "الحالة", "تاريخ الاستحقاق"],
-          invoices.map((inv) => [inv.id.slice(0, 8), `${inv.period_start.slice(0, 10)} - ${inv.period_end.slice(0, 10)}`, fmtCents(inv.amount_cents), inv.status, inv.due_date.slice(0, 10)])
+          invoices.map((inv) => [inv.id.slice(0, 8), `${inv.period_start.slice(0, 10)} - ${inv.period_end.slice(0, 10)}`, formatMoney(inv.amount_cents), inv.status, inv.due_date.slice(0, 10)])
         );
       } else if (tab === "taxes") {
         tableHtml = pdfTableHtml(
@@ -213,7 +203,7 @@ export default function FinancePage() {
           [
             ["نظام الضريبة", taxInfo?.tax_mode === "inclusive" ? "شامل" : "غير شامل"],
             ["نسبة الضريبة", `${((taxInfo?.tax_rate_cents ?? 0) / 100).toFixed(2)}%`],
-            ["إجمالي الضريبة المحصلة اليوم", fmtCents(taxCollectedToday)],
+            ["إجمالي الضريبة المحصلة اليوم", formatMoney(taxCollectedToday)],
           ]
         );
       }
@@ -230,7 +220,7 @@ export default function FinancePage() {
 
   const handleAddCost = async () => {
     if (savingCost) return;
-    const amount = Math.round(parseFloat(costAmount || "0") * 100);
+    const amount = parseMoneyInput(costAmount);
     if (amount <= 0) {
       setMessage("يرجى إدخال مبلغ صحيح");
       return;
@@ -243,8 +233,8 @@ export default function FinancePage() {
       setCostNotes("");
       setMessage("تم إضافة التكلفة بنجاح");
       fetchAll();
-    } catch {
-      setMessage("حدث خطأ في إضافة التكلفة");
+    } catch (err) {
+      setMessage(`حدث خطأ في إضافة التكلفة: ${realErrorText(err)}`);
     } finally {
       setSavingCost(false);
     }
@@ -252,7 +242,7 @@ export default function FinancePage() {
 
   const handleAddInvoice = async () => {
     if (savingInvoice) return;
-    const amount = Math.round(parseFloat(invoiceAmount || "0") * 100);
+    const amount = parseMoneyInput(invoiceAmount);
     if (amount <= 0) { setMessage("يرجى إدخال مبلغ صحيح"); return; }
     setSavingInvoice(true);
     try {
@@ -261,8 +251,8 @@ export default function FinancePage() {
       setInvoiceAmount("");
       setMessage("تم إنشاء الفاتورة بنجاح");
       fetchAll();
-    } catch {
-      setMessage("حدث خطأ في إنشاء الفاتورة");
+    } catch (err) {
+      setMessage(`حدث خطأ في إنشاء الفاتورة: ${realErrorText(err)}`);
     } finally {
       setSavingInvoice(false);
     }
@@ -273,8 +263,8 @@ export default function FinancePage() {
       await invoke("mark_invoice_paid_v3", { sessionToken: token, invoiceId: inv.id });
       setMessage("تم دفع الفاتورة بنجاح");
       fetchAll();
-    } catch {
-      setMessage("حدث خطأ في دفع الفاتورة");
+    } catch (err) {
+      setMessage(`حدث خطأ في دفع الفاتورة: ${realErrorText(err)}`);
     }
   };
 
@@ -348,17 +338,15 @@ export default function FinancePage() {
           </div>
           {dateRange === "custom" && (
             <div className="flex gap-3">
-              <input
-                type="date"
+              <DatePicker
                 value={customStart}
-                onChange={(e) => setCustomStart(e.target.value)}
-                className="h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                onChange={(v) => setCustomStart(v)}
+                className="h-10 px-4 pl-10 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
               />
-              <input
-                type="date"
+              <DatePicker
                 value={customEnd}
-                onChange={(e) => setCustomEnd(e.target.value)}
-                className="h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                onChange={(v) => setCustomEnd(v)}
+                className="h-10 px-4 pl-10 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
               />
             </div>
           )}
@@ -367,7 +355,7 @@ export default function FinancePage() {
             <div className="bg-white rounded-md p-4 space-y-1 border border-ink-200">
               <p className="text-ink-400 text-sm font-arabic">إجمالي الإيرادات</p>
               <p className="text-2xl font-bold text-saffron-600 font-mono">
-                {fmtCurrency(totalRevenue, currency)}
+                {formatMoney(totalRevenue)}
               </p>
             </div>
             <div className="bg-white rounded-md p-4 space-y-1 border border-ink-200">
@@ -377,7 +365,7 @@ export default function FinancePage() {
             <div className="bg-white rounded-md p-4 space-y-1 border border-ink-200">
               <p className="text-ink-400 text-sm font-arabic">متوسط قيمة الطلب</p>
               <p className="text-2xl font-bold text-ink-900 font-mono">
-                {fmtCurrency(avgOrder, currency)}
+                {formatMoney(avgOrder)}
               </p>
             </div>
           </div>
@@ -399,10 +387,10 @@ export default function FinancePage() {
                   <tr key={i} className="border-b border-ink-200 hover:bg-saffron-50">
                     <td className="p-3 font-arabic text-ink-900">{r.date}</td>
                     <td className="p-3 font-mono text-ink-900">{r.orderCount}</td>
-                    <td className="p-3 font-mono text-saffron-600">{fmtCurrency(r.cash, currency)}</td>
-                    <td className="p-3 font-mono text-ink-700">{fmtCurrency(r.card, currency)}</td>
-                    <td className="p-3 font-mono text-ink-700">{fmtCurrency(r.wallet, currency)}</td>
-                    <td className="p-3 font-mono text-saffron-600 font-bold">{fmtCurrency(r.total, currency)}</td>
+                    <td className="p-3 font-mono text-saffron-600">{formatMoney(r.cash)}</td>
+                    <td className="p-3 font-mono text-ink-700">{formatMoney(r.card)}</td>
+                    <td className="p-3 font-mono text-ink-700">{formatMoney(r.wallet)}</td>
+                    <td className="p-3 font-mono text-saffron-600 font-bold">{formatMoney(r.total)}</td>
                   </tr>
                 ))}
                 {revenueData.length === 0 && (
@@ -424,7 +412,7 @@ export default function FinancePage() {
             <div className="bg-white rounded-md p-4 border border-ink-200 flex-1 max-w-xs">
               <p className="text-ink-400 text-sm font-arabic">إجمالي التكاليف</p>
               <p className="text-2xl font-bold text-danger-600 font-mono">
-                {fmtCurrency(totalCosts, currency)}
+                {formatMoney(totalCosts)}
               </p>
             </div>
             <button
@@ -454,7 +442,7 @@ export default function FinancePage() {
                         {c.category}
                       </span>
                     </td>
-                    <td className="p-3 font-mono text-danger-600 font-bold">{fmtCurrency(c.amount_cents, currency)}</td>
+                    <td className="p-3 font-mono text-danger-600 font-bold">{formatMoney(c.amount_cents)}</td>
                     <td className="p-3 text-ink-400 text-sm">{c.notes || "-"}</td>
                   </tr>
                 ))}
@@ -477,7 +465,7 @@ export default function FinancePage() {
             <div className="bg-white rounded-md p-4 border border-ink-200 flex-1 max-w-xs">
               <p className="text-ink-400 text-sm font-arabic">إجمالي الفواتير المستحقة</p>
               <p className="text-2xl font-bold text-warn-600 font-mono">
-                {fmtCurrency(invoices.filter((i) => i.status === "PENDING" || i.status === "OVERDUE").reduce((a, i) => a + i.amount_cents, 0), currency)}
+                {formatMoney(invoices.filter((i) => i.status === "PENDING" || i.status === "OVERDUE").reduce((a, i) => a + i.amount_cents, 0))}
               </p>
             </div>
             <button
@@ -506,7 +494,7 @@ export default function FinancePage() {
                     <td className="p-3 text-ink-900 text-sm">
                       {inv.period_start.slice(0, 10)} - {inv.period_end.slice(0, 10)}
                     </td>
-                    <td className="p-3 font-mono text-saffron-600 font-bold">{fmtCurrency(inv.amount_cents, currency)}</td>
+                    <td className="p-3 font-mono text-saffron-600 font-bold">{formatMoney(inv.amount_cents)}</td>
                     <td className="p-3">
                       <span className={`inline-block px-3 py-1 rounded-full text-xs font-arabic font-medium ${statusBadge(inv.status)}`}>
                         {statusLabel(inv.status)}
@@ -555,7 +543,7 @@ export default function FinancePage() {
             <div className="bg-white rounded-md p-4 border border-ink-200 space-y-2">
               <h2 className="font-bold text-ink-900 font-arabic">الضريبة المحصلة اليوم</h2>
               <p className="text-2xl font-bold text-saffron-600 font-mono">
-                {fmtCurrency(taxCollectedToday, currency)}
+                {formatMoney(taxCollectedToday)}
               </p>
               <button
                 onClick={exportPdf}
@@ -576,11 +564,11 @@ export default function FinancePage() {
             <div className="space-y-3">
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">بداية الفترة</label>
-                <input type="date" value={invoicePeriodStart} onChange={(e) => setInvoicePeriodStart(e.target.value)} className="w-full h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500" />
+                <DatePicker value={invoicePeriodStart} onChange={(v) => setInvoicePeriodStart(v)} className="w-full h-10 px-4 pl-10 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500" />
               </div>
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">نهاية الفترة</label>
-                <input type="date" value={invoicePeriodEnd} onChange={(e) => setInvoicePeriodEnd(e.target.value)} className="w-full h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500" />
+                <DatePicker value={invoicePeriodEnd} onChange={(v) => setInvoicePeriodEnd(v)} className="w-full h-10 px-4 pl-10 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500" />
               </div>
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">المبلغ (ريال)</label>
@@ -588,7 +576,7 @@ export default function FinancePage() {
               </div>
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">تاريخ الاستحقاق</label>
-                <input type="date" value={invoiceDueDate} onChange={(e) => setInvoiceDueDate(e.target.value)} className="w-full h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500" />
+                <DatePicker value={invoiceDueDate} onChange={(v) => setInvoiceDueDate(v)} className="w-full h-10 px-4 pl-10 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500" />
               </div>
             </div>
             <div className="flex gap-3 justify-end pt-2">
@@ -615,7 +603,7 @@ export default function FinancePage() {
             </div>
             <div className="text-center py-4">
               <p className="text-sm text-ink-400 font-arabic">المبلغ</p>
-              <p className="text-3xl font-bold text-saffron-600 font-mono">{fmtCurrency(showInvoiceDetail.amount_cents, currency)}</p>
+              <p className="text-3xl font-bold text-saffron-600 font-mono">{formatMoney(showInvoiceDetail.amount_cents)}</p>
             </div>
             <div className="flex gap-2 pt-2">
               {showInvoiceDetail.status === "PENDING" && (
@@ -658,11 +646,10 @@ export default function FinancePage() {
               </div>
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">التاريخ</label>
-                <input
-                  type="date"
+                <DatePicker
                   value={costDate}
-                  onChange={(e) => setCostDate(e.target.value)}
-                  className="w-full h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                  onChange={(v) => setCostDate(v)}
+                  className="w-full h-10 px-4 pl-10 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                 />
               </div>
               <div>

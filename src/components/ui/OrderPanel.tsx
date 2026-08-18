@@ -19,7 +19,6 @@ interface Props {
   discountCents: number;
   totalCents: number;
   currencySymbol: string;
-  usdTotal?: string | undefined;
   onEditOrder?: (() => void) | undefined;
   /** Icon for the current order type (DINE_IN/TAKEAWAY/DELIVERY/ONLINE) -- rendered inside the visible order-type pill, not just a bare edit pencil. */
   orderTypeIcon?: ReactNode;
@@ -33,11 +32,11 @@ interface Props {
 
 export default function OrderPanel({
   tableLabel, lines, subtotalCents, discountCents,
-  totalCents, currencySymbol, usdTotal, onEditOrder, orderTypeIcon, orderTypeLabel, children, toolbar,
+  totalCents, currencySymbol, onEditOrder, orderTypeIcon, orderTypeLabel, children, toolbar,
   onIncrementLine, onDecrementLine, onVoidLine,
 }: Props) {
   const fmt = (c: number) =>
-    (c / 100).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    c.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 
   return (
     // Full-height pinned column -- no floating margin, no card radius/shadow.
@@ -106,9 +105,6 @@ export default function OrderPanel({
           <div className="pt-2 border-t border-dashed border-line">
             <div className="flex items-center justify-between">
               <span className="text-sm font-medium text-text">الإجمالي</span>
-              {usdTotal && (
-                <span className="tabular text-[11px] text-text-muted" dir="ltr">≈ {usdTotal} USD</span>
-              )}
             </div>
             <div className="flex items-baseline justify-end gap-1.5" style={{ letterSpacing: "-0.02em" }}>
               <span className="tabular text-[26px] font-medium text-text leading-none" dir="ltr">

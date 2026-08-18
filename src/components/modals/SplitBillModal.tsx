@@ -23,11 +23,20 @@ export default function SplitBillModal({ onClose, onConfirm }: Props) {
     { id: "split-2", label: "الفاتورة ٢", itemIds: [], amountCents: 0 },
   ]);
 
+  // Manual per-slot amount, independent of item-toggle assignment. A slot's
+  // effective total is item-derived amountCents PLUS whatever's typed in
+  // here -- lets a cashier toggle a couple of shared items onto a slot AND
+  // top it up (or start it) with a hand-typed number, e.g. "she's covering
+  // her plate plus 5,000 toward the shared appetizer."
+  const [manualCents, setManualCents] = useState<Record<string, number>>({});
+
   const totalCents = useCartStore((s) => s.total());
 
-  const allAssigned = splits.every((s) => s.itemIds.length > 0 || s.amountCents > 0);
+  const effectiveAmountCents = (s: SplitItem) => s.amountCents + (manualCents[s.id] ?? 0);
 
-  const assignedTotal = splits.reduce((sum, s) => sum + s.amountCents, 0);
+  const allAssigned = splits.every((s) => s.itemIds.length > 0 || effectiveAmountCents(s) > 0);
+
+  const assignedTotal = splits.reduce((sum, s) => sum + effectiveAmountCents(s), 0);
   const remainder = totalCents - assignedTotal;
 
   const toggleItem = (splitId: string, itemId: string, itemTotal: number) => {
@@ -44,6 +53,31 @@ export default function SplitBillModal({ onClose, onConfirm }: Props) {
         return { ...s, itemIds: newIds, amountCents: newAmount };
       })
     );
+  };
+
+  const setManualAmount = (splitId: string, value: string) => {
+    const cents = Math.max(0, parseInt(value, 10) || 0);
+    setManualCents((prev) => ({ ...prev, [splitId]: cents }));
+  };
+
+  // Whole SYP only (no fils/decimals in this business) -- integer division
+  // for the even share, then the leftover cents (totalCents % N, always
+  // < N) are handed out 1-by-1 to the first N slots so every cent is
+  // accounted for and the sum of shares is exactly totalCents, never off by
+  // a few cents the way naive float division would be.
+  const splitEvenly = () => {
+    const n = splits.length;
+    if (n === 0) return;
+    const base = Math.floor(totalCents / n);
+    const remainderCents = totalCents % n;
+    setSplits((prev) => prev.map((s) => ({ ...s, itemIds: [], amountCents: 0 })));
+    setManualCents(() => {
+      const next: Record<string, number> = {};
+      splits.forEach((s, i) => {
+        next[s.id] = base + (i < remainderCents ? 1 : 0);
+      });
+      return next;
+    });
   };
 
   return (
@@ -73,8 +107,29 @@ export default function SplitBillModal({ onClose, onConfirm }: Props) {
                   }
                   className="w-full px-3 py-2 rounded-sm border-2 border-ink-200 bg-white font-arabic text-sm mb-2"
                 />
+                {/* Manual amount, added on top of whatever items are toggled
+                    onto this slot below -- lets a slot be "these items + a
+                    hand-typed top-up" instead of only pure item assignment. */}
+                <label className="font-arabic text-xs text-ink-500 mb-1 block">
+                  مبلغ إضافي (يدوي)
+                </label>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  step={1}
+                  value={manualCents[split.id] ?? 0}
+                  onChange={(e) => setManualAmount(split.id, e.target.value)}
+                  className="w-full px-3 py-2 rounded-sm border-2 border-ink-200 bg-white font-mono text-sm mb-2"
+                  dir="ltr"
+                />
+                {split.itemIds.length > 0 && (
+                  <div className="font-arabic text-xs text-ink-400 mb-1">
+                    أصناف: {fmt(split.amountCents)}
+                  </div>
+                )}
                 <div className="font-mono font-bold text-lg text-ink-900" dir="ltr">
-                  {fmt(split.amountCents)}
+                  {fmt(effectiveAmountCents(split))}
                 </div>
               </div>
             ))}
@@ -90,6 +145,13 @@ export default function SplitBillModal({ onClose, onConfirm }: Props) {
               <IconPlus className="w-6 h-6" stroke={1.75} />
             </button>
           </div>
+
+          <button
+            onClick={splitEvenly}
+            className="w-full h-10 rounded-xl bg-accent-soft text-accent-text font-arabic font-bold text-sm hover:opacity-90 transition-opacity"
+          >
+            قسّم بالتساوي
+          </button>
 
           <div className="bg-surface-alt rounded-xl p-3 flex justify-between items-center">
             <span className="font-arabic text-sm text-text-2">المتبقي للتوزيع</span>
@@ -134,7 +196,7 @@ export default function SplitBillModal({ onClose, onConfirm }: Props) {
             إلغاء
           </button>
           <button
-            onClick={() => onConfirm(splits)}
+            onClick={() => onConfirm(splits.map((s) => ({ ...s, amountCents: effectiveAmountCents(s) })))}
             disabled={!allAssigned || remainder !== 0}
             className="flex-1 h-12 rounded-xl bg-saffron-600 text-white font-arabic font-bold hover:bg-accent-text disabled:opacity-50"
           >

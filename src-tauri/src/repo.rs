@@ -354,6 +354,7 @@ pub struct ReceiptConfig {
 pub struct LoyaltyCardLookup {
     pub card_number: String,
     pub customer_name: String,
+    pub customer_phone: Option<String>,
     pub points: i64,
     pub tier: String,
 }
@@ -4681,6 +4682,42 @@ impl<'a> Repo<'a> {
             }
         }
 
+        // Persistence-bug fix (2026-08-18): this method used to create real
+        // child orders (above) but never touch `tables.current_order_id` or
+        // the now-emptied parent order's status, so every split beyond the
+        // very first became permanently unreachable -- the table's pointer
+        // still referenced the original (now item-less) order, and nothing
+        // else in `repo.rs` queries orders by `table_id` or `parent_order_id`
+        // (only via `tables.current_order_id`). Two things now happen so the
+        // split orders are actually reachable and payable:
+        //  1. Point `tables.current_order_id` at the FIRST split order --
+        //     same single-current-order-per-table shape every other
+        //     order-creation path already relies on (see line ~4419/4482).
+        //     The frontend (`pos/page.tsx handleSplitConfirm`) is
+        //     responsible for walking the REST of the returned split order
+        //     ids through the normal per-order payment flow
+        //     (`finalize_order_with_payment_v3`, which itself clears
+        //     `current_order_id` once the order it matches is paid) --
+        //     that command takes an explicit `order_id` and never depended
+        //     on `current_order_id` in the first place, so it works
+        //     unmodified for every split, not just the first.
+        //  2. Mark the original (parent) order CANCELLED rather than leaving
+        //     it dangling as PENDING-with-zero-items forever -- it is
+        //     excluded from revenue/reporting queries same as any other
+        //     CANCELLED order (see `reconcile.rs` / revenue queries), so
+        //     this does not double-count money that now lives on the split
+        //     orders.
+        if let Some(first_split_id) = split_order_ids.first() {
+            self.conn.execute(
+                "UPDATE tables SET status = 'OCCUPIED', current_order_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
+                params![first_split_id, now, table_id],
+            ).map_err(RepoError::from)?;
+        }
+        self.conn.execute(
+            "UPDATE orders SET status = 'CANCELLED', last_modified = ?1, sync_status = 'pending' WHERE id = ?2",
+            params![now, order_id],
+        ).map_err(RepoError::from)?;
+
         Ok(split_order_ids)
     }
 
@@ -5022,15 +5059,16 @@ impl<'a> Repo<'a> {
     /// loyalty balance just by entering that tenant's real card number.
     pub fn lookup_loyalty_card(&self, tenant_id: &str, card_number: &str) -> Result<Option<LoyaltyCardLookup>, RepoError> {
         let result = self.conn.query_row(
-            "SELECT lc.card_number, c.name, lc.points, lc.tier \
+            "SELECT lc.card_number, c.name, c.phone, lc.points, lc.tier \
              FROM loyalty_cards lc INNER JOIN customers c ON c.id = lc.customer_id \
              WHERE lc.card_number = ?1 AND lc.tenant_id = ?2",
             params![card_number, tenant_id],
             |r| Ok(LoyaltyCardLookup {
                 card_number: r.get(0)?,
                 customer_name: r.get(1)?,
-                points: r.get(2)?,
-                tier: r.get(3)?,
+                customer_phone: r.get(2)?,
+                points: r.get(3)?,
+                tier: r.get(4)?,
             }),
         ).optional().map_err(RepoError::from)?;
 

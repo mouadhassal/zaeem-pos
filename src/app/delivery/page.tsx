@@ -3,6 +3,7 @@ import { useCurrency } from "../../hooks/useCurrency";
 import * as deliveryService from "../../lib/deliveryService";
 import type { DriverStatus } from "../../db/types";
 import { realErrorText } from "../../lib/errors";
+import { parseMoneyInput } from "../../lib/money";
 import { IconTruckDelivery as Truck, IconUsers as Users, IconMapPin as MapPin, IconHistory as History, IconPlus as Plus, IconX as X, IconPhone as Phone, IconCar as Car, IconNavigation as Navigation, IconStar as Star } from "@tabler/icons-react";
 
 type Tab = "active" | "drivers" | "zones" | "history";
@@ -533,8 +534,8 @@ function ZonesView({
 
 function ZoneForm({ editing, onClose, onSaved }: { editing: ZoneRow | null; onClose: () => void; onSaved: () => void }) {
   const [name, setName] = useState(editing?.name || "");
-  const [feeCents, setFeeCents] = useState(editing ? String(editing.fee_cents / 100) : "10");
-  const [minOrderCents, setMinOrderCents] = useState(editing ? String(editing.min_order_cents / 100) : "0");
+  const [feeCents, setFeeCents] = useState(editing ? String(editing.fee_cents) : "10");
+  const [minOrderCents, setMinOrderCents] = useState(editing ? String(editing.min_order_cents) : "0");
   const [estimatedMinutes, setEstimatedMinutes] = useState(editing ? String(editing.estimated_minutes) : "30");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -546,8 +547,8 @@ function ZoneForm({ editing, onClose, onSaved }: { editing: ZoneRow | null; onCl
     try {
       const input = {
         name: name.trim(),
-        fee_cents: Math.round(parseFloat(feeCents || "0") * 100),
-        min_order_cents: Math.round(parseFloat(minOrderCents || "0") * 100),
+        fee_cents: parseMoneyInput(feeCents),
+        min_order_cents: parseMoneyInput(minOrderCents),
         estimated_minutes: parseInt(estimatedMinutes || "30"),
       };
       if (editing) {

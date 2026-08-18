@@ -3,6 +3,7 @@ import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
 import { useCurrency } from "../../hooks/useCurrency";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
+import DatePicker from "../../components/ui/DatePicker";
 
 interface SalesSummary {
   totalSales: number;
@@ -211,7 +212,7 @@ export default function ReportsPage() {
         rangeEndIso: endDate ? endDate.toISOString() : null,
       });
 
-      const totalSales = report.total_sales / 100;
+      const totalSales = report.total_sales;
       const orderCount = report.order_count;
       const avgTicket = orderCount > 0 ? totalSales / orderCount : 0;
 
@@ -328,7 +329,7 @@ export default function ReportsPage() {
         <div style="display:flex;gap:12px;margin-bottom:20px">
           <div style="flex:1;border:1px solid #E4E7EC;border-radius:8px;padding:10px;text-align:center">
             <div style="font-size:11px;color:#667085">إجمالي المبيعات</div>
-            <div style="font-size:16px;font-weight:700">${fmt(Math.round(summary.totalSales * 100))}</div>
+            <div style="font-size:16px;font-weight:700">${fmt(summary.totalSales)}</div>
           </div>
           <div style="flex:1;border:1px solid #E4E7EC;border-radius:8px;padding:10px;text-align:center">
             <div style="font-size:11px;color:#667085">عدد الطلبات</div>
@@ -336,7 +337,7 @@ export default function ReportsPage() {
           </div>
           <div style="flex:1;border:1px solid #E4E7EC;border-radius:8px;padding:10px;text-align:center">
             <div style="font-size:11px;color:#667085">متوسط الفاتورة</div>
-            <div style="font-size:16px;font-weight:700">${fmt(Math.round(summary.avgTicket * 100))}</div>
+            <div style="font-size:16px;font-weight:700">${fmt(Math.round(summary.avgTicket))}</div>
           </div>
         </div>
         ${pdfTableHtml("أفضل الأصناف", ["الصنف", "الكمية"], summary.topItems.map((i) => [i.name, String(i.quantity)]))}
@@ -395,17 +396,15 @@ export default function ReportsPage() {
         </div>
         {dateRange === "custom" && (
           <div className="flex gap-3">
-            <input
-              type="date"
+            <DatePicker
               value={customStart}
-              onChange={(e) => setCustomStart(e.target.value)}
-              className="h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+              onChange={(v) => setCustomStart(v)}
+              className="h-10 px-4 pl-10 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
             />
-            <input
-              type="date"
+            <DatePicker
               value={customEnd}
-              onChange={(e) => setCustomEnd(e.target.value)}
-              className="h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+              onChange={(v) => setCustomEnd(v)}
+              className="h-10 px-4 pl-10 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
             />
           </div>
         )}
@@ -415,7 +414,7 @@ export default function ReportsPage() {
         <div className="zc-card p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic">إجمالي المبيعات</p>
           <p className="text-2xl font-bold text-saffron-600 font-mono">
-            {fmt(Math.round(summary.totalSales * 100))}
+            {fmt(summary.totalSales)}
           </p>
         </div>
         <div className="zc-card p-4 space-y-1">
@@ -425,7 +424,7 @@ export default function ReportsPage() {
         <div className="zc-card p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic">متوسط الفاتورة</p>
           <p className="text-2xl font-bold text-ink-900 font-mono">
-            {fmt(Math.round(summary.avgTicket * 100))}
+            {fmt(Math.round(summary.avgTicket))}
           </p>
         </div>
       </div>

@@ -136,8 +136,8 @@ export default function KDSPage() {
     try {
       await invoke("update_order_status_v3", { sessionToken: token, orderId, newStatus: nextStatus });
       await fetchOrders();
-    } catch {
-      setError("حدث خطأ في تحديث الحالة");
+    } catch (err) {
+      setError(`حدث خطأ في تحديث الحالة: ${realErrorText(err)}`);
     }
   };
 

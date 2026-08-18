@@ -6,6 +6,7 @@ import {
 } from "@tabler/icons-react";
 import { useAuthStore } from "../../stores/authStore";
 import { useShiftStore } from "../../stores/shiftStore";
+import { formatMoney, parseMoneyInput } from "../../lib/money";
 
 // 2026-08-02: was a hardcoded 5000 assuming small everyday prices -- wrong
 // by orders of magnitude for a currency whose real menu prices run in the
@@ -42,13 +43,6 @@ function formatElapsed(start: string): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function fmtCurrency(cents: number, curr: string = "SAR"): string {
-  return new Intl.NumberFormat("ar-SA", {
-    style: "currency",
-    currency: curr,
-  }).format(cents / 100);
-}
-
 /** Rust returns the real reason ("opening a shift requires a Branch-scoped
  * actor", "select a branch to open a shift for", etc.) as the Err(String) --
  * this used to be thrown away by a bare `catch {}` everywhere on this page,
@@ -62,7 +56,6 @@ function errText(err: unknown, fallback: string): string {
 export default function ShiftPage() {
   const user = useAuthStore((s) => s.user);
   const setActiveShiftId = useShiftStore((s) => s.setActiveShiftId);
-  const [currency, setCurrency] = useState("SAR");
 
   const [activeShift, setActiveShift] = useState<ActiveShift | null>(null);
   const [stats, setStats] = useState<ShiftStats>({ orderCount: 0, totalSales: 0, cashTotal: 0, cardTotal: 0 });
@@ -94,8 +87,6 @@ export default function ShiftPage() {
     try {
       const token = useAuthStore.getState().token;
 
-      const cfg = await invoke<{ currency: string }>("get_chain_config_v3", { sessionToken: token });
-      if (cfg) setCurrency(cfg.currency);
 
       const thresholds = await invoke<{ shift_diff_threshold_cents: number }>("get_manager_thresholds_v3", { sessionToken: token });
       if (thresholds) setDiffThresholdCents(thresholds.shift_diff_threshold_cents);
@@ -146,7 +137,7 @@ export default function ShiftPage() {
 
   const handleStartShift = async () => {
     if (!user) return;
-    const cents = Math.round(parseFloat(startingCash || "0") * 100);
+    const cents = parseMoneyInput(startingCash);
     setStartingShift(true);
     try {
       const token = useAuthStore.getState().token;
@@ -182,7 +173,7 @@ export default function ShiftPage() {
       const shiftStats = await invoke<{ cash_total: number }>("get_shift_stats_v3", { sessionToken: token, shiftId: activeShift.id });
 
       const expectedCashCents = shiftStats.cash_total + activeShift.starting_cash_cents;
-      const actualCashCents = Math.round(parseFloat(actualCash || "0") * 100);
+      const actualCashCents = parseMoneyInput(actualCash);
       const diffCents = actualCashCents - expectedCashCents;
       const absDiff = Math.abs(diffCents);
 
@@ -263,13 +254,13 @@ export default function ShiftPage() {
             <div className="flex justify-between text-sm">
               <span className="text-text-3">المتوقع</span>
               <span className="font-mono text-text font-bold tabular" dir="ltr">
-                {fmtCurrency(summary.expectedCash, currency)}
+                {formatMoney(summary.expectedCash)}
               </span>
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-text-3">الفعلي</span>
               <span className="font-mono text-text font-bold tabular" dir="ltr">
-                {fmtCurrency(summary.actualCash, currency)}
+                {formatMoney(summary.actualCash)}
               </span>
             </div>
             <div className="border-t border-line pt-3 flex justify-between text-sm">
@@ -280,7 +271,7 @@ export default function ShiftPage() {
                 style={{ color: summary.difference >= 0 ? "var(--ok)" : "var(--danger)" }}
               >
                 {summary.difference >= 0 ? "+" : ""}
-                {fmtCurrency(summary.difference, currency)}
+                {formatMoney(summary.difference)}
               </span>
             </div>
           </div>
@@ -374,14 +365,14 @@ export default function ShiftPage() {
           <div className="flex items-center gap-1.5 text-text-3 text-xs mb-1.5">
             إجمالي المبيعات
           </div>
-          <p className="text-2xl font-bold text-accent-text font-mono tabular" dir="ltr">{fmtCurrency(stats.totalSales, currency)}</p>
+          <p className="text-2xl font-bold text-accent-text font-mono tabular" dir="ltr">{formatMoney(stats.totalSales)}</p>
         </div>
         <div className="bg-surface rounded-[13px] p-4 border border-line">
           <div className="flex items-center gap-1.5 text-text-3 text-xs mb-1.5">
             <IconCash className="w-3.5 h-3.5" stroke={1.75} />
             نقدي
           </div>
-          <p className="text-2xl font-bold text-accent-text font-mono tabular" dir="ltr">{fmtCurrency(stats.cashTotal, currency)}</p>
+          <p className="text-2xl font-bold text-accent-text font-mono tabular" dir="ltr">{formatMoney(stats.cashTotal)}</p>
         </div>
       </div>
 
@@ -390,7 +381,7 @@ export default function ShiftPage() {
           <h2 className="font-bold text-text">آخر الطلبات</h2>
           <div className="flex items-center gap-1.5 text-text-3 text-xs">
             <IconCreditCard className="w-3.5 h-3.5" stroke={1.75} />
-            <span className="font-mono tabular" dir="ltr">{fmtCurrency(stats.cardTotal, currency)}</span>
+            <span className="font-mono tabular" dir="ltr">{formatMoney(stats.cardTotal)}</span>
             <span>شبكة</span>
           </div>
         </div>
@@ -408,7 +399,7 @@ export default function ShiftPage() {
                     {o.status === "PAID" ? "مدفوع" : o.status === "CANCELLED" ? "ملغي" : o.status}
                   </span>
                 </div>
-                <span className="font-mono text-sm text-text tabular" dir="ltr">{fmtCurrency(o.total_cents, currency)}</span>
+                <span className="font-mono text-sm text-text tabular" dir="ltr">{formatMoney(o.total_cents)}</span>
               </div>
             ))}
           </div>

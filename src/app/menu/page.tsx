@@ -3,7 +3,9 @@ import { invoke } from "../../lib/invoke";
 import { getBusinessMode } from "../../lib/orderService";
 import { useAuthStore } from "../../stores/authStore";
 import { invalidateMenuItemPhotoCache } from "../../hooks/useMenuItemPhoto";
+import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { z } from "zod";
+import { realErrorText } from "../../lib/errors";
 import { IconPencil, IconTrash, IconX } from "@tabler/icons-react";
 
 interface Category {
@@ -149,14 +151,6 @@ const DAY_NAMES = ["الأحد", "الإثنين", "الثلاثاء", "الأر
 
 type Tab = "items" | "categories" | "offers";
 type OfferSubTab = "combos" | "happyhour";
-
-function toCents(value: string): number {
-  return Math.round(parseFloat(value || "0") * 100);
-}
-
-function fromCents(cents: number): string {
-  return (cents / 100).toFixed(2);
-}
 
 function calcMargin(price: number, cost: number): number {
   if (price <= 0) return 0;
@@ -319,8 +313,8 @@ export default function MenuPage() {
     setItemForm({
       name: item.name,
       category_id: item.category_id,
-      price_cents: fromCents(item.price_cents),
-      cost_cents: fromCents(item.cost_cents),
+      price_cents: String(item.price_cents),
+      cost_cents: String(item.cost_cents),
       description: item.description ?? "",
       barcode: item.barcode ?? "",
     });
@@ -403,8 +397,8 @@ export default function MenuPage() {
         sessionToken: token,
         name: parsed.data.name,
         categoryId: parsed.data.category_id,
-        priceCents: toCents(itemForm.price_cents),
-        costCents: toCents(itemForm.cost_cents),
+        priceCents: parseMoneyInput(itemForm.price_cents),
+        costCents: parseMoneyInput(itemForm.cost_cents),
         description: parsed.data.description || null,
         barcode: parsed.data.barcode || null,
       };
@@ -419,7 +413,7 @@ export default function MenuPage() {
       if (typeof err === "string" && err.includes("UNIQUE")) {
         setItemErrors({ barcode: "الباركود موجود مسبقاً" });
       } else {
-        setItemErrors({ _form: "حدث خطأ في الحفظ" });
+        setItemErrors({ _form: `حدث خطأ في الحفظ: ${realErrorText(err)}` });
       }
     } finally {
       setSavingItem(false);
@@ -433,8 +427,8 @@ export default function MenuPage() {
       await invoke("delete_menu_item_v3", { sessionToken: token, itemId: deleteItemId });
       setDeleteItemId(null);
       await fetchAll();
-    } catch {
-      setError("حدث خطأ في الحذف");
+    } catch (err) {
+      setError(`حدث خطأ في الحذف: ${realErrorText(err)}`);
     } finally {
       setDeletingItem(false);
     }
@@ -444,8 +438,8 @@ export default function MenuPage() {
     try {
       await invoke("set_menu_item_active_v3", { sessionToken: token, itemId: item.id, isActive: !item.is_active });
       await fetchAll();
-    } catch {
-      setError("حدث خطأ في تحديث الحالة");
+    } catch (err) {
+      setError(`حدث خطأ في تحديث الحالة: ${realErrorText(err)}`);
     }
   };
 
@@ -545,8 +539,8 @@ export default function MenuPage() {
       }
       setShowCategoryModal(false);
       await fetchAll();
-    } catch {
-      setCategoryErrors({ _form: "حدث خطأ في الحفظ" });
+    } catch (err) {
+      setCategoryErrors({ _form: `حدث خطأ في الحفظ: ${realErrorText(err)}` });
     } finally {
       setSavingCategory(false);
     }
@@ -559,8 +553,8 @@ export default function MenuPage() {
       await invoke("delete_category_v3", { sessionToken: token, categoryId: deleteCategoryId });
       setDeleteCategoryId(null);
       await fetchAll();
-    } catch {
-      setError("حدث خطأ في الحذف");
+    } catch (err) {
+      setError(`حدث خطأ في الحذف: ${realErrorText(err)}`);
     } finally {
       setDeletingCategory(false);
     }
@@ -578,7 +572,7 @@ export default function MenuPage() {
     setEditComboId(combo.id);
     setComboForm({
       name: combo.name,
-      bundle_price_cents: fromCents(combo.bundle_price_cents),
+      bundle_price_cents: String(combo.bundle_price_cents),
       items: combo.items.map((i) => ({
         menu_item_id: i.menu_item_id,
         quantity: i.quantity.toString(),
@@ -601,7 +595,7 @@ export default function MenuPage() {
     }
     setSavingCombo(true);
     try {
-      const bundleCents = toCents(comboForm.bundle_price_cents);
+      const bundleCents = parseMoneyInput(comboForm.bundle_price_cents);
       const items: [string, number][] = parsed.data.items.map((i) => [i.menu_item_id, i.quantity]);
 
       if (editComboId) {
@@ -612,8 +606,8 @@ export default function MenuPage() {
 
       setShowComboModal(false);
       await fetchAll();
-    } catch {
-      setComboErrors({ _form: "حدث خطأ في الحفظ" });
+    } catch (err) {
+      setComboErrors({ _form: `حدث خطأ في الحفظ: ${realErrorText(err)}` });
     } finally {
       setSavingCombo(false);
     }
@@ -626,8 +620,8 @@ export default function MenuPage() {
       await invoke("delete_combo_meal_v3", { sessionToken: token, comboId: deleteComboId });
       setDeleteComboId(null);
       await fetchAll();
-    } catch {
-      setError("حدث خطأ في الحذف");
+    } catch (err) {
+      setError(`حدث خطأ في الحذف: ${realErrorText(err)}`);
     } finally {
       setDeletingCombo(false);
     }
@@ -706,8 +700,8 @@ export default function MenuPage() {
       }
       setShowHappyHourModal(false);
       await fetchAll();
-    } catch {
-      setHappyHourErrors({ _form: "حدث خطأ في الحفظ" });
+    } catch (err) {
+      setHappyHourErrors({ _form: `حدث خطأ في الحفظ: ${realErrorText(err)}` });
     } finally {
       setSavingHappyHour(false);
     }
@@ -717,8 +711,8 @@ export default function MenuPage() {
     try {
       await invoke("delete_happy_hour_rule_v3", { sessionToken: token, ruleId: id });
       await fetchAll();
-    } catch {
-      setError("حدث خطأ في الحذف");
+    } catch (err) {
+      setError(`حدث خطأ في الحذف: ${realErrorText(err)}`);
     }
   };
 
@@ -726,8 +720,8 @@ export default function MenuPage() {
     try {
       await invoke("set_happy_hour_rule_active_v3", { sessionToken: token, ruleId: rule.id, isActive: !rule.is_active });
       await fetchAll();
-    } catch {
-      setError("حدث خطأ في تحديث الحالة");
+    } catch (err) {
+      setError(`حدث خطأ في تحديث الحالة: ${realErrorText(err)}`);
     }
   };
 
@@ -852,10 +846,10 @@ export default function MenuPage() {
                         </span>
                       </td>
                       <td className="p-3 font-mono text-saffron-600 font-bold">
-                        {fromCents(item.price_cents)}
+                        {formatMoney(item.price_cents)}
                       </td>
                       <td className="p-3 font-mono text-ink-500">
-                        {item.cost_cents > 0 ? fromCents(item.cost_cents) : "-"}
+                        {item.cost_cents > 0 ? formatMoney(item.cost_cents) : "-"}
                       </td>
                       <td className="p-3">
                         <span
@@ -1028,7 +1022,7 @@ export default function MenuPage() {
                       <span className="text-ink-400 font-arabic">
                         السعر المجمع:{" "}
                         <span className="font-mono text-saffron-600 font-bold">
-                          {fromCents(combo.bundle_price_cents)}
+                          {formatMoney(combo.bundle_price_cents)}
                         </span>
                       </span>
                       {savings > 0 && (
@@ -1047,7 +1041,7 @@ export default function MenuPage() {
                             {ci.name} × {ci.quantity}
                           </span>
                           <span className="font-mono">
-                            {fromCents(ci.price_cents * ci.quantity)}
+                            {formatMoney(ci.price_cents * ci.quantity)}
                           </span>
                         </div>
                       ))}

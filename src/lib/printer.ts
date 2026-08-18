@@ -1,5 +1,6 @@
 import { invoke } from "./invoke";
 import { useAuthStore } from "../stores/authStore";
+import { formatMoney } from "./money";
 
 function token() {
   return useAuthStore.getState().token ?? "";
@@ -330,8 +331,7 @@ function createEscPosCommandBuffer(): {
 function renderReceiptCanvas(data: ReceiptData, paperWidthMm: number): HTMLCanvasElement {
   const W = paperWidthDots(paperWidthMm);
   const b = newCanvasBuilder(W);
-  const currency = data.currency ?? "SAR";
-  const fmt = (c: number) => new Intl.NumberFormat("ar-SA", { style: "currency", currency }).format(c / 100);
+  const fmt = formatMoney;
 
   drawLine(b, data.chainName, { size: 42, bold: true, align: "center" });
   drawLine(b, data.branchName, { size: 24, align: "center" });
@@ -609,9 +609,7 @@ export async function openCashDrawer(pulseMs: number = 200): Promise<void> {
 }
 
 export function generateOnScreenReceiptHTML(data: ReceiptData): string {
-  const currency = data.currency ?? "SAR";
-  const fmtCent = (c: number) =>
-    new Intl.NumberFormat("ar-SA", { style: "currency", currency }).format(c / 100);
+  const fmtCent = formatMoney;
 
   let itemsHtml = "";
   for (const item of data.items) {

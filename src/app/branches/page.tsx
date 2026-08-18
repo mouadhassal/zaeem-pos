@@ -4,6 +4,7 @@ import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 import { z } from "zod";
 import { IconPencil, IconX } from "@tabler/icons-react";
+import { formatMoney } from "../../lib/money";
 
 interface Branch {
   id: string;
@@ -138,7 +139,7 @@ export default function BranchesPage() {
       for (const b of rows) {
         statsMap[b.id] = {
           todayOrders: todayData.order_count,
-          todayRevenue: todayData.revenue_cents / 100,
+          todayRevenue: todayData.revenue_cents,
           terminalCount: terminalMap[b.id] ?? 0,
           staffCount: todayData.staff_count,
         };
@@ -211,8 +212,8 @@ export default function BranchesPage() {
       }
       setShowModal(false);
       await fetchAll();
-    } catch {
-      setFormErrors({ _form: "حدث خطأ في الحفظ" });
+    } catch (err) {
+      setFormErrors({ _form: `حدث خطأ في الحفظ: ${realErrorText(err)}` });
     } finally {
       setSaving(false);
     }
@@ -222,8 +223,8 @@ export default function BranchesPage() {
     try {
       await invoke("set_branch_full_active_v3", { sessionToken: token, branchId: branch.id, isActive: !branch.is_active });
       await fetchAll();
-    } catch {
-      setError("حدث خطأ في تحديث الحالة");
+    } catch (err) {
+      setError(`حدث خطأ في تحديث الحالة: ${realErrorText(err)}`);
     }
   };
 
@@ -237,7 +238,7 @@ export default function BranchesPage() {
       setDetailBranch(branch);
       setDetailTerminals(terminals);
       setDetailStaffCount(todayData.staff_count);
-      setDetailTodaySales(todayData.revenue_cents / 100);
+      setDetailTodaySales(todayData.revenue_cents);
       setDetailOpen(true);
     } catch (err) {
       setError(`حدث خطأ في تحميل التفاصيل: ${realErrorText(err)}`);
@@ -255,8 +256,8 @@ export default function BranchesPage() {
     try {
       await invoke("update_branch_detail_field_v3", { sessionToken: token, branchId: detailBranch.id, field, value: value || null });
       setDetailBranch({ ...detailBranch, [field]: value });
-    } catch {
-      setError("حدث خطأ في التحديث");
+    } catch (err) {
+      setError(`حدث خطأ في التحديث: ${realErrorText(err)}`);
     }
   };
 
@@ -336,7 +337,7 @@ export default function BranchesPage() {
                   <p className="text-[10px] text-ink-500 font-arabic">الطلبات اليوم</p>
                 </div>
                 <div className="bg-white rounded-sm p-2.5 text-center">
-                  <p className="text-lg font-bold text-saffron-600 font-mono">{s?.todayRevenue ?? 0}</p>
+                  <p className="text-lg font-bold text-saffron-600 font-mono">{formatMoney(s?.todayRevenue ?? 0)}</p>
                   <p className="text-[10px] text-ink-500 font-arabic">الإيرادات اليوم</p>
                 </div>
                 <div className="bg-white rounded-sm p-2.5 text-center">
@@ -568,7 +569,7 @@ export default function BranchesPage() {
               <div className="bg-saffron-50 rounded-md p-4 space-y-2">
                 <h3 className="font-bold font-arabic text-sm text-saffron-700">ملخص المبيعات اليوم</h3>
                 <p className="text-3xl font-bold text-saffron-600 font-mono">
-                  {detailTodaySales.toFixed(2)}
+                  {formatMoney(detailTodaySales)}
                 </p>
                 <p className="text-xs text-saffron-500 font-arabic">إجمالي المبيعات</p>
               </div>

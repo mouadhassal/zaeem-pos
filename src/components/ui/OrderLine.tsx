@@ -28,7 +28,7 @@ export default function OrderLine({
   const photoUrl = useMenuItemPhoto(menuItemId ?? id, !!hasPhoto, token);
 
   const fmt = (c: number) =>
-    (c / 100).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    c.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 
   return (
     // Two rows, not one packed row: thumbnail(34)+name+steppers(72)+total(68)+void(32)

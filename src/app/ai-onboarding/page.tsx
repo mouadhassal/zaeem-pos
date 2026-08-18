@@ -4,6 +4,7 @@ import { IconCamera as Camera, IconUpload as Upload, IconMicrophone as Mic, Icon
 import { useAuthStore } from "../../stores/authStore";
 import { realErrorText } from "../../lib/errors";
 import { getBusinessMode } from "../../lib/orderService";
+import { formatMoney, parseMoneyInput } from "../../lib/money";
 
 interface DraftCategory {
   name: string;
@@ -49,14 +50,6 @@ function confidenceLabel(c: number): string {
   if (c >= 0.9) return "عالي";
   if (c >= 0.7) return "متوسط";
   return "منخفض";
-}
-
-function formatCents(c: number): string {
-  return (c / 100).toFixed(2);
-}
-
-function parseCents(s: string): number {
-  return Math.round(parseFloat(s || "0") * 100);
 }
 
 export default function AiOnboardingPage() {
@@ -538,7 +531,7 @@ export default function AiOnboardingPage() {
                                     <div className="flex flex-wrap gap-1">
                                       {item.modifiers.map((m, mi) => (
                                         <span key={mi} className="text-[10px] bg-ink-100 text-ink-600 px-2 py-0.5 rounded-full font-arabic">
-                                          {m.ar_name}{m.price_cents > 0 ? ` (+${formatCents(m.price_cents)})` : ""}
+                                          {m.ar_name}{m.price_cents > 0 ? ` (+${formatMoney(m.price_cents)})` : ""}
                                         </span>
                                       ))}
                                     </div>
@@ -551,14 +544,14 @@ export default function AiOnboardingPage() {
                                       type="number"
                                       min="0"
                                       step="0.01"
-                                      value={formatCents(item.price_cents)}
-                                      onChange={(e) => updateItem(globalIdx, "price_cents", parseCents(e.target.value))}
+                                      value={String(item.price_cents)}
+                                      onChange={(e) => updateItem(globalIdx, "price_cents", parseMoneyInput(e.target.value))}
                                       className="w-24 h-9 px-3 rounded-lg bg-white border border-ink-200 text-ink-900 font-mono text-sm text-left outline-none focus:border-saffron-500"
                                       dir="ltr"
                                     />
                                   ) : (
                                     <span className="font-mono font-bold text-saffron-600 text-sm whitespace-nowrap">
-                                      {formatCents(item.price_cents)}
+                                      {formatMoney(item.price_cents)}
                                     </span>
                                   )}
 
@@ -615,8 +608,8 @@ export default function AiOnboardingPage() {
                                         type="number"
                                         min="0"
                                         step="0.01"
-                                        value={formatCents(m.price_cents)}
-                                        onChange={(e) => updateModifier(globalIdx, mi, "price_cents", parseCents(e.target.value))}
+                                        value={String(m.price_cents)}
+                                        onChange={(e) => updateModifier(globalIdx, mi, "price_cents", parseMoneyInput(e.target.value))}
                                         className="w-20 h-8 px-2 rounded-lg bg-ink-50 border border-ink-200 text-ink-900 font-mono text-xs text-left outline-none focus:border-saffron-500"
                                         dir="ltr"
                                       />

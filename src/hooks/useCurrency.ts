@@ -1,39 +1,22 @@
-import { useState, useEffect } from "react";
-import { invoke } from "../lib/invoke";
-import { useAuthStore } from "../stores/authStore";
+import { CURRENCY_SYMBOL, formatMoney } from "../lib/money";
 
+// Pre-existing gap fixed 2026-08-18: `pos/page.tsx` already imported this
+// (keyed lookup by `cfg.currency` from `get_receipt_config_v3`) but it was
+// never actually exported anywhere, a `tsc --noEmit` failure. Currency
+// codes match `src-tauri/src/money.rs`'s `scale_for` match arms; codes not
+// listed here fall back to the raw currency code itself (see call site).
 export const CURRENCY_SYMBOLS: Record<string, string> = {
-  SAR: "ر.س",
   SYP: "ل.س",
   IQD: "د.ع",
-  JOD: "د.ا",
   USD: "$",
-  AED: "د.إ",
-  QAR: "ر.ق",
+  EUR: "€",
+  SAR: "ر.س",
   KWD: "د.ك",
   BHD: "د.ب",
   OMR: "ر.ع",
-  EGP: "ج.م",
-  LBP: "ل.ل",
-  SDG: "ج.س",
+  JOD: "د.أ",
 };
 
-const DEFAULT_CURRENCY = "SAR";
-
 export function useCurrency() {
-  const [currency, setCurrency] = useState(DEFAULT_CURRENCY);
-
-  useEffect(() => {
-    const token = useAuthStore.getState().token;
-    invoke<{ currency: string }>("get_chain_config_v3", { sessionToken: token })
-      .then((row) => {
-        if (row?.currency) setCurrency(row.currency);
-      })
-      .catch(() => {});
-  }, []);
-
-  const symbol = CURRENCY_SYMBOLS[currency] || currency;
-  const fmt = (cents: number) => `${(cents / 100).toFixed(2)} ${symbol}`;
-
-  return { currency, symbol, fmt };
+  return { currency: "SYP", symbol: CURRENCY_SYMBOL, fmt: formatMoney };
 }

@@ -6,7 +6,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useComboStore, type Combo } from "../../stores/comboStore";
 import { useMenuItemPhoto } from "../../hooks/useMenuItemPhoto";
 import { getCategoryStyle } from "../../components/ui/CategoryConfig";
-import SearchBar from "../../components/ui/SearchBar";
+import Typeahead from "../../components/ui/Typeahead";
 import CategoryChip from "../../components/ui/CategoryChip";
 import ItemCard from "../../components/ui/ItemCard";
 import Numpad from "../../components/ui/Numpad";
@@ -185,7 +185,32 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
 
       {showSearch && (
         <div className="px-3 py-2 border-b border-line">
-          <SearchBar value={searchValue} onChange={setSearchValue} />
+          {/* The grid below (visibleItems) keeps re-filtering live off
+              searchValue as before -- this dropdown is a quick-pick on top:
+              suggestions come from the full category-filtered set (not
+              narrowed by searchValue first, so it can suggest a match even
+              before the grid below has visibly narrowed), and selecting one
+              adds it to the cart immediately, same as tapping its card. */}
+          <Typeahead
+            value={searchValue}
+            onChange={setSearchValue}
+            items={filteredByStore}
+            filterItem={(item, q) =>
+              item.name.includes(q) || (!!item.barcode && item.barcode.includes(q))
+            }
+            getKey={(item) => item.id}
+            onSelect={(item) => handleAdd(item)}
+            renderItem={(item) => (
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-ink-900 font-medium">{item.name}</span>
+                <span className="font-mono text-ink-500 text-xs" dir="ltr">
+                  {item.effectivePriceCents.toLocaleString("en-US")} {currencySymbol}
+                </span>
+              </div>
+            )}
+            placeholder="ابحث عن صنف أو امسح الباركود..."
+            emptyMessage="لا توجد أصناف مطابقة"
+          />
         </div>
       )}
 
@@ -202,7 +227,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
               >
                 <div className="text-[12px] font-medium text-text truncate">{combo.name}</div>
                 <div className="tabular text-[12px] font-semibold" style={{ color: "#F04E23" }} dir="ltr">
-                  {(combo.bundlePriceCents / 100).toLocaleString("en-US")} {currencySymbol}
+                  {combo.bundlePriceCents.toLocaleString("en-US")} {currencySymbol}
                 </div>
               </button>
             ))}

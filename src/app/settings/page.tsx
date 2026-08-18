@@ -8,6 +8,7 @@ import NetworkTab from "./NetworkTab";
 import { checkForUpdatesManually } from "../../lib/autoUpdate";
 import { createBackup, listBackups, type BackupInfo } from "../../lib/backup";
 import { realErrorText } from "../../lib/errors";
+import { CURRENCY_SYMBOL, parseMoneyInput } from "../../lib/money";
 
 type SettingsTab = "general" | "printer" | "tax" | "branch" | "license" | "network" | "backup" | "about";
 
@@ -37,14 +38,6 @@ interface Branch {
   phone: string | null;
   max_tables: number;
 }
-
-const CURRENCIES = [
-  { value: "SYP", label: "ليرة سورية (SYP)" },
-  { value: "SAR", label: "ريال سعودي (SAR)" },
-  { value: "IQD", label: "دينار عراقي (IQD)" },
-  { value: "JOD", label: "دينار أردني (JOD)" },
-  { value: "USD", label: "دولار أمريكي (USD)" },
-];
 
 const PAPER_WIDTHS = [58, 80];
 
@@ -108,7 +101,6 @@ export default function SettingsPage() {
   const isOwner = user?.role === "OWNER";
 
   const [, setConfig] = useState<ChainConfig | null>(null);
-  const [currency, setCurrency] = useState("SAR");
   // 2026-08-03 "next phase" (see nextphase.md §2): both default true so an
   // existing restaurant's experience never changes unless they opt out.
   const [hasTables, setHasTables] = useState(true);
@@ -129,9 +121,9 @@ export default function SettingsPage() {
   const [taxMode, setTaxMode] = useState<TaxMode>("exclusive");
   // 2026-08-02: real, per-tenant manager-approval thresholds -- replaces
   // two hardcoded constants that were wrong by orders of magnitude for a
-  // currency whose real menu prices run in the thousands. Stored/edited in
-  // major currency units here, converted to/from minor units at the
-  // invoke boundary (same convention as taxRate above).
+  // currency whose real menu prices run in the thousands. SYP has no minor
+  // unit (see src/lib/money.ts), so these are plain whole-SYP amounts --
+  // no ×100/÷100 conversion at the invoke boundary.
   const [voidThreshold, setVoidThreshold] = useState("200");
   const [shiftDiffThreshold, setShiftDiffThreshold] = useState("500");
 
@@ -282,13 +274,12 @@ export default function SettingsPage() {
     try {
       const cfg = await invoke<{ chain_name: string; currency: string; tax_mode: TaxMode; tax_rate_cents: number }>("get_chain_config_v3", { sessionToken: token });
       setConfig(cfg);
-      setCurrency(cfg.currency);
       setTaxMode(cfg.tax_mode);
       setTaxRate(String(cfg.tax_rate_cents / 100));
 
       const thresholds = await invoke<{ void_threshold_cents: number; shift_diff_threshold_cents: number }>("get_manager_thresholds_v3", { sessionToken: token });
-      setVoidThreshold(String(thresholds.void_threshold_cents / 100));
-      setShiftDiffThreshold(String(thresholds.shift_diff_threshold_cents / 100));
+      setVoidThreshold(String(thresholds.void_threshold_cents));
+      setShiftDiffThreshold(String(thresholds.shift_diff_threshold_cents));
 
       const mode = await invoke<{ has_tables: boolean; has_kitchen: boolean }>("get_business_mode_v3", { sessionToken: token });
       setHasTables(mode.has_tables);
@@ -304,8 +295,8 @@ export default function SettingsPage() {
         setBranchAddress(branchRow.address ?? "");
         setBranchPhone(branchRow.phone ?? "");
       }
-    } catch {
-      showMsg("حدث خطأ في تحميل الإعدادات");
+    } catch (err) {
+      showMsg(`حدث خطأ في تحميل الإعدادات: ${realErrorText(err)}`);
     }
   }, [token]);
 
@@ -363,19 +354,6 @@ export default function SettingsPage() {
     }
   };
 
-  const saveCurrency = async () => {
-    setSaving(true);
-    try {
-      await invoke("update_chain_currency_v3", { sessionToken: token, currency });
-      showMsg("تم حفظ العملة بنجاح");
-      fetchData();
-    } catch {
-      showMsg("حدث خطأ في الحفظ");
-    } finally {
-      setSaving(false);
-    }
-  };
-
   // 2026-08-03 "next phase": each switch saves (and takes effect)
   // immediately on toggle -- no separate "save" button, matching how a
   // real on/off setting should feel, not a form field.
@@ -398,8 +376,8 @@ export default function SettingsPage() {
       await invoke("update_chain_tax_v3", { sessionToken: token, taxRateCents: Math.round(parseFloat(taxRate || "0") * 100), taxMode });
       showMsg("تم حفظ إعدادات الضريبة بنجاح");
       fetchData();
-    } catch {
-      showMsg("حدث خطأ في الحفظ");
+    } catch (err) {
+      showMsg(`حدث خطأ في الحفظ: ${realErrorText(err)}`);
     } finally {
       setSaving(false);
     }
@@ -410,13 +388,13 @@ export default function SettingsPage() {
     try {
       await invoke("update_manager_thresholds_v3", {
         sessionToken: token,
-        voidThresholdCents: Math.round(parseFloat(voidThreshold || "0") * 100),
-        shiftDiffThresholdCents: Math.round(parseFloat(shiftDiffThreshold || "0") * 100),
+        voidThresholdCents: parseMoneyInput(voidThreshold),
+        shiftDiffThresholdCents: parseMoneyInput(shiftDiffThreshold),
       });
       showMsg("تم حفظ حدود موافقة المدير بنجاح");
       fetchData();
-    } catch {
-      showMsg("حدث خطأ في الحفظ");
+    } catch (err) {
+      showMsg(`حدث خطأ في الحفظ: ${realErrorText(err)}`);
     } finally {
       setSaving(false);
     }
@@ -435,12 +413,12 @@ export default function SettingsPage() {
         // create_table_v3/delete_table_v3) -- this legacy capacity number
         // is kept unchanged, not user-edited here anymore.
         maxTables: branch?.max_tables ?? 20,
-        currency,
+        currency: "SYP",
       });
       showMsg("تم حفظ بيانات الفرع بنجاح");
       fetchData();
-    } catch {
-      showMsg("حدث خطأ في الحفظ");
+    } catch (err) {
+      showMsg(`حدث خطأ في الحفظ: ${realErrorText(err)}`);
     } finally {
       setSaving(false);
     }
@@ -599,24 +577,9 @@ export default function SettingsPage() {
             <div className="bg-white rounded-md p-5 border border-ink-200 space-y-4">
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">العملة</label>
-                <div className="flex gap-3">
-                  <select
-                    value={currency}
-                    onChange={(e) => setCurrency(e.target.value)}
-                    className="flex-1 h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
-                  >
-                    {CURRENCIES.map((c) => (
-                      <option key={c.value} value={c.value}>{c.label}</option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={saveCurrency}
-                    disabled={saving}
-                    className="h-10 px-6 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
-                  >
-                    حفظ
-                  </button>
-                </div>
+                <p className="h-10 flex items-center px-4 rounded-sm bg-ink-50 border-2 border-ink-200 text-ink-900 font-arabic text-sm">
+                  الليرة السورية ({CURRENCY_SYMBOL})
+                </p>
               </div>
             </div>
 
@@ -890,11 +853,11 @@ export default function SettingsPage() {
                 عند إلغاء صنف أو إغلاق وردية بفارق نقدي أكبر من الحد المحدد، يُطلب رمز مدير للتأكيد
               </p>
               <div>
-                <label className="block text-sm font-arabic text-ink-900 mb-1">حد إلغاء الصنف ({currency})</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">حد إلغاء الصنف ({CURRENCY_SYMBOL})</label>
                 <input
                   type="number"
                   min="0"
-                  step="0.01"
+                  step="1"
                   value={voidThreshold}
                   onChange={(e) => setVoidThreshold(e.target.value)}
                   className="w-40 h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
@@ -902,11 +865,11 @@ export default function SettingsPage() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-arabic text-ink-900 mb-1">حد فارق إغلاق الوردية ({currency})</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">حد فارق إغلاق الوردية ({CURRENCY_SYMBOL})</label>
                 <input
                   type="number"
                   min="0"
-                  step="0.01"
+                  step="1"
                   value={shiftDiffThreshold}
                   onChange={(e) => setShiftDiffThreshold(e.target.value)}
                   className="w-40 h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"

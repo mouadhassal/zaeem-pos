@@ -1,3 +1,5 @@
+import { formatMoney } from "./money";
+
 interface VFDDisplayConfig {
   port: string;
   baud: number;
@@ -45,11 +47,7 @@ export function showCustomerWelcome(): void {
 }
 
 export function showCustomerTotal(cents: number): void {
-  const total = new Intl.NumberFormat("ar-SA", {
-    style: "currency",
-    currency: "SAR",
-  }).format(cents / 100);
-  updateCustomerDisplay(`المجموع: ${total}`);
+  updateCustomerDisplay(`المجموع: ${formatMoney(cents)}`);
 }
 
 export async function closeCustomerDisplay(): Promise<void> {

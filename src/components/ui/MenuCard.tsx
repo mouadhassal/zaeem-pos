@@ -1,3 +1,5 @@
+import { formatMoney } from "../../lib/money";
+
 interface Props {
   name: string;
   priceCents: number;
@@ -37,10 +39,7 @@ export default function MenuCard({
         <h3 className="text-ink-900 font-medium text-sm truncate">{name}</h3>
         <div className="flex items-center justify-between">
           <span className="text-saffron-600 font-bold text-sm font-mono">
-            {new Intl.NumberFormat("ar-SA", {
-              style: "currency",
-              currency: "SAR",
-            }).format(priceCents / 100)}
+            {formatMoney(priceCents)}
           </span>
           <button
             onClick={onAdd}

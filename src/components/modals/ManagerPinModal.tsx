@@ -25,6 +25,13 @@ export default function ManagerPinModal({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Single sanitizer for both input sources (the typeable field and the
+  // on-screen numpad grid) so there's exactly one code path mutating `pin`
+  // -- previously the grid buttons appended digits with their own char-
+  // append logic while the input regex-sanitized independently, which
+  // could silently diverge if either path ever changed.
+  const setDigits = (next: string) => setPin(next.replace(/\D/g, "").slice(0, 6));
+
   const handleVerify = async () => {
     setLoading(true);
     setError(null);
@@ -70,7 +77,7 @@ export default function ManagerPinModal({
             <input
               type="password"
               value={pin}
-              onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              onChange={(e) => setDigits(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleVerify();
               }}
@@ -89,26 +96,26 @@ export default function ManagerPinModal({
             {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
               <button
                 key={n}
-                onClick={() => setPin((p) => p.length < 6 ? p + n : p)}
+                onClick={() => setDigits(pin + String(n))}
                 className="h-12 rounded-xl bg-white border border-ink-200 font-mono text-lg font-bold text-ink-900 hover:bg-ink-100 active:bg-ink-100 transition-colors"
               >
                 {n}
               </button>
             ))}
             <button
-              onClick={() => setPin((p) => p.slice(0, -1))}
+              onClick={() => setDigits(pin.slice(0, -1))}
               className="h-12 rounded-xl bg-white border border-ink-200 text-ink-500 hover:bg-ink-100 flex items-center justify-center transition-colors"
             >
               <IconBackspace className="w-5 h-5" stroke={1.75} />
             </button>
             <button
-              onClick={() => setPin((p) => p.length < 6 ? p + "0" : p)}
+              onClick={() => setDigits(pin + "0")}
               className="h-12 rounded-xl bg-white border border-ink-200 font-mono text-lg font-bold text-ink-900 hover:bg-ink-100 transition-colors"
             >
               0
             </button>
             <button
-              onClick={() => setPin("")}
+              onClick={() => setDigits("")}
               className="h-12 rounded-xl bg-white border border-ink-200 text-ink-500 hover:bg-ink-100 flex items-center justify-center transition-colors"
             >
               <IconX className="w-4 h-4" stroke={1.75} />

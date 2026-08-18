@@ -68,6 +68,19 @@ export default function POSPage() {
   const [showDriverSelect, setShowDriverSelect] = useState(false);
   const [showLoyaltyScan, setShowLoyaltyScan] = useState(false);
   const [showDebtSelect, setShowDebtSelect] = useState(false);
+  // Split-bill payment queue (2026-08-18 persistence-bug fix): `split_bill_v3`
+  // creates real PENDING orders server-side and returns their ids in
+  // `splits` order -- this walks the cashier through PaymentModal once per
+  // returned order id, paying each via `finalize_order_with_payment_v3`
+  // (order-id-driven, doesn't touch the cart) instead of the ids being
+  // discarded like before. `null` means "not currently mid a split payment".
+  const [splitQueue, setSplitQueue] = useState<{
+    orderId: string;
+    label: string;
+    amountCents: number;
+    items: { name: string; quantity: number; priceCents: number; modifiers: { name: string; priceCents: number }[] }[];
+  }[] | null>(null);
+  const [splitQueueIndex, setSplitQueueIndex] = useState(0);
   const [loyaltyCard, setLoyaltyCard] = useState<{ card_number: string; customer_name: string; points: number; tier: string } | null>(null);
   const [loyaltyRewards, setLoyaltyRewards] = useState<LoyaltyRewardOption[]>([]);
   const [redeemingReward, setRedeemingReward] = useState(false);
@@ -386,14 +399,69 @@ export default function POSPage() {
     const orderId = tables.find((t) => t.id === tableId)?.current_order_id;
     if (!orderId) return;
     try {
-      await splitBill(orderId, splits.map((s) => ({ itemIds: s.itemIds, amountCents: s.amountCents, label: s.label })), user.id, tableId);
+      const splitOrderIds = await splitBill(orderId, splits.map((s) => ({ itemIds: s.itemIds, amountCents: s.amountCents, label: s.label })), user.id, tableId);
+      // `Repo::split_bill` iterates `splits` in order, pushing one new order
+      // id per entry -- `splitOrderIds[i]` is guaranteed to correspond to
+      // `splits[i]`. Snapshot the cart items now (before `clearCart()`
+      // below) so each queued payment's receipt can show its own real item
+      // lines for item-toggle-based splits (manual-amount-only splits just
+      // get an empty item list, same as any other amount-only line).
+      const cartItemsSnapshot = items;
+      const queue = splits.map((s, i) => ({
+        orderId: splitOrderIds[i],
+        label: s.label,
+        amountCents: s.amountCents,
+        items: cartItemsSnapshot
+          .filter((ci) => s.itemIds.includes(ci.id) && !ci.voided)
+          .map((ci) => ({ name: ci.name, quantity: ci.quantity, priceCents: ci.unitPriceCents, modifiers: ci.modifiers })),
+      }));
       setShowSplit(false);
-      setSuccessMsg("تم تقسيم الفاتورة ✓");
-      setTimeout(() => setSuccessMsg(null), 3000);
       clearCart();
-      fetchTables();
+      setSplitQueue(queue);
+      setSplitQueueIndex(0);
+      setShowPayment(true);
     } catch (err) {
       setSuccessMsg(`تعذر تقسيم الفاتورة: ${realErrorText(err)}`);
+      setTimeout(() => setSuccessMsg(null), 4000);
+    }
+  };
+
+  // Pays exactly one queued split order via the existing order-id-driven
+  // finalize path (`finalizeOrder` -> `finalize_order_with_payment_v3`) --
+  // no `createOrder` call, the order already exists (created by
+  // `split_bill_v3`). Advances to the next queued split on success, or
+  // closes out the whole split-payment flow once the queue is empty.
+  const handleSplitPaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string) => {
+    if (!splitQueue) return;
+    const current = splitQueue[splitQueueIndex];
+    try {
+      const cfg = await getReceiptConfig();
+      const receipt: ReceiptData = {
+        chainName: cfg.chain_name, branchName: cfg.branch_name,
+        currency: cfg.currency, orderNumber: current.orderId.slice(0, 8),
+        tableName: tableName ?? "", orderType: "DINE_IN",
+        items: current.items,
+        subtotalCents: current.amountCents, taxCents: 0, secondaryTaxCents: 0,
+        serviceChargeCents: 0, discountCents: 0,
+        savingsCents: 0, totalCents: current.amountCents, paymentMethod: method, changeCents,
+      };
+      await finalizeOrder(current.orderId, method, receivedCents, changeCents, receipt, debtorId);
+      const nextIndex = splitQueueIndex + 1;
+      if (nextIndex < splitQueue.length) {
+        setSplitQueueIndex(nextIndex);
+        setSuccessMsg(`تم دفع ${current.label} ✓ (${nextIndex}/${splitQueue.length})`);
+        setTimeout(() => setSuccessMsg(null), 2500);
+      } else {
+        setShowPayment(false);
+        setSplitQueue(null);
+        setSplitQueueIndex(0);
+        setSuccessMsg("تم دفع كل الفواتير المقسّمة ✓");
+        setTimeout(() => setSuccessMsg(null), 3000);
+        resetOrderInfo();
+        fetchTables();
+      }
+    } catch (err) {
+      setSuccessMsg(`تعذر دفع ${current.label}: ${realErrorText(err)}`);
       setTimeout(() => setSuccessMsg(null), 4000);
     }
   };
@@ -490,15 +558,6 @@ export default function POSPage() {
     ? `طاولة ${tableName} / #${orderNumber}`
     : "اختر طاولة";
 
-  // WENZDES audit M11: this used to show a "≈ X USD" line next to the
-  // total using a hardcoded 15,000 SYP/USD rate that was never wired to
-  // any real exchange-rate source -- a cashier could read that number out
-  // loud to a customer as if it meant something. No real FX command exists
-  // yet (see OrderPanel/TotalBlock's still-optional `usdTotal` prop for
-  // where a real one would plug back in); showing nothing is more honest
-  // than showing a number that's quietly made up.
-  const usdTotal = undefined;
-
   const handleIncrementLine = (id: string) => updateQuantity(id, 1);
   const handleDecrementLine = (id: string) => updateQuantity(id, -1);
 
@@ -550,7 +609,6 @@ export default function POSPage() {
           discountCents={discountCents}
           totalCents={totalCents}
           currencySymbol={currencySymbol}
-          usdTotal={usdTotal}
           onEditOrder={() => {}} /* order type now set via top bar */
           orderTypeIcon={<OrderTypeIconComponent className="w-3.5 h-3.5" stroke={2} />}
           orderTypeLabel={ORDER_TYPE_LABELS[orderType] || orderType}
@@ -622,6 +680,7 @@ export default function POSPage() {
               }
             }}
             {...(items.length > 0 ? { onHold: handleHold as () => void } : {})}
+            holdDisabled={!tableId}
           />
         </OrderPanel>
       </div>
@@ -729,7 +788,7 @@ export default function POSPage() {
                 >
                   <option value="">بدون منطقة</option>
                   {zones.map((z) => (
-                    <option key={z.id} value={z.id}>{z.name} ({(z.fee_cents / 100).toFixed(0)})</option>
+                    <option key={z.id} value={z.id}>{z.name} ({z.fee_cents})</option>
                   ))}
                 </select>
               )}
@@ -797,6 +856,7 @@ export default function POSPage() {
                         if (card) {
                           setLoyaltyCard(card);
                           useOrderTypeStore.getState().setCustomerName(card.customer_name);
+                          if (card.customer_phone) useOrderTypeStore.getState().setCustomerPhone(card.customer_phone);
                           listActiveLoyaltyRewards().then(setLoyaltyRewards).catch(() => setLoyaltyRewards([]));
                         } else {
                           // 2026-08-04: this used to do nothing at all on a
@@ -895,9 +955,33 @@ export default function POSPage() {
 
       {showPayment && (
         <PaymentModal
-          onClose={() => setShowPayment(false)}
-          onSuccess={handlePaymentSuccess}
-          {...(orderType === "DEBT" && debtorId && debtorName
+          // Keyed by the order actually being paid so each split's turn
+          // gets fresh internal state (received amount, debtor phone, etc)
+          // instead of carrying over whatever was typed for the previous
+          // split.
+          key={splitQueue ? splitQueue[splitQueueIndex].orderId : "cart"}
+          onClose={() => {
+            setShowPayment(false);
+            // Known limitation: closing mid-queue leaves any
+            // not-yet-paid split orders as real, valid PENDING orders in
+            // the DB (never lost), but there is currently no dedicated
+            // "resume paying pending splits" UI to get back to them --
+            // re-selecting the table only retrieves DRAFT (held) orders,
+            // not PENDING ones. Clearing the queue here at least makes
+            // that state visible/consistent instead of silently stuck.
+            if (splitQueue) {
+              setSplitQueue(null);
+              setSplitQueueIndex(0);
+              fetchTables();
+            }
+          }}
+          onSuccess={splitQueue ? handleSplitPaymentSuccess : handlePaymentSuccess}
+          {...(splitQueue
+            ? {
+                totalOverrideCents: splitQueue[splitQueueIndex].amountCents,
+                subtitleOverride: `${splitQueue[splitQueueIndex].label} · ${splitQueueIndex + 1}/${splitQueue.length}`,
+              }
+            : orderType === "DEBT" && debtorId && debtorName
             ? { initialMethod: "CREDIT" as const, initialDebtorId: debtorId, initialDebtorName: debtorName }
             : orderType === "DEBT"
             ? { initialMethod: "CREDIT" as const }

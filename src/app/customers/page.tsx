@@ -5,6 +5,9 @@ import { useAuthStore } from "../../stores/authStore";
 import { z } from "zod";
 import { IconEye, IconPencil, IconTrash, IconX } from "@tabler/icons-react";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
+import Typeahead from "../../components/ui/Typeahead";
+import DatePicker from "../../components/ui/DatePicker";
+import { formatMoney } from "../../lib/money";
 
 interface Customer {
   id: string;
@@ -67,10 +70,6 @@ const customerSchema = z.object({
   notes: z.string().optional().default(""),
   birthday: z.string().optional().default(""),
 });
-
-function fromCents(cents: number): string {
-  return (cents / 100).toFixed(2);
-}
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return "-";
@@ -196,7 +195,7 @@ export default function CustomersPage() {
       if (typeof err === "string" && err.includes("UNIQUE")) {
         setFormErrors({ phone: "رقم الهاتف موجود مسبقاً" });
       } else {
-        setFormErrors({ _form: "حدث خطأ في الحفظ" });
+        setFormErrors({ _form: `حدث خطأ في الحفظ: ${realErrorText(err)}` });
       }
     } finally {
       setSaving(false);
@@ -209,8 +208,8 @@ export default function CustomersPage() {
       await invoke("delete_customer_v3", { sessionToken: token, customerId: deleteId });
       setDeleteId(null);
       await fetchAll();
-    } catch {
-      setError("حدث خطأ في الحذف");
+    } catch (err) {
+      setError(`حدث خطأ في الحذف: ${realErrorText(err)}`);
     }
   };
 
@@ -268,8 +267,8 @@ export default function CustomersPage() {
       });
       setDetailCustomer({ ...detailCustomer, customer: updated });
       setDetailDraft({});
-    } catch {
-      setError("حدث خطأ في التحديث");
+    } catch (err) {
+      setError(`حدث خطأ في التحديث: ${realErrorText(err)}`);
     } finally {
       setDetailSaving(false);
     }
@@ -297,7 +296,7 @@ export default function CustomersPage() {
             c.email ?? "",
             c.address ?? "",
             c.total_orders.toString(),
-            fromCents(c.total_spent_cents),
+            formatMoney(c.total_spent_cents),
             formatDate(c.last_order_at),
             formatDate(c.last_modified),
           ])
@@ -347,13 +346,24 @@ export default function CustomersPage() {
         </div>
       </div>
 
-      {/* Search */}
-      <input
-        type="text"
+      {/* Search -- the table below still filters live off searchQuery (browsing),
+          the dropdown adds a jump-straight-to-record shortcut (onSelect opens
+          the detail panel directly, same as clicking a row). */}
+      <Typeahead<Customer>
         value={searchQuery}
-        onChange={(e) => setSearchQuery(e.target.value)}
+        onChange={setSearchQuery}
+        items={customers}
+        filterItem={(c, q) => c.name.toLowerCase().includes(q.toLowerCase()) || c.phone.includes(q)}
+        getKey={(c) => c.id}
+        onSelect={(c) => openDetail(c)}
+        renderItem={(c) => (
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-ink-900 font-medium">{c.name}</span>
+            <span className="font-mono text-ink-500 text-xs" dir="ltr">{c.phone}</span>
+          </div>
+        )}
         placeholder="ابحث بالاسم أو الهاتف..."
-        className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
+        emptyMessage="لا يوجد عملاء مطابقون"
       />
 
       {/* Table */}
@@ -381,7 +391,7 @@ export default function CustomersPage() {
                 <td className="p-3 font-mono text-ink-500" dir="ltr">{c.phone}</td>
                 <td className="p-3 text-center font-mono text-ink-900">{c.total_orders}</td>
                 <td className="p-3 text-center font-mono text-saffron-600 font-bold">
-                  {fromCents(c.total_spent_cents)}
+                  {formatMoney(c.total_spent_cents)}
                 </td>
                 <td className="p-3 font-arabic text-ink-400 text-xs">
                   {formatDateTime(c.last_order_at)}
@@ -494,11 +504,12 @@ export default function CustomersPage() {
 
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">تاريخ الميلاد</label>
-                <input
-                  type="date"
+                <DatePicker
                   value={form.birthday}
-                  onChange={(e) => setForm((p) => ({ ...p, birthday: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
+                  onChange={(v) => setForm((p) => ({ ...p, birthday: v }))}
+                  minYear={new Date().getFullYear() - 100}
+                  maxYear={new Date().getFullYear()}
+                  className="w-full h-10 px-4 pl-10 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                 />
               </div>
 
@@ -641,7 +652,7 @@ export default function CustomersPage() {
                 </div>
                 <div className="bg-saffron-50 rounded-sm p-3 text-center">
                   <p className="text-2xl font-bold text-saffron-600 font-mono">
-                    {fromCents(detailCustomer.avgOrderValue)}
+                    {formatMoney(detailCustomer.avgOrderValue)}
                   </p>
                   <p className="text-xs text-saffron-600 font-arabic mt-1">متوسط الفاتورة</p>
                 </div>
@@ -682,7 +693,7 @@ export default function CustomersPage() {
                         </span>
                         <div className="flex items-center gap-2">
                           <span className="font-mono text-saffron-600 font-bold">
-                            {fromCents(o.total_cents)}
+                            {formatMoney(o.total_cents)}
                           </span>
                           <span className={`px-2 py-0.5 rounded-full text-[10px] font-arabic ${
                             o.status === "PAID" ? "bg-saffron-50 text-saffron-600" :

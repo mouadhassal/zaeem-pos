@@ -20,11 +20,11 @@ export default function ItemCard({
   name, priceCents, originalPriceCents, categoryName, photoUrl,
   quantity, currencySymbol, onAdd, onRemove, badge,
 }: Props) {
-  const formatted = (priceCents / 100).toLocaleString("en-US", {
+  const formatted = priceCents.toLocaleString("en-US", {
     minimumFractionDigits: 0, maximumFractionDigits: 0,
   });
   const formattedOriginal = originalPriceCents != null
-    ? (originalPriceCents / 100).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })
+    ? originalPriceCents.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })
     : null;
 
   const inCart = quantity > 0;

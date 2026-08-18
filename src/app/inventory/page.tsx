@@ -6,9 +6,10 @@ import { useAuthStore } from "../../stores/authStore";
 import { IconPackage as Package, IconSearch as Search, IconEdit as Edit3, IconChevronDown as ChevronDown, IconChevronUp as ChevronUp, IconShoppingCart as ShoppingCart } from "@tabler/icons-react";
 import { IconPencil, IconTrash, IconClipboardList, IconEye, IconPackageImport, IconX, IconCash, IconTruckDelivery, IconAlertTriangle } from "@tabler/icons-react";
 import EmptyState from "../../components/ui/EmptyState";
+import DatePicker from "../../components/ui/DatePicker";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
-import { useCurrency } from "../../hooks/useCurrency";
 import { openMarketplace } from "../../lib/marketplace";
+import { formatMoney, parseMoneyInput } from "../../lib/money";
 
 const editSchema = z.object({
   name: z.string().min(1, "الاسم مطلوب"),
@@ -114,19 +115,11 @@ function StockBadge({ qty, min }: { qty: number; min: number }) {
 
 // `formatCurrency` is called from many separate tab components in this
 // file (SuppliersTab, IngredientsTab, movements, etc.), not just the top-
-// level page -- turning it into a hook would mean threading `fmt` as a
-// prop through every one of them. Module-level cache instead (same
-// established pattern as `useMenuItemPhoto`'s `photoCache`): the real
-// currency, once `useCurrency()` resolves it once at the top level, is
-// good for every tab without re-fetching per-component. Was hardcoded
-// 'SAR' before this fix -- wrong symbol for any non-SAR tenant.
-let cachedCurrency = "SAR";
-
+// level page. The chain is always SYP now (see src/lib/money.ts), so this
+// just delegates to the shared formatter -- kept as a thin wrapper so call
+// sites throughout the file don't need to change.
 function formatCurrency(cents: number): string {
-  return new Intl.NumberFormat("ar-SA", {
-    style: "currency",
-    currency: cachedCurrency,
-  }).format(cents / 100);
+  return formatMoney(cents);
 }
 
 function fmtDateTime(iso: string | null): string {
@@ -209,8 +202,6 @@ export default function InventoryPage() {
   const [showAddIngredient, setShowAddIngredient] = useState(false);
   const [showReceiveStock, setShowReceiveStock] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const { currency } = useCurrency();
-  useEffect(() => { cachedCurrency = currency; }, [currency]);
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: "stock", label: "المخزون" },
@@ -1269,7 +1260,7 @@ function PaySupplierModal({ supplier, onClose, onSaved }: { supplier: Supplier; 
   const [error, setError] = useState<string | null>(null);
 
   const handlePay = async () => {
-    const amountCents = Math.round(parseFloat(amount || "0") * 100);
+    const amountCents = parseMoneyInput(amount);
     if (amountCents <= 0) return;
     setSaving(true);
     try {
@@ -1739,7 +1730,7 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
     setSaving(true);
     setReceiveError(null);
     try {
-      const amountPaidCents = Math.round(parseFloat(amountPaid || "0") * 100);
+      const amountPaidCents = parseMoneyInput(amountPaid);
       await invoke("receive_purchase_order_v3", {
         sessionToken: token,
         poId: po.id,
@@ -1799,7 +1790,7 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
               </select>
             </div>
             <div className="flex gap-2">
-              <button type="button" onClick={() => setAmountPaid((po.total_cents / 100).toString())} className="text-xs font-arabic text-saffron-600 hover:underline">دفع كامل المبلغ</button>
+              <button type="button" onClick={() => setAmountPaid(String(po.total_cents))} className="text-xs font-arabic text-saffron-600 hover:underline">دفع كامل المبلغ</button>
               <button type="button" onClick={() => setAmountPaid("")} className="text-xs font-arabic text-ink-400 hover:underline">بدون دفع الآن</button>
             </div>
           </div>
@@ -1992,20 +1983,18 @@ function MovementsTab() {
       <div className="flex gap-3 flex-wrap">
         <div>
           <label className="block text-xs text-ink-400 mb-1 font-arabic">من</label>
-          <input
-            type="date"
+          <DatePicker
             value={dateFrom}
-            onChange={(e) => setDateFrom(e.target.value)}
-            className="h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
+            onChange={(v) => setDateFrom(v)}
+            className="h-10 px-3 pl-10 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
         </div>
         <div>
           <label className="block text-xs text-ink-400 mb-1 font-arabic">إلى</label>
-          <input
-            type="date"
+          <DatePicker
             value={dateTo}
-            onChange={(e) => setDateTo(e.target.value)}
-            className="h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
+            onChange={(v) => setDateTo(v)}
+            className="h-10 px-3 pl-10 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
         </div>
         <div>

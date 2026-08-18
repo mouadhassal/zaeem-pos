@@ -3,6 +3,7 @@ import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 import { useCurrency } from "../../hooks/useCurrency";
+import { parseMoneyInput } from "../../lib/money";
 import { IconCreditCard as CreditCard, IconPlus as Plus, IconSearch as Search } from "@tabler/icons-react";
 import { IconGift, IconTag, IconPencil, IconTrash } from "@tabler/icons-react";
 
@@ -174,8 +175,8 @@ export default function LoyaltyPage() {
       await fetchCustomers();
       setSelectedCustomer(id);
       resetNewCustomerForm();
-    } catch {
-      setNewCustomerError("حدث خطأ في إضافة العميل");
+    } catch (err) {
+      setNewCustomerError(`حدث خطأ في إضافة العميل: ${realErrorText(err)}`);
     } finally {
       setCreatingCustomer(false);
     }
@@ -232,7 +233,7 @@ export default function LoyaltyPage() {
     let valueCents: number | null = null;
     let valuePercentBps: number | null = null;
     if (rewardForm.rewardType === "DISCOUNT_FIXED") {
-      valueCents = Math.round(parseFloat(rewardForm.value || "0") * 100);
+      valueCents = parseMoneyInput(rewardForm.value);
       if (valueCents <= 0) { setRewardFormError("قيمة الخصم يجب أن تكون أكبر من صفر"); return; }
     } else if (rewardForm.rewardType === "DISCOUNT_PERCENT") {
       valuePercentBps = Math.round(parseFloat(rewardForm.value || "0") * 100);

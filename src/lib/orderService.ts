@@ -57,6 +57,7 @@ interface ReceiptConfig {
 interface LoyaltyCardLookup {
   card_number: string;
   customer_name: string;
+  customer_phone: string | null;
   points: number;
   tier: string;
 }

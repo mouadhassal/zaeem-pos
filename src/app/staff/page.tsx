@@ -6,6 +6,8 @@ import { useAuthStore } from "../../stores/authStore";
 import type { UserRole } from "../../db/types";
 import QRCode from "qrcode";
 import { IconDeviceMobile, IconPencil, IconLock } from "@tabler/icons-react";
+import DatePicker from "../../components/ui/DatePicker";
+import { formatMoney } from "../../lib/money";
 /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 type Tab = "employees" | "shifts" | "attendance";
@@ -125,7 +127,7 @@ function formatDuration(clockIn: string | null, clockOut: string | null): string
 
 function formatCents(cents: number | null): string {
   if (cents === null) return "---";
-  return new Intl.NumberFormat("ar-SA", { style: "currency", currency: "SAR" }).format(cents / 100);
+  return formatMoney(cents);
 }
 
 export default function StaffPage() {
@@ -328,7 +330,7 @@ export default function StaffPage() {
       setShowEmployeeModal(false);
       await fetchEmployees();
     } catch (err) {
-      setEmployeeErrors({ _form: typeof err === "string" ? err : "حدث خطأ في الحفظ" });
+      setEmployeeErrors({ _form: typeof err === "string" ? err : `حدث خطأ في الحفظ: ${realErrorText(err)}` });
     } finally {
       setSavingEmployee(false);
     }
@@ -340,8 +342,8 @@ export default function StaffPage() {
       await invoke("set_staff_active_v3", { sessionToken: token, targetStaffId: suspendEmployeeId, isActive: false });
       setSuspendEmployeeId(null);
       await fetchEmployees();
-    } catch {
-      setError("حدث خطأ في التعليق");
+    } catch (err) {
+      setError(`حدث خطأ في التعليق: ${realErrorText(err)}`);
     }
   };
 
@@ -349,8 +351,8 @@ export default function StaffPage() {
     try {
       await invoke("set_staff_active_v3", { sessionToken: token, targetStaffId: emp.id, isActive: !emp.is_active });
       await fetchEmployees();
-    } catch {
-      setError("حدث خطأ في تحديث الحالة");
+    } catch (err) {
+      setError(`حدث خطأ في تحديث الحالة: ${realErrorText(err)}`);
     }
   };
 
@@ -360,8 +362,8 @@ export default function StaffPage() {
       await invoke("force_close_shift_v3", { sessionToken: token, shiftId });
       setForceCloseShiftId(null);
       await fetchShifts();
-    } catch {
-      setError("حدث خطأ في إغلاق الوردية");
+    } catch (err) {
+      setError(`حدث خطأ في إغلاق الوردية: ${realErrorText(err)}`);
     }
   };
 
@@ -370,8 +372,8 @@ export default function StaffPage() {
     try {
       await invoke("clock_in_v3", { sessionToken: token, userId });
       await fetchAttendance();
-    } catch {
-      setError("حدث خطأ في تسجيل الحضور");
+    } catch (err) {
+      setError(`حدث خطأ في تسجيل الحضور: ${realErrorText(err)}`);
     } finally {
       setClockingUserId(null);
     }
@@ -382,8 +384,8 @@ export default function StaffPage() {
     try {
       await invoke("clock_out_v3", { sessionToken: token, userId });
       await fetchAttendance();
-    } catch {
-      setError("حدث خطأ في تسجيل الانصراف");
+    } catch (err) {
+      setError(`حدث خطأ في تسجيل الانصراف: ${realErrorText(err)}`);
     } finally {
       setClockingUserId(null);
     }
@@ -557,20 +559,18 @@ export default function StaffPage() {
           <div className="flex gap-3 flex-wrap">
             <div className="flex items-center gap-2">
               <label className="text-sm font-arabic text-ink-500">من</label>
-              <input
-                type="date"
+              <DatePicker
                 value={shiftDateFrom}
-                onChange={(e) => setShiftDateFrom(e.target.value)}
-                className="h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                onChange={(v) => setShiftDateFrom(v)}
+                className="h-10 px-3 pl-10 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
               />
             </div>
             <div className="flex items-center gap-2">
               <label className="text-sm font-arabic text-ink-500">إلى</label>
-              <input
-                type="date"
+              <DatePicker
                 value={shiftDateTo}
-                onChange={(e) => setShiftDateTo(e.target.value)}
-                className="h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                onChange={(v) => setShiftDateTo(v)}
+                className="h-10 px-3 pl-10 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
               />
             </div>
             <select
@@ -839,20 +839,18 @@ export default function StaffPage() {
               <div className="flex gap-3 flex-wrap">
                 <div className="flex items-center gap-2">
                   <label className="text-sm font-arabic text-ink-500">من</label>
-                  <input
-                    type="date"
+                  <DatePicker
                     value={attendanceDateFrom}
-                    onChange={(e) => setAttendanceDateFrom(e.target.value)}
-                    className="h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                    onChange={(v) => setAttendanceDateFrom(v)}
+                    className="h-10 px-3 pl-10 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                   />
                 </div>
                 <div className="flex items-center gap-2">
                   <label className="text-sm font-arabic text-ink-500">إلى</label>
-                  <input
-                    type="date"
+                  <DatePicker
                     value={attendanceDateTo}
-                    onChange={(e) => setAttendanceDateTo(e.target.value)}
-                    className="h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                    onChange={(v) => setAttendanceDateTo(v)}
+                    className="h-10 px-3 pl-10 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                   />
                 </div>
                 <select

@@ -4,6 +4,7 @@ import { realErrorText } from "../../lib/errors";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import { IconChevronRight, IconChevronLeft, IconPlus, IconX, IconTrash } from "@tabler/icons-react";
+import DatePicker from "../../components/ui/DatePicker";
 
 // HR_AND_GENERALIZATION_PLAN.md Part A -- a manager's calendar of who's
 // scheduled to work when. Deliberately named "roster" everywhere (matches
@@ -330,11 +331,10 @@ export default function SchedulePage() {
 
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">التاريخ *</label>
-                <input
-                  type="date"
+                <DatePicker
                   value={form.workDate}
-                  onChange={(e) => setForm((p) => ({ ...p, workDate: e.target.value }))}
-                  className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
+                  onChange={(v) => setForm((p) => ({ ...p, workDate: v }))}
+                  className="w-full h-10 px-4 pl-10 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                   dir="ltr"
                 />
               </div>

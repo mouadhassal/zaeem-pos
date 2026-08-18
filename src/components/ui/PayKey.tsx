@@ -2,9 +2,10 @@ interface Props {
   disabled?: boolean;
   onClick: () => void;
   onHold?: () => void;
+  holdDisabled?: boolean;
 }
 
-export default function PayKey({ disabled, onClick, onHold }: Props) {
+export default function PayKey({ disabled, onClick, onHold, holdDisabled }: Props) {
   return (
     <div className="flex gap-2">
       <button
@@ -18,7 +19,8 @@ export default function PayKey({ disabled, onClick, onHold }: Props) {
       {onHold && (
         <button
           onClick={onHold}
-          className="px-4 rounded-[12px] bg-surface-alt text-text-2 text-sm font-medium transition-all active:scale-[0.98]"
+          disabled={holdDisabled}
+          className="px-4 rounded-[12px] bg-surface-alt text-text-2 text-sm font-medium transition-all active:scale-[0.98] disabled:opacity-40"
           style={{ minHeight: 50, minWidth: 44 }}
         >
           تعليق
