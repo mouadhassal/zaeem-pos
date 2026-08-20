@@ -34,6 +34,7 @@ import { useShiftStore } from "../../stores/shiftStore";
 import { useOrderTypeStore } from "../../stores/orderTypeStore";
 import { useMenuStore } from "../../stores/menuStore";
 import { CURRENCY_SYMBOLS } from "../../hooks/useCurrency";
+import { setCurrency } from "../../lib/money";
 import { useDiscountCap } from "../../hooks/useDiscountCap";
 import { createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, lookupLoyaltyCard, listActiveLoyaltyRewards, redeemLoyaltyReward, getBusinessMode } from "../../lib/orderService";
 import type { LoyaltyRewardOption } from "../../lib/orderService";
@@ -111,6 +112,7 @@ export default function POSPage() {
   useEffect(() => {
     getReceiptConfig().then((cfg) => {
       setCurrencySymbol(CURRENCY_SYMBOLS[cfg.currency] || cfg.currency);
+      setCurrency(cfg.currency);
     }).catch(() => {});
     import("../../lib/taxCalculator").then((m) =>
       m.getDefaultTaxConfig().then((cfg) => useCartStore.getState().setTaxConfig(cfg)).catch(() => {})

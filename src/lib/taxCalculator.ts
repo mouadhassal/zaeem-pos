@@ -64,11 +64,15 @@ export async function getDefaultTaxConfig(): Promise<TaxConfig> {
     const { invoke } = await import("./invoke");
     const { useAuthStore } = await import("../stores/authStore");
     const token = useAuthStore.getState().token;
-    const config = await invoke<{ tax_mode: string; tax_rate_cents: number; secondary_tax_rate_cents: number; service_charge_rate_cents: number }>(
+    const config = await invoke<{ tax_mode: string; tax_rate_cents: number; secondary_tax_rate_cents: number; service_charge_rate_cents: number; currency?: string }>(
       "get_chain_config_v3", { sessionToken: token }
     );
 
     if (config) {
+      if (config.currency) {
+        const { setCurrency } = await import("./money");
+        setCurrency(config.currency);
+      }
       return {
         mode: config.tax_mode as "inclusive" | "exclusive",
         taxRateCents: config.tax_rate_cents,

@@ -8,7 +8,7 @@ import NetworkTab from "./NetworkTab";
 import { checkForUpdatesManually } from "../../lib/autoUpdate";
 import { createBackup, listBackups, type BackupInfo } from "../../lib/backup";
 import { realErrorText } from "../../lib/errors";
-import { CURRENCY_SYMBOL, parseMoneyInput } from "../../lib/money";
+import { CURRENCY_SYMBOL, parseMoneyInput, setCurrency } from "../../lib/money";
 
 type SettingsTab = "general" | "printer" | "tax" | "branch" | "license" | "network" | "backup" | "about";
 
@@ -276,6 +276,7 @@ export default function SettingsPage() {
       setConfig(cfg);
       setTaxMode(cfg.tax_mode);
       setTaxRate(String(cfg.tax_rate_cents / 100));
+      setCurrency(cfg.currency);
 
       const thresholds = await invoke<{ void_threshold_cents: number; shift_diff_threshold_cents: number }>("get_manager_thresholds_v3", { sessionToken: token });
       setVoidThreshold(String(thresholds.void_threshold_cents));
