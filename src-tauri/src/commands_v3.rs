@@ -3606,6 +3606,57 @@ fn enforce_discount_cap(
     }
 }
 
+/// §3.3 money-trust-boundary fix: the Rust command layer, not the frontend,
+/// is now the authority on what an order costs. Previously
+/// `create_full_order_v3`/`hold_order_v3` took `subtotal_cents`/`tax_cents`/
+/// `total_cents` as trusted caller-supplied arguments -- only checked for
+/// non-negativity and internal self-consistency
+/// (`validate_order_money_consistency`), never against a real price or a
+/// real tax computation. A modified client (or any direct Tauri command
+/// invocation bypassing the real POS UI) could set `unit_price_cents` to 1
+/// on every item and both the old subtotal-matches-items check AND the
+/// total-matches-formula check would still pass, because both were only
+/// checking arithmetic self-consistency against numbers the same hostile
+/// caller supplied.
+///
+/// This re-prices every item from `menu_items` (see
+/// `Repo::price_authoritative_items`'s own doc comment for why that table
+/// and not the separate, unpopulated `menu_item_default`/`menu_item_override`
+/// pair), sums the real subtotal, fetches the tenant's real tax config from
+/// `chain_config`, and runs it through `pricing::calculate_tax` -- the exact
+/// same rounding and "discount before tax" logic as
+/// `taxCalculator.ts::calculateTax`, just no longer optional to honor.
+/// Returns `(authoritative_items, subtotal_cents, combined_tax_cents,
+/// total_cents)`. Callers still pass `discount_cents` in (permission-gated
+/// and cap-checked separately by `enforce_discount_cap`, using THIS
+/// function's authoritative subtotal, not whatever stale subtotal the
+/// caller sent) and `delivery_fee_cents` (added on top, untaxed, matching
+/// `orderService.ts`'s own convention).
+fn price_order_authoritatively(
+    conn: &rusqlite::Connection,
+    tenant_id: &str,
+    items: &[crate::repo::OrderItemInput],
+    discount_cents: i64,
+    delivery_fee_cents: i64,
+) -> Result<(Vec<crate::repo::OrderItemInput>, i64, i64, i64), String> {
+    let repo = Repo::new(conn);
+    let priced_items = repo.price_authoritative_items(tenant_id, items).map_err(|e| e.to_string())?;
+    let subtotal_cents = Repo::sum_item_total_cents(&priced_items);
+
+    let chain_config = repo.get_chain_config(tenant_id).map_err(|e| e.to_string())?;
+    let tax_config = crate::pricing::TaxConfig {
+        mode: crate::pricing::TaxMode::from_str(&chain_config.tax_mode),
+        tax_rate_cents: chain_config.tax_rate_cents,
+        secondary_tax_rate_cents: chain_config.secondary_tax_rate_cents,
+        service_charge_rate_cents: chain_config.service_charge_rate_cents,
+    };
+    let breakdown = crate::pricing::calculate_tax(subtotal_cents, discount_cents, &tax_config);
+    let combined_tax_cents = breakdown.combined_tax_cents();
+    let total_cents = std::cmp::max(0, subtotal_cents + combined_tax_cents - discount_cents + delivery_fee_cents);
+
+    Ok((priced_items, subtotal_cents, combined_tax_cents, total_cents))
+}
+
 // ---------------------------------------------------------------------------
 // Slice A -- POS flow commands. These replace the frontend's `orderService.ts`
 // and `pos/page.tsx` getDb() calls with Rust-backed, auth-checked commands.
@@ -3715,9 +3766,15 @@ fn create_full_order_v3_impl(
     table_id: String,
     order_type: String,
     items: Vec<crate::repo::OrderItemInput>,
-    subtotal_cents: i64,
-    tax_cents: i64,
-    total_cents: i64,
+    // No longer trusted -- the command recomputes its own authoritative
+    // subtotal/tax/total via `price_order_authoritatively` below. Kept as
+    // parameters so the Tauri command signature (and every existing
+    // frontend call site) doesn't need to change; a caller-supplied value
+    // here is now read by nobody. See `price_order_authoritatively`'s doc
+    // comment for the attack this closes.
+    _subtotal_cents: i64,
+    _tax_cents: i64,
+    _total_cents: i64,
     discount_cents: i64,
     discount_reason: Option<String>,
     customer_name: Option<String>,
@@ -3737,7 +3794,7 @@ fn create_full_order_v3_impl(
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         resolve_operating_branch(&conn, &actor, license, None)?
     };
-    if subtotal_cents < 0 || tax_cents < 0 || total_cents < 0 || discount_cents < 0 {
+    if discount_cents < 0 || delivery_fee_cents < 0 {
         return Err("negative amounts are not valid".to_string());
     }
 
@@ -3758,6 +3815,8 @@ fn create_full_order_v3_impl(
             .ok_or_else(|| "لا توجد وردية مفتوحة -- يجب فتح وردية أولاً قبل البيع".to_string())?
             .id,
     );
+    let (items, subtotal_cents, tax_cents, total_cents) =
+        price_order_authoritatively(&conn, &tenant_id, &items, discount_cents, delivery_fee_cents)?;
     let override_used = enforce_discount_cap(&mut conn, &actor, &tenant_id, subtotal_cents, discount_cents, manager_override_pin.as_deref())?;
 
     let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
@@ -3914,9 +3973,12 @@ fn hold_order_v3_impl(
     table_id: String,
     order_type: String,
     items: Vec<crate::repo::OrderItemInput>,
-    subtotal_cents: i64,
-    tax_cents: i64,
-    total_cents: i64,
+    // No longer trusted -- see `price_order_authoritatively`. A held DRAFT
+    // should show the cashier real prices when retrieved, same as a live
+    // order; there's no reason a hold gets a weaker guarantee than a sale.
+    _subtotal_cents: i64,
+    _tax_cents: i64,
+    _total_cents: i64,
     shift_id: Option<String>,
 ) -> Result<String, String> {
     let actor = authenticate_actor(state, &session_token)?;
@@ -3927,6 +3989,8 @@ fn hold_order_v3_impl(
     };
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let (items, subtotal_cents, tax_cents, total_cents) =
+        price_order_authoritatively(&conn, &tenant_id, &items, 0, 0)?;
     let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let input = FullOrderInput {
@@ -4183,9 +4247,10 @@ fn schedule_delayed_order_v3_impl(
     table_id: String,
     order_type: String,
     items: Vec<crate::repo::OrderItemInput>,
-    subtotal_cents: i64,
-    tax_cents: i64,
-    total_cents: i64,
+    // No longer trusted -- see `price_order_authoritatively`.
+    _subtotal_cents: i64,
+    _tax_cents: i64,
+    _total_cents: i64,
     scheduled_at: String,
 ) -> Result<String, String> {
     let actor = authenticate_actor(state, &session_token)?;
@@ -4196,6 +4261,8 @@ fn schedule_delayed_order_v3_impl(
     };
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let (items, subtotal_cents, tax_cents, total_cents) =
+        price_order_authoritatively(&conn, &tenant_id, &items, 0, 0)?;
     let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let input = FullOrderInput {
@@ -5326,6 +5393,69 @@ mod tests {
             assert_eq!(item_count, 1);
             let outbox_count: i64 = conn.query_row("SELECT COUNT(*) FROM sync_outbox WHERE tenant_id = ?1", params![tenant_id], |r| r.get(0)).unwrap();
             assert_eq!(outbox_count, 2, "one orders row + one order_items row must have been enqueued for sync, through the real wrapper body");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// §3.3 money-trust-boundary fix regression test: a hostile caller
+        /// sends a real 1000-cent item (matching the real `menu_items`
+        /// price) at `unit_price_cents: 1` -- a fabricated 1000x-under
+        /// price -- plus a wildly wrong `subtotal_cents`/`tax_cents`/
+        /// `total_cents` claiming the whole order costs 1 cent. Before this
+        /// fix, `validate_order_money_consistency` would have PASSED this
+        /// (the fabricated unit price and the fabricated subtotal agree
+        /// with each other -- that's exactly the "genuine remaining gap"
+        /// its old doc comment named). Proves the order that actually lands
+        /// costs what the real menu says, not what the caller claimed.
+        #[test]
+        fn create_full_order_v3_ignores_a_caller_supplied_price_and_total_and_charges_the_real_menu_price() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_ignores_fabricated_price");
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                // Real menu price: 1000 cents. Tax is 0% by default (chain_config
+                // seeds tax_rate_cents at its default), so the honest total for
+                // qty 2 is 2000 -- deliberately not what the attack below claims.
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 1000, 500, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+
+            let fabricated_items = vec![OrderItemInput {
+                menu_item_id: item_id, name: None, quantity: 2,
+                // The attack: claim the real 1000-cent item costs 1 cent.
+                unit_price_cents: 1,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let order_id = create_full_order_v3_impl(
+                &db, &license, session, table_id, "DINE_IN".to_string(), fabricated_items,
+                // The attack continues: claim the whole order's subtotal/tax/
+                // total is 1 cent too, internally "consistent" with the
+                // fabricated unit price above -- exactly what the old
+                // self-consistency-only check would have accepted.
+                1, 0, 1, 0, None, None, None, None, 0, None, None, None,
+            ).expect("order creation must still succeed -- it's re-priced, not rejected");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let (stored_subtotal, stored_total): (i64, i64) = conn.query_row(
+                "SELECT subtotal_cents, total_cents FROM orders WHERE id = ?1", params![order_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ).unwrap();
+            assert_eq!(stored_subtotal, 2_000, "subtotal must be the REAL menu price (2 x 1000), not the caller's fabricated 1 cent");
+            assert_eq!(stored_total, 2_000, "total must follow the real subtotal, not the caller's fabricated 1 cent claim");
+
+            let stored_unit_price: i64 = conn.query_row(
+                "SELECT unit_price_cents FROM order_items WHERE order_id = ?1", params![order_id], |r| r.get(0),
+            ).unwrap();
+            assert_eq!(stored_unit_price, 1_000, "the stored line price must be the real menu price, not the caller's fabricated unit_price_cents: 1");
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 

@@ -92,6 +92,131 @@ pub fn check_discount_cap(subtotal_cents: i64, discount_cents: i64, cap_percent:
     Ok(())
 }
 
+/// Server-side port of `src/lib/taxCalculator.ts::calculateTax` -- see
+/// `_platform_plan_reconciliation.md` §3.3: previously the Rust command
+/// layer only checked `subtotal_cents`/`tax_cents` for non-negativity and
+/// trusted whatever the frontend sent, with tax computed exclusively in
+/// TypeScript. This is the authoritative recomputation that closes that
+/// trust boundary -- callers must reach the exact same numbers a caller
+/// following the rules would, and a hostile/modified client can no longer
+/// dictate its own tax or total. Semantics, rounding, and the "discount
+/// before tax" order of operations are ported line-for-line from the
+/// TypeScript so both layers agree on every order created before this
+/// existed (any that still round-trip through the old command params).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaxMode {
+    Inclusive,
+    Exclusive,
+}
+
+impl TaxMode {
+    /// `chain_config.tax_mode` is a free-text column ("inclusive"/
+    /// "exclusive"); anything else defaults to Exclusive, matching
+    /// `taxCalculator.ts::getDefaultTaxConfig`'s own fallback default.
+    pub fn from_str(s: &str) -> Self {
+        if s == "inclusive" { TaxMode::Inclusive } else { TaxMode::Exclusive }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TaxConfig {
+    pub mode: TaxMode,
+    pub tax_rate_cents: i64,
+    pub secondary_tax_rate_cents: i64,
+    pub service_charge_rate_cents: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaxBreakdown {
+    pub subtotal_cents: i64,
+    pub tax_cents: i64,
+    pub secondary_tax_cents: i64,
+    pub service_charge_cents: i64,
+    pub total_cents: i64,
+}
+
+impl TaxBreakdown {
+    /// The single combined figure the `orders` table actually has a column
+    /// for (`tax_cents`) -- `create_full_order_v3`'s frontend caller has
+    /// always folded these three into one number before sending it
+    /// (`orderService.ts::createOrder`: `taxCents + secondaryTaxCents +
+    /// serviceChargeCents`); this is that same fold, done server-side.
+    pub fn combined_tax_cents(&self) -> i64 {
+        self.tax_cents + self.secondary_tax_cents + self.service_charge_cents
+    }
+}
+
+/// Round-half-up for non-negative integers, matching JS `Math.round`'s
+/// behavior for the always-non-negative amounts this module deals in
+/// (`Math.round(n / d)` == `floor((2n + d) / (2d))`). Plain integer
+/// division truncates toward zero, which is wrong at the .5 boundary --
+/// this crate's rust-version (1.77.2, see `check_discount_cap`'s own
+/// comment) doesn't have `div_ceil` stabilized in a form usable here
+/// either, so this is a small hand-rolled equivalent, not a missing-API
+/// workaround copy-pasted from elsewhere.
+fn round_div(numerator: i64, denominator: i64) -> i64 {
+    debug_assert!(denominator > 0);
+    (2 * numerator + denominator) / (2 * denominator)
+}
+
+/// Line-for-line port of `taxCalculator.ts::calculateTax`. `item_total_cents`
+/// is the raw, pre-discount sum of `(unit_price_cents + modifiers) *
+/// quantity` across an order's items -- callers must NOT pre-subtract the
+/// discount themselves; this function applies it internally, exactly once,
+/// against the taxable base (discount changes what tax is owed on, taxing
+/// the pre-discount total would overcharge tax on money the customer never
+/// paid -- same comment as the TS test file).
+pub fn calculate_tax(item_total_cents: i64, discount_cents: i64, config: &TaxConfig) -> TaxBreakdown {
+    let effective_total = std::cmp::max(0, item_total_cents - discount_cents);
+
+    match config.mode {
+        TaxMode::Inclusive => {
+            let divisor = 10_000 + config.tax_rate_cents;
+            let tax_cents = if config.tax_rate_cents > 0 {
+                round_div(effective_total * config.tax_rate_cents, divisor)
+            } else {
+                0
+            };
+            let subtotal_cents = effective_total - tax_cents;
+
+            let secondary_tax_cents = if config.secondary_tax_rate_cents > 0 {
+                round_div(subtotal_cents * config.secondary_tax_rate_cents, 10_000)
+            } else {
+                0
+            };
+            let service_charge_cents = if config.service_charge_rate_cents > 0 {
+                round_div(subtotal_cents * config.service_charge_rate_cents, 10_000)
+            } else {
+                0
+            };
+
+            let total_cents = subtotal_cents + tax_cents + secondary_tax_cents + service_charge_cents;
+            TaxBreakdown { subtotal_cents, tax_cents, secondary_tax_cents, service_charge_cents, total_cents }
+        }
+        TaxMode::Exclusive => {
+            let subtotal_cents = effective_total;
+            let tax_cents = if config.tax_rate_cents > 0 {
+                round_div(effective_total * config.tax_rate_cents, 10_000)
+            } else {
+                0
+            };
+            let secondary_tax_cents = if config.secondary_tax_rate_cents > 0 {
+                round_div(effective_total * config.secondary_tax_rate_cents, 10_000)
+            } else {
+                0
+            };
+            let service_charge_cents = if config.service_charge_rate_cents > 0 {
+                round_div(effective_total * config.service_charge_rate_cents, 10_000)
+            } else {
+                0
+            };
+
+            let total_cents = subtotal_cents + tax_cents + secondary_tax_cents + service_charge_cents;
+            TaxBreakdown { subtotal_cents, tax_cents, secondary_tax_cents, service_charge_cents, total_cents }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +263,76 @@ mod tests {
     fn zero_subtotal_with_positive_discount_is_rejected() {
         let result = check_discount_cap(0, 500, 50);
         assert!(result.is_err());
+    }
+
+    // Ported 1:1 from taxCalculator.test.ts -- same fixtures, same expected
+    // numbers, proving the Rust engine agrees with the frontend's own
+    // reference implementation rather than just being internally consistent.
+    fn exclusive_1500() -> TaxConfig {
+        TaxConfig { mode: TaxMode::Exclusive, tax_rate_cents: 1500, secondary_tax_rate_cents: 0, service_charge_rate_cents: 0 }
+    }
+    fn inclusive_1500() -> TaxConfig {
+        TaxConfig { mode: TaxMode::Inclusive, tax_rate_cents: 1500, secondary_tax_rate_cents: 0, service_charge_rate_cents: 0 }
+    }
+
+    #[test]
+    fn exclusive_mode_adds_tax_on_top_of_the_item_total() {
+        let r = calculate_tax(10_000, 0, &exclusive_1500());
+        assert_eq!(r.subtotal_cents, 10_000);
+        assert_eq!(r.tax_cents, 1_500);
+        assert_eq!(r.total_cents, 11_500);
+    }
+
+    #[test]
+    fn inclusive_mode_backs_the_tax_out_of_the_item_total_instead_of_adding_it() {
+        let r = calculate_tax(11_500, 0, &inclusive_1500());
+        assert_eq!(r.subtotal_cents, 10_000);
+        assert_eq!(r.tax_cents, 1_500);
+        assert_eq!(r.total_cents, 11_500);
+    }
+
+    #[test]
+    fn applies_the_discount_before_computing_tax_not_after() {
+        let r = calculate_tax(10_000, 2_000, &exclusive_1500());
+        assert_eq!(r.subtotal_cents, 8_000);
+        assert_eq!(r.tax_cents, 1_200);
+        assert_eq!(r.total_cents, 9_200);
+    }
+
+    #[test]
+    fn clamps_a_discount_larger_than_the_item_total_to_zero_instead_of_going_negative() {
+        let r = calculate_tax(5_000, 9_000, &exclusive_1500());
+        assert_eq!(r.subtotal_cents, 0);
+        assert_eq!(r.tax_cents, 0);
+        assert_eq!(r.total_cents, 0);
+    }
+
+    #[test]
+    fn stacks_secondary_tax_and_service_charge_on_the_exclusive_subtotal() {
+        let config = TaxConfig { mode: TaxMode::Exclusive, tax_rate_cents: 1000, secondary_tax_rate_cents: 500, service_charge_rate_cents: 1000 };
+        let r = calculate_tax(10_000, 0, &config);
+        assert_eq!(r.tax_cents, 1_000);
+        assert_eq!(r.secondary_tax_cents, 500);
+        assert_eq!(r.service_charge_cents, 1_000);
+        assert_eq!(r.total_cents, 12_500);
+        assert_eq!(r.combined_tax_cents(), 2_500);
+    }
+
+    #[test]
+    fn charges_zero_tax_when_the_rate_is_zero() {
+        let config = TaxConfig { mode: TaxMode::Exclusive, tax_rate_cents: 0, secondary_tax_rate_cents: 0, service_charge_rate_cents: 0 };
+        let r = calculate_tax(10_000, 0, &config);
+        assert_eq!(r.tax_cents, 0);
+        assert_eq!(r.total_cents, 10_000);
+    }
+
+    #[test]
+    fn round_div_matches_js_math_round_at_the_half_cent_boundary() {
+        // 15% of 10 = 1.5 -- Math.round(1.5) === 2, not banker's-rounds-to-2-anyway;
+        // pick a case where round-to-even and round-half-up actually disagree:
+        // 5% of 50 = 2.5 -> Math.round(2.5) === 3.
+        let config = TaxConfig { mode: TaxMode::Exclusive, tax_rate_cents: 500, secondary_tax_rate_cents: 0, service_charge_rate_cents: 0 };
+        let r = calculate_tax(50, 0, &config);
+        assert_eq!(r.tax_cents, 3);
     }
 }

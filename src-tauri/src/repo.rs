@@ -2343,6 +2343,68 @@ impl<'a> Repo<'a> {
         ).map_err(RepoError::from)
     }
 
+    /// Closes the "genuine remaining gap" `validate_order_money_consistency`
+    /// used to document below: a caller could submit real items with a
+    /// fabricated LOW `unit_price_cents` and pass the old internal-
+    /// consistency-only check, because nothing compared it against a real
+    /// price authority. `menu_items.price_cents` (the table
+    /// `create_menu_item_v3` actually populates -- NOT the separate,
+    /// unpopulated `menu_item_default`/`menu_item_override` T1.6 tables
+    /// `resolve_menu_price` reads) is that authority. Returns a corrected
+    /// copy of `items` with every `unit_price_cents` overwritten by the
+    /// tenant's own current menu price -- the caller's value is read only
+    /// to know which item was ordered, never trusted for what it costs.
+    ///
+    /// Does NOT validate `modifiers` (ad hoc, staff-keyed at ring-up time --
+    /// there is no modifier price catalog anywhere in this schema to check
+    /// against) or happy-hour discounts (applied client-side only, no
+    /// backend equivalent yet -- same still-open gap the old comment named,
+    /// left open here too rather than silently claiming to close it).
+    pub fn price_authoritative_items(&self, tenant_id: &str, items: &[OrderItemInput]) -> Result<Vec<OrderItemInput>, RepoError> {
+        items.iter().map(|item| {
+            let (price_cents, is_active): (i64, i64) = self.conn.query_row(
+                "SELECT price_cents, is_active FROM menu_items WHERE id = ?1 AND tenant_id = ?2",
+                params![item.menu_item_id, tenant_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ).optional()?.ok_or_else(|| RepoError::ItemUnavailable {
+                item_id: item.menu_item_id.clone(),
+                branch_id: String::new(),
+                reason: "menu item does not exist for this tenant".to_string(),
+            })?;
+            if is_active == 0 {
+                return Err(RepoError::ItemUnavailable {
+                    item_id: item.menu_item_id.clone(),
+                    branch_id: String::new(),
+                    reason: "menu item is not active".to_string(),
+                });
+            }
+            Ok(OrderItemInput {
+                menu_item_id: item.menu_item_id.clone(),
+                name: item.name.clone(),
+                quantity: item.quantity,
+                unit_price_cents: price_cents,
+                notes: item.notes.clone(),
+                combo_id: item.combo_id.clone(),
+                modifiers: item.modifiers.clone(),
+            })
+        }).collect()
+    }
+
+    /// Given already-authoritatively-priced `items` (see
+    /// `price_authoritative_items`), the raw pre-discount item total:
+    /// `sum((unit_price_cents + modifiers) * quantity)`. This is what the
+    /// `orders.subtotal_cents` column has always stored (see
+    /// `orderService.ts::createOrder`'s own `subtotalCents: state.subtotal()`
+    /// -- the RAW cart subtotal, not the post-discount figure
+    /// `taxCalculator.ts::calculateTax` separately returns under the same
+    /// field name).
+    pub fn sum_item_total_cents(items: &[OrderItemInput]) -> i64 {
+        items.iter().map(|item| {
+            let modifiers_total: i64 = item.modifiers.iter().map(|m| m.price_cents).sum();
+            (item.unit_price_cents + modifiers_total) * item.quantity
+        }).sum()
+    }
+
     pub fn update_chain_currency(&self, tenant_id: &str, currency: &str) -> Result<(), RepoError> {
         self.ensure_chain_config_row(tenant_id)?;
         self.conn.execute("UPDATE chain_config SET currency = ?1, last_modified = datetime('now') WHERE tenant_id = ?2", params![currency, tenant_id])?;
@@ -4291,19 +4353,25 @@ impl<'a> Repo<'a> {
     /// exact formula `orderService.ts` already uses client-side (`delivery
     /// FeeCents` is hardcoded to 0 there today and not added to total).
     ///
-    /// NOT closed by this check, and a genuine remaining gap: an attacker
-    /// who submits real items with a fabricated LOW `unit_price_cents` per
-    /// item (rather than a mismatched subtotal) still passes this check,
-    /// because there is currently no server-side ground truth to verify a
-    /// line price against -- `resolve_menu_price`/`menu_item_default` (T1.6)
-    /// is the only price-authority mechanism that exists, but it reads a
-    /// table `create_menu_item_v3` never populates (real menu items live in
-    /// the legacy `menu_items` table -- the same table duality already on
-    /// the punch list), and happy-hour discounts are applied entirely
-    /// client-side with no backend equivalent to check against. Closing
-    /// that requires building server-side happy-hour-aware price
-    /// resolution against the table that's actually populated -- flagged
-    /// as the next work item, not silently left unmentioned.
+    /// UPDATE (§3.3 money-trust-boundary fix): the "genuine remaining gap"
+    /// this comment used to describe -- a fabricated LOW `unit_price_cents`
+    /// per item passing this check because nothing compared it to a real
+    /// price authority -- is now closed one layer up, in
+    /// `commands_v3::create_full_order_v3_impl`/`hold_order_v3_impl`, which
+    /// call `Repo::price_authoritative_items` (real ground truth:
+    /// `menu_items.price_cents`, the table `create_menu_item_v3` actually
+    /// populates) and `pricing::calculate_tax` (server-side port of
+    /// `taxCalculator.ts`) BEFORE this function ever runs, then pass in
+    /// their own authoritative `subtotal_cents`/`tax_cents`/`total_cents`.
+    /// This function now runs as a defense-in-depth internal-consistency
+    /// check against numbers the command layer itself just computed, not
+    /// the primary defense against a hostile caller -- kept because a
+    /// direct `Repo::create_full_order`/`hold_order` caller (tests, or any
+    /// future caller that forgets the pricing step) still gets a hard
+    /// failure instead of a silently-wrong order. Still NOT closed: ad hoc
+    /// `modifiers` (no price catalog exists to check them against) and
+    /// happy-hour discounts (client-side only, no backend equivalent) --
+    /// same still-open gaps, not silently claimed fixed here.
     fn validate_order_money_consistency(input: &FullOrderInput) -> Result<(), RepoError> {
         let items_subtotal: i64 = input.items.iter().map(|item| {
             let modifiers_total: i64 = item.modifiers.iter().map(|m| m.price_cents).sum();
@@ -4314,7 +4382,11 @@ impl<'a> Repo<'a> {
                 order_id: "(order being created)".to_string(), expected_cents: items_subtotal, got_cents: input.subtotal_cents,
             });
         }
-        let expected_total = std::cmp::max(0, input.subtotal_cents + input.tax_cents - input.discount_cents);
+        // Includes `delivery_fee_cents` now -- the command layer's
+        // authoritative total legitimately adds it (a DELIVERY order really
+        // does charge the fee), and this check must agree or every priced
+        // delivery order would fail its own consistency check.
+        let expected_total = std::cmp::max(0, input.subtotal_cents + input.tax_cents - input.discount_cents + input.delivery_fee_cents);
         if expected_total != input.total_cents {
             return Err(RepoError::PaymentAmountMismatch {
                 order_id: "(order being created)".to_string(), expected_cents: expected_total, got_cents: input.total_cents,
