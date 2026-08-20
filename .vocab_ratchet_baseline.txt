@@ -1,16 +1,16 @@
-# vocab_ratchet baseline -- generated 2026-08-20T19:47:42Z
-menu: 122
-table: 568
+# vocab_ratchet baseline -- generated 2026-08-20T20:11:42Z
+menu: 126
+table: 572
 kitchen: 116
 course: 0
 modifier: 9
 chef: 0
 dine_in: 119
 kds: 46
-recipe: 35
-ingredient: 67
-combo: 66
+recipe: 52
+ingredient: 71
+combo: 71
 happy_hour: 0
 waiter: 0
 
-TOTAL: 1148
+TOTAL: 1182
