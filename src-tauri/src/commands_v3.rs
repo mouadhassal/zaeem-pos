@@ -1495,6 +1495,61 @@ pub fn adjust_stock_v3(state: State<Db>, license: State<crate::license::cloud::C
 }
 
 // ---------------------------------------------------------------------------
+// 2026-08-20 -- recipe (BOM) management. Same `Permission::ManageMenu` gate
+// as menu item create/update -- attaching what an item consumes is part of
+// managing the menu, not a separate inventory-only permission.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_recipe_ingredients_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, menu_item_id: String) -> Result<Vec<crate::repo::RecipeIngredientRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_recipe_ingredients(&actor.scope(), &menu_item_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn add_recipe_ingredient_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, menu_item_id: String, ingredient_id: String, quantity_needed: f64) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    if quantity_needed <= 0.0 {
+        return Err("الكمية المطلوبة يجب أن تكون أكبر من صفر".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let recipe_id = Repo::new(&tx).add_recipe_ingredient(&actor.scope(), &menu_item_id, &ingredient_id, quantity_needed).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &menu_item_id, None, Some(&serde_json::json!({ "recipe_ingredient_added": ingredient_id, "quantity_needed": quantity_needed }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(recipe_id)
+}
+
+#[tauri::command]
+pub fn update_recipe_ingredient_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, recipe_id: String, quantity_needed: f64) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    if quantity_needed <= 0.0 {
+        return Err("الكمية المطلوبة يجب أن تكون أكبر من صفر".to_string());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).update_recipe_ingredient(&actor.scope(), &recipe_id, quantity_needed).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_recipe_ingredient_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, recipe_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let menu_item_id = Repo::new(&tx).delete_recipe_ingredient(&actor.scope(), &recipe_id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &menu_item_id, None, Some(&serde_json::json!({ "recipe_ingredient_removed": recipe_id }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Batch 3b, slice 2, group 3 -- shifts.
 // ---------------------------------------------------------------------------
 
@@ -5563,6 +5618,167 @@ mod tests {
             let conn = Connection::open(&db_path).unwrap();
             let repo = Repo::new(&conn);
             assert_eq!(repo.replay_order_status(&order_id).unwrap(), "PENDING", "the order's real status must be unchanged by either rejected attempt");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// 2026-08-20 recipe management: closes the gap where `recipes` had
+        /// no create/edit path at all. A plain 'simple' item gaining its
+        /// first recipe link must be promoted to 'prepared' -- the same
+        /// classification the v23 migration's backfill would have given it
+        /// had the recipe existed at migration time, just applied live now.
+        #[test]
+        fn add_recipe_ingredient_promotes_a_simple_item_to_prepared() {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("recipe_promotes_prepared");
+            let conn = Connection::open(&db_path).unwrap();
+            let repo = Repo::new(&conn);
+            let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+            let item_id = repo.create_menu_item(&tenant_id, "Burger", &category_id, 1000, 500, None, None).unwrap();
+            let ingredient_id = repo.create_ingredient(&tenant_id, &branch_id, "Beef Patty", "unit", 200, 0.0).unwrap();
+
+            let kind_before: String = conn.query_row("SELECT item_kind FROM menu_items WHERE id = ?1", params![item_id], |r| r.get(0)).unwrap();
+            assert_eq!(kind_before, "simple");
+
+            let scope = Scope::Tenant { tenant_id: tenant_id.clone() };
+            let recipe_id = repo.add_recipe_ingredient(&scope, &item_id, &ingredient_id, 2.0).unwrap();
+
+            let kind_after: String = conn.query_row("SELECT item_kind FROM menu_items WHERE id = ?1", params![item_id], |r| r.get(0)).unwrap();
+            assert_eq!(kind_after, "prepared", "gaining its first recipe row must promote a simple item to prepared");
+
+            let listed = repo.list_recipe_ingredients(&scope, &item_id).unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].id, recipe_id);
+            assert_eq!(listed[0].ingredient_name, "Beef Patty");
+            assert_eq!(listed[0].quantity_needed, 2.0);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Composite (from `is_combo`) must keep priority over prepared,
+        /// matching the v23 migration's exact backfill priority -- a combo
+        /// item that also gets a recipe row stays 'composite', doesn't get
+        /// silently downgraded to 'prepared'.
+        #[test]
+        fn add_recipe_ingredient_does_not_downgrade_a_composite_item() {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("recipe_keeps_composite");
+            let conn = Connection::open(&db_path).unwrap();
+            let repo = Repo::new(&conn);
+            let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+            let item_id = repo.create_menu_item(&tenant_id, "Combo Meal", &category_id, 3000, 1500, None, None).unwrap();
+            conn.execute("UPDATE menu_items SET is_combo = 1, item_kind = 'composite' WHERE id = ?1", params![item_id]).unwrap();
+            let ingredient_id = repo.create_ingredient(&tenant_id, &branch_id, "Bun", "unit", 50, 0.0).unwrap();
+
+            let scope = Scope::Tenant { tenant_id: tenant_id.clone() };
+            repo.add_recipe_ingredient(&scope, &item_id, &ingredient_id, 1.0).unwrap();
+
+            let kind_after: String = conn.query_row("SELECT item_kind FROM menu_items WHERE id = ?1", params![item_id], |r| r.get(0)).unwrap();
+            assert_eq!(kind_after, "composite", "a combo item gaining a recipe row must stay composite, not downgrade to prepared");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Symmetric with the promotion test: deleting an item's LAST
+        /// recipe row must revert it to 'simple' (it's a non-combo item, so
+        /// nothing else keeps it out of that default).
+        #[test]
+        fn delete_recipe_ingredient_reverts_to_simple_when_it_was_the_last_link() {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("recipe_reverts_simple");
+            let conn = Connection::open(&db_path).unwrap();
+            let repo = Repo::new(&conn);
+            let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+            let item_id = repo.create_menu_item(&tenant_id, "Fries", &category_id, 500, 200, None, None).unwrap();
+            let ingredient_id = repo.create_ingredient(&tenant_id, &branch_id, "Potato", "kg", 100, 0.0).unwrap();
+
+            let scope = Scope::Tenant { tenant_id: tenant_id.clone() };
+            let recipe_id = repo.add_recipe_ingredient(&scope, &item_id, &ingredient_id, 0.3).unwrap();
+            assert_eq!(conn.query_row::<String, _, _>("SELECT item_kind FROM menu_items WHERE id = ?1", params![item_id], |r| r.get(0)).unwrap(), "prepared");
+
+            let deleted_from_item = repo.delete_recipe_ingredient(&scope, &recipe_id).unwrap();
+            assert_eq!(deleted_from_item, item_id);
+
+            let kind_after: String = conn.query_row("SELECT item_kind FROM menu_items WHERE id = ?1", params![item_id], |r| r.get(0)).unwrap();
+            assert_eq!(kind_after, "simple", "removing the last recipe row must revert a non-combo item to simple");
+            assert_eq!(repo.list_recipe_ingredients(&scope, &item_id).unwrap().len(), 0);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Basic CRUD round-trip: quantity update does not touch item_kind
+        /// (presence, not amount, is what item_kind derives from).
+        #[test]
+        fn update_recipe_ingredient_changes_quantity_without_touching_item_kind() {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("recipe_update_quantity");
+            let conn = Connection::open(&db_path).unwrap();
+            let repo = Repo::new(&conn);
+            let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+            let item_id = repo.create_menu_item(&tenant_id, "Soup", &category_id, 800, 300, None, None).unwrap();
+            let ingredient_id = repo.create_ingredient(&tenant_id, &branch_id, "Broth", "l", 150, 0.0).unwrap();
+            let scope = Scope::Tenant { tenant_id: tenant_id.clone() };
+            let recipe_id = repo.add_recipe_ingredient(&scope, &item_id, &ingredient_id, 1.0).unwrap();
+
+            repo.update_recipe_ingredient(&scope, &recipe_id, 1.5).unwrap();
+
+            let listed = repo.list_recipe_ingredients(&scope, &item_id).unwrap();
+            assert_eq!(listed[0].quantity_needed, 1.5);
+            assert_eq!(conn.query_row::<String, _, _>("SELECT item_kind FROM menu_items WHERE id = ?1", params![item_id], |r| r.get(0)).unwrap(), "prepared");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Scoping: `recipes` has no tenant_id column of its own -- the
+        /// guard is indirect, through `menu_item_id`. Proves a Tenant Two
+        /// session cannot add/list/update/delete a recipe link belonging to
+        /// Tenant One's menu item, even by id, in a DB shared by both
+        /// (the real one-tenant-per-install architecture never puts two
+        /// tenants in the same file, but the RLS-equivalent guard must hold
+        /// regardless, same discipline as every other scope test here).
+        #[test]
+        fn recipe_crud_is_scoped_to_the_owning_tenant() {
+            let temp = std::env::temp_dir().join(format!("commands_v3_test_recipe_scope_{}", std::process::id()));
+            let _ = fs::remove_dir_all(&temp);
+            fs::create_dir_all(&temp).unwrap();
+            let db_path = temp.join("test.db");
+            let mut conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+            migrate::run_migrations(&mut conn, &db_path).unwrap();
+            migrate_v3::run_expand_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_remap_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_identity_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_drift_fix_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_index_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_discount_cap_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_sync_outbox_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_supplier_ledger_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_loyalty_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_staff_sync_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_lan_pairing_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_printer_system_name_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_manager_threshold_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_business_mode_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_roster_entry_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_refund_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_manager_threshold_syp_rescale_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_ingredient_sync_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_item_kind_migration(&mut conn, &db_path).unwrap();
+
+            let fx = seed_two_tenant_two_branch("recipe_scope", &conn);
+            let repo = Repo::new(&conn);
+            let category1 = repo.create_category(&fx.tenant1, "T1 Category", None, 0, None).unwrap();
+            let item1 = repo.create_menu_item(&fx.tenant1, "T1 Item", &category1, 1000, 500, None, None).unwrap();
+            let ingredient1 = repo.create_ingredient(&fx.tenant1, &fx.branch1a, "T1 Ingredient", "unit", 100, 0.0).unwrap();
+
+            let scope1 = Scope::Tenant { tenant_id: fx.tenant1.clone() };
+            let scope2 = Scope::Tenant { tenant_id: fx.tenant2.clone() };
+
+            let recipe_id = repo.add_recipe_ingredient(&scope1, &item1, &ingredient1, 1.0).unwrap();
+
+            // Tenant Two must not be able to add a recipe row against
+            // Tenant One's menu item or ingredient, by id.
+            assert!(repo.add_recipe_ingredient(&scope2, &item1, &ingredient1, 1.0).is_err(), "Tenant Two must not be able to link recipes onto Tenant One's menu item");
+            // Tenant Two must not be able to list, update, or delete
+            // Tenant One's recipe row.
+            assert!(repo.list_recipe_ingredients(&scope2, &item1).is_err(), "Tenant Two must not be able to list Tenant One's menu item's recipe");
+            assert!(repo.update_recipe_ingredient(&scope2, &recipe_id, 5.0).is_err(), "Tenant Two must not be able to update Tenant One's recipe row by id");
+            assert!(repo.delete_recipe_ingredient(&scope2, &recipe_id).is_err(), "Tenant Two must not be able to delete Tenant One's recipe row by id");
+
+            // Tenant One's own access still works, unaffected by the
+            // rejected cross-tenant attempts above.
+            assert_eq!(repo.list_recipe_ingredients(&scope1, &item1).unwrap().len(), 1);
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
@@ -10925,6 +11141,7 @@ mod tests {
             "get_tenant_today_stats_v3", "get_branch_today_stats_v3", "get_staff_counts_by_branch_v3", "get_terminal_counts_by_branch_v3",
             "list_ingredients_v3", "create_ingredient_v3", "update_ingredient_v3", "adjust_stock_v3",
             "list_inventory_logs_v3", "list_low_stock_ingredients_v3",
+            "list_recipe_ingredients_v3", "add_recipe_ingredient_v3", "update_recipe_ingredient_v3", "delete_recipe_ingredient_v3",
             "create_debtor_v3", "update_debtor_v3", "deactivate_debtor_v3",
             "list_debt_entries_v3", "record_debt_payment_v3",
             "get_finance_revenue_v3", "get_dashboard_summary_v3", "get_tax_collected_v3", "list_operational_costs_v3",

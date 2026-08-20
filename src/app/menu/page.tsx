@@ -7,6 +7,7 @@ import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { z } from "zod";
 import { realErrorText } from "../../lib/errors";
 import { IconPencil, IconTrash, IconX } from "@tabler/icons-react";
+import Typeahead from "../../components/ui/Typeahead";
 
 interface Category {
   id: string;
@@ -34,6 +35,24 @@ interface ComboMeal {
   name: string;
   bundle_price_cents: number;
   items: { menu_item_id: string; name: string; quantity: number; price_cents: number }[];
+}
+
+/** Only the fields the recipe picker needs -- inventory/page.tsx's own
+ *  `Ingredient` interface carries stock/cost fields this modal never uses. */
+interface IngredientOption {
+  id: string;
+  name: string;
+  unit: string;
+}
+
+/** Mirrors `RecipeIngredientRow` (repo.rs) -- `id` is the `recipes.id`
+ *  (needed to delete/update this specific link, not the ingredient's own id). */
+interface RecipeIngredient {
+  id: string;
+  ingredient_id: string;
+  ingredient_name: string;
+  unit: string;
+  quantity_needed: number;
 }
 
 interface HappyHourRule {
@@ -204,6 +223,18 @@ export default function MenuPage() {
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
 
+  // Recipe (ingredients used) -- same "save the item first" gate as photo
+  // upload above: a recipe row links to a real menu_item_id, so it can't
+  // exist before the item does.
+  const [allIngredients, setAllIngredients] = useState<IngredientOption[]>([]);
+  const [recipeIngredients, setRecipeIngredients] = useState<RecipeIngredient[]>([]);
+  const [recipeIngredientQuery, setRecipeIngredientQuery] = useState("");
+  const [selectedIngredient, setSelectedIngredient] = useState<IngredientOption | null>(null);
+  const [recipeQuantity, setRecipeQuantity] = useState("");
+  const [savingRecipeRow, setSavingRecipeRow] = useState(false);
+  const [removingRecipeRowId, setRemovingRecipeRowId] = useState<string | null>(null);
+  const [recipeError, setRecipeError] = useState<string | null>(null);
+
   // Categories tab
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [editCategoryId, setEditCategoryId] = useState<string | null>(null);
@@ -299,12 +330,34 @@ export default function MenuPage() {
   }, [fetchAll]);
 
   // ---- Menu Items ----
+  const fetchAllIngredientsOnce = () => {
+    invoke<IngredientOption[]>("list_ingredients_v3", { sessionToken: token })
+      .then(setAllIngredients)
+      .catch(() => setAllIngredients([]));
+  };
+
+  const fetchRecipeIngredients = (itemId: string) => {
+    invoke<RecipeIngredient[]>("list_recipe_ingredients_v3", { sessionToken: token, menuItemId: itemId })
+      .then(setRecipeIngredients)
+      .catch(() => setRecipeIngredients([]));
+  };
+
+  const resetRecipeForm = () => {
+    setRecipeIngredients([]);
+    setRecipeIngredientQuery("");
+    setSelectedIngredient(null);
+    setRecipeQuantity("");
+    setRecipeError(null);
+  };
+
   const openAddItem = () => {
     setEditItemId(null);
     setItemForm(emptyMenuItemForm);
     setItemErrors({});
     setItemPhoto(null);
     setPhotoError(null);
+    resetRecipeForm();
+    fetchAllIngredientsOnce();
     setShowItemModal(true);
   };
 
@@ -333,7 +386,51 @@ export default function MenuPage() {
     } else {
       setItemPhoto(null);
     }
+    resetRecipeForm();
+    fetchAllIngredientsOnce();
+    fetchRecipeIngredients(item.id);
     setShowItemModal(true);
+  };
+
+  const addRecipeRow = async () => {
+    if (!editItemId || !selectedIngredient) return;
+    const qty = parseFloat(recipeQuantity);
+    if (!qty || qty <= 0) {
+      setRecipeError("الكمية يجب أن تكون أكبر من صفر");
+      return;
+    }
+    setRecipeError(null);
+    setSavingRecipeRow(true);
+    try {
+      await invoke("add_recipe_ingredient_v3", {
+        sessionToken: token,
+        menuItemId: editItemId,
+        ingredientId: selectedIngredient.id,
+        quantityNeeded: qty,
+      });
+      setSelectedIngredient(null);
+      setRecipeIngredientQuery("");
+      setRecipeQuantity("");
+      fetchRecipeIngredients(editItemId);
+    } catch (e) {
+      setRecipeError(realErrorText(e));
+    } finally {
+      setSavingRecipeRow(false);
+    }
+  };
+
+  const removeRecipeRow = async (recipeId: string) => {
+    if (!editItemId) return;
+    setRemovingRecipeRowId(recipeId);
+    setRecipeError(null);
+    try {
+      await invoke("delete_recipe_ingredient_v3", { sessionToken: token, recipeId });
+      fetchRecipeIngredients(editItemId);
+    } catch (e) {
+      setRecipeError(realErrorText(e));
+    } finally {
+      setRemovingRecipeRowId(null);
+    }
   };
 
   const MAX_PHOTO_BYTES = 3 * 1024 * 1024;
@@ -1298,6 +1395,96 @@ export default function MenuPage() {
                   rows={3}
                   className="w-full px-4 py-2 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600 resize-none"
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">
+                  المكونات المستهلكة (اختياري)
+                </label>
+                {editItemId ? (
+                  <div className="space-y-2">
+                    {recipeIngredients.length > 0 && (
+                      <ul className="space-y-1.5">
+                        {recipeIngredients.map((r) => (
+                          <li
+                            key={r.id}
+                            className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-sm bg-ink-50 border border-ink-200"
+                          >
+                            <span className="text-sm font-arabic text-ink-900">
+                              {r.ingredient_name}
+                              <span className="text-ink-400 font-mono text-xs mx-1.5" dir="ltr">
+                                {r.quantity_needed} {r.unit}
+                              </span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => removeRecipeRow(r.id)}
+                              disabled={removingRecipeRowId === r.id}
+                              className="text-red-500 hover:text-red-600 disabled:opacity-50"
+                              aria-label="إزالة المكوّن"
+                            >
+                              <IconX size={16} />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+
+                    <div className="flex gap-2 items-start">
+                      <div className="flex-1">
+                        <Typeahead
+                          value={selectedIngredient ? selectedIngredient.name : recipeIngredientQuery}
+                          onChange={(v) => {
+                            setRecipeIngredientQuery(v);
+                            setSelectedIngredient(null);
+                          }}
+                          items={allIngredients.filter(
+                            (ing) => !recipeIngredients.some((r) => r.ingredient_id === ing.id)
+                          )}
+                          filterItem={(item, q) => item.name.includes(q)}
+                          getKey={(item) => item.id}
+                          onSelect={(item) => {
+                            setSelectedIngredient(item);
+                            setRecipeIngredientQuery(item.name);
+                          }}
+                          renderItem={(item) => (
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-ink-900">{item.name}</span>
+                              <span className="text-ink-400 text-xs">{item.unit}</span>
+                            </div>
+                          )}
+                          placeholder="ابحث عن مكوّن..."
+                          emptyMessage="لا توجد مكوّنات مطابقة"
+                        />
+                      </div>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={recipeQuantity}
+                        onChange={(e) => setRecipeQuantity(e.target.value)}
+                        placeholder="الكمية"
+                        className="w-24 h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
+                      />
+                      <button
+                        type="button"
+                        onClick={addRecipeRow}
+                        disabled={!selectedIngredient || savingRecipeRow}
+                        className="h-10 px-4 rounded-sm bg-ink-100 text-ink-900 text-sm font-arabic hover:bg-ink-200 transition-colors disabled:opacity-50 shrink-0"
+                      >
+                        {savingRecipeRow ? "..." : "إضافة"}
+                      </button>
+                    </div>
+                    {recipeError && <p className="text-xs text-red-500 font-arabic">{recipeError}</p>}
+                    <p className="text-[11px] text-ink-400 font-arabic">
+                      كل مكوّن مرتبط ينقص تلقائياً من المخزون عند بيع الصنف.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-ink-400 font-arabic">
+                    احفظ الصنف أولاً، بعدها تقدر تربطه بمكوّنات من المخزون
+                  </p>
+                )}
               </div>
 
               {itemErrors._form && (

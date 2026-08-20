@@ -435,6 +435,18 @@ pub struct IngredientRow {
     pub is_active: i64,
 }
 
+/// One row of a menu item's BOM/recipe -- `id` is the `recipes.id` (needed
+/// for update/delete), `ingredient_name`/`unit` are joined in for display
+/// so the frontend doesn't need a second round trip against `ingredients`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RecipeIngredientRow {
+    pub id: String,
+    pub ingredient_id: String,
+    pub ingredient_name: String,
+    pub unit: String,
+    pub quantity_needed: f64,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CategoryRow {
     pub id: String,
@@ -3883,6 +3895,109 @@ impl<'a> Repo<'a> {
             params![log_id, tenant_id, branch_id, ingredient_id, change_amount, reason, actor_id, now],
         )?;
         Ok(log_id)
+    }
+
+    // -----------------------------------------------------------------
+    // 2026-08-20 -- recipe (BOM) management. `recipes` had zero create/edit
+    // path anywhere in this app (every `INSERT INTO recipes` in the whole
+    // crate was test-fixture-only) -- the v23 item_kind migration's
+    // 'prepared' classification and `deplete_recipe_stock`'s payment-time
+    // depletion both already read this table, but nothing could ever write
+    // it except hand-written SQL. This is that write path, for the first
+    // time.
+    //
+    // `recipes` itself has NO tenant_id/branch_id column (see
+    // `deplete_recipe_stock`'s own query) -- scoping is indirect, via
+    // `assert_row_in_scope` against `menu_items`/`ingredients` (both of
+    // which DO carry tenant_id), same pattern `void_order_item` already
+    // uses for `order_items` (scoped through its parent `orders` row).
+    // -----------------------------------------------------------------
+
+    pub fn list_recipe_ingredients(&self, scope: &Scope, menu_item_id: &str) -> Result<Vec<RecipeIngredientRow>, RepoError> {
+        self.assert_row_in_scope("menu_items", menu_item_id, scope)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT r.id, r.ingredient_id, i.name, i.unit, r.quantity_needed \
+             FROM recipes r JOIN ingredients i ON i.id = r.ingredient_id \
+             WHERE r.menu_item_id = ?1 ORDER BY i.name ASC",
+        )?;
+        let rows = stmt.query_map(params![menu_item_id], |r| {
+            Ok(RecipeIngredientRow {
+                id: r.get(0)?, ingredient_id: r.get(1)?, ingredient_name: r.get(2)?, unit: r.get(3)?, quantity_needed: r.get(4)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// Links `ingredient_id` to `menu_item_id` with the quantity needed per
+    /// sale. Recomputes `item_kind` afterward: 'composite' (from
+    /// `is_combo`) still wins over 'prepared', matching the v23 migration's
+    /// exact priority -- a combo item that also gets a recipe stays
+    /// composite, doesn't get downgraded.
+    pub fn add_recipe_ingredient(&self, scope: &Scope, menu_item_id: &str, ingredient_id: &str, quantity_needed: f64) -> Result<String, RepoError> {
+        self.assert_row_in_scope("menu_items", menu_item_id, scope)?;
+        self.assert_row_in_scope("ingredients", ingredient_id, scope)?;
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO recipes (id, menu_item_id, ingredient_id, quantity_needed, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, datetime('now'), 'pending')",
+            params![id, menu_item_id, ingredient_id, quantity_needed],
+        )?;
+        self.recompute_item_kind(menu_item_id)?;
+        Ok(id)
+    }
+
+    /// `recipe_id` has no tenant column of its own -- resolve its parent
+    /// `menu_item_id` first, then scope-check THAT (same indirect pattern
+    /// as `list_recipe_ingredients`), so a caller can't touch another
+    /// tenant's recipe row by guessing/enumerating ids.
+    fn recipe_menu_item_id_in_scope(&self, scope: &Scope, recipe_id: &str) -> Result<String, RepoError> {
+        let menu_item_id: String = self.conn.query_row(
+            "SELECT menu_item_id FROM recipes WHERE id = ?1", params![recipe_id], |r| r.get(0),
+        ).optional()?.ok_or_else(|| RepoError::TenantOwnershipViolation { table: "recipes".to_string(), id: recipe_id.to_string() })?;
+        self.assert_row_in_scope("menu_items", &menu_item_id, scope)?;
+        Ok(menu_item_id)
+    }
+
+    pub fn update_recipe_ingredient(&self, scope: &Scope, recipe_id: &str, quantity_needed: f64) -> Result<(), RepoError> {
+        self.recipe_menu_item_id_in_scope(scope, recipe_id)?;
+        self.conn.execute(
+            "UPDATE recipes SET quantity_needed = ?1, last_modified = datetime('now') WHERE id = ?2",
+            params![quantity_needed, recipe_id],
+        )?;
+        // Presence unchanged (still linked, just a different quantity) --
+        // no item_kind recompute needed here, only on add/delete.
+        Ok(())
+    }
+
+    /// Deletes the link and recomputes `item_kind`: if this was the item's
+    /// last recipe row and it's not a combo, it reverts to 'simple' --
+    /// symmetric with `add_recipe_ingredient`'s upgrade, same priority
+    /// rule.
+    pub fn delete_recipe_ingredient(&self, scope: &Scope, recipe_id: &str) -> Result<String, RepoError> {
+        let menu_item_id = self.recipe_menu_item_id_in_scope(scope, recipe_id)?;
+        self.conn.execute("DELETE FROM recipes WHERE id = ?1", params![recipe_id])?;
+        self.recompute_item_kind(&menu_item_id)?;
+        Ok(menu_item_id)
+    }
+
+    /// Single source of truth for "what item_kind should this row have,
+    /// right now" -- same priority the v23 migration's backfill established
+    /// (composite from `is_combo`, else prepared from a `recipes` row, else
+    /// simple), just evaluated live instead of once at migration time.
+    fn recompute_item_kind(&self, menu_item_id: &str) -> Result<(), RepoError> {
+        let is_combo: i64 = self.conn.query_row(
+            "SELECT is_combo FROM menu_items WHERE id = ?1", params![menu_item_id], |r| r.get(0),
+        )?;
+        let new_kind = if is_combo == 1 {
+            "composite"
+        } else {
+            let has_recipe: bool = self.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM recipes WHERE menu_item_id = ?1)", params![menu_item_id], |r| r.get(0),
+            )?;
+            if has_recipe { "prepared" } else { "simple" }
+        };
+        self.conn.execute("UPDATE menu_items SET item_kind = ?1 WHERE id = ?2", params![new_kind, menu_item_id])?;
+        Ok(())
     }
 
     // -----------------------------------------------------------------
