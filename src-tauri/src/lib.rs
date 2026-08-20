@@ -5,6 +5,7 @@ use tauri::{Manager, State};
 mod migrate;
 mod migrate_v3;
 mod money;
+mod order_lifecycle;
 mod pricing;
 mod security;
 mod repo;

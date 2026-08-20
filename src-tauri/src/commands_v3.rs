@@ -769,6 +769,7 @@ fn update_order_status_v3_impl(state: &Db, session_token: String, order_id: Stri
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let repo = Repo::new(&tx);
     let previous_status = repo.replay_order_status(&order_id).map_err(|e| e.to_string())?;
+    crate::order_lifecycle::validate_order_status_transition(&previous_status, &new_status)?;
     repo.append_order_status_event(&order_tenant_id, &order_branch_id, &order_id, &new_status, &actor.id, &actor.device_id)
         .map_err(|e| e.to_string())?;
     repo.rebuild_order_current(&order_id).map_err(|e| e.to_string())?;
@@ -5457,6 +5458,111 @@ mod tests {
                 "SELECT unit_price_cents FROM order_items WHERE order_id = ?1", params![order_id], |r| r.get(0),
             ).unwrap();
             assert_eq!(stored_unit_price, 1_000, "the stored line price must be the real menu price, not the caller's fabricated unit_price_cents: 1");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// §3.2 order-lifecycle guard regression test, real happy path: a
+        /// freshly created order lands PENDING (`create_full_order_v3`'s own
+        /// initial `append_order_status_event(..., "PENDING", ...)`), then
+        /// `update_order_status_v3` walks it through the exact sequence the
+        /// real KDS UI's `STATUS_FLOW` map drives (PENDING -> PREPARING ->
+        /// READY -> SERVED) -- proves the new guard doesn't block the one
+        /// real caller that exists today.
+        #[test]
+        fn update_order_status_v3_allows_the_real_kds_happy_path_end_to_end() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("status_guard_happy_path");
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                repo.create_menu_item(&tenant_id, "Item", &category_id, 1000, 500, None, None).unwrap();
+                cashier_id
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+
+            let item_id: String = {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.query_row("SELECT id FROM menu_items LIMIT 1", [], |r| r.get(0)).unwrap()
+            };
+            let items = vec![OrderItemInput {
+                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let order_id = create_full_order_v3_impl(
+                &db, &license, session.clone(), table_id, "DINE_IN".to_string(), items,
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+            ).unwrap();
+
+            for next in ["PREPARING", "READY", "SERVED"] {
+                update_order_status_v3_impl(&db, session.clone(), order_id.clone(), next.to_string())
+                    .unwrap_or_else(|e| panic!("legal transition to {next} must succeed, got: {e}"));
+            }
+
+            let conn = Connection::open(&db_path).unwrap();
+            let repo = Repo::new(&conn);
+            assert_eq!(repo.replay_order_status(&order_id).unwrap(), "SERVED");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// §3.2 order-lifecycle guard regression test, the actual attack
+        /// this closes: before this fix, a caller with `UpdateOrderStatus`
+        /// permission (any staff role that has it -- not just kitchen
+        /// staff) could move a fresh PENDING order straight to SERVED
+        /// (skipping PREPARING/READY entirely -- kitchen never saw it) or
+        /// to a fabricated status string, and `update_order_status_v3_impl`
+        /// would append it with zero validation. Proves both are now
+        /// rejected, and that the order's real status is unchanged by the
+        /// rejected attempt (the event log never got the illegal entry).
+        #[test]
+        fn update_order_status_v3_rejects_skipping_stages_and_fabricated_statuses() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("status_guard_rejects_illegal");
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                repo.create_menu_item(&tenant_id, "Item", &category_id, 1000, 500, None, None).unwrap();
+                cashier_id
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+
+            let item_id: String = {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.query_row("SELECT id FROM menu_items LIMIT 1", [], |r| r.get(0)).unwrap()
+            };
+            let items = vec![OrderItemInput {
+                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let order_id = create_full_order_v3_impl(
+                &db, &license, session.clone(), table_id, "DINE_IN".to_string(), items,
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+            ).unwrap();
+
+            let skip_result = update_order_status_v3_impl(&db, session.clone(), order_id.clone(), "SERVED".to_string());
+            assert!(skip_result.is_err(), "PENDING -> SERVED must be rejected -- it skips PREPARING and READY, kitchen never sees it");
+
+            let fabricated_result = update_order_status_v3_impl(&db, session.clone(), order_id.clone(), "not-a-real-status".to_string());
+            assert!(fabricated_result.is_err(), "a fabricated status string must be rejected, not silently appended to the event log");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let repo = Repo::new(&conn);
+            assert_eq!(repo.replay_order_status(&order_id).unwrap(), "PENDING", "the order's real status must be unchanged by either rejected attempt");
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
