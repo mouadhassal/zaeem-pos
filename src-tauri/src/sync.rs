@@ -317,6 +317,55 @@ fn build_supplier_payload(
     Ok((payments, suppliers))
 }
 
+/// The marketplace "reorder low-stock ingredients" feature's data source:
+/// every `ingredients` row touched by this batch, re-read at its CURRENT
+/// state (not the outbox payload snapshot), same "always send the live
+/// state, not the snapshot at enqueue time" reasoning as
+/// `build_supplier_payload`/`build_staff_payload`. Multiple outbox rows for
+/// the same ingredient_id (e.g. several sales depleting it before the next
+/// tick) collapse to one current row, not stale duplicates. An ingredient
+/// can legitimately be missing (hard-deleted after being queued) -- skipped,
+/// not an error.
+fn build_ingredients_payload(
+    conn: &Connection,
+    batch: &[OutboxRow],
+) -> Result<Vec<serde_json::Value>, rusqlite::Error> {
+    let mut ingredient_ids: Vec<String> = Vec::new();
+    for row in batch {
+        if row.table_name != "ingredients" {
+            continue;
+        }
+        if !ingredient_ids.contains(&row.row_id) {
+            ingredient_ids.push(row.row_id.clone());
+        }
+    }
+
+    let mut ingredients = Vec::new();
+    for ingredient_id in ingredient_ids {
+        #[allow(clippy::type_complexity)]
+        let row: Option<(String, String, String, String, f64, f64, i64, i64)> = conn
+            .query_row(
+                "SELECT tenant_id, branch_id, name, unit, current_stock, min_stock, cost_cents_per_unit, is_active \
+                 FROM ingredients WHERE id = ?1",
+                params![ingredient_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
+            )
+            .ok();
+        let Some((tenant_id, branch_id, name, unit, current_stock, min_stock, cost_cents_per_unit, is_active)) = row else {
+            continue;
+        };
+        ingredients.push(serde_json::json!({
+            "local_ingredient_id": ingredient_id,
+            "tenant_id": tenant_id, "branch_id": branch_id,
+            "name": name, "unit": unit,
+            "current_stock": current_stock, "min_stock": min_stock,
+            "cost_cents_per_unit": cost_cents_per_unit, "is_active": is_active != 0,
+        }));
+    }
+
+    Ok(ingredients)
+}
+
 /// Owner dashboard "staff" summary (aggregate-only, per the user's explicit
 /// scope decision -- see `commands_v3::sync_enqueue_staff_snapshot`'s doc
 /// comment for what this does and doesn't cover). Same "always send the
@@ -391,11 +440,12 @@ async fn send_batch(
     suppliers: &[serde_json::Value],
     supplier_payments: &[serde_json::Value],
     staff: &[serde_json::Value],
+    ingredients: &[serde_json::Value],
     config_dir: &std::path::Path,
 ) -> Result<(), String> {
     use crate::license::cloud::{load_config_from_file, supabase_anon_key, supabase_url};
 
-    if orders.is_empty() && suppliers.is_empty() && supplier_payments.is_empty() && staff.is_empty() {
+    if orders.is_empty() && suppliers.is_empty() && supplier_payments.is_empty() && staff.is_empty() && ingredients.is_empty() {
         return Ok(());
     }
 
@@ -411,6 +461,7 @@ async fn send_batch(
         "suppliers": suppliers,
         "supplier_payments": supplier_payments,
         "staff": staff,
+        "ingredients": ingredients,
         "device_name": "Zaeem POS",
         "version": env!("CARGO_PKG_VERSION"),
     });
@@ -460,7 +511,7 @@ pub async fn run_tick(
     batch_limit: i64,
     config_dir: &std::path::Path,
 ) -> Result<usize, rusqlite::Error> {
-    let (batch, orders_payload, suppliers_payload, supplier_payments_payload, staff_payload) = {
+    let (batch, orders_payload, suppliers_payload, supplier_payments_payload, staff_payload, ingredients_payload) = {
         // Recovers from a poisoned lock instead of panicking -- this runs
         // on a 30s background timer with no caller to catch a panic; once
         // poisoned, a plain .unwrap() here would kill sync permanently for
@@ -473,10 +524,11 @@ pub async fn run_tick(
         let orders_payload = build_orders_payload(&conn, &batch)?;
         let (supplier_payments_payload, suppliers_payload) = build_supplier_payload(&conn, &batch)?;
         let staff_payload = build_staff_payload(&conn, &batch)?;
-        (batch, orders_payload, suppliers_payload, supplier_payments_payload, staff_payload)
+        let ingredients_payload = build_ingredients_payload(&conn, &batch)?;
+        (batch, orders_payload, suppliers_payload, supplier_payments_payload, staff_payload, ingredients_payload)
     };
 
-    let result = send_batch(&orders_payload, &suppliers_payload, &supplier_payments_payload, &staff_payload, config_dir).await;
+    let result = send_batch(&orders_payload, &suppliers_payload, &supplier_payments_payload, &staff_payload, &ingredients_payload, config_dir).await;
 
     let conn = db.lock().unwrap_or_else(|e| e.into_inner());
     match result {

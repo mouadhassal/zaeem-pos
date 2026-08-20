@@ -842,6 +842,12 @@ fn take_payment_v3_impl(
         None, Some(&serde_json::json!({ "payment_id": payment_id, "method": method, "amount_cents": amount_cents, "change_cents": change_cents, "debtor_id": debtor_id })),
     ).map_err(|e| e.to_string())?;
 
+    // `Repo::take_payment` just deducted recipe-linked ingredient stock
+    // (`deplete_recipe_stock`) for every non-voided item on this order --
+    // queue the current snapshot of each ingredient touched.
+    let license_status = license.cached_status();
+    sync_enqueue_recipe_ingredients_for_order(&tx, &tenant_id, &branch_id, &order_id, &actor.device_id, &license_status)?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(payment_id)
 }
@@ -1430,6 +1436,10 @@ pub fn create_ingredient_v3(state: State<Db>, license: State<crate::license::clo
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let ingredient_id = Repo::new(&tx).create_ingredient(&tenant_id, &branch_id, &name, &unit, cost_cents_per_unit, min_stock).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "name": name, "created": true }))).map_err(|e| e.to_string())?;
+
+    let license_status = license.cached_status();
+    sync_enqueue_ingredient(&tx, &tenant_id, &branch_id, &ingredient_id, &actor.device_id, &license_status)?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(ingredient_id)
 }
@@ -1444,6 +1454,17 @@ pub fn update_ingredient_v3(state: State<Db>, license: State<crate::license::clo
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     Repo::new(&tx).update_ingredient(&actor.scope(), &ingredient_id, &name, &unit, cost_cents_per_unit, min_stock).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
+
+    // tenant_id/branch_id come from the ingredient's OWN row, not the
+    // actor's scope -- correct regardless of whether the caller is
+    // Branch- or Tenant-scoped, same reasoning as `void_order_item_v3`.
+    let (ing_tenant_id, ing_branch_id): (String, String) = tx.query_row(
+        "SELECT tenant_id, branch_id FROM ingredients WHERE id = ?1", params![ingredient_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).map_err(|e| e.to_string())?;
+    let license_status = license.cached_status();
+    sync_enqueue_ingredient(&tx, &ing_tenant_id, &ing_branch_id, &ingredient_id, &actor.device_id, &license_status)?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -1464,6 +1485,10 @@ pub fn adjust_stock_v3(state: State<Db>, license: State<crate::license::cloud::C
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let log_id = Repo::new(&tx).adjust_stock(&actor.scope(), &tenant_id, &branch_id, &ingredient_id, change_amount, &reason, &actor.id).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "change_amount": change_amount, "reason": reason, "log_id": log_id }))).map_err(|e| e.to_string())?;
+
+    let license_status = license.cached_status();
+    sync_enqueue_ingredient(&tx, &tenant_id, &branch_id, &ingredient_id, &actor.device_id, &license_status)?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(log_id)
 }
@@ -2879,6 +2904,28 @@ pub fn receive_purchase_order_v3(state: State<Db>, license: State<crate::license
         sync_enqueue_operational_cost(&tx, &tenant_id, &branch_id, cost_id, &actor.device_id, &license_status)?;
     }
 
+    // Every ingredient whose current_stock just got bumped by receiving --
+    // real ingredient_id re-derived from `purchase_order_items` itself
+    // (same server-side-authoritative lookup `Repo::receive_purchase_order`
+    // already does internally), not trusted from the client's own `items`
+    // tuples.
+    let mut received_ingredient_ids: Vec<String> = Vec::new();
+    for (item_id, _client_ingredient_id, _qty) in &items {
+        let real_ingredient_id: Option<String> = tx.query_row(
+            "SELECT ingredient_id FROM purchase_order_items WHERE id = ?1 AND purchase_order_id = ?2",
+            params![item_id, po_id],
+            |r| r.get(0),
+        ).optional().map_err(|e| e.to_string())?;
+        if let Some(id) = real_ingredient_id {
+            if !received_ingredient_ids.contains(&id) {
+                received_ingredient_ids.push(id);
+            }
+        }
+    }
+    for ingredient_id in &received_ingredient_ids {
+        sync_enqueue_ingredient(&tx, &tenant_id, &branch_id, ingredient_id, &actor.device_id, &license_status)?;
+    }
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -4066,6 +4113,21 @@ fn void_order_item_v3_impl(state: &Db, license: &crate::license::cloud::CloudLic
     let license_status = license.cached_status();
     sync_enqueue_single_order_item(&tx, &item_tenant_id, &item_branch_id, &item_id, &actor.device_id, &license_status)?;
 
+    // `Repo::void_order_item` restores this item's recipe-linked
+    // ingredient stock ONLY when its parent order was already PAID (see
+    // that function's doc comment) -- re-check the same condition here to
+    // decide whether there's anything to sync.
+    let (order_id, menu_item_id): (String, String) = tx.query_row(
+        "SELECT order_id, menu_item_id FROM order_items WHERE id = ?1", params![item_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).map_err(|e| e.to_string())?;
+    let order_status: String = tx.query_row(
+        "SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+    if order_status == "PAID" {
+        sync_enqueue_recipe_ingredients_for_menu_item(&tx, &item_tenant_id, &item_branch_id, &menu_item_id, &actor.device_id, &license_status)?;
+    }
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -4279,6 +4341,11 @@ fn finalize_order_with_payment_v3_impl(
     sync_enqueue_payment(&tx, &tenant_id, &branch_id, &payment_id, &actor.device_id, &license_status)?;
     sync_enqueue_order(&tx, &tenant_id, &branch_id, &order_id, &actor.device_id, &license_status)?;
 
+    // `Repo::finalize_order_with_payment` just deducted recipe-linked
+    // ingredient stock for every non-voided item on this order -- queue
+    // the current snapshot of each ingredient touched.
+    sync_enqueue_recipe_ingredients_for_order(&tx, &tenant_id, &branch_id, &order_id, &actor.device_id, &license_status)?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(FinalizePaymentResult { payment_id, points_earned })
 }
@@ -4314,6 +4381,19 @@ pub fn refund_order_v3(
         audit::Action::OrderRefunded, "order", &order_id,
         None, Some(&serde_json::json!({ "refund_id": refund_id, "reason": reason })),
     ).map_err(|e| e.to_string())?;
+
+    // `Repo::refund_order` just restored recipe-linked ingredient stock for
+    // every non-voided item on this order (mirror of the deplete at
+    // payment time) -- queue the current snapshot of each ingredient
+    // touched. tenant_id/branch_id come from the order's OWN row, not the
+    // actor's scope, same reasoning as elsewhere in this file.
+    let (order_tenant_id, order_branch_id): (String, String) = tx.query_row(
+        "SELECT tenant_id, branch_id FROM orders WHERE id = ?1", params![order_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).map_err(|e| e.to_string())?;
+    let license_status = license.cached_status();
+    sync_enqueue_recipe_ingredients_for_order(&tx, &order_tenant_id, &order_branch_id, &order_id, &actor.device_id, &license_status)?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(refund_id)
 }
@@ -4379,6 +4459,100 @@ fn sync_enqueue_supplier_payment(
         "amount_cents": amount_cents, "method": method, "notes": notes, "created_at": created_at,
     });
     crate::sync::enqueue(tx, "supplier_payments", payment_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
+}
+
+/// The marketplace "reorder low-stock ingredients" feature's POS-side
+/// half: stamps `ingredients.rev`/`updated_at_hlc`/`device_id` and queues
+/// the ingredient's CURRENT row -- always re-read fresh here, never
+/// reconstructed from the caller's own view of what changed, same
+/// "always send the live state" principle as `sync_enqueue_order`. Called
+/// after every write that can change what the marketplace needs to see
+/// (name/unit/min_stock/cost on create+edit, current_stock on manual
+/// adjustment, recipe-based depletion at payment, restoration on
+/// void/refund, and purchase-order receiving). Silently a no-op if the
+/// ingredient was hard-deleted between the write and this call -- nothing
+/// left to sync, not an error.
+fn sync_enqueue_ingredient(
+    tx: &rusqlite::Transaction,
+    tenant_id: &str,
+    branch_id: &str,
+    ingredient_id: &str,
+    device_id: &str,
+    license_status: &crate::license::signed::LicenseStatus,
+) -> Result<(), String> {
+    tx.execute(
+        "UPDATE ingredients SET rev = COALESCE(rev, 0) + 1, updated_at_hlc = ?1, device_id = ?2 WHERE id = ?3",
+        params![crate::hlc::next(), device_id, ingredient_id],
+    ).map_err(|e| e.to_string())?;
+
+    #[allow(clippy::type_complexity)]
+    let row: Option<(String, String, f64, f64, i64, i64, i64)> = tx.query_row(
+        "SELECT name, unit, current_stock, min_stock, cost_cents_per_unit, is_active, rev FROM ingredients WHERE id = ?1",
+        params![ingredient_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+    ).optional().map_err(|e| e.to_string())?;
+    let Some((name, unit, current_stock, min_stock, cost_cents_per_unit, is_active, rev)) = row else {
+        return Ok(());
+    };
+
+    let payload = serde_json::json!({
+        "id": ingredient_id, "tenant_id": tenant_id, "branch_id": branch_id,
+        "name": name, "unit": unit, "current_stock": current_stock,
+        "min_stock": min_stock, "cost_cents_per_unit": cost_cents_per_unit,
+        "is_active": is_active != 0,
+    });
+    crate::sync::enqueue(tx, "ingredients", ingredient_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
+}
+
+/// Every ingredient_id touched by recipe-based stock movement (deplete at
+/// payment, restore on refund) for a whole order -- re-derived from
+/// `order_items` JOIN `recipes`, the exact same query shape
+/// `Repo::deplete_recipe_stock`/`Repo::refund_order` use internally to
+/// decide what to move, so this always matches what the repo layer just
+/// changed. Enqueues each one via `sync_enqueue_ingredient`.
+fn sync_enqueue_recipe_ingredients_for_order(
+    tx: &rusqlite::Transaction,
+    tenant_id: &str,
+    branch_id: &str,
+    order_id: &str,
+    device_id: &str,
+    license_status: &crate::license::signed::LicenseStatus,
+) -> Result<(), String> {
+    let ingredient_ids: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "SELECT DISTINCT r.ingredient_id FROM order_items oi JOIN recipes r ON r.menu_item_id = oi.menu_item_id \
+             WHERE oi.order_id = ?1 AND oi.voided = 0",
+        ).map_err(|e| e.to_string())?;
+        let ids = stmt.query_map(params![order_id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        ids.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    };
+    for ingredient_id in ingredient_ids {
+        sync_enqueue_ingredient(tx, tenant_id, branch_id, &ingredient_id, device_id, license_status)?;
+    }
+    Ok(())
+}
+
+/// Every ingredient_id in one menu item's recipe -- used by
+/// `void_order_item_v3` (a single item's own recipe, restored only when its
+/// parent order was already PAID; see `Repo::void_order_item`'s doc
+/// comment for that condition).
+fn sync_enqueue_recipe_ingredients_for_menu_item(
+    tx: &rusqlite::Transaction,
+    tenant_id: &str,
+    branch_id: &str,
+    menu_item_id: &str,
+    device_id: &str,
+    license_status: &crate::license::signed::LicenseStatus,
+) -> Result<(), String> {
+    let ingredient_ids: Vec<String> = {
+        let mut stmt = tx.prepare("SELECT ingredient_id FROM recipes WHERE menu_item_id = ?1").map_err(|e| e.to_string())?;
+        let ids = stmt.query_map(params![menu_item_id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        ids.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    };
+    for ingredient_id in ingredient_ids {
+        sync_enqueue_ingredient(tx, tenant_id, branch_id, &ingredient_id, device_id, license_status)?;
+    }
+    Ok(())
 }
 
 /// Owner dashboard "staff" summary (aggregate-only, per user's explicit
@@ -4819,6 +4993,7 @@ mod tests {
         migrate_v3::run_roster_entry_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_refund_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_manager_threshold_syp_rescale_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_ingredient_sync_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
