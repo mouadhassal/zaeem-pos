@@ -249,6 +249,15 @@ pub fn run_expand_migration(conn: &mut Connection, db_path: &Path) -> Result<(),
                 updated_at_hlc TEXT NOT NULL, device_id TEXT NOT NULL, deleted_at TEXT, rev INTEGER NOT NULL DEFAULT 1,
                 PRIMARY KEY (branch_id, item_id)
             );
+            -- DEAD TABLE, never wired up: no code anywhere in repo.rs/commands_v3.rs
+            -- reads or writes tenant_settings (confirmed by a whole-crate grep). The
+            -- REAL, live per-tenant tax/name config surface is chain_config
+            -- (get_chain_config_v3/update_chain_tax_v3) -- see this file's own
+            -- run_discount_cap_migration doc comment for the same note. Left in
+            -- place (not dropped) because this migration already shipped and a
+            -- DROP TABLE here would be an unnecessary destructive change against
+            -- something merely unused, not harmful. Do not wire new code into this
+            -- table -- extend chain_config instead.
             CREATE TABLE IF NOT EXISTS tenant_settings (
                 tenant_id TEXT PRIMARY KEY REFERENCES tenant(id),
                 chain_name TEXT NOT NULL,
