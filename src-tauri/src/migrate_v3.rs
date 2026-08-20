@@ -1915,6 +1915,103 @@ pub fn run_ingredient_sync_migration(conn: &mut Connection, _db_path: &Path) -> 
     Ok(())
 }
 
+pub const MIGRATION_S_VERSION: i64 = 23;
+
+/// ZAEEM_POS_PLATFORM_PLAN.md §3.1 "Item kind" (kernel/pack multi-vertical
+/// platform work), reconciled against reality per
+/// `_platform_plan_reconciliation.md`'s "§3.1 Item kind" section: `menu_items`
+/// has had zero `ALTER TABLE` schema drift across every migration in this
+/// file (v4-v22) -- this is the cheap moment to add the discriminator the
+/// plan wants, per the plan's own "do it first, while data volume is small."
+///
+/// Adds two columns, additive only:
+/// - `item_kind TEXT NOT NULL DEFAULT 'simple'` -- deliberately NO CHECK
+///   constraint (SQLite can't add one via `ALTER TABLE ADD COLUMN` without a
+///   full table rebuild, same constraint that made v12/v14/v22 rebuild
+///   `sync_outbox`; not worth that cost here). No command currently writes
+///   `item_kind` (this migration is the read-path/data-model foundation
+///   only, per the plan's own phasing -- no create/update UI for kind yet),
+///   so there is nothing to validate today; when one is added, it should
+///   enforce valid values at the Rust command layer, the same pattern
+///   `order_status_event.status` already uses for an unconstrained column
+///   (`_platform_plan_reconciliation.md` §3.2).
+/// - `attributes TEXT` (nullable, JSON-as-text) -- a generic escape hatch
+///   for kind-specific data. Deliberately UNUSED by this migration's own
+///   backfill (every row gets `attributes = NULL`): 'composite' items
+///   already have their components tracked relationally via
+///   `combo_items`/`is_combo`, and 'prepared' items via `recipes` --
+///   duplicating that into JSON here would be a second, driftable source of
+///   truth for no current benefit. Reserved for kinds this migration does
+///   NOT implement yet (Variant/Weighed/Batched/Serialized/Service, per the
+///   plan's full 8-kind list) once a real vertical needs them.
+///
+/// Scope decision, stated plainly: only 'simple', 'prepared', and
+/// 'composite' are backfilled/implemented now. The plan lists 8 kinds;
+/// this schema has real, populated precedent for exactly these 3
+/// (`recipes` for Prepared, `menu_items.is_combo` for Composite -- see
+/// backfill logic below) and zero precedent for the other 5. Building
+/// Weighed/Batched/Serialized/Service tables or logic with no current call
+/// site would be speculative scope the plan itself gates behind future
+/// phases (§7's "P3: >=10 paying restaurants" gate) -- not built here.
+///
+/// Backfill logic (in priority order, first match wins):
+/// - `menu_items.is_combo = 1` -> 'composite'. This is the REAL, populated
+///   combo flag (`0002_reconcile.sql`, checked by `MenuItemRow.is_combo`
+///   throughout `repo.rs`/`commands_v3.rs`). Deliberately NOT joined against
+///   `combo_meals` -- `repo.rs`'s own `ComboComponentRow` doc comment
+///   documents that `combo_meals`/`combo_items` is a parallel, disconnected
+///   table with no FK back to `menu_items.id` in the current model, so that
+///   join would silently match zero rows. `is_combo` is the only backfill
+///   signal that's actually populated on real installs.
+/// - else `EXISTS (SELECT 1 FROM recipes WHERE recipes.menu_item_id =
+///   menu_items.id)` -> 'prepared'. `recipes` (item x ingredient x quantity
+///   BOM, `0001_init.sql:67-75`) is the real, CRUD-complete link -- NOT
+///   `menu_items.recipe_id` (a legacy, effectively-unused single-value
+///   column that predates the many-to-many `recipes` table and is never
+///   read by any recipe CRUD path in `repo.rs`).
+/// - else -> 'simple' (the column default already covers this; the backfill
+///   UPDATE below is explicit anyway, for auditability).
+pub fn run_item_kind_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_S_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+
+    if table_exists(&tx, "menu_items")? {
+        add_column_if_missing(&tx, "menu_items", "item_kind", "TEXT NOT NULL DEFAULT 'simple'")?;
+        add_column_if_missing(&tx, "menu_items", "attributes", "TEXT")?;
+
+        // Backfill: composite first (is_combo is authoritative and takes
+        // priority over an item that happens to also have a recipe row),
+        // then prepared, matching the priority order documented above.
+        tx.execute("UPDATE menu_items SET item_kind = 'composite' WHERE is_combo = 1", [])?;
+        tx.execute(
+            "UPDATE menu_items SET item_kind = 'prepared' \
+             WHERE is_combo != 1 AND EXISTS (SELECT 1 FROM recipes WHERE recipes.menu_item_id = menu_items.id)",
+            [],
+        )?;
+        tx.execute(
+            "UPDATE menu_items SET item_kind = 'simple' \
+             WHERE is_combo != 1 AND NOT EXISTS (SELECT 1 FROM recipes WHERE recipes.menu_item_id = menu_items.id)",
+            [],
+        )?;
+    }
+
+    println!("v23_item_kind: menu_items.item_kind + attributes added, backfilled from is_combo/recipes");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_S_VERSION, "0023_item_kind", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2464,6 +2561,84 @@ mod tests {
         );
         assert!(rejected.is_err(), "the CHECK constraint must still reject an unlisted table_name, not have been silently dropped");
         println!("[supplier-ledger-migration] sync_outbox accepts all 5 known table_names and still rejects an unknown one");
+
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(integrity, "ok");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// v23 item_kind migration: idempotent, adds `menu_items.item_kind`/
+    /// `attributes`, and correctly classifies all 3 backfill cases from a
+    /// single pre-migration seeded DB -- a combo item (`is_combo=1`) ->
+    /// 'composite' (taking priority even though this item also has a
+    /// recipe row, proving the documented priority order), a recipe-linked
+    /// item -> 'prepared', and a plain item -> 'simple' (the column
+    /// default, asserted explicitly rather than just relied upon).
+    #[test]
+    fn test_item_kind_migration_is_idempotent_and_backfills_composite_prepared_simple_correctly() {
+        let db_path = fresh_db_path("item_kind_migration");
+        build_base_fixture(&db_path);
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            // item-1 (Burger) is marked as a combo -- must win 'composite'
+            // even though it ALSO gets a recipe row below, proving
+            // composite takes priority over prepared in the backfill.
+            conn.execute("UPDATE menu_items SET is_combo = 1 WHERE id = 'item-1'", []).unwrap();
+            conn.execute_batch(
+                "INSERT INTO ingredients (id, name, unit) VALUES ('ing-1', 'Beef Patty', 'unit');
+                 INSERT INTO recipes (id, menu_item_id, ingredient_id, quantity_needed) VALUES
+                    ('recipe-1', 'item-1', 'ing-1', 1),
+                    ('recipe-2', 'item-2', 'ing-1', 2);"
+            ).expect("failed to seed combo/recipe fixtures");
+        }
+        {
+            let mut conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+            run_expand_migration(&mut conn, &db_path).expect("Migration A failed");
+            run_remap_migration(&mut conn, &db_path).expect("Migration B failed");
+            run_identity_migration(&mut conn, &db_path).expect("Migration C failed");
+            run_drift_fix_migration(&mut conn, &db_path).expect("Migration D failed");
+            run_index_migration(&mut conn, &db_path).expect("Migration E failed");
+            run_discount_cap_migration(&mut conn, &db_path).expect("Migration F failed");
+            run_sync_outbox_migration(&mut conn, &db_path).expect("Migration G failed");
+            run_supplier_ledger_migration(&mut conn, &db_path).expect("Migration H failed");
+            run_loyalty_migration(&mut conn, &db_path).expect("Migration I failed");
+            run_staff_sync_migration(&mut conn, &db_path).expect("Migration J failed");
+            run_lan_pairing_migration(&mut conn, &db_path).expect("Migration K failed");
+            run_printer_system_name_migration(&mut conn, &db_path).expect("Migration L failed");
+            run_manager_threshold_migration(&mut conn, &db_path).expect("Migration M failed");
+            run_business_mode_migration(&mut conn, &db_path).expect("Migration N failed");
+            run_roster_entry_migration(&mut conn, &db_path).expect("Migration O failed");
+            run_refund_migration(&mut conn, &db_path).expect("Migration P failed");
+            run_manager_threshold_syp_rescale_migration(&mut conn, &db_path).expect("Migration Q failed");
+            run_ingredient_sync_migration(&mut conn, &db_path).expect("Migration R failed");
+            run_item_kind_migration(&mut conn, &db_path).expect("Migration S failed (first run)");
+            // Second run must be a clean no-op, not an error and not a
+            // re-scramble of already-correct data.
+            run_item_kind_migration(&mut conn, &db_path).expect("Migration S failed (second run -- must be idempotent)");
+        }
+        let conn = Connection::open(&db_path).unwrap();
+
+        let cols: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(menu_items)").unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(1)).unwrap().filter_map(|r| r.ok()).collect()
+        };
+        assert!(cols.contains(&"item_kind".to_string()), "menu_items.item_kind must exist after Migration S");
+        assert!(cols.contains(&"attributes".to_string()), "menu_items.attributes must exist after Migration S");
+
+        // NOTE: Migration B (run_remap_migration) remaps every menu_items.id
+        // from the legacy string ids ('item-1' etc.) to fresh UUIDv7s (and
+        // correctly repoints recipes.menu_item_id along with it, per its own
+        // FK_REMAP_TABLE) -- so 'item-1' no longer exists as an id by the
+        // time this assertion runs. Resolve by name (stable across remap)
+        // instead of assuming the pre-migration literal id survives.
+        let kind_of_named = |name: &str| -> String {
+            conn.query_row("SELECT item_kind FROM menu_items WHERE name = ?1", params![name], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(kind_of_named("Burger"), "composite", "combo item must backfill to 'composite', taking priority over its recipe row");
+        assert_eq!(kind_of_named("Fries"), "prepared", "recipe-linked, non-combo item must backfill to 'prepared'");
+        assert_eq!(kind_of_named("Cola"), "simple", "plain item with no combo flag and no recipe must backfill to 'simple'");
 
         let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
         assert_eq!(integrity, "ok");

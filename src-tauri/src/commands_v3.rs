@@ -5061,6 +5061,7 @@ mod tests {
         migrate_v3::run_refund_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_manager_threshold_syp_rescale_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_ingredient_sync_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_item_kind_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -10122,6 +10123,14 @@ mod tests {
         migrate_v3::run_identity_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_drift_fix_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_index_migration(&mut conn, &db_path).unwrap();
+        // v23: repo.rs::list_menu_items (called below, line ~10195) now
+        // selects item_kind/attributes -- this test's chain must reach that
+        // migration too, or the SELECT fails with "no such column" against
+        // a DB that stopped at Migration E. item_kind migration only
+        // touches menu_items and has no dependency on the migrations this
+        // minimal chain intentionally skips (discount_cap/sync_outbox/etc),
+        // so it's safe to run directly after Migration E.
+        migrate_v3::run_item_kind_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("matrix", &conn);

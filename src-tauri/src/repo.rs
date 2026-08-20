@@ -462,6 +462,12 @@ pub struct MenuItemRow {
     pub is_combo: i64,
     pub combo_original_price_cents: Option<i64>,
     pub combo_description: Option<String>,
+    /// ZAEEM_POS_PLATFORM_PLAN.md §3.1 Item kind, v23 migration
+    /// (`migrate_v3::run_item_kind_migration`). One of 'simple', 'prepared',
+    /// 'composite' -- see that migration's doc comment for backfill logic
+    /// and why the other 5 plan-listed kinds aren't implemented yet.
+    pub item_kind: String,
+    pub attributes: Option<String>,
 }
 
 /// `menuStore.ts`'s combo-component lookup. NOTE: this mirrors an existing
@@ -3561,7 +3567,7 @@ impl<'a> Repo<'a> {
         self.assert_scope_populated("menu_items", false)?;
         let mut stmt = self.conn.prepare(
             "SELECT id, name, price_cents, cost_cents, category_id, image_path, description, barcode, is_active, \
-                    is_combo, combo_original_price_cents, combo_description \
+                    is_combo, combo_original_price_cents, combo_description, item_kind, attributes \
              FROM menu_items WHERE tenant_id = ?1 ORDER BY name ASC",
         )?;
         let rows = stmt.query_map(params![tenant_id], |r| {
@@ -3569,6 +3575,7 @@ impl<'a> Repo<'a> {
                 id: r.get(0)?, name: r.get(1)?, price_cents: r.get(2)?, cost_cents: r.get(3)?, category_id: r.get(4)?,
                 image_path: r.get(5)?, description: r.get(6)?, barcode: r.get(7)?, is_active: r.get(8)?,
                 is_combo: r.get(9)?, combo_original_price_cents: r.get(10)?, combo_description: r.get(11)?,
+                item_kind: r.get(12)?, attributes: r.get(13)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
