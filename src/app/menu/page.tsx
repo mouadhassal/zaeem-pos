@@ -28,6 +28,35 @@ interface MenuItem {
   description: string | null;
   barcode: string | null;
   is_active: number;
+  /** 'simple' | 'prepared' | 'composite' -- derived server-side (see
+   *  Repo::recompute_item_kind), never set directly by this UI. */
+  item_kind: string;
+}
+
+/** Display copy for `item_kind`, read-only everywhere -- the only way this
+ *  value changes is indirectly (linking/unlinking a recipe ingredient
+ *  below, or becoming part of a combo), never a manual selector, so a
+ *  badge is never "wrong" the way a stale dropdown could be. */
+const ITEM_KIND_LABEL: Record<string, { label: string; hint: string; className: string }> = {
+  simple: {
+    label: "بسيط",
+    hint: "صنف عادي بدون مكونات مرتبطة من المخزون",
+    className: "bg-ink-100 text-ink-600",
+  },
+  prepared: {
+    label: "محضّر",
+    hint: "يحتوي على مكونات من المخزون تُخصم تلقائياً عند البيع",
+    className: "bg-blue-100 text-blue-700",
+  },
+  composite: {
+    label: "مجمّع",
+    hint: "جزء من وجبة مجمّعة",
+    className: "bg-purple-100 text-purple-700",
+  },
+};
+
+function itemKindMeta(kind: string) {
+  return ITEM_KIND_LABEL[kind] ?? ITEM_KIND_LABEL.simple;
 }
 
 interface ComboMeal {
@@ -923,6 +952,7 @@ export default function MenuPage() {
               <thead>
                 <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
                   <th className="text-right p-3 font-medium">الاسم</th>
+                  <th className="text-right p-3 font-medium">النوع</th>
                   <th className="text-right p-3 font-medium">التصنيف</th>
                   <th className="text-right p-3 font-medium">السعر</th>
                   <th className="text-right p-3 font-medium">التكلفة</th>
@@ -937,6 +967,14 @@ export default function MenuPage() {
                   return (
                     <tr key={item.id} className="border-b border-ink-200 hover:bg-saffron-50">
                       <td className="p-3 font-arabic text-ink-900">{item.name}</td>
+                      <td className="p-3">
+                        <span
+                          title={itemKindMeta(item.item_kind).hint}
+                          className={`inline-block px-2.5 py-1 rounded-full text-xs font-arabic ${itemKindMeta(item.item_kind).className}`}
+                        >
+                          {itemKindMeta(item.item_kind).label}
+                        </span>
+                      </td>
                       <td className="p-3">
                         <span className="inline-block px-3 py-1 rounded-full text-xs font-arabic bg-saffron-50 text-saffron-700">
                           {selectedCategoryName(item.category_id)}
@@ -1000,7 +1038,7 @@ export default function MenuPage() {
                 })}
                 {filteredItems.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="p-6 text-center text-ink-500 font-arabic">
+                    <td colSpan={8} className="p-6 text-center text-ink-500 font-arabic">
                       لا توجد أصناف
                     </td>
                   </tr>
@@ -1403,6 +1441,32 @@ export default function MenuPage() {
                 </label>
                 {editItemId ? (
                   <div className="space-y-2">
+                    {(() => {
+                      // Live-derived, not read from `item.item_kind` (which
+                      // would only refresh after a full fetchAll) -- mirrors
+                      // Repo::recompute_item_kind's own priority exactly:
+                      // composite (from is_combo, unreachable from this
+                      // modal -- combos are a separate entity, managed in
+                      // the Offers tab) still wins, otherwise it's
+                      // 'prepared' the instant a row is added and reverts
+                      // to 'simple' the instant the last one is removed.
+                      const baseItem = menuItems.find((m) => m.id === editItemId);
+                      const liveKind =
+                        baseItem?.item_kind === "composite"
+                          ? "composite"
+                          : recipeIngredients.length > 0
+                          ? "prepared"
+                          : "simple";
+                      const meta = itemKindMeta(liveKind);
+                      return (
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className={`inline-block px-2.5 py-1 rounded-full text-xs font-arabic ${meta.className}`}>
+                            {meta.label}
+                          </span>
+                          <span className="text-[11px] text-ink-400 font-arabic">{meta.hint}</span>
+                        </div>
+                      );
+                    })()}
                     {recipeIngredients.length > 0 && (
                       <ul className="space-y-1.5">
                         {recipeIngredients.map((r) => (

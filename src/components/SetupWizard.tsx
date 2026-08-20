@@ -12,7 +12,7 @@ const CURRENCIES = [
 ];
 
 export default function SetupWizard() {
-  const [step, setStep] = useState<"account" | "branch">("account");
+  const [step, setStep] = useState<"account" | "branch" | "business">("account");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [pin, setPin] = useState("");
@@ -25,6 +25,16 @@ export default function SetupWizard() {
   const [branchName, setBranchName] = useState("");
   const [currency, setCurrency] = useState("SYP");
   const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
+
+  // 2026-08-21: has_tables/has_kitchen already does real work (hides KDS
+  // nav, relabels menu->products, drops DINE_IN as an order type when
+  // off -- see Sidebar.tsx/settings/page.tsx) but used to live buried in
+  // Settings with zero prompt at signup, so a fresh non-restaurant tenant
+  // landed in a restaurant-shaped default with no nudge to say otherwise.
+  // Same defaults chain_config already seeds (both true) -- this step
+  // just asks the question up front instead of leaving it undiscovered.
+  const [hasTables, setHasTables] = useState(true);
+  const [hasKitchen, setHasKitchen] = useState(true);
 
   async function handleAccountSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -56,10 +66,23 @@ export default function SetupWizard() {
       if (logoDataUrl) {
         localStorage.setItem("zaeem_branch_logo", logoDataUrl);
       }
+      setStep("business");
+      setLoading(false);
+    } catch {
+      setError("حدث خطأ في حفظ بيانات الفرع");
+      setLoading(false);
+    }
+  }
+
+  async function handleBusinessSubmit() {
+    setError("");
+    setLoading(true);
+    try {
+      await invoke("update_business_mode_v3", { sessionToken: useAuthStore.getState().token, hasTables, hasKitchen });
       localStorage.setItem("zaeem_setup_complete", "1");
       window.location.reload();
     } catch {
-      setError("حدث خطأ في حفظ بيانات الفرع");
+      setError("حدث خطأ في حفظ نوع النشاط");
       setLoading(false);
     }
   }
@@ -164,7 +187,7 @@ export default function SetupWizard() {
                       <span>جاري الحفظ...</span>
                     </>
                   ) : (
-                    <span>بدء الاستخدام</span>
+                    <span>التالي — نوع النشاط</span>
                   )}
                 </button>
 
@@ -173,6 +196,88 @@ export default function SetupWizard() {
                   className="w-full h-9 text-sm text-ink-400 hover:text-ink-600 transition-colors font-arabic"
                 >
                   تخطي — الإعداد لاحقاً
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (step === "business") {
+    return (
+      <div className="relative min-h-screen w-full overflow-hidden bg-ink-50" dir="rtl">
+        <div className="min-h-screen flex items-center justify-center p-4">
+          <div className="w-full max-w-md">
+            <div className="text-center mb-8">
+              <div className="inline-flex items-center justify-center w-16 h-16 rounded-lg bg-saffron-600 mb-4">
+                <UtensilsCrossed className="w-8 h-8 text-white" />
+              </div>
+              <h1 className="text-3xl font-bold text-ink-800 mb-2 tracking-tight">
+                WENZDES
+              </h1>
+              <p className="text-ink-400 text-sm">نوع النشاط</p>
+            </div>
+
+            <div className="bg-white border border-ink-200 rounded-md p-8">
+              {error && (
+                <div className="mb-6 flex items-center gap-2 p-3 rounded-sm bg-red-50 border border-red-200 text-red-600 text-sm">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{error}</span>
+                </div>
+              )}
+
+              <div className="space-y-5">
+                <p className="text-xs text-ink-400 font-arabic">
+                  يناسب هذا مطعم كامل الخدمة افتراضياً. عطّل ما لا ينطبق على نشاطك -- مقهى بدون طاولات، متجر بدون مطبخ، أو الاثنين معاً. يمكنك تغيير هذا لاحقاً من الإعدادات.
+                </p>
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="text-sm font-arabic text-ink-900 block">لدينا طاولات</span>
+                    <span className="text-xs font-arabic text-ink-400">إدارة الطاولات، الدمج، والتقسيم</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setHasTables(!hasTables)}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${hasTables ? "bg-saffron-600" : "bg-ink-300"}`}
+                  >
+                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${hasTables ? "translate-x-6" : "translate-x-1"}`} />
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between pt-2 border-t border-ink-200">
+                  <div>
+                    <span className="text-sm font-arabic text-ink-900 block">لدينا مطبخ</span>
+                    <span className="text-xs font-arabic text-ink-400">طباعة تذاكر المطبخ وشاشة عرض المطبخ (KDS)</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setHasKitchen(!hasKitchen)}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${hasKitchen ? "bg-saffron-600" : "bg-ink-300"}`}
+                  >
+                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${hasKitchen ? "translate-x-6" : "translate-x-1"}`} />
+                  </button>
+                </div>
+
+                <button
+                  onClick={handleBusinessSubmit}
+                  disabled={loading}
+                  className={`w-full h-11 rounded-sm font-bold text-white text-base transition-colors flex items-center justify-center gap-2 ${
+                    loading
+                      ? "bg-ink-300 cursor-not-allowed text-ink-500"
+                      : "bg-saffron-600 hover:bg-saffron-700 active:bg-saffron-800"
+                  }`}
+                >
+                  {loading ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>جاري الحفظ...</span>
+                    </>
+                  ) : (
+                    <span>بدء الاستخدام</span>
+                  )}
                 </button>
               </div>
             </div>

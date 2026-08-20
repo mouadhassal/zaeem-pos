@@ -652,13 +652,22 @@ export function generateOnScreenReceiptHTML(data: ReceiptData): string {
 
 export async function testPrint(): Promise<void> {
   const cfg = await invoke<ChainConfigV3>("get_chain_config_v3", { sessionToken: token() });
+  // 2026-08-21 vocabulary-leak audit fix: this used to hardcode
+  // tableName/orderType to a restaurant dine-in order unconditionally --
+  // a has_tables=false business (coffee counter, retail shop) hitting the
+  // real "test print" button in Settings would see a fake "طاولة 1" line
+  // on their own test receipt, the exact leak the rest of printer.ts was
+  // already fixed to avoid for real orders (see renderReceiptCanvas's own
+  // 2026-08-13 fix comment). Reads business mode the same way
+  // orderService.ts already does for the real print paths.
+  const mode = await invoke<{ has_tables: boolean }>("get_business_mode_v3", { sessionToken: token() }).catch(() => ({ has_tables: true }));
   await printReceipt({
     chainName: cfg?.chain_name ?? "منشأة التجربة",
     branchName: "الفرع الرئيسي",
     currency: cfg?.currency ?? "SAR",
     orderNumber: "TEST-001",
-    tableName: "طاولة 1",
-    orderType: "DINE_IN",
+    tableName: mode.has_tables ? "طاولة 1" : "",
+    orderType: mode.has_tables ? "DINE_IN" : "TAKEAWAY",
     items: [{ name: "برجر", quantity: 1, priceCents: 2500 }],
     subtotalCents: 2500,
     taxCents: 375,
