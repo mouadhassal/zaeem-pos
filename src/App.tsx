@@ -44,12 +44,24 @@ function LoadingFallback() {
 function PosLayout({ children }: { children: React.ReactNode }) {
   // T2.0 owner dashboard: OWNER lands on the money-first dashboard, not the
   // order-taking screen -- "orders are a manager-level detail, not an
-  // owner headline" (plan §3). Every other role's landing view is
-  // unchanged. Computed once at mount (lazy initializer), not re-derived
-  // on every render -- the role doesn't change mid-session.
-  const [activeView, setActiveView] = useState(() =>
-    useAuthStore.getState().user?.role === "OWNER" ? "dashboard" : "pos"
-  );
+  // owner headline" (plan §3). Computed once at mount (lazy initializer),
+  // not re-derived on every render -- the role doesn't change mid-session.
+  //
+  // 2026-08-21 QA audit fix: KITCHEN fell through to the same "pos"
+  // default as every other role, landing kitchen staff on the full sales
+  // screen (product grid, table assignment, payment) instead of their own
+  // dedicated view -- KITCHEN_NAV (lib/permissions.ts) only ever exposes
+  // "kds" and "shift", so "pos" was never even reachable from their own
+  // sidebar; they'd have started on a screen with no way back to it.
+  // Verified live: an owner clicking the same "المطبخ" nav item correctly
+  // reaches the real KDS screen -- only the KITCHEN role's own initial
+  // landing view was wrong, not the KDS page/route itself.
+  const [activeView, setActiveView] = useState(() => {
+    const role = useAuthStore.getState().user?.role;
+    if (role === "OWNER") return "dashboard";
+    if (role === "KITCHEN") return "kds";
+    return "pos";
+  });
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
   const { navItems } = usePermissions();
 

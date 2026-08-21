@@ -3746,17 +3746,24 @@ pub fn create_table_v3(state: State<Db>, license: State<crate::license::cloud::C
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     if name.trim().is_empty() {
-        return Err("table name cannot be empty".to_string());
+        return Err("اسم الطاولة مطلوب".to_string());
     }
 
-    let scope = actor.scope();
-    let tenant_branches = if let Scope::Tenant { tenant_id } = &scope {
+    // QA audit fix (2026-08-21): this used to call `resolve_branch_for_actor`
+    // directly, which requires an explicit `branch_id` for any Tenant-scoped
+    // caller (Owner) and fails closed with a raw, untranslated English error
+    // ("select a branch first") otherwise -- exactly the friction
+    // `resolve_operating_branch` (added later, see its own doc comment) was
+    // built to remove for the common single-branch case, but this call site
+    // was never migrated to it. Reproduced live: an Owner on a genuinely
+    // single-branch tenant could not create a table at all. Settings' own
+    // table-creation form (settings/page.tsx) never collects/sends a
+    // branch_id either, so this was unconditionally broken for every
+    // single-branch install, not just an edge case.
+    let (tenant_id, resolved_branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        Repo::new(&conn).list_branches(tenant_id).map_err(|e| e.to_string())?
-    } else {
-        vec![]
+        resolve_operating_branch(&conn, &actor, &license, branch_id)?
     };
-    let (tenant_id, resolved_branch_id) = resolve_branch_for_actor(scope, branch_id, &tenant_branches)?;
 
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).create_table(&tenant_id, &resolved_branch_id, name.trim()).map_err(|e| e.to_string())
