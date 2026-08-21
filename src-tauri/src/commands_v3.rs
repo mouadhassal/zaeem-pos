@@ -459,14 +459,17 @@ pub fn create_staff_v3(
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::CreateStaff).map_err(|e| e.to_string())?;
 
-    let target_role = Role::from_str(&role).ok_or_else(|| format!("unknown role: {role}"))?;
+    let target_role = Role::from_str(&role).ok_or_else(|| "دور غير معروف".to_string())?;
 
     // Hard rule (SCHEMA_V3.md §2.1, decision 2026-07-16): actor_rank > target_rank, always.
+    // 2026-08-22 QA re-audit: this raw English message reached the Arabic
+    // Staff page verbatim ("role Owner (rank 3) cannot assign role Owner
+    // (rank 3) -- must be strictly below the actor's own rank") -- found
+    // live by trying to create a second Owner from Settings > الموظفين
+    // (the role dropdown offers "مالك" with nothing stopping the actor from
+    // picking it; the backend correctly refuses, just never in Arabic).
     if actor.role.rank() <= target_role.rank() {
-        return Err(format!(
-            "role {:?} (rank {}) cannot assign role {:?} (rank {}) -- must be strictly below the actor's own rank",
-            actor.role, actor.role.rank(), target_role, target_role.rank()
-        ));
+        return Err("لا يمكنك تعيين دور بنفس رتبة حسابك أو أعلى منها".to_string());
     }
 
     // Hard rule (ARCHITECTURE_V3.md #2): Manager's create_staff forces branch_id = actor's own.
@@ -518,7 +521,7 @@ pub fn update_staff_v3(state: State<Db>, license: State<crate::license::cloud::C
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
 
-    let new_role_parsed = Role::from_str(&new_role).ok_or_else(|| format!("unknown role: {new_role}"))?;
+    let new_role_parsed = Role::from_str(&new_role).ok_or_else(|| "دور غير معروف".to_string())?;
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let (target_tenant_id, target_branch_id, target_current_rank) =
@@ -526,17 +529,14 @@ pub fn update_staff_v3(state: State<Db>, license: State<crate::license::cloud::C
 
     authorize_scope(&actor, &target_tenant_id, target_branch_id.as_deref()).map_err(|e| e.to_string())?;
 
+    // 2026-08-22 QA re-audit: both of these raw English messages reached
+    // the Arabic Staff page verbatim -- same class of bug as
+    // create_staff_v3's rank check right above, fixed the same way.
     if actor.role.rank() <= target_current_rank {
-        return Err(format!(
-            "actor rank {} cannot modify a target of rank {} -- must be strictly higher",
-            actor.role.rank(), target_current_rank
-        ));
+        return Err("لا يمكنك تعديل موظف بنفس رتبتك أو أعلى منها".to_string());
     }
     if actor.role.rank() <= new_role_parsed.rank() {
-        return Err(format!(
-            "actor rank {} cannot assign rank {} -- must be strictly higher than the rank being assigned",
-            actor.role.rank(), new_role_parsed.rank()
-        ));
+        return Err("لا يمكنك تعيين دور بنفس رتبة حسابك أو أعلى منها".to_string());
     }
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -592,11 +592,10 @@ pub fn update_staff_profile_v3(state: State<Db>, license: State<crate::license::
     authorize_scope(&actor, &target_tenant_id, target_branch_id.as_deref()).map_err(|e| e.to_string())?;
     // A Manager may edit their own profile (rank equal to self is fine here --
     // this isn't a rank-elevation action) but never someone who outranks them.
+    // 2026-08-22 QA re-audit: same raw-English-reaches-Arabic-UI bug as
+    // create_staff_v3/update_staff_v3's rank checks.
     if actor.id != target_staff_id && actor.role.rank() <= target_current_rank {
-        return Err(format!(
-            "actor rank {} cannot modify a target of rank {} -- must be strictly higher (or be editing their own profile)",
-            actor.role.rank(), target_current_rank
-        ));
+        return Err("لا يمكنك تعديل موظف بنفس رتبتك أو أعلى منها".to_string());
     }
 
     if let Some(ref p) = new_pin {
