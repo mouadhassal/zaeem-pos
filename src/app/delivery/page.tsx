@@ -60,15 +60,29 @@ const STATUS_BADGE: Record<string, { class: string; label: string }> = {
   CANCELLED: { class: "bg-ink-100 text-ink-500", label: "ملغي" },
 };
 
+// 2026-08-22 QA re-audit: delivery_logs.assigned_at is written as the raw
+// SQL literal datetime('now') (repo.rs's assign_driver), not
+// chrono::Utc::now().to_rfc3339() -- "YYYY-MM-DD HH:MM:SS", space-
+// separated, no 'T', no timezone. `new Date(iso)` isn't spec-guaranteed
+// to parse that (and doesn't, live, in this app's WebView2), so every
+// assigned-driver row showed "Invalid Date". Swapping the space for 'T'
+// makes it real ISO `new Date` parses correctly; SQLite's datetime() has
+// no timezone suffix here, so this is parsed as local time, same as it
+// was already being displayed for other genuinely-ISO timestamps.
+function parseSqliteDateTime(iso: string | null | undefined): Date {
+  if (!iso) return new Date(NaN);
+  return new Date(iso.includes("T") ? iso : iso.replace(" ", "T"));
+}
+
 function formatTime(iso: string | null) {
   if (!iso) return "—";
-  const d = new Date(iso);
+  const d = parseSqliteDateTime(iso);
   return d.toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" });
 }
 
 function formatDate(iso: string | null) {
   if (!iso) return "—";
-  const d = new Date(iso);
+  const d = parseSqliteDateTime(iso);
   return d.toLocaleDateString("ar-SA", { day: "numeric", month: "short" });
 }
 

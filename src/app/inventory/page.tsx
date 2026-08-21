@@ -122,15 +122,39 @@ function formatCurrency(cents: number): string {
   return formatMoney(cents);
 }
 
+// 2026-08-22 QA re-audit: every "آخر تحديث" cell showed the literal text
+// "Invalid Date". The REAL root cause (repo.rs's `IngredientRow`): the
+// struct `list_ingredients`/`list_low_stock_ingredients` return never
+// selected `last_modified` at all, even though this file's `Ingredient`
+// TS interface has always declared it as a required `string` -- Tauri's
+// IPC has no way to catch a struct simply missing a field the TS type
+// claims exists, so `ing.last_modified` was silently `undefined` on
+// every row. Fixed at the source (both queries now select it, the
+// struct now carries it). `create_ingredient`/`update_ingredient` (repo.rs)
+// still write it via the raw SQL literal `datetime('now')` -- space-
+// separated, no 'T' -- on every future edit, unlike the RFC3339 value
+// this specific pre-existing data happened to have; the normalization
+// below covers that case too, and is a harmless no-op on an already-ISO
+// string.
+function parseSqliteDateTime(iso: string | null | undefined): Date {
+  // Guards against exactly the failure mode above recurring: if a field
+  // this is called on is ever silently missing again, this returns a
+  // safely-formattable Invalid Date instead of throwing and blanking the
+  // whole page (this is a plain component, no error boundary
+  // nearby). Guard for real rather than trust the declared type.
+  if (!iso) return new Date(NaN);
+  return new Date(iso.includes("T") ? iso : iso.replace(" ", "T"));
+}
+
 function fmtDateTime(iso: string | null): string {
   if (!iso) return "-";
-  return new Date(iso).toLocaleString("ar-SA", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return parseSqliteDateTime(iso).toLocaleString("ar-SA", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 const SUPPLIER_PAYMENT_METHOD_LABEL: Record<string, string> = { CASH: "نقداً", BANK: "تحويل بنكي", CARD: "بطاقة" };
 
 function formatDate(iso: string): string {
-  return new Date(iso).toLocaleString("ar-SA", {
+  return parseSqliteDateTime(iso).toLocaleString("ar-SA", {
     year: "numeric",
     month: "short",
     day: "numeric",

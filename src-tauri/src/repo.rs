@@ -433,6 +433,13 @@ pub struct IngredientRow {
     pub current_stock: f64,
     pub min_stock: f64,
     pub is_active: i64,
+    // 2026-08-22 QA re-audit: never selected until now -- the frontend's
+    // `Ingredient` TS interface has always declared this as a required
+    // `string`, but every row that ever reached it had it silently
+    // `undefined` (Tauri's IPC has no way to catch a struct simply not
+    // having a field the TS type claims exists), so inventory's "آخر
+    // تحديث" column showed "Invalid Date" for every single ingredient.
+    pub last_modified: String,
 }
 
 /// One row of a menu item's BOM/recipe -- `id` is the `recipes.id` (needed
@@ -3073,13 +3080,13 @@ impl<'a> Repo<'a> {
         self.assert_scope_populated("ingredients", true)?;
         let (predicate, args) = Self::scope_predicate(scope);
         let sql = format!(
-            "SELECT id, name, unit, cost_cents_per_unit, current_stock, min_stock, is_active FROM ingredients \
+            "SELECT id, name, unit, cost_cents_per_unit, current_stock, min_stock, is_active, last_modified FROM ingredients \
              WHERE {predicate} AND is_active = 1 AND current_stock < min_stock ORDER BY current_stock ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(params_refs.as_slice(), |r| {
-            Ok(IngredientRow { id: r.get(0)?, name: r.get(1)?, unit: r.get(2)?, cost_cents_per_unit: r.get(3)?, current_stock: r.get(4)?, min_stock: r.get(5)?, is_active: r.get(6)? })
+            Ok(IngredientRow { id: r.get(0)?, name: r.get(1)?, unit: r.get(2)?, cost_cents_per_unit: r.get(3)?, current_stock: r.get(4)?, min_stock: r.get(5)?, is_active: r.get(6)?, last_modified: r.get(7)? })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
@@ -3830,12 +3837,12 @@ impl<'a> Repo<'a> {
         self.assert_scope_populated("ingredients", true)?;
         let (predicate, args) = Self::scope_predicate(scope);
         let sql = format!(
-            "SELECT id, name, unit, cost_cents_per_unit, current_stock, min_stock, is_active FROM ingredients WHERE {predicate} AND is_active = 1 ORDER BY name ASC"
+            "SELECT id, name, unit, cost_cents_per_unit, current_stock, min_stock, is_active, last_modified FROM ingredients WHERE {predicate} AND is_active = 1 ORDER BY name ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(params_refs.as_slice(), |r| {
-            Ok(IngredientRow { id: r.get(0)?, name: r.get(1)?, unit: r.get(2)?, cost_cents_per_unit: r.get(3)?, current_stock: r.get(4)?, min_stock: r.get(5)?, is_active: r.get(6)? })
+            Ok(IngredientRow { id: r.get(0)?, name: r.get(1)?, unit: r.get(2)?, cost_cents_per_unit: r.get(3)?, current_stock: r.get(4)?, min_stock: r.get(5)?, is_active: r.get(6)?, last_modified: r.get(7)? })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
@@ -5679,6 +5686,47 @@ mod tests {
 
         repo.set_category_photo(&tenant_id, &category_id, None).unwrap();
         assert_eq!(repo.get_category_photo_path(&tenant_id, &category_id).unwrap(), None, "clearing must set it back to NULL, not leave the stale path");
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// 2026-08-22 QA re-audit: `list_ingredients`/`list_low_stock_ingredients`
+    /// used to select every `IngredientRow` column except `last_modified`,
+    /// even though the frontend's `Ingredient` TS interface has always
+    /// declared it as a required `string` -- Tauri's IPC layer has no way to
+    /// catch a Rust struct simply missing a field the TS type claims exists,
+    /// so `ing.last_modified` was silently `undefined` on every row and
+    /// inventory's "آخر تحديث" column showed the literal text "Invalid
+    /// Date" for every ingredient, confirmed live via tauri-driver. Proves
+    /// both list methods now actually return the same non-empty
+    /// `last_modified` `create_ingredient` wrote, not an empty/default
+    /// value that would happen to satisfy the type without fixing the bug.
+    #[test]
+    fn list_ingredients_includes_the_real_last_modified_not_a_missing_field() {
+        let db_path = fresh_migrated_db("ingredient_last_modified");
+        let conn = Connection::open(&db_path).unwrap();
+        let (tenant_id, branch_id): (String, String) =
+            conn.query_row("SELECT tenant_id, id FROM branch LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let repo = Repo::new(&conn);
+
+        repo.create_ingredient(&tenant_id, &branch_id, "دقيق", "kg", 1000, 5.0).unwrap();
+        let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        // adjust_stock's inventory_logs write has a real FK on staff.id.
+        let actor_id = repo.create_staff(&tenant_id, None, Some(&branch_id), "CASHIER", 10, "Test Cashier", Some("$2b$dummy"), None).unwrap();
+
+        let all = repo.list_ingredients(&scope).unwrap();
+        assert_eq!(all.len(), 1);
+        assert!(!all[0].last_modified.is_empty(), "last_modified must be a real value, not silently missing/empty");
+        let raw_last_modified: String = conn.query_row("SELECT last_modified FROM ingredients WHERE id = ?1", params![all[0].id], |r| r.get(0)).unwrap();
+        assert_eq!(all[0].last_modified, raw_last_modified, "must be the actual DB value, not a placeholder that happens to satisfy the type");
+
+        // create_ingredient always starts stock at 0 -- receive a small
+        // amount, still under min_stock (5.0), so the same bug's low-stock
+        // path is covered too.
+        repo.adjust_stock(&scope, &tenant_id, &branch_id, &all[0].id, 2.0, "RECEIVE", &actor_id).unwrap();
+        let low_stock = repo.list_low_stock_ingredients(&scope).unwrap();
+        assert_eq!(low_stock.len(), 1);
+        assert!(!low_stock[0].last_modified.is_empty(), "list_low_stock_ingredients must carry last_modified too");
+
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 }
