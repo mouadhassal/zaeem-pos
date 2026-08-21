@@ -67,6 +67,60 @@ fn require_license_not_locked(license: &crate::license::cloud::CloudLicenseState
     Ok(())
 }
 
+const INITIAL_SETUP_IN_PROGRESS_KEY: &str = "initial_setup_in_progress";
+// Bounds the exemption below even if the wizard's own "تخطي -- الإعداد
+// لاحقاً" (skip) button is used -- that path reloads straight into the
+// authenticated app without ever calling `update_business_mode_v3`,
+// which is the exemption's normal (immediate) close. 30 minutes is far
+// more than any real owner takes to click through three short forms;
+// this is just a backstop so an abandoned/skipped setup can't leave the
+// exemption open indefinitely.
+const INITIAL_SETUP_WINDOW_MS: i64 = 30 * 60 * 1000;
+
+/// 2026-08-21 QA re-audit: same lock as `require_license_not_locked`,
+/// except within `INITIAL_SETUP_WINDOW_MS` of `setup_owner_v3` creating
+/// the very first owner (`INITIAL_SETUP_IN_PROGRESS_KEY` stores that
+/// expiry timestamp). `update_business_mode_v3` -- the wizard's own
+/// final step -- clears it early, on success. In between, SetupWizard's
+/// "branch" and "business" steps call `update_chain_currency_v3`/
+/// `save_legacy_branch_v3`/`update_business_mode_v3`, none of which the
+/// owner could have possibly gotten a license activated for yet:
+/// Settings' activation UI is itself unreachable until setup finishes.
+/// Without this exemption that was a real deadlock --
+/// `require_license_not_locked` failed every one of those three calls
+/// with "لا يوجد ترخيص صالح" on a brand-new device, confirmed live
+/// against a release build (debug builds never hit this, since
+/// `needs_setup_v3` always returns false under `cfg!(debug_assertions)`,
+/// so the wizard was never actually exercised before this pass).
+///
+/// A local `branches`/staff-count check was considered instead and
+/// rejected: `update_business_mode_v3` runs AFTER `save_legacy_branch_v3`
+/// already created the tenant's one branch in the same wizard pass, so
+/// "zero branches" doesn't hold for all three calls, and "exactly one
+/// branch" is indistinguishable from a genuinely already-set-up,
+/// single-branch tenant editing business mode later with an expired
+/// license -- that would reopen the exact licensing bypass this gate
+/// exists to prevent. The flag can't be replayed: `setup_owner_v3`
+/// itself refuses a second run once an owner exists ("المالك موجود
+/// بالفعل"), so there is no path for an already-set-up tenant to ever
+/// see this flag set again.
+fn require_license_not_locked_or_initial_setup(
+    license: &crate::license::cloud::CloudLicenseState,
+    conn: &Connection,
+) -> Result<(), String> {
+    let expires_at_ms: Option<i64> = conn
+        .query_row("SELECT value FROM app_settings WHERE key = ?1", params![INITIAL_SETUP_IN_PROGRESS_KEY], |r| r.get::<_, String>(0))
+        .optional()
+        .unwrap_or(None)
+        .and_then(|v| v.parse().ok());
+    if let Some(expires_at_ms) = expires_at_ms {
+        if chrono::Utc::now().timestamp_millis() < expires_at_ms {
+            return Ok(());
+        }
+    }
+    require_license_not_locked(license)
+}
+
 /// 2026-08-14 pricing tiers: 'pos_lite' is the sell-and-print terminal
 /// without the CRM/ERP layer (reports, loyalty, debt, roster/HR, anomaly/
 /// forecast/reconciliation) -- that's the actual product difference from
@@ -326,6 +380,16 @@ pub fn setup_owner_v3(state: State<Db>, name: String, password: String, pin: Str
         &tx, &device_id, &tenant_id, None, &staff_id,
         audit::Action::StaffCreated, "staff", &staff_id,
         None, Some(&serde_json::json!({ "role": "OWNER", "name": name, "bootstrap": true })),
+    ).map_err(|e| e.to_string())?;
+    // Opens the license-gate exemption SetupWizard's own remaining steps
+    // (currency/branch/business-mode) need -- see
+    // `require_license_not_locked_or_initial_setup`'s doc comment.
+    // `update_business_mode_v3` (the wizard's final step) closes it early
+    // on success; this timestamp bounds it regardless.
+    let setup_expires_at_ms = (chrono::Utc::now().timestamp_millis() + INITIAL_SETUP_WINDOW_MS).to_string();
+    tx.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+        params![INITIAL_SETUP_IN_PROGRESS_KEY, setup_expires_at_ms],
     ).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
 
@@ -2266,9 +2330,9 @@ pub fn get_chain_config_v3(state: State<Db>, session_token: String) -> Result<cr
 #[tauri::command]
 pub fn update_chain_currency_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, currency: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    require_license_not_locked_or_initial_setup(&license, &conn)?;
+    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     Repo::new(&tx).update_chain_currency(&actor.tenant_id, &currency).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "chain_config", "default", None, Some(&serde_json::json!({ "currency": currency }))).map_err(|e| e.to_string())?;
@@ -2429,9 +2493,9 @@ fn resolve_order_table_id(tx: &rusqlite::Transaction, tenant_id: &str, branch_id
 #[tauri::command]
 pub fn update_business_mode_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, has_tables: bool, has_kitchen: bool) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    require_license_not_locked_or_initial_setup(&license, &conn)?;
+    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     Repo::new(&tx).update_business_mode(&actor.tenant_id, has_tables, has_kitchen).map_err(|e| e.to_string())?;
     if !has_tables {
@@ -2442,6 +2506,12 @@ pub fn update_business_mode_v3(state: State<Db>, license: State<crate::license::
         audit::Action::SettingsChanged, "chain_config", "default",
         None, Some(&serde_json::json!({ "has_tables": has_tables, "has_kitchen": has_kitchen })),
     ).map_err(|e| e.to_string())?;
+    // SetupWizard's own final step -- the exemption
+    // `require_license_not_locked_or_initial_setup` grants during initial
+    // setup closes here, permanently, the moment setup genuinely
+    // completes. A no-op on every later, ordinary Settings edit (the flag
+    // is already gone by then).
+    tx.execute("DELETE FROM app_settings WHERE key = ?1", params![INITIAL_SETUP_IN_PROGRESS_KEY]).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -2458,9 +2528,9 @@ pub fn get_legacy_branch_v3(state: State<Db>, license: State<crate::license::clo
 #[allow(clippy::too_many_arguments)]
 pub fn save_legacy_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, existing_id: Option<String>, name: String, address: Option<String>, phone: Option<String>, max_tables: i64, currency: String) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    require_license_not_locked_or_initial_setup(&license, &conn)?;
+    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let branch_id = Repo::new(&tx).upsert_legacy_branch(&actor.tenant_id, existing_id.as_deref(), &name, address.as_deref(), phone.as_deref(), max_tables, &currency).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "branch", &branch_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
@@ -11408,7 +11478,18 @@ mod tests {
             for name in GATED {
                 let body = function_body(source, name);
                 let has_param = body.contains("license: State<crate::license::cloud::CloudLicenseState>");
-                let has_call = body.contains("require_license_not_locked(&license)?;");
+                // update_chain_currency_v3/save_legacy_branch_v3/
+                // update_business_mode_v3 call the initial-setup-exempt
+                // wrapper instead of the raw gate directly -- see
+                // `require_license_not_locked_or_initial_setup`'s doc
+                // comment (SetupWizard's own steps run before any license
+                // could possibly be activated yet). The wrapper always
+                // falls through to the exact same `require_license_not_
+                // locked` call once the setup window closes, so this is
+                // still real, permanent enforcement -- just not the raw
+                // call string.
+                let has_call = body.contains("require_license_not_locked(&license)?;")
+                    || body.contains("require_license_not_locked_or_initial_setup(&license, &conn)?;");
                 if !has_param || !has_call {
                     missing.push(*name);
                 }
@@ -11498,6 +11579,84 @@ mod tests {
             assert!(!status_after_install.back_office_locked(), "a valid license for this machine must unlock back-office");
 
             let _ = fs::remove_dir_all(&dir);
+        }
+
+        /// 2026-08-21 QA re-audit: proves the actual deadlock fix --
+        /// `require_license_not_locked_or_initial_setup` grants access on
+        /// a fully unlicensed device (matching a real brand-new terminal
+        /// mid-SetupWizard) while the setup window is still open, blocks
+        /// exactly like the raw gate once it's expired, and blocks
+        /// immediately once it's been explicitly cleared (what
+        /// `update_business_mode_v3` does on the wizard's own successful
+        /// completion). Confirmed live against a release build before this
+        /// fix: a brand-new device could never get past SetupWizard's
+        /// "branch" step at all, since `save_legacy_branch_v3` failed with
+        /// "لا يوجد ترخيص صالح" and Settings' activation UI -- the only
+        /// place to fix that -- was itself unreachable until setup
+        /// finished.
+        #[test]
+        fn initial_setup_exemption_opens_then_closes_the_license_gate() {
+            use super::super::{require_license_not_locked_or_initial_setup, INITIAL_SETUP_IN_PROGRESS_KEY, INITIAL_SETUP_WINDOW_MS};
+            let (db_path, _tenant_id, _branch_id, _table_id) = seeded_db("initial_setup_exemption");
+
+            // Same construction as command_wrapper_tests's private
+            // never_checked_license helper (a fresh, never-installed
+            // license -- exactly a brand-new terminal's real state) --
+            // that helper isn't visible from this sibling submodule.
+            struct NeverCalledTransport;
+            #[async_trait::async_trait]
+            impl crate::license::cloud::CloudTransport for NeverCalledTransport {
+                async fn check(&self, _license_id: &str, _device_token: &str) -> crate::license::cloud::CloudCheckOutcome {
+                    panic!("this test must never call the cloud transport");
+                }
+            }
+            let license_dir = db_path.parent().unwrap().to_path_buf();
+            let key = license_core::signed::test_support::test_keypair();
+            let offline = crate::license::store::LicenseState::init(license_dir.clone(), key.verifying_key());
+            let license = crate::license::cloud::CloudLicenseState::new(offline, license_dir, None, Box::new(NeverCalledTransport));
+            assert!(license.cached_status().back_office_locked(), "a brand-new device with no license file must start locked");
+
+            let conn = Connection::open(&db_path).unwrap();
+
+            // No flag at all -- an ordinary already-set-up device with a
+            // locked license: the gate must still block, same as always.
+            assert!(require_license_not_locked_or_initial_setup(&license, &conn).is_err());
+
+            // setup_owner_v3's own write: an expiry timestamp in the future.
+            let future_ms = chrono::Utc::now().timestamp_millis() + INITIAL_SETUP_WINDOW_MS;
+            conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+                params![INITIAL_SETUP_IN_PROGRESS_KEY, future_ms.to_string()],
+            ).unwrap();
+            assert!(
+                require_license_not_locked_or_initial_setup(&license, &conn).is_ok(),
+                "within the setup window, SetupWizard's own commands must not be blocked by the missing license"
+            );
+
+            // Expired window (setup abandoned/skipped past 30 minutes ago) --
+            // falls through to the real, permanent lock again.
+            let past_ms = chrono::Utc::now().timestamp_millis() - 1000;
+            conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+                params![INITIAL_SETUP_IN_PROGRESS_KEY, past_ms.to_string()],
+            ).unwrap();
+            assert!(require_license_not_locked_or_initial_setup(&license, &conn).is_err(), "an expired setup window must not exempt anything");
+
+            // update_business_mode_v3's own explicit close (the common,
+            // non-abandoned path) -- deleting the key must block immediately,
+            // not just eventually via expiry.
+            conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+                params![INITIAL_SETUP_IN_PROGRESS_KEY, future_ms.to_string()],
+            ).unwrap();
+            assert!(require_license_not_locked_or_initial_setup(&license, &conn).is_ok());
+            conn.execute("DELETE FROM app_settings WHERE key = ?1", params![INITIAL_SETUP_IN_PROGRESS_KEY]).unwrap();
+            assert!(
+                require_license_not_locked_or_initial_setup(&license, &conn).is_err(),
+                "clearing the flag (setup finished) must close the exemption immediately"
+            );
+
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
     }
 

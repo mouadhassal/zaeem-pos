@@ -166,7 +166,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const user = toAuthUser(response);
       localStorage.setItem("zaeem_auth_token", response.token);
       localStorage.setItem("zaeem_user", JSON.stringify(user));
-      set({ user, token: response.token, isAuthenticated: true, needsSetup: false });
+      // 2026-08-21 QA re-audit: this used to also set needsSetup: false
+      // here -- since App.tsx checks `needsSetup` before `isAuthenticated`,
+      // that flip swapped SetupWizard out for the full authenticated app on
+      // the very next render, orphaning its own "branch" and "business"
+      // steps (currency, branch name, has_tables/has_kitchen) before they
+      // could ever be shown. needs_setup_v3 itself already flips to false
+      // server-side the moment an OWNER exists (commands_v3.rs), so leaving
+      // needsSetup untouched here just lets SetupWizard finish its own
+      // steps; handleBusinessSubmit's own reload is what actually surfaces
+      // the real (now-false) needs_setup_v3 result and exits the wizard.
+      set({ user, token: response.token, isAuthenticated: true });
       return null;
     } catch (err) {
       return typeof err === "string" ? err : "فشل إنشاء الحساب";
