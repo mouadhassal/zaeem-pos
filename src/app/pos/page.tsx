@@ -220,10 +220,11 @@ export default function POSPage() {
   }, [fetchTables, addItem]);
 
   const handleHold = async () => {
-    if (!user || !tableId) return;
+    if (!user) return;
+    if (!tableId && orderType === "DINE_IN") return;
     try {
       await holdOrder(
-        tableId, user.id, orderType,
+        tableId ?? "", user.id, orderType,
         items.map((i) => ({ menuItemId: i.menuItemId, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers })),
         useCartStore.getState().subtotal(),
         useCartStore.getState().tax().taxCents + useCartStore.getState().tax().secondaryTaxCents + useCartStore.getState().tax().serviceChargeCents,
@@ -312,7 +313,7 @@ export default function POSPage() {
 
   const handlePaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string) => {
     if (!user) return;
-    if (!tableId && orderType !== "DEBT") return;
+    if (!tableId && orderType === "DINE_IN") return;
     let orderId: string;
     try {
       const state = useCartStore.getState();
@@ -558,7 +559,9 @@ export default function POSPage() {
     ? `#${orderNumber}`
     : tableId
     ? `طاولة ${tableName} / #${orderNumber}`
-    : "اختر طاولة";
+    : orderType === "DINE_IN"
+    ? "اختر طاولة"
+    : `#${orderNumber}`;
 
   const handleIncrementLine = (id: string) => updateQuantity(id, 1);
   const handleDecrementLine = (id: string) => updateQuantity(id, -1);
@@ -668,7 +671,7 @@ export default function POSPage() {
           }
         >
           <PayKey
-            disabled={items.length === 0 || (!tableId && orderType !== "DEBT")}
+            disabled={items.length === 0 || (!tableId && orderType === "DINE_IN")}
             onClick={() => {
               const cartSubtotal = useCartStore.getState().subtotal();
               const discountPercent = cartSubtotal > 0
@@ -682,7 +685,7 @@ export default function POSPage() {
               }
             }}
             {...(items.length > 0 ? { onHold: handleHold as () => void } : {})}
-            holdDisabled={!tableId}
+            holdDisabled={!tableId && orderType === "DINE_IN"}
           />
         </OrderPanel>
       </div>

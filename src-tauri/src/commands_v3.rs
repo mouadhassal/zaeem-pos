@@ -2404,6 +2404,26 @@ fn ensure_counter_tables_exist(tx: &rusqlite::Transaction, tenant_id: &str) -> R
     Ok(())
 }
 
+/// Whenever a caller sends an empty `table_id` (currently only possible
+/// for non-DINE_IN order types, since DINE_IN's own frontend flow always
+/// requires a real table selection first -- see pos/page.tsx's PayKey
+/// disabled condition), silently resolve to that branch's counter table
+/// instead of failing the NOT NULL / FK constraint on `orders.table_id`.
+/// A non-empty table_id is returned unchanged -- this never overrides a
+/// real, caller-selected dine-in table. Reuses `ensure_counter_tables_exist`
+/// (idempotent, matched by exact name) so this never creates duplicates.
+fn resolve_order_table_id(tx: &rusqlite::Transaction, tenant_id: &str, branch_id: &str, table_id: &str) -> Result<String, String> {
+    if !table_id.trim().is_empty() {
+        return Ok(table_id.to_string());
+    }
+    ensure_counter_tables_exist(tx, tenant_id)?;
+    tx.query_row(
+        "SELECT id FROM tables WHERE tenant_id = ?1 AND branch_id = ?2 AND name = ?3",
+        params![tenant_id, branch_id, COUNTER_TABLE_NAME],
+        |r| r.get(0),
+    ).map_err(|e| e.to_string())
+}
+
 /// Manager+ (`Permission::ManageSettings`, same gate as currency/tax/
 /// discount caps/manager thresholds).
 #[tauri::command]
@@ -3884,6 +3904,7 @@ fn create_full_order_v3_impl(
 
     let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let table_id = resolve_order_table_id(&tx, &tenant_id, &branch_id, &table_id)?;
     let input = FullOrderInput {
         table_id, user_id: actor.id.clone(), order_type: order_type.clone(),
         subtotal_cents, tax_cents, total_cents, discount_cents,
@@ -4056,6 +4077,7 @@ fn hold_order_v3_impl(
         price_order_authoritatively(&conn, &tenant_id, &items, 0, 0)?;
     let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let table_id = resolve_order_table_id(&tx, &tenant_id, &branch_id, &table_id)?;
     let input = FullOrderInput {
         table_id, user_id: actor.id.clone(), order_type: order_type.clone(),
         subtotal_cents, tax_cents, total_cents, discount_cents: 0,
@@ -4328,6 +4350,7 @@ fn schedule_delayed_order_v3_impl(
         price_order_authoritatively(&conn, &tenant_id, &items, 0, 0)?;
     let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let table_id = resolve_order_table_id(&tx, &tenant_id, &branch_id, &table_id)?;
     let input = FullOrderInput {
         table_id, user_id: actor.id.clone(), order_type: order_type.clone(),
         subtotal_cents, tax_cents, total_cents, discount_cents: 0,
@@ -6482,6 +6505,146 @@ mod tests {
             tx.commit().unwrap();
             assert_eq!(count_counters(&branch_a), 1, "must be idempotent, not create a duplicate");
             assert_eq!(count_counters(&branch_b), 1);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// 2026-08-20 takeaway-without-a-table fix: a real user flagged
+        /// that TAKEAWAY couldn't be paid because the frontend required a
+        /// physical table to be picked first, even though `orders.table_id`
+        /// is a real NOT NULL FK (`0001_init.sql`) that can never actually
+        /// go nullable without a large cross-cutting schema change (KDS
+        /// filtering, table-merge, split-bill, reporting all key off it).
+        /// The safe fix: `resolve_order_table_id` resolves a caller-supplied
+        /// empty `table_id` to the branch's counter table via the existing
+        /// `ensure_counter_tables_exist` mechanism instead. Proves a TAKEAWAY
+        /// order created with `table_id: ""` succeeds and the stored
+        /// `orders.table_id` is the branch's real counter table id -- not an
+        /// empty string, and not a constraint failure.
+        #[test]
+        fn create_full_order_v3_with_empty_table_id_resolves_to_the_counter_table() {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("empty_table_id_resolves");
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 1000, 500, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+            let items = vec![OrderItemInput {
+                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let order_id = create_full_order_v3_impl(
+                &db, &license,
+                session, "".to_string(), "TAKEAWAY".to_string(), items,
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+            ).expect("a TAKEAWAY order with no table_id must succeed, not fail the FK/NOT NULL constraint");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let stored_table_id: String = conn.query_row("SELECT table_id FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            let counter_table_id: String = conn.query_row(
+                "SELECT id FROM tables WHERE tenant_id = ?1 AND branch_id = ?2 AND name = 'المنضدة'",
+                params![tenant_id, branch_id],
+                |r| r.get(0),
+            ).unwrap();
+            assert_eq!(stored_table_id, counter_table_id, "an empty caller table_id must resolve to the branch's real counter table id");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Companion to the test above: creating TWO separate orders with an
+        /// empty `table_id` must not create two counter tables --
+        /// `resolve_order_table_id` calls the existing idempotent
+        /// `ensure_counter_tables_exist` every time, so the second call must
+        /// find the row the first call already created.
+        #[test]
+        fn create_full_order_v3_with_empty_table_id_twice_does_not_duplicate_the_counter_table() {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("empty_table_id_no_dup");
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 1000, 500, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+
+            for _ in 0..2 {
+                let items = vec![OrderItemInput {
+                    menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 1000,
+                    notes: None, combo_id: None, modifiers: vec![],
+                }];
+                create_full_order_v3_impl(
+                    &db, &license,
+                    session.clone(), "".to_string(), "TAKEAWAY".to_string(), items,
+                    1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+                ).expect("each empty-table_id TAKEAWAY order must succeed");
+            }
+
+            let conn = Connection::open(&db_path).unwrap();
+            let counter_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM tables WHERE tenant_id = ?1 AND branch_id = ?2 AND name = 'المنضدة'",
+                params![tenant_id, branch_id],
+                |r| r.get(0),
+            ).unwrap();
+            assert_eq!(counter_count, 1, "two orders with an empty table_id must still share exactly one counter table, not create a duplicate");
+            let order_count: i64 = conn.query_row("SELECT COUNT(*) FROM orders WHERE tenant_id = ?1", params![tenant_id], |r| r.get(0)).unwrap();
+            assert_eq!(order_count, 2, "both orders must have actually been created");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Regression guard: a DINE_IN order with a real, caller-supplied
+        /// `table_id` must keep using that exact table, never get silently
+        /// redirected to the counter table -- `resolve_order_table_id`
+        /// returns a non-empty `table_id` unchanged.
+        #[test]
+        fn create_full_order_v3_with_dine_in_and_a_real_table_id_keeps_that_table() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("dine_in_real_table_unchanged");
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 1000, 500, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+            let items = vec![OrderItemInput {
+                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let order_id = create_full_order_v3_impl(
+                &db, &license,
+                session, table_id.clone(), "DINE_IN".to_string(), items,
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+            ).expect("a DINE_IN order with a real table_id must still succeed");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let stored_table_id: String = conn.query_row("SELECT table_id FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(stored_table_id, table_id, "a real caller-supplied dine-in table_id must never be redirected to the counter table");
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
