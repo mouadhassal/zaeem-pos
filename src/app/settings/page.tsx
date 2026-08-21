@@ -322,7 +322,19 @@ export default function SettingsPage() {
     setTableError(null);
     setTableBusy(true);
     try {
-      await invoke("create_table_v3", { sessionToken: token, name: newTableName.trim(), branchId: branch?.id ?? null });
+      // 2026-08-22 QA re-audit: `branch` here is get_legacy_branch_v3's row
+      // -- the legacy single-branch `branches` table SetupWizard writes to.
+      // create_table_v3 validates its branchId against the real, separate
+      // `branch` (singular) table T1.1's expand migration seeds with its
+      // OWN fresh id -- the two tables were never reconciled, so branch.id
+      // never matches and every "add table" failed with a raw, untranslated
+      // "that branch does not belong to your tenant" (resolve_branch_for_
+      // actor's error, commands_v3.rs). Passing null instead lets
+      // resolve_operating_branch do what it already does correctly for
+      // create_table_v3 (fixed earlier this session for exactly this
+      // "single branch, no explicit id" case) -- auto-resolve the real
+      // branch instead of trusting an id from the wrong table.
+      await invoke("create_table_v3", { sessionToken: token, name: newTableName.trim(), branchId: null });
       setNewTableName("");
       await fetchTables();
     } catch (err) {
