@@ -6772,6 +6772,61 @@ mod tests {
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
+        /// 2026-08-22 QA re-audit: `split_bill`'s INSERT never populated the
+        /// money-scale columns (subtotal_minor/_currency/_scale/etc) every
+        /// other order-creation path already sets -- confirmed live: a
+        /// kitchen-screen status change on a split-bill order hard-errored
+        /// ("Invalid column type Null at index: 2, name: subtotal_minor")
+        /// because `update_order_status_v3` (via `replay_order_status`/
+        /// `order_current`'s rebuild) reads `orders.subtotal_minor` as
+        /// non-nullable. Proves the fix: advancing a split order's status
+        /// now succeeds instead of hard-erroring.
+        #[test]
+        fn update_order_status_v3_succeeds_on_a_split_bill_order() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("status_update_on_split_order");
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 1000, 500, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+            let items = vec![OrderItemInput {
+                menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 1000,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let order_id = create_full_order_v3_impl(
+                &db, &license,
+                session.clone(), table_id.clone(), "DINE_IN".to_string(), items,
+                2000, 0, 2000, 0, None, None, None, None, 0, None, None, None,
+            ).unwrap();
+
+            let split_ids = split_bill_v3_impl(
+                &db, session.clone(), order_id, vec![
+                    crate::repo::SplitBillInput { item_ids: vec![], amount_cents: 1000, label: "1".to_string() },
+                    crate::repo::SplitBillInput { item_ids: vec![], amount_cents: 1000, label: "2".to_string() },
+                ], table_id,
+            ).expect("split_bill itself must succeed");
+            assert_eq!(split_ids.len(), 2);
+
+            update_order_status_v3_impl(&db, session, split_ids[0].clone(), "PREPARING".to_string())
+                .expect("advancing a split-bill order's status must not hard-error on a Null subtotal_minor column");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let subtotal_minor: i64 = conn.query_row("SELECT subtotal_minor FROM orders WHERE id = ?1", params![split_ids[0]], |r| r.get(0)).unwrap();
+            assert_eq!(subtotal_minor, 1000, "the split order's money-scale columns must be populated, not left NULL");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
         /// 2026-08-02: this control used to exist ONLY in shift/page.tsx's
         /// client-side `DIFF_THRESHOLD_CENTS` check -- calling
         /// `close_shift_v3` directly (bypassing the UI) could close any

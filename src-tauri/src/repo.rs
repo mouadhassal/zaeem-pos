@@ -4869,6 +4869,20 @@ impl<'a> Repo<'a> {
         let (tenant_id, branch_id): (String, String) = self.conn.query_row(
             "SELECT tenant_id, branch_id FROM orders WHERE id = ?1", params![order_id], |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
+        // 2026-08-22 QA re-audit: this INSERT never populated the money-scale
+        // columns (subtotal_minor/_currency/_scale/etc) that every other
+        // order-creation path (create_full_order, hold_order) always sets --
+        // confirmed live: KDS's `update_order_status_v3` reads
+        // `orders.subtotal_minor` as non-nullable and hard-errors ("Invalid
+        // column type Null at index: 2") the moment a split-bill order's
+        // status is touched, since it was left NULL. Same currency/scale
+        // convention as the other two paths: native currency, so
+        // base_minor mirrors the minor value, fx_rate '1', fx_source
+        // 'NATIVE', denom_epoch 2.
+        let currency: String = self.conn.query_row(
+            "SELECT currency FROM branch WHERE id = ?1", params![branch_id], |r| r.get(0)
+        )?;
+        let scale = crate::money::scale_for(&currency) as i64;
         let now = chrono::Utc::now().to_rfc3339();
         let mut split_order_ids = Vec::with_capacity(splits.len());
 
@@ -4880,9 +4894,17 @@ impl<'a> Repo<'a> {
             split_order_ids.push(new_order_id.clone());
 
             self.conn.execute(
-                "INSERT INTO orders (id, tenant_id, branch_id, table_id, user_id, status, order_type, subtotal_cents, tax_cents, total_cents, discount_cents, delivery_fee_cents, parent_order_id, created_at, sync_version, last_modified, sync_status) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', 'DINE_IN', ?6, 0, ?6, 0, 0, ?7, ?8, 1, ?8, 'pending')",
-                params![new_order_id, tenant_id, branch_id, table_id, user_id, split.amount_cents, order_id, now],
+                "INSERT INTO orders (id, tenant_id, branch_id, table_id, user_id, status, order_type, subtotal_cents, tax_cents, total_cents, discount_cents, delivery_fee_cents, parent_order_id, created_at, sync_version, last_modified, sync_status, \
+                 subtotal_minor, subtotal_currency, subtotal_scale, subtotal_base_minor, subtotal_fx_rate, subtotal_fx_source, subtotal_denom_epoch, \
+                 tax_minor, tax_currency, tax_scale, tax_base_minor, tax_fx_rate, tax_fx_source, tax_denom_epoch, \
+                 discount_minor, discount_currency, discount_scale, discount_base_minor, discount_fx_rate, discount_fx_source, discount_denom_epoch, \
+                 total_minor, total_currency, total_scale, total_base_minor, total_fx_rate, total_fx_source, total_denom_epoch) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', 'DINE_IN', ?6, 0, ?6, 0, 0, ?7, ?8, 1, ?8, 'pending', \
+                 ?6, ?9, ?10, ?6, '1', 'NATIVE', 2, \
+                 0, ?9, ?10, 0, '1', 'NATIVE', 2, \
+                 0, ?9, ?10, 0, '1', 'NATIVE', 2, \
+                 ?6, ?9, ?10, ?6, '1', 'NATIVE', 2)",
+                params![new_order_id, tenant_id, branch_id, table_id, user_id, split.amount_cents, order_id, now, currency, scale],
             ).map_err(RepoError::from)?;
 
             for item_id in &split.item_ids {
