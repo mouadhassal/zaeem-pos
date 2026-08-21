@@ -4701,7 +4701,17 @@ impl<'a> Repo<'a> {
         let sql = format!(
             "SELECT id, customer_name, customer_phone, delivery_address FROM orders WHERE id = {id_placeholder} AND status = 'DRAFT' AND {predicate}"
         );
-        let order: Option<(String, String, Option<String>, Option<String>)> = self.conn.query_row(
+        // 2026-08-22 QA re-audit: `customer_name` (index 1) was declared as
+        // a plain `String`, not `Option<String>` -- but it's genuinely NULL
+        // for the overwhelming common case, a DINE_IN hold with no customer
+        // name recorded at all. rusqlite hard-errors ("Invalid column type
+        // Null at index: 1") rather than silently coercing, which meant
+        // EVERY resume of a normal dine-in held order failed -- confirmed
+        // live: the frontend has no try/catch around this call
+        // (pos/page.tsx's handleTableSelect), so it surfaced only as a
+        // silent unhandled promise rejection, leaving the cashier looking
+        // at an empty cart for a table that had a real held order.
+        let order: Option<(String, Option<String>, Option<String>, Option<String>)> = self.conn.query_row(
             &sql,
             params_from_iter(args.iter()),
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
@@ -4740,7 +4750,7 @@ impl<'a> Repo<'a> {
             });
         }
 
-        Ok(Some(HeldOrderResult { items, customer_name: Some(customer_name), customer_phone, delivery_address }))
+        Ok(Some(HeldOrderResult { items, customer_name, customer_phone, delivery_address }))
     }
 
     /// Verifies `order_id` belongs to the caller's tenant/branch before any

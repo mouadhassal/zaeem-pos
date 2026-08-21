@@ -6717,6 +6717,61 @@ mod tests {
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
+        /// 2026-08-22 QA re-audit: a DINE_IN order held with no customer
+        /// name (the overwhelming common case -- `FullOrderInput.
+        /// customer_name` is `None` for a normal table hold) used to make
+        /// `retrieve_held_order` hard-fail with a rusqlite "Invalid column
+        /// type Null at index: 1, name: customer_name" error, because the
+        /// query's tuple type declared that column as a plain `String`
+        /// instead of `Option<String>`. Confirmed live via tauri-driver:
+        /// the frontend's `handleTableSelect` (pos/page.tsx) has no
+        /// try/catch around the `retrieveHeldOrder` call, so this
+        /// surfaced only as a silent unhandled promise rejection -- a
+        /// cashier holding a dine-in order and re-selecting that same
+        /// table saw an empty cart for a table that had a real held
+        /// order, with no error shown anywhere. This proves the fix:
+        /// resuming a customer-name-less held order succeeds and returns
+        /// the real items.
+        #[test]
+        fn retrieve_held_order_succeeds_for_a_dine_in_hold_with_no_customer_name() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("retrieve_held_order_no_customer_name");
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 1000, 500, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+            let items = vec![OrderItemInput {
+                menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 1000,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let order_id = hold_order_v3_impl(
+                &db, &license, session, table_id.clone(), "DINE_IN".to_string(), items,
+                2000, 0, 2000, None,
+            ).expect("holding a dine-in order with no customer name must succeed");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let scope = Scope::Branch { tenant_id, branch_id };
+            let held = Repo::new(&conn)
+                .retrieve_held_order(&scope, &order_id)
+                .expect("retrieving a customer-name-less held order must not hard-error on the Null customer_name column")
+                .expect("the held order must actually be found");
+            assert_eq!(held.customer_name, None, "no customer name was ever recorded for this hold");
+            assert_eq!(held.items.len(), 1, "one distinct line item (quantity 2) was held");
+            assert_eq!(held.items[0].quantity, 2);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
         /// 2026-08-02: this control used to exist ONLY in shift/page.tsx's
         /// client-side `DIFF_THRESHOLD_CENTS` check -- calling
         /// `close_shift_v3` directly (bypassing the UI) could close any
