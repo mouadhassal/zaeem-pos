@@ -609,6 +609,7 @@ export default function POSPage() {
       <div className="w-[250px] shrink-0 h-full">
         <OrderPanel
           tableLabel={tableLabel}
+          emptyMessage={orderType === "DINE_IN" ? "ما في أصناف بعد. اختر طاولة لتبدأ." : "ما في أصناف بعد. أضف صنفاً لتبدأ."}
           lines={orderLines}
           subtotalCents={subtotalCents}
           discountCents={discountCents}

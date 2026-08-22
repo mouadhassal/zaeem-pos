@@ -19,6 +19,12 @@ interface Props {
   discountCents: number;
   totalCents: number;
   currencySymbol: string;
+  /** 2026-08-22 QA re-audit: was a bare hardcoded "اختر طاولة لتبدأ" (choose
+      a table to start) regardless of order type -- wrong and confusing for
+      TAKEAWAY/DEBT, which the takeaway fix earlier this session made
+      table-free. Caller now passes the message that's actually true for the
+      current order type; falls back to the old copy if omitted. */
+  emptyMessage?: string;
   onEditOrder?: (() => void) | undefined;
   /** Icon for the current order type (DINE_IN/TAKEAWAY/DELIVERY/ONLINE) -- rendered inside the visible order-type pill, not just a bare edit pencil. */
   orderTypeIcon?: ReactNode;
@@ -33,7 +39,7 @@ interface Props {
 export default function OrderPanel({
   tableLabel, lines, subtotalCents, discountCents,
   totalCents, currencySymbol, onEditOrder, orderTypeIcon, orderTypeLabel, children, toolbar,
-  onIncrementLine, onDecrementLine, onVoidLine,
+  onIncrementLine, onDecrementLine, onVoidLine, emptyMessage,
 }: Props) {
   const fmt = (c: number) =>
     c.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -76,7 +82,7 @@ export default function OrderPanel({
         ))}
         {lines.length === 0 && (
           <div className="text-sm text-text-muted text-center py-8">
-            ما في أصناف بعد. اختر طاولة لتبدأ.
+            {emptyMessage ?? "ما في أصناف بعد. اختر طاولة لتبدأ."}
           </div>
         )}
       </div>
