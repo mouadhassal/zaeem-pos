@@ -42,8 +42,24 @@ const entrySchema = z.object({
 });
 type EntryForm = z.infer<typeof entrySchema>;
 
+// 2026-08-22 QA re-audit: this used to be `d.toISOString().slice(0, 10)` --
+// `d` here is always a LOCAL midnight (built via startOfWeek's
+// setDate/setHours(0,0,0,0), local-time setters), but toISOString()
+// converts to UTC first. In any timezone ahead of UTC (Asia/Damascus,
+// UTC+3, this app's own established convention -- see upsert_legacy_branch's
+// hardcoded 'Asia/Damascus'), local midnight is still the PREVIOUS day in
+// UTC, so every date key this produced was one full day earlier than the
+// column it labeled. The header text next to it already used
+// `d.toLocaleDateString(...)` (correctly local), so the visible day number
+// and the actual entriesFor()/openAdd() date key silently disagreed by one
+// day, every single day, confirmed live: a shift saved for the picked date
+// 25/08 rendered under the column visually labeled 26/08. Local
+// year/month/day components -- no UTC conversion -- fixes it.
 function toDateStr(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 // Gulf/Saudi convention -- week starts Saturday. Finds the most recent
