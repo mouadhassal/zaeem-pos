@@ -304,6 +304,30 @@ export default function NetworkTab({ token }: { token: string | null }) {
 
       {status.mode === "hub" && (
         <>
+          {/* 2026-08-22 QA re-audit: `forget_pairing_v3` (resets
+              lan_config.json's mode back to "standalone") already existed
+              and was already wired to the Satellite block below -- but
+              never offered here, so a device that became a Hub had no UI
+              path back to standalone at all, confirmed live. Same action,
+              same button copy pattern as the Satellite block's "إلغاء
+              الاتصال بهذا المركز". `start_hub_server` only ever runs at
+              boot or right when Hub mode is enabled (lan.rs/lib.rs) -- there
+              is no live "stop the server" call anywhere in this codebase --
+              so this is honest about the restart requirement rather than
+              implying the change takes effect immediately. */}
+          <div className="bg-white rounded-md p-5 border border-ink-200 space-y-2">
+            <button
+              onClick={forgetPairing}
+              disabled={busy}
+              className="h-9 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-xs font-bold hover:bg-ink-100 transition-colors disabled:opacity-50"
+            >
+              تعطيل وضع المركزي
+            </button>
+            <p className="text-xs text-ink-400 font-arabic">
+              يعيد هذا الجهاز إلى الوضع المستقل. يسري التغيير بالكامل بعد إعادة تشغيل التطبيق.
+            </p>
+          </div>
+
           <div className="bg-white rounded-md p-5 border border-ink-200 space-y-3">
             <p className="text-sm font-arabic text-ink-900 font-bold">طلبات اتصال جديدة</p>
             {pending.length === 0 ? (
