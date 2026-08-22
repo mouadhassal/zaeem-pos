@@ -5,6 +5,7 @@ import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import { IconChevronRight, IconChevronLeft, IconPlus, IconX, IconTrash } from "@tabler/icons-react";
 import DatePicker from "../../components/ui/DatePicker";
+import { toLocalDateStr } from "../../lib/dateLocal";
 
 // HR_AND_GENERALIZATION_PLAN.md Part A -- a manager's calendar of who's
 // scheduled to work when. Deliberately named "roster" everywhere (matches
@@ -42,25 +43,13 @@ const entrySchema = z.object({
 });
 type EntryForm = z.infer<typeof entrySchema>;
 
-// 2026-08-22 QA re-audit: this used to be `d.toISOString().slice(0, 10)` --
-// `d` here is always a LOCAL midnight (built via startOfWeek's
-// setDate/setHours(0,0,0,0), local-time setters), but toISOString()
-// converts to UTC first. In any timezone ahead of UTC (Asia/Damascus,
-// UTC+3, this app's own established convention -- see upsert_legacy_branch's
-// hardcoded 'Asia/Damascus'), local midnight is still the PREVIOUS day in
-// UTC, so every date key this produced was one full day earlier than the
-// column it labeled. The header text next to it already used
-// `d.toLocaleDateString(...)` (correctly local), so the visible day number
-// and the actual entriesFor()/openAdd() date key silently disagreed by one
-// day, every single day, confirmed live: a shift saved for the picked date
-// 25/08 rendered under the column visually labeled 26/08. Local
-// year/month/day components -- no UTC conversion -- fixes it.
-function toDateStr(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
+// 2026-08-22 QA re-audit: this used to be a local `d.toISOString().slice(0,
+// 10)` -- see lib/dateLocal.ts's doc comment for the full root cause
+// (confirmed live: a shift saved for the picked date 25/08 rendered under
+// the column visually labeled 26/08). Now shares the one fixed
+// implementation with finance/reports/staff instead of a second local copy
+// that could drift back out of sync.
+const toDateStr = toLocalDateStr;
 
 // Gulf/Saudi convention -- week starts Saturday. Finds the most recent
 // Saturday at or before `from`.

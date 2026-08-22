@@ -7,6 +7,7 @@ import { IconEye, IconCreditCard, IconX } from "@tabler/icons-react";
 import DatePicker from "../../components/ui/DatePicker";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { realErrorText } from "../../lib/errors";
+import { toLocalDateStr, parseLocalDateStr } from "../../lib/dateLocal";
 
 type Tab = "revenue" | "costs" | "invoices" | "taxes";
 type DateRange = "today" | "week" | "month" | "custom";
@@ -62,7 +63,10 @@ function rangeStart(range: DateRange, customStart?: string): Date {
     d.setHours(0, 0, 0, 0);
     return d;
   }
-  return new Date(customStart || now.toISOString().slice(0, 10));
+  if (customStart) return parseLocalDateStr(customStart);
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  return d;
 }
 
 function rangeEnd(range: DateRange, customEnd?: string): Date {
@@ -70,7 +74,12 @@ function rangeEnd(range: DateRange, customEnd?: string): Date {
   if (range === "today") return now;
   if (range === "week") return now;
   if (range === "month") return now;
-  return new Date(customEnd || now.toISOString().slice(0, 10) + "T23:59:59");
+  if (customEnd) {
+    const d = parseLocalDateStr(customEnd);
+    d.setHours(23, 59, 59, 999);
+    return d;
+  }
+  return now;
 }
 
 const CATEGORY_OPTIONS = ["إيجار", "رواتب", "كهرباء", "مياه", "إنترنت", "صيانة", "مستلزمات", "تسويق", "أخرى"];
@@ -92,19 +101,19 @@ export default function FinancePage() {
   const [showAddCost, setShowAddCost] = useState(false);
   const [costCategory, setCostCategory] = useState(CATEGORY_OPTIONS[0]);
   const [costAmount, setCostAmount] = useState("");
-  const [costDate, setCostDate] = useState(new Date().toISOString().slice(0, 10));
+  const [costDate, setCostDate] = useState(toLocalDateStr(new Date()));
   const [costNotes, setCostNotes] = useState("");
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [showAddInvoice, setShowAddInvoice] = useState(false);
   const [showInvoiceDetail, setShowInvoiceDetail] = useState<Invoice | null>(null);
   const [invoicePeriodStart, setInvoicePeriodStart] = useState(() => {
-    const d = new Date(); d.setDate(1); return d.toISOString().slice(0, 10);
+    const d = new Date(); d.setDate(1); return toLocalDateStr(d);
   });
-  const [invoicePeriodEnd, setInvoicePeriodEnd] = useState(() => new Date().toISOString().slice(0, 10));
+  const [invoicePeriodEnd, setInvoicePeriodEnd] = useState(() => toLocalDateStr(new Date()));
   const [invoiceAmount, setInvoiceAmount] = useState("");
   const [invoiceDueDate, setInvoiceDueDate] = useState(() => {
-    const d = new Date(); d.setMonth(d.getMonth() + 1); return d.toISOString().slice(0, 10);
+    const d = new Date(); d.setMonth(d.getMonth() + 1); return toLocalDateStr(d);
   });
   const [savingCost, setSavingCost] = useState(false);
   const [savingInvoice, setSavingInvoice] = useState(false);
@@ -138,7 +147,7 @@ export default function FinancePage() {
       setTotalOrders(revenue.order_count);
       setAvgOrder(revenue.order_count > 0 ? revenue.total / revenue.order_count : 0);
       setRevenueData([{
-        date: startDate.toISOString().slice(0, 10),
+        date: toLocalDateStr(startDate),
         orderCount: revenue.order_count,
         cash: revenue.cash,
         card: revenue.card,
@@ -212,7 +221,7 @@ export default function FinancePage() {
         <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${new Date().toLocaleDateString("ar-SA")}</p>
         ${tableHtml}
       `;
-      await exportHtmlToPdf(`تقرير-${tab}-${new Date().toISOString().slice(0, 10)}.pdf`, bodyHtml, token ?? "");
+      await exportHtmlToPdf(`تقرير-${tab}-${toLocalDateStr(new Date())}.pdf`, bodyHtml, token ?? "");
     } finally {
       setExportingPdf(false);
     }

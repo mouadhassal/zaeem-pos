@@ -4,6 +4,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useCurrency } from "../../hooks/useCurrency";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 import DatePicker from "../../components/ui/DatePicker";
+import { toLocalDateStr, parseLocalDateStr } from "../../lib/dateLocal";
 
 interface SalesSummary {
   totalSales: number;
@@ -113,7 +114,10 @@ function rangeStart(range: DateRange, customStart?: string): Date {
     d.setHours(0, 0, 0, 0);
     return d;
   }
-  return new Date(customStart || now.toISOString().slice(0, 10));
+  if (customStart) return parseLocalDateStr(customStart);
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  return d;
 }
 
 function rangeEnd(range: DateRange, customEnd?: string): Date | null {
@@ -121,7 +125,20 @@ function rangeEnd(range: DateRange, customEnd?: string): Date | null {
   // None meaning, avoids sending a redundant "end = right now" bound on
   // the three preset ranges.
   if (range !== "custom") return null;
-  return new Date((customEnd || new Date().toISOString().slice(0, 10)) + "T23:59:59");
+  // 2026-08-22 QA re-audit: this used to fall back to
+  // `new Date().toISOString().slice(0,10) + "T23:59:59"` when customEnd was
+  // empty -- landing the "مخصص" (custom) tab's default range on UTC
+  // midnight through 23:59:59 LOCAL of that UTC date, rather than the same
+  // local-midnight-to-now range "اليوم" (today) uses. In Asia/Damascus
+  // (UTC+3) that silently clipped the day's first 3 hours of orders,
+  // which is exactly why "مخصص" with nothing typed in showed fewer
+  // orders/lower total than "اليوم" for the identical day (confirmed live:
+  // 4 orders/73,000 vs 6 orders/150,000). If nothing was typed, behave
+  // exactly like "اليوم" -- up to now, not an arbitrary end-of-day cutoff.
+  if (!customEnd) return null;
+  const d = parseLocalDateStr(customEnd);
+  d.setHours(23, 59, 59, 999);
+  return d;
 }
 
 // Mirrors reconcile.rs's UnreconciledOrder/ReconciliationReport -- a
@@ -344,7 +361,7 @@ export default function ReportsPage() {
         ${pdfTableHtml("أداء الموظفين", ["الموظف", "الطلبات"], summary.staffPerformance.map((s) => [s.name, String(s.orderCount)]))}
         ${pdfTableHtml("حالة المخزون", ["الصنف", "المخزون", "الحد الأدنى"], summary.inventoryStatus.map((inv) => [inv.name, String(inv.currentStock), String(inv.minStock)]))}
       `;
-      await exportHtmlToPdf(`تقرير-المبيعات-${new Date().toISOString().slice(0, 10)}.pdf`, bodyHtml, token ?? "");
+      await exportHtmlToPdf(`تقرير-المبيعات-${toLocalDateStr(new Date())}.pdf`, bodyHtml, token ?? "");
     } finally {
       setExportingPdf(false);
     }

@@ -8,6 +8,7 @@ import QRCode from "qrcode";
 import { IconDeviceMobile, IconPencil, IconLock } from "@tabler/icons-react";
 import DatePicker from "../../components/ui/DatePicker";
 import { formatMoney } from "../../lib/money";
+import { toLocalDateStr, parseLocalDateStr } from "../../lib/dateLocal";
 /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 type Tab = "employees" | "shifts" | "attendance";
@@ -158,18 +159,18 @@ export default function StaffPage() {
   const [shiftDateFrom, setShiftDateFrom] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 7);
-    return d.toISOString().slice(0, 10);
+    return toLocalDateStr(d);
   });
-  const [shiftDateTo, setShiftDateTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [shiftDateTo, setShiftDateTo] = useState(() => toLocalDateStr(new Date()));
   const [shiftEmployeeFilter, setShiftEmployeeFilter] = useState("");
   const [forceCloseShiftId, setForceCloseShiftId] = useState<string | null>(null);
 
   const [clockingUserId, setClockingUserId] = useState<string | null>(null);
   const [attendanceSubTab, setAttendanceSubTab] = useState<"today" | "history">("today");
   const [attendanceDateFrom, setAttendanceDateFrom] = useState(() => {
-    const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10);
+    const d = new Date(); d.setDate(d.getDate() - 30); return toLocalDateStr(d);
   });
-  const [attendanceDateTo, setAttendanceDateTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [attendanceDateTo, setAttendanceDateTo] = useState(() => toLocalDateStr(new Date()));
   const [attendanceEmployeeFilter, setAttendanceEmployeeFilter] = useState("");
 
   const fetchEmployees = useCallback(async () => {
@@ -192,8 +193,8 @@ export default function StaffPage() {
     try {
       const rows = await invoke<Shift[]>("list_shifts_v3", {
         sessionToken: token,
-        dateFrom: shiftDateFrom ? new Date(shiftDateFrom).toISOString() : null,
-        dateTo: shiftDateTo ? (() => { const d = new Date(shiftDateTo); d.setHours(23, 59, 59, 999); return d.toISOString(); })() : null,
+        dateFrom: shiftDateFrom ? parseLocalDateStr(shiftDateFrom).toISOString() : null,
+        dateTo: shiftDateTo ? (() => { const d = parseLocalDateStr(shiftDateTo); d.setHours(23, 59, 59, 999); return d.toISOString(); })() : null,
         userId: shiftEmployeeFilter || null,
       });
       setShifts(rows);
@@ -204,7 +205,7 @@ export default function StaffPage() {
 
   const fetchAttendance = useCallback(async (fromDate?: string, toDate?: string) => {
     try {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = toLocalDateStr(new Date());
       const f = fromDate || today;
       const t = toDate || today;
       const rows = await invoke<Attendance[]>("list_attendance_v3", {
