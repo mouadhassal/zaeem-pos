@@ -3,6 +3,7 @@ import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
 import { IconRobot as Bot, IconSend as Send, IconUser as User, IconSparkles as Sparkles } from "@tabler/icons-react";
 import { IconChartBar, IconPackage, IconTrophy, IconUsers, IconAlertTriangle, IconBulb } from "@tabler/icons-react";
+import { formatArabicTime } from "../../lib/dateLocal";
 
 interface Message {
   id: string;
@@ -163,7 +164,7 @@ export default function AIPage() {
             }`}>
               <div className="whitespace-pre-wrap font-arabic" data-testid="ai-chat-message-text">{msg.content}</div>
               <p className={`text-xs mt-2 ${msg.role === "assistant" ? "text-ink-400" : "text-saffron-200"}`}>
-                {new Date(msg.timestamp).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" })}
+                {formatArabicTime(new Date(msg.timestamp), { hour: "2-digit", minute: "2-digit" })}
               </p>
             </div>
           </div>

@@ -7,6 +7,7 @@ import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import { IconCash, IconPencil, IconTrash, IconX } from "@tabler/icons-react";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
+import { formatArabicDateTime, formatArabicDate } from "../../lib/dateLocal";
 
 interface DebtorRow {
   id: string;
@@ -53,7 +54,7 @@ const emptyForm: DebtorForm = { name: "", phone: "", email: "", address: "", not
 
 function fmtDateTime(iso: string | null): string {
   if (!iso) return "-";
-  return new Date(iso).toLocaleString("ar-SA", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return formatArabicDateTime(new Date(iso), { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 // Debt aging: only meaningful for a debtor who still owes something and has
@@ -205,7 +206,7 @@ export default function DebtPage() {
     try {
       const bodyHtml = `
         <h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 4px">إدارة الديون</h1>
-        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${new Date().toLocaleDateString("ar-SA")}</p>
+        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${formatArabicDate(new Date())}</p>
         ${pdfTableHtml(
           "المدينون",
           ["الاسم", "الهاتف", "إجمالي الديون", "المدفوع", "المتبقي", "آخر معاملة"],

@@ -5,6 +5,7 @@ import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 import { connectLanChangeSocket } from "../../lib/lan";
 import { OutOfStockPanel } from "./OutOfStockPanel";
+import { formatArabicTime } from "../../lib/dateLocal";
 
 interface KDSItem {
   name: string;
@@ -56,7 +57,7 @@ const ORDER_TYPE_LABELS: Record<string, string> = {
 };
 
 function fmtTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" });
+  return formatArabicTime(new Date(iso), { hour: "2-digit", minute: "2-digit" });
 }
 
 function elapsed(iso: string): string {

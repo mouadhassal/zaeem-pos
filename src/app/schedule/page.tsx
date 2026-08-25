@@ -5,7 +5,7 @@ import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import { IconChevronRight, IconChevronLeft, IconPlus, IconX, IconTrash } from "@tabler/icons-react";
 import DatePicker from "../../components/ui/DatePicker";
-import { toLocalDateStr } from "../../lib/dateLocal";
+import { toLocalDateStr, formatArabicDate } from "../../lib/dateLocal";
 
 // HR_AND_GENERALIZATION_PLAN.md Part A -- a manager's calendar of who's
 // scheduled to work when. Deliberately named "roster" everywhere (matches
@@ -223,7 +223,7 @@ export default function SchedulePage() {
             <IconChevronRight className="w-4 h-4" />
           </button>
           <span className="text-sm font-arabic text-ink-900 font-medium px-2 whitespace-nowrap">
-            {weekStart.toLocaleDateString("ar-SA", { day: "numeric", month: "short" })} — {weekEnd.toLocaleDateString("ar-SA", { day: "numeric", month: "short" })}
+            {formatArabicDate(weekStart, { day: "numeric", month: "short" })} — {formatArabicDate(weekEnd, { day: "numeric", month: "short" })}
           </span>
           <button
             onClick={() => setWeekStart((w) => { const d = new Date(w); d.setDate(d.getDate() + 7); return d; })}
@@ -254,7 +254,7 @@ export default function SchedulePage() {
                 {days.map((d, i) => (
                   <th key={i} className="text-center p-2 font-medium min-w-[120px]">
                     <div>{DAY_NAMES[i]}</div>
-                    <div className="text-[11px] text-ink-400 font-normal">{d.toLocaleDateString("ar-SA", { day: "numeric", month: "numeric" })}</div>
+                    <div className="text-[11px] text-ink-400 font-normal">{formatArabicDate(d, { day: "numeric", month: "numeric" })}</div>
                   </th>
                 ))}
               </tr>

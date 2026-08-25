@@ -9,6 +9,7 @@ import { checkForUpdatesManually } from "../../lib/autoUpdate";
 import { createBackup, listBackups, type BackupInfo } from "../../lib/backup";
 import { realErrorText } from "../../lib/errors";
 import { CURRENCY_SYMBOL, parseMoneyInput, setCurrency } from "../../lib/money";
+import { formatArabicDate, formatArabicDateTime } from "../../lib/dateLocal";
 
 type SettingsTab = "general" | "printer" | "tax" | "branch" | "license" | "network" | "backup" | "about";
 
@@ -91,7 +92,7 @@ function mapActivationError(raw: string): string {
 }
 
 function formatExpiry(expiresAtMs: number): string {
-  return new Date(expiresAtMs).toLocaleDateString("ar", { year: "numeric", month: "long", day: "numeric" });
+  return formatArabicDate(new Date(expiresAtMs), { year: "numeric", month: "long", day: "numeric" });
 }
 
 export default function SettingsPage() {
@@ -1217,7 +1218,7 @@ export default function SettingsPage() {
                 <span className="text-sm text-ink-400 font-arabic">آخر نسخة احتياطية</span>
                 <span className="text-sm font-mono text-ink-900">
                   {lastBackup
-                    ? new Date(lastBackup).toLocaleString("ar-SA")
+                    ? formatArabicDateTime(new Date(lastBackup))
                     : "لم يتم إنشاء نسخة بعد"}
                 </span>
               </div>

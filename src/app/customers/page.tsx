@@ -8,6 +8,7 @@ import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 import Typeahead from "../../components/ui/Typeahead";
 import DatePicker from "../../components/ui/DatePicker";
 import { formatMoney } from "../../lib/money";
+import { formatArabicDate } from "../../lib/dateLocal";
 
 interface Customer {
   id: string;
@@ -75,7 +76,7 @@ function formatDate(dateStr: string | null): string {
   if (!dateStr) return "-";
   try {
     const d = new Date(dateStr);
-    return d.toLocaleDateString("ar-SA", {
+    return formatArabicDate(d, {
       year: "numeric",
       month: "short",
       day: "numeric",
@@ -89,7 +90,7 @@ function formatDateTime(dateStr: string | null): string {
   if (!dateStr) return "-";
   try {
     const d = new Date(dateStr);
-    return d.toLocaleDateString("ar-SA", {
+    return formatArabicDate(d, {
       year: "numeric",
       month: "short",
       day: "numeric",
@@ -286,7 +287,7 @@ export default function CustomersPage() {
     try {
       const bodyHtml = `
         <h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 4px">قاعدة العملاء</h1>
-        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${new Date().toLocaleDateString("ar-SA")}</p>
+        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${formatArabicDate(new Date())}</p>
         ${pdfTableHtml(
           "العملاء",
           ["الاسم", "الهاتف", "البريد", "العنوان", "عدد الطلبات", "إجمالي المشتريات", "آخر طلب", "آخر تعديل"],

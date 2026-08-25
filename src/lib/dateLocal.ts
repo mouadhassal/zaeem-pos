@@ -27,3 +27,38 @@ export function parseLocalDateStr(s: string): Date {
   const [y, m, day] = s.split("-").map(Number);
   return new Date(y, m - 1, day);
 }
+
+// 2026-08-25 QA re-audit (design/UX consistency pass): every money value
+// in this app deliberately formats with `toLocaleString("en-US", ...)` --
+// Western digits -- see money.ts, ItemCard, OrderLine, OrderPanel,
+// TotalBlock, MenuGridContainer. But every DATE across the app called
+// `toLocaleDateString("ar-SA", ...)` directly, ~20 call sites across 12
+// files (customers, debt, delivery, inventory, loyalty, reports,
+// schedule, settings, staff, printer receipts) -- "ar-SA" alone renders
+// Eastern Arabic-Indic digits (٢٢ أغسطس ٢٠٢٦), so a receipt or list row
+// could show a price in Western digits right next to a date in Eastern
+// Arabic-Indic ones, in the same UI, at the same time. Confirmed live via
+// tauri-driver: the customers page's "آخر تعديل" column. `numberingSystem:
+// "latn"` keeps the real Arabic month/weekday names while forcing Western
+// digits -- these two helpers are now the one correct way to format a
+// date for display anywhere in this app, matching money's own convention
+// instead of drifting from it.
+const WESTERN_DIGITS: Intl.DateTimeFormatOptions = { numberingSystem: "latn" };
+
+/** Formats a Date for display -- Arabic month/weekday names, Western digits. */
+export function formatArabicDate(d: Date, opts: Intl.DateTimeFormatOptions = { year: "numeric", month: "long", day: "numeric" }): string {
+  return d.toLocaleDateString("ar-SA", { ...opts, ...WESTERN_DIGITS });
+}
+
+/** Same as `formatArabicDate` but includes a time-of-day component. */
+export function formatArabicDateTime(d: Date, opts: Intl.DateTimeFormatOptions = { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }): string {
+  return d.toLocaleString("ar-SA", { ...opts, ...WESTERN_DIGITS });
+}
+
+/** Time-of-day only, Western digits -- same reasoning as formatArabicDate.
+ * `toLocaleTimeString("ar-SA")` alone renders Eastern Arabic-Indic hour/
+ * minute digits, which showed up on printed receipts (printer.ts) right
+ * next to Western-digit prices on the same slip. */
+export function formatArabicTime(d: Date, opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" }): string {
+  return d.toLocaleTimeString("ar-SA", { ...opts, ...WESTERN_DIGITS });
+}

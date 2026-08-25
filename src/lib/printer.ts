@@ -1,6 +1,7 @@
 import { invoke } from "./invoke";
 import { useAuthStore } from "../stores/authStore";
 import { formatMoney } from "./money";
+import { formatArabicDate, formatArabicTime } from "./dateLocal";
 
 function token() {
   return useAuthStore.getState().token ?? "";
@@ -338,8 +339,8 @@ function renderReceiptCanvas(data: ReceiptData, paperWidthMm: number): HTMLCanva
   b.y += 6;
   drawRule(b);
 
-  drawTwoCol(b, "التاريخ", new Date().toLocaleDateString("ar-SA"));
-  drawTwoCol(b, "الوقت", new Date().toLocaleTimeString("ar-SA"));
+  drawTwoCol(b, "التاريخ", formatArabicDate(new Date()));
+  drawTwoCol(b, "الوقت", formatArabicTime(new Date()));
   drawTwoCol(b, "رقم الطلب", data.orderNumber);
   // 2026-08-13 generalization fix: was drawn unconditionally -- a takeaway/
   // delivery order (tableName = "") or ANY order from a has_tables=false
@@ -402,11 +403,11 @@ function renderKitchenTicketCanvas(data: KitchenTicketData, paperWidthMm: number
   if (data.tableName) drawTwoCol(b, "طاولة", data.tableName);
   drawTwoCol(b, "رقم", data.orderNumber);
   drawTwoCol(b, "النوع", typeLabels[data.orderType] ?? data.orderType);
-  drawTwoCol(b, "التاريخ", new Date().toLocaleDateString("ar-SA"));
-  drawTwoCol(b, "الوقت", new Date().toLocaleTimeString("ar-SA"));
+  drawTwoCol(b, "التاريخ", formatArabicDate(new Date()));
+  drawTwoCol(b, "الوقت", formatArabicTime(new Date()));
 
   if (data.scheduledAt) {
-    drawTwoCol(b, "مجدول", new Date(data.scheduledAt).toLocaleTimeString("ar-SA"), { bold: true });
+    drawTwoCol(b, "مجدول", formatArabicTime(new Date(data.scheduledAt)), { bold: true });
   }
 
   drawRule(b);
@@ -627,8 +628,8 @@ export function generateOnScreenReceiptHTML(data: ReceiptData): string {
       <p style="text-align:center;color:#666;margin:4px 0">${data.branchName}</p>
       <hr/>
       <table style="width:100%;font-size:14px">
-        <tr><td>التاريخ</td><td style="text-align:left">${new Date().toLocaleDateString("ar-SA")}</td></tr>
-        <tr><td>الوقت</td><td style="text-align:left">${new Date().toLocaleTimeString("ar-SA")}</td></tr>
+        <tr><td>التاريخ</td><td style="text-align:left">${formatArabicDate(new Date())}</td></tr>
+        <tr><td>الوقت</td><td style="text-align:left">${formatArabicTime(new Date())}</td></tr>
         <tr><td>رقم الطلب</td><td style="text-align:left">${data.orderNumber}</td></tr>
         ${data.tableName ? `<tr><td>طاولة</td><td style="text-align:left">${data.tableName}</td></tr>` : ""}
       </table>

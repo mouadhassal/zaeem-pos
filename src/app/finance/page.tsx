@@ -7,7 +7,7 @@ import { IconEye, IconCreditCard, IconX } from "@tabler/icons-react";
 import DatePicker from "../../components/ui/DatePicker";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { realErrorText } from "../../lib/errors";
-import { toLocalDateStr, parseLocalDateStr } from "../../lib/dateLocal";
+import { toLocalDateStr, parseLocalDateStr, formatArabicDate } from "../../lib/dateLocal";
 
 type Tab = "revenue" | "costs" | "invoices" | "taxes";
 type DateRange = "today" | "week" | "month" | "custom";
@@ -218,7 +218,7 @@ export default function FinancePage() {
       }
       const bodyHtml = `
         <h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 4px">تقرير ${tabTitle(tab)}</h1>
-        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${new Date().toLocaleDateString("ar-SA")}</p>
+        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${formatArabicDate(new Date())}</p>
         ${tableHtml}
       `;
       await exportHtmlToPdf(`تقرير-${tab}-${toLocalDateStr(new Date())}.pdf`, bodyHtml, token ?? "");

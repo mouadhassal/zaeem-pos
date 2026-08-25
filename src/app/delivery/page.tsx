@@ -4,6 +4,7 @@ import * as deliveryService from "../../lib/deliveryService";
 import type { DriverStatus } from "../../db/types";
 import { realErrorText } from "../../lib/errors";
 import { parseMoneyInput } from "../../lib/money";
+import { formatArabicDate, formatArabicTime } from "../../lib/dateLocal";
 import { IconTruckDelivery as Truck, IconUsers as Users, IconMapPin as MapPin, IconHistory as History, IconPlus as Plus, IconX as X, IconPhone as Phone, IconCar as Car, IconNavigation as Navigation, IconStar as Star } from "@tabler/icons-react";
 
 type Tab = "active" | "drivers" | "zones" | "history";
@@ -77,13 +78,13 @@ function parseSqliteDateTime(iso: string | null | undefined): Date {
 function formatTime(iso: string | null) {
   if (!iso) return "—";
   const d = parseSqliteDateTime(iso);
-  return d.toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" });
+  return formatArabicTime(d, { hour: "2-digit", minute: "2-digit" });
 }
 
 function formatDate(iso: string | null) {
   if (!iso) return "—";
   const d = parseSqliteDateTime(iso);
-  return d.toLocaleDateString("ar-SA", { day: "numeric", month: "short" });
+  return formatArabicDate(d, { day: "numeric", month: "short" });
 }
 
 export default function DeliveryPage() {

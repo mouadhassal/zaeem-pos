@@ -8,7 +8,7 @@ import QRCode from "qrcode";
 import { IconDeviceMobile, IconPencil, IconLock } from "@tabler/icons-react";
 import DatePicker from "../../components/ui/DatePicker";
 import { formatMoney } from "../../lib/money";
-import { toLocalDateStr, parseLocalDateStr } from "../../lib/dateLocal";
+import { toLocalDateStr, parseLocalDateStr, formatArabicDate, formatArabicTime } from "../../lib/dateLocal";
 /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 type Tab = "employees" | "shifts" | "attendance";
@@ -103,12 +103,12 @@ const DIFF_THRESHOLD_CENTS = 5000;
 
 function formatTime(iso: string | null): string {
   if (!iso) return "---";
-  return new Date(iso).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" });
+  return formatArabicTime(new Date(iso), { hour: "2-digit", minute: "2-digit" });
 }
 
 function formatDate(iso: string | null): string {
   if (!iso) return "---";
-  return new Date(iso).toLocaleDateString("ar-SA", { day: "2-digit", month: "2-digit", year: "numeric" });
+  return formatArabicDate(new Date(iso), { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
 function formatDateTime(iso: string | null): string {

@@ -4,6 +4,7 @@ import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 import { useCurrency } from "../../hooks/useCurrency";
 import { parseMoneyInput } from "../../lib/money";
+import { formatArabicDateTime } from "../../lib/dateLocal";
 import { IconCreditCard as CreditCard, IconPlus as Plus, IconSearch as Search } from "@tabler/icons-react";
 import { IconGift, IconTag, IconPencil, IconTrash } from "@tabler/icons-react";
 
@@ -31,7 +32,7 @@ interface LoyaltyReward {
 }
 
 function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString("ar-SA", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  return formatArabicDateTime(new Date(iso), { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 // Owner-configured tier NAMES are free text (T2.0: real backend config, no

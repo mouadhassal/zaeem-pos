@@ -5,6 +5,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { z } from "zod";
 import { IconPencil, IconX } from "@tabler/icons-react";
 import { formatMoney } from "../../lib/money";
+import { formatArabicDate } from "../../lib/dateLocal";
 
 interface Branch {
   id: string;
@@ -89,7 +90,7 @@ function formatDate(dateStr: string | null): string {
   if (!dateStr) return "-";
   try {
     const d = new Date(dateStr);
-    return d.toLocaleDateString("ar-SA", {
+    return formatArabicDate(d, {
       year: "numeric",
       month: "short",
       day: "numeric",

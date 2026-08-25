@@ -4,7 +4,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useCurrency } from "../../hooks/useCurrency";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 import DatePicker from "../../components/ui/DatePicker";
-import { toLocalDateStr, parseLocalDateStr } from "../../lib/dateLocal";
+import { toLocalDateStr, parseLocalDateStr, formatArabicDate, formatArabicDateTime } from "../../lib/dateLocal";
 
 interface SalesSummary {
   totalSales: number;
@@ -342,7 +342,7 @@ export default function ReportsPage() {
     try {
       const bodyHtml = `
         <h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 4px">تقرير المبيعات</h1>
-        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${new Date().toLocaleDateString("ar-SA")}</p>
+        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${formatArabicDate(new Date())}</p>
         <div style="display:flex;gap:12px;margin-bottom:20px">
           <div style="flex:1;border:1px solid #E4E7EC;border-radius:8px;padding:10px;text-align:center">
             <div style="font-size:11px;color:#667085">إجمالي المبيعات</div>
@@ -742,7 +742,7 @@ export default function ReportsPage() {
                       {o.table_name || ORDER_TYPE_LABEL[o.order_type] || o.order_type}
                     </span>
                     <span className="text-ink-400 text-xs font-arabic mr-2">
-                      {new Date(o.created_at).toLocaleString("ar-SA", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                      {formatArabicDateTime(new Date(o.created_at), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
                     </span>
                     {isRefunded && <span className="text-[10px] text-red-500 font-arabic mr-2">تم الاسترداد</span>}
                   </div>

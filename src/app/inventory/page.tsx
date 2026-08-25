@@ -10,6 +10,7 @@ import DatePicker from "../../components/ui/DatePicker";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 import { openMarketplace } from "../../lib/marketplace";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
+import { formatArabicDateTime, formatArabicDate } from "../../lib/dateLocal";
 
 const editSchema = z.object({
   name: z.string().min(1, "الاسم مطلوب"),
@@ -148,13 +149,13 @@ function parseSqliteDateTime(iso: string | null | undefined): Date {
 
 function fmtDateTime(iso: string | null): string {
   if (!iso) return "-";
-  return parseSqliteDateTime(iso).toLocaleString("ar-SA", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return formatArabicDateTime(parseSqliteDateTime(iso), { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 const SUPPLIER_PAYMENT_METHOD_LABEL: Record<string, string> = { CASH: "نقداً", BANK: "تحويل بنكي", CARD: "بطاقة" };
 
 function formatDate(iso: string): string {
-  return parseSqliteDateTime(iso).toLocaleString("ar-SA", {
+  return formatArabicDateTime(parseSqliteDateTime(iso), {
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -1046,7 +1047,7 @@ function SuppliersTab() {
     try {
       const bodyHtml = `
         <h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 4px">الموردون</h1>
-        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${new Date().toLocaleDateString("ar-SA")}</p>
+        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${formatArabicDate(new Date())}</p>
         ${pdfTableHtml(
           "الموردون",
           ["اسم المورد", "الهاتف", "إجمالي المشتريات", "المدفوع", "الرصيد المستحق"],
@@ -1971,7 +1972,7 @@ function MovementsTab() {
     try {
       const bodyHtml = `
         <h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 4px">حركات المخزون</h1>
-        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${new Date().toLocaleDateString("ar-SA")}</p>
+        <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${formatArabicDate(new Date())}</p>
         ${pdfTableHtml(
           "الحركات",
           ["التاريخ", "المادة", "النوع", "الكمية", "السبب", "المستخدم"],
