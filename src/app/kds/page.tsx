@@ -159,7 +159,7 @@ export default function KDSPage() {
       <div className="bg-surface border-b border-ink-200 px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-bold text-ink-900">شاشة المطبخ</h1>
-          <span className="text-xs text-ink-500 font-mono">تحديث تلقائي كل ١٠ ثوان</span>
+          <span className="text-xs text-ink-500 font-mono">تحديث تلقائي كل 10 ثوان</span>
           <button
             onClick={() => setShowOutOfStock(true)}
             className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-danger-soft text-danger text-xs font-bold font-arabic hover:opacity-80 transition-opacity"
