@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, lazy, Suspense } from "react";
+import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
 import TableBar from "../../components/layout/TableBar";
 // Perf fix (post-login load lag): these 8 components are only ever needed
@@ -34,7 +35,7 @@ import { useShiftStore } from "../../stores/shiftStore";
 import { useOrderTypeStore } from "../../stores/orderTypeStore";
 import { useMenuStore } from "../../stores/menuStore";
 import { CURRENCY_SYMBOLS } from "../../hooks/useCurrency";
-import { setCurrency } from "../../lib/money";
+import { setCurrency, parseMoneyInput } from "../../lib/money";
 import { useDiscountCap } from "../../hooks/useDiscountCap";
 import { createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, lookupLoyaltyCard, listActiveLoyaltyRewards, redeemLoyaltyReward, getBusinessMode } from "../../lib/orderService";
 import type { LoyaltyRewardOption } from "../../lib/orderService";
@@ -104,10 +105,58 @@ export default function POSPage() {
   const { orderType, setOrderType, customerName, customerPhone, deliveryAddress, driverId, deliveryZoneId, deliveryFeeCents, debtorId, debtorName, resetOrderInfo, setDriverId, setDeliveryZone } = useOrderTypeStore();
   const user = useAuthStore((s) => s.user);
   const shiftId = useShiftStore((s) => s.activeShiftId);
+  const setActiveShiftId = useShiftStore((s) => s.setActiveShiftId);
   // Real, server-enforced cap (chain_config via get_discount_caps_v3) --
   // replaces the old usePermissions().maxDiscountPercent, which was a
   // frontend-only constant Rust never checked (this task's whole point).
   const { yourCapPercent: maxDiscountPercent } = useDiscountCap();
+
+  // 2026-08-25 QA re-audit ("I can't pay" report): `shiftId` used to only
+  // ever get populated by actually VISITING the Shift page (shift/page.tsx
+  // is the only place that ever called setActiveShiftId from a real fetch)
+  // -- a cashier/manager who logged in and went straight to the POS screen
+  // had a permanently-null shiftId here regardless of their REAL shift
+  // status, and neither PayKey nor Hold checked it anyway. The backend has
+  // always correctly required an open shift (get_active_shift(&actor.id)
+  // in create_full_order_v3/hold_order_v3 -- per-staff-member, deliberately,
+  // for cash-drawer accountability), so the failure mode was: add items,
+  // pick a table, open payment, enter cash, hit confirm, and ONLY THEN get
+  // a raw backend string ("لا توجد وردية مفتوحة") after all that work --
+  // exactly reproduced live for a Manager who'd never opened one. It
+  // "worked" for whichever staff happened to already have a shift open
+  // from earlier in the day, by coincidence, not because this screen ever
+  // checked. Fetching real status here (not just relying on the Shift page
+  // having been visited first) and gating Pay/Hold on it turns a late,
+  // confusing backend rejection into an upfront, obvious, fixable prompt.
+  const [shiftStatusKnown, setShiftStatusKnown] = useState(false);
+  useEffect(() => {
+    const token = useAuthStore.getState().token;
+    invoke<{ id: string } | null>("get_active_shift_v3", { sessionToken: token })
+      .then((shift) => setActiveShiftId(shift?.id ?? null))
+      .catch(() => {})
+      .finally(() => setShiftStatusKnown(true));
+  }, [setActiveShiftId]);
+
+  const [showOpenShift, setShowOpenShift] = useState(false);
+  const [openShiftStartingCash, setOpenShiftStartingCash] = useState("");
+  const [openingShift, setOpeningShift] = useState(false);
+  const [openShiftError, setOpenShiftError] = useState<string | null>(null);
+  const handleOpenShift = async () => {
+    setOpeningShift(true);
+    setOpenShiftError(null);
+    try {
+      const token = useAuthStore.getState().token;
+      const cents = parseMoneyInput(openShiftStartingCash || "0");
+      const id = await invoke<string>("open_shift_v3", { sessionToken: token, startingCashCents: cents, branchId: null });
+      setActiveShiftId(id);
+      setShowOpenShift(false);
+      setOpenShiftStartingCash("");
+    } catch (err) {
+      setOpenShiftError(realErrorText(err));
+    } finally {
+      setOpeningShift(false);
+    }
+  };
 
   useEffect(() => {
     getReceiptConfig().then((cfg) => {
@@ -672,8 +721,13 @@ export default function POSPage() {
           }
         >
           <PayKey
+            // Not folding !shiftId into `disabled` here on purpose: a grayed-out
+            // button with no explanation is exactly the confusing dead-end this
+            // fix exists to remove. Pay/Hold both stay clickable with no shift
+            // open and take the cashier straight to opening one instead.
             disabled={items.length === 0 || (!tableId && orderType === "DINE_IN")}
             onClick={() => {
+              if (!shiftId) { setShowOpenShift(true); return; }
               const cartSubtotal = useCartStore.getState().subtotal();
               const discountPercent = cartSubtotal > 0
                 ? Math.round((useCartStore.getState().discountCents / cartSubtotal) * 100)
@@ -685,7 +739,7 @@ export default function POSPage() {
                 setShowPayment(true);
               }
             }}
-            {...(items.length > 0 ? { onHold: handleHold as () => void } : {})}
+            {...(items.length > 0 ? { onHold: shiftId ? handleHold as () => void : () => setShowOpenShift(true) } : {})}
             holdDisabled={!tableId && orderType === "DINE_IN"}
           />
         </OrderPanel>
@@ -1042,6 +1096,65 @@ export default function POSPage() {
       {dbError && (
         <div className="fixed top-32 left-1/2 -translate-x-1/2 text-white px-6 py-3 rounded-[12px] shadow-sh-3 z-50 text-sm font-medium" style={{ backgroundColor: "var(--warn)" }}>
           {dbError}
+        </div>
+      )}
+
+      {/* 2026-08-25 QA re-audit ("I can't pay" report): surfaced up front,
+          before a cashier/manager gets all the way through picking a
+          table/items/payment method only to hit a raw backend rejection at
+          the very last step ("لا توجد وردية مفتوحة") -- see the shiftId
+          fetch effect above for the full root-cause writeup. Only shown
+          once the real status is known (shiftStatusKnown), so this never
+          flashes on the brief moment before the fetch resolves. */}
+      {shiftStatusKnown && !shiftId && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 flex items-center gap-3 text-white px-5 py-3 rounded-[12px] shadow-sh-3 z-50 text-sm font-medium" style={{ backgroundColor: "var(--warn)" }}>
+          <span>لا توجد وردية مفتوحة -- افتح وردية أولاً قبل البيع</span>
+          <button
+            type="button"
+            onClick={() => setShowOpenShift(true)}
+            className="bg-white/20 hover:bg-white/30 transition-colors rounded-[8px] px-3 py-1 text-xs font-bold"
+          >
+            فتح وردية
+          </button>
+        </div>
+      )}
+
+      {showOpenShift && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40" onClick={() => !openingShift && setShowOpenShift(false)}>
+          <div className="bg-surface rounded-[16px] shadow-sh-3 p-6 w-[360px]" dir="rtl" onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-base font-bold text-text mb-1">فتح وردية</h2>
+            <p className="text-xs text-text-2 mb-4">أدخل المبلغ النقدي الموجود في الدرج حالياً لبدء وردية جديدة.</p>
+            <label className="text-xs text-text-2 mb-1 block">المبلغ الافتتاحي</label>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={openShiftStartingCash}
+              onChange={(e) => setOpenShiftStartingCash(e.target.value)}
+              placeholder="0"
+              disabled={openingShift}
+              className="w-full h-11 rounded-[10px] border border-line bg-surface-alt px-3 text-sm text-text mb-3 outline-none focus:border-accent"
+              autoFocus
+            />
+            {openShiftError && <p className="text-xs text-danger mb-3">{openShiftError}</p>}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleOpenShift}
+                disabled={openingShift}
+                className="flex-1 h-11 rounded-[10px] bg-accent text-white text-sm font-bold disabled:opacity-50"
+              >
+                {openingShift ? "جارٍ الفتح..." : "بدء الوردية"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowOpenShift(false)}
+                disabled={openingShift}
+                className="h-11 px-4 rounded-[10px] bg-surface-alt text-text-2 text-sm font-medium"
+              >
+                إلغاء
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
