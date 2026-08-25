@@ -56,8 +56,8 @@ export function OutOfStockPanel({ token, onClose }: { token: string | null; onCl
       <div className="bg-surface rounded-[13px] shadow-sh-3 w-full max-w-lg mx-4 max-h-[80vh] flex flex-col">
         <div className="p-4 border-b border-line flex items-center justify-between shrink-0">
           <h2 className="text-lg font-bold text-text">توفر الأصناف</h2>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-alt text-text-3">
-            <IconX className="w-5 h-5" />
+          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-surface-alt flex items-center justify-center text-text-3 shrink-0">
+            <IconX className="w-4 h-4" />
           </button>
         </div>
 

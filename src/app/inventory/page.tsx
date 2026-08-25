@@ -183,9 +183,9 @@ function Modal({
           <h2 className="text-lg font-bold text-ink-900">{title}</h2>
           <button
             onClick={onClose}
-            className="text-ink-500 hover:text-ink-500 leading-none"
+            className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"
           >
-            <IconX className="w-5 h-5" />
+            <IconX className="w-4 h-4" />
           </button>
         </div>
         {children}
@@ -335,7 +335,7 @@ function ReceiveStockEntryModal({ onClose, onReceived }: { onClose: () => void; 
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6 space-y-4" dir="rtl">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-bold text-ink-900">استلام بضاعة</h2>
-          <button onClick={onClose} className="text-ink-500 hover:text-ink-700"><IconX className="w-5 h-5" /></button>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
         </div>
         <p className="text-sm text-ink-500">اختر طلبية الشراء التي وصلت لتسجيل الكميات المستلمة وتحديث المخزون تلقائياً.</p>
         {loadError && <p className="text-sm text-red-500">{loadError}</p>}
@@ -1874,7 +1874,7 @@ function PODetailModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-bold text-ink-900 font-arabic">تفاصيل الطلبية</h2>
-          <button onClick={onClose} className="text-ink-500 hover:text-ink-500 leading-none"><IconX className="w-5 h-5" /></button>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
         </div>
         {loadError && <p className="text-sm text-red-500 font-arabic">{loadError}</p>}
         <div className="grid grid-cols-2 gap-4 text-sm">

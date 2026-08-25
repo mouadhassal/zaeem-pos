@@ -153,9 +153,9 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
           <h2 className="font-arabic font-bold text-lg text-ink-900">الدفع</h2>
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center transition-colors"
+            className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0 transition-colors"
           >
-            <IconX className="w-5 h-5 text-ink-500" stroke={1.75} />
+            <IconX className="w-4 h-4" />
           </button>
         </div>
 

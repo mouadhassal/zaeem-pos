@@ -85,8 +85,8 @@ export default function SplitBillModal({ onClose, onConfirm }: Props) {
       <div className="bg-white rounded-md border border-line shadow-sh-3 w-[600px] max-h-[80vh] overflow-y-auto">
         <div className="px-6 py-4 border-b border-ink-200 flex items-center justify-between">
           <h2 className="font-arabic font-bold text-lg text-ink-900">تقسيم الفاتورة</h2>
-          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center transition-colors">
-            <IconX className="w-5 h-5 text-ink-500" stroke={1.75} />
+          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0 transition-colors">
+            <IconX className="w-4 h-4" />
           </button>
         </div>
 

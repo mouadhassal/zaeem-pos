@@ -307,8 +307,8 @@ export default function SchedulePage() {
           <div className="bg-white rounded-md shadow-xl w-full max-w-md mx-4 p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold font-arabic text-ink-900">{editId ? "تعديل دوام" : "إضافة دوام"}</h2>
-              <button onClick={() => setModalOpen(false)} className="text-ink-400 hover:text-ink-900">
-                <IconX className="w-5 h-5" />
+              <button onClick={() => setModalOpen(false)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0">
+                <IconX className="w-4 h-4" />
               </button>
             </div>
 

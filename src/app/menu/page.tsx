@@ -1490,7 +1490,7 @@ export default function MenuPage() {
                               className="text-red-500 hover:text-red-600 disabled:opacity-50"
                               aria-label="إزالة المكوّن"
                             >
-                              <IconX size={16} />
+                              <IconX className="w-4 h-4" />
                             </button>
                           </li>
                         ))}

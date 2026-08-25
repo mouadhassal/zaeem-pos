@@ -571,7 +571,7 @@ export default function FinancePage() {
           <div className="bg-white rounded-md shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold font-arabic text-ink-900">إنشاء فاتورة جديدة</h2>
-              <button onClick={() => setShowAddInvoice(false)} className="text-ink-500 hover:text-ink-900 leading-none"><IconX className="w-5 h-5" /></button>
+              <button onClick={() => setShowAddInvoice(false)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
             </div>
             <div className="space-y-3">
               <div>
@@ -604,7 +604,7 @@ export default function FinancePage() {
           <div className="bg-white rounded-md shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold font-arabic text-ink-900">تفاصيل الفاتورة</h2>
-              <button onClick={() => setShowInvoiceDetail(null)} className="text-ink-500 hover:text-ink-500 leading-none"><IconX className="w-5 h-5" /></button>
+              <button onClick={() => setShowInvoiceDetail(null)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
             </div>
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div><span className="text-ink-400 font-arabic">رقم الفاتورة: </span><span className="font-mono text-ink-900">{showInvoiceDetail.id.slice(0, 8)}</span></div>
@@ -632,7 +632,7 @@ export default function FinancePage() {
           <div className="bg-white rounded-md shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold font-arabic text-ink-900">إضافة تكلفة</h2>
-              <button onClick={() => setShowAddCost(false)} className="text-ink-500 hover:text-ink-900 leading-none"><IconX className="w-5 h-5" /></button>
+              <button onClick={() => setShowAddCost(false)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
             </div>
             <div className="space-y-3">
               <div>
