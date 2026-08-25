@@ -1925,6 +1925,7 @@ pub fn run_ingredient_sync_migration(conn: &mut Connection, _db_path: &Path) -> 
 }
 
 pub const MIGRATION_S_VERSION: i64 = 23;
+pub const MIGRATION_T_VERSION: i64 = 24;
 
 /// ZAEEM_POS_PLATFORM_PLAN.md §3.1 "Item kind" (kernel/pack multi-vertical
 /// platform work), reconciled against reality per
@@ -2016,6 +2017,61 @@ pub fn run_item_kind_migration(conn: &mut Connection, _db_path: &Path) -> Result
     tx.execute(
         "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
         params![MIGRATION_S_VERSION, "0023_item_kind", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Drops 11 legacy tables confirmed dead: no SQL references anywhere in
+/// `src/` (word-boundary checked across the whole tree, not just
+/// `repo.rs`/`commands_v3.rs`, so this excludes column-name false positives
+/// like `customer_name`), no registered `#[tauri::command]` wrapper, and no
+/// frontend caller. This is a strict subset of an initially-proposed
+/// 14-table list. Two exclusions worth noting:
+/// - `menu_item_default`/`menu_item_override` back a real, tested,
+///   registered command (`resolve_menu_price_v3`) that simply has no
+///   frontend UI yet, which is a different category from genuinely dead.
+/// - `upload_queue` was initially proposed for this list too, but a
+///   whole-tree re-check (not just `repo.rs`/`commands_v3.rs`) found it's
+///   live: `ai/queue.rs` is a real AI upload/draft ingestion queue,
+///   constructed at startup (`lib.rs`'s `UploadQueue::new_queue`), with a
+///   `CREATE TABLE IF NOT EXISTS upload_queue` that would silently
+///   resurrect it after any DROP anyway.
+/// `id_remap`/`schema_migrations` are migration-system bookkeeping and were
+/// never in scope.
+pub fn run_dead_table_cleanup_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_T_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+
+    const DEAD_TABLES: [&str; 11] = [
+        "audit_logs",
+        "branch_settings",
+        "customer",
+        "login_sessions",
+        "notifications",
+        "price_list",
+        "price_list_item",
+        "sync_queue",
+        "tenant_settings",
+        "terminal",
+        "voids",
+    ];
+    for t in DEAD_TABLES {
+        tx.execute(&format!("DROP TABLE IF EXISTS {t}"), [])?;
+    }
+
+    println!("v24_drop_dead_legacy_tables: dropped 11 confirmed-dead legacy tables (no SQL refs, no commands, no frontend callers)");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_T_VERSION, "0024_drop_dead_legacy_tables", applied_at, "n/a-programmatic"],
     )?;
     tx.commit()?;
     Ok(())
@@ -2700,6 +2756,78 @@ mod tests {
             ("PLATINUM".to_string(), 3000, 2.0),
         ], "seeded tiers must exactly match the current frontend TIER_CONFIG values -- a mismatch here means an existing install's customers would silently change tier the moment this migration runs");
         println!("[loyalty-migration] loyalty_tier/loyalty_reward created; existing tenant seeded with exactly the 4 current TIER_CONFIG values, idempotent across two runs");
+
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(integrity, "ok");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// T2.1 dead-table cleanup: idempotent, drops all 11 confirmed-dead
+    /// legacy tables, and leaves every still-live table (including
+    /// `menu_item_default`/`menu_item_override`, which are excluded from
+    /// this cleanup because they back a real registered command, and
+    /// `upload_queue`, which is a live AI-upload-queue table) intact.
+    #[test]
+    fn test_dead_table_cleanup_migration_is_idempotent_and_drops_exactly_the_dead_tables() {
+        let db_path = fresh_db_path("dead_table_cleanup_migration");
+        build_base_fixture(&db_path);
+        {
+            let mut conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+            run_expand_migration(&mut conn, &db_path).expect("Migration A failed");
+            run_remap_migration(&mut conn, &db_path).expect("Migration B failed");
+            run_identity_migration(&mut conn, &db_path).expect("Migration C failed");
+            run_drift_fix_migration(&mut conn, &db_path).expect("Migration D failed");
+            run_index_migration(&mut conn, &db_path).expect("Migration E failed");
+            run_discount_cap_migration(&mut conn, &db_path).expect("Migration F failed");
+            run_sync_outbox_migration(&mut conn, &db_path).expect("Migration G failed");
+            run_supplier_ledger_migration(&mut conn, &db_path).expect("Migration H failed");
+            run_loyalty_migration(&mut conn, &db_path).expect("Migration I failed");
+            run_staff_sync_migration(&mut conn, &db_path).expect("Migration J failed");
+            run_lan_pairing_migration(&mut conn, &db_path).expect("Migration K failed");
+            run_printer_system_name_migration(&mut conn, &db_path).expect("Migration L failed");
+            run_manager_threshold_migration(&mut conn, &db_path).expect("Migration M failed");
+            run_business_mode_migration(&mut conn, &db_path).expect("Migration N failed");
+            run_roster_entry_migration(&mut conn, &db_path).expect("Migration O failed");
+            run_refund_migration(&mut conn, &db_path).expect("Migration P failed");
+            run_manager_threshold_syp_rescale_migration(&mut conn, &db_path).expect("Migration Q failed");
+            run_ingredient_sync_migration(&mut conn, &db_path).expect("Migration R failed");
+            run_item_kind_migration(&mut conn, &db_path).expect("Migration S failed");
+            run_dead_table_cleanup_migration(&mut conn, &db_path).expect("Migration T failed (first run)");
+            // Second run must be a clean no-op -- DROP TABLE IF EXISTS on
+            // already-dropped tables, not an error.
+            run_dead_table_cleanup_migration(&mut conn, &db_path).expect("Migration T failed (second run -- must be idempotent)");
+        }
+        let conn = Connection::open(&db_path).unwrap();
+
+        let dropped = [
+            "audit_logs", "branch_settings", "customer", "login_sessions",
+            "notifications", "price_list", "price_list_item", "sync_queue",
+            "tenant_settings", "terminal", "voids",
+        ];
+        for table in dropped {
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1", params![table], |r| r.get(0),
+            ).unwrap();
+            assert!(!exists, "{table} must be dropped after Migration T");
+        }
+
+        // Tables intentionally left alone must survive: branch/branches
+        // (the unreconciled duality, out of scope for this migration), and
+        // menu_item_default/menu_item_override (real command, no frontend
+        // caller yet -- not the same as dead). `upload_queue` is also
+        // intentionally excluded from the drop list (see the migration's
+        // doc comment) but isn't asserted here: it's created at runtime by
+        // `ai::UploadQueue::new_queue`, not by any migration, so it's
+        // correctly absent from this migration-only fixture.
+        let kept = ["branch", "branches", "menu_item_default", "menu_item_override"];
+        for table in kept {
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1", params![table], |r| r.get(0),
+            ).unwrap();
+            assert!(exists, "{table} must NOT be dropped by Migration T");
+        }
 
         let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
         assert_eq!(integrity, "ok");
