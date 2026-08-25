@@ -1,4 +1,4 @@
-import { IconToolsKitchen2, IconShoppingBag, IconTruckDelivery, IconWorld, IconWallet } from "@tabler/icons-react";
+import { IconToolsKitchen2, IconShoppingBag, IconTruckDelivery, IconWorld, IconWallet, IconX } from "@tabler/icons-react";
 import type { OrderType } from "../../stores/orderTypeStore";
 
 interface Props {
@@ -18,9 +18,14 @@ export default function OrderTypeSelector({ onSelect, onClose }: Props) {
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">
       <div className="bg-surface rounded-2xl border border-line w-[480px] overflow-hidden shadow-sh-3">
-        <div className="px-6 py-4 border-b border-line">
-          <h2 className="font-arabic font-bold text-lg text-text">نوع الطلب</h2>
-          <p className="font-arabic text-sm text-text-muted mt-0.5">اختر نوع الطلبية</p>
+        <div className="px-6 py-4 border-b border-line flex items-center justify-between">
+          <div>
+            <h2 className="font-arabic font-bold text-lg text-text">نوع الطلب</h2>
+            <p className="font-arabic text-sm text-text-muted mt-0.5">اختر نوع الطلبية</p>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-surface-alt flex items-center justify-center text-text-muted shrink-0">
+            <IconX className="w-4 h-4" />
+          </button>
         </div>
         <div className="p-4 grid grid-cols-2 gap-3">
           {TYPES.map((t) => {

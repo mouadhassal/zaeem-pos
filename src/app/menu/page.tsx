@@ -1285,9 +1285,12 @@ export default function MenuPage() {
       {showItemModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-ink-900">
-              {editItemId ? "تعديل صنف" : "إضافة صنف"}
-            </h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold font-arabic text-ink-900">
+                {editItemId ? "تعديل صنف" : "إضافة صنف"}
+              </h2>
+              <button onClick={() => setShowItemModal(false)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+            </div>
 
             <div className="space-y-3">
               <div>
@@ -1579,7 +1582,10 @@ export default function MenuPage() {
       {deleteItemId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد الحذف</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد الحذف</h2>
+              <button onClick={() => setDeleteItemId(null)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+            </div>
             <p className="text-sm font-arabic text-ink-500">
               هل أنت متأكد من حذف هذا الصنف؟
             </p>
@@ -1606,7 +1612,10 @@ export default function MenuPage() {
       {deleteComboId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد الحذف</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد الحذف</h2>
+              <button onClick={() => setDeleteComboId(null)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+            </div>
             <p className="text-sm font-arabic text-ink-500">
               هل أنت متأكد من حذف هذه الوجبة المجمعة؟
             </p>
@@ -1633,9 +1642,12 @@ export default function MenuPage() {
       {showCategoryModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-ink-900">
-              {editCategoryId ? "تعديل تصنيف" : "إضافة تصنيف"}
-            </h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold font-arabic text-ink-900">
+                {editCategoryId ? "تعديل تصنيف" : "إضافة تصنيف"}
+              </h2>
+              <button onClick={() => setShowCategoryModal(false)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+            </div>
 
             <div className="space-y-3">
               <div>
@@ -1770,7 +1782,10 @@ export default function MenuPage() {
       {deleteCategoryId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد الحذف</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد الحذف</h2>
+              <button onClick={() => setDeleteCategoryId(null)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+            </div>
             <p className="text-sm font-arabic text-ink-500">
               هل أنت متأكد من حذف هذا التصنيف؟
             </p>
@@ -1797,9 +1812,12 @@ export default function MenuPage() {
       {showComboModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-ink-900">
-              {editComboId ? "تعديل وجبة مجمعة" : "إضافة وجبة مجمعة"}
-            </h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold font-arabic text-ink-900">
+                {editComboId ? "تعديل وجبة مجمعة" : "إضافة وجبة مجمعة"}
+              </h2>
+              <button onClick={() => setShowComboModal(false)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+            </div>
 
             <div className="space-y-3">
               <div>
@@ -1911,9 +1929,12 @@ export default function MenuPage() {
       {showHappyHourModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-ink-900">
-              {editHappyHourId ? "تعديل قاعدة ساعة سعيدة" : "إضافة قاعدة ساعة سعيدة"}
-            </h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold font-arabic text-ink-900">
+                {editHappyHourId ? "تعديل قاعدة ساعة سعيدة" : "إضافة قاعدة ساعة سعيدة"}
+              </h2>
+              <button onClick={() => setShowHappyHourModal(false)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+            </div>
 
             <div className="space-y-3">
               <div>

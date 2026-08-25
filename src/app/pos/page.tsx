@@ -27,7 +27,7 @@ import {
   IconAward as Award, IconTruck as Truck,
   IconArrowsSplit2 as Split, IconArrowsLeftRight as ArrowLeftRight,
   IconPrinter as Printer, IconTrash as Trash2,
-  IconToolsKitchen2, IconShoppingBag, IconTruckDelivery, IconWorld, IconWallet,
+  IconToolsKitchen2, IconShoppingBag, IconTruckDelivery, IconWorld, IconWallet, IconX,
 } from "@tabler/icons-react";
 import { useCartStore } from "../../stores/cartStore";
 import { useAuthStore } from "../../stores/authStore";
@@ -897,6 +897,11 @@ export default function POSPage() {
       {showLoyaltyScan && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
           <div className="bg-surface rounded-[13px] shadow-sh-3 w-full max-w-sm mx-4 p-6 space-y-4">
+            <div className="flex justify-end -mb-2">
+              <button onClick={() => setShowLoyaltyScan(false)} className="w-8 h-8 rounded-lg hover:bg-surface-alt flex items-center justify-center text-text-3">
+                <IconX className="w-4 h-4" />
+              </button>
+            </div>
             {!loyaltyCard ? (
               <>
                 <h2 className="text-lg font-bold text-text">ربط بطاقة ولاء</h2>

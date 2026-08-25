@@ -671,17 +671,17 @@ function AddStockModal({
         />
         <div className="flex gap-2 pt-2">
           <button
+            onClick={onClose}
+            className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors"
+          >
+            إلغاء
+          </button>
+          <button
             onClick={handleSubmit}
             disabled={qty <= 0 || !reason.trim()}
             className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
             تأكيد
-          </button>
-          <button
-            onClick={onClose}
-            className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors"
-          >
-            إلغاء
           </button>
         </div>
       </div>
@@ -754,17 +754,17 @@ function RemoveStockModal({
         />
         <div className="flex gap-2 pt-2">
           <button
+            onClick={onClose}
+            className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors"
+          >
+            إلغاء
+          </button>
+          <button
             onClick={handleSubmit}
             disabled={qty <= 0 || !reason.trim() || qty > target.current_stock}
             className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
             تأكيد
-          </button>
-          <button
-            onClick={onClose}
-            className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors"
-          >
-            إلغاء
           </button>
         </div>
       </div>
@@ -836,8 +836,8 @@ function AddIngredientModal({
         </div>
         {errors._form && <p className="text-sm text-red-500">{errors._form}</p>}
         <div className="flex gap-2 pt-2">
-          <button onClick={handleSubmit} disabled={saving} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{saving ? "جاري..." : "إضافة"}</button>
           <button onClick={onClose} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors">إلغاء</button>
+          <button onClick={handleSubmit} disabled={saving} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{saving ? "جاري..." : "إضافة"}</button>
         </div>
       </div>
     </Modal>
@@ -965,17 +965,17 @@ function EditIngredientModal({
         {errors._form && <p className="text-sm text-red-500">{errors._form}</p>}
         <div className="flex gap-2 pt-2">
           <button
+            onClick={onClose}
+            className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors"
+          >
+            إلغاء
+          </button>
+          <button
             onClick={handleSubmit}
             disabled={saving}
             className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
             {saving ? "جاري..." : "حفظ"}
-          </button>
-          <button
-            onClick={onClose}
-            className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors"
-          >
-            إلغاء
           </button>
         </div>
       </div>
@@ -1307,7 +1307,10 @@ function PaySupplierModal({ supplier, onClose, onSaved }: { supplier: Supplier; 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
-        <h2 className="text-lg font-bold font-arabic text-ink-900">تسديد دفعة لمورد</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-bold font-arabic text-ink-900">تسديد دفعة لمورد</h2>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+        </div>
         <p className="text-sm font-arabic text-ink-500">المورد: <span className="font-bold">{supplier.name}</span></p>
         <p className="text-sm font-arabic text-ink-400">الرصيد المستحق: <span className="font-mono font-bold text-red-600">{formatCurrency(supplier.balance_cents)}</span></p>
         {error && <p className="text-sm text-red-500 font-arabic">{error}</p>}
@@ -1319,10 +1322,10 @@ function PaySupplierModal({ supplier, onClose, onSaved }: { supplier: Supplier; 
         </select>
         <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="ملاحظات (اختياري)" className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm font-arabic focus:outline-none focus:ring-2 focus:ring-saffron-600" />
         <div className="flex gap-2 pt-2">
+          <button onClick={onClose} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors">إلغاء</button>
           <button onClick={handlePay} disabled={saving || !amount || parseFloat(amount) <= 0} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">
             {saving ? "جاري..." : "تسديد"}
           </button>
-          <button onClick={onClose} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors">إلغاء</button>
         </div>
       </div>
     </div>
@@ -1439,17 +1442,17 @@ function SupplierModal({
         {errors._form && <p className="text-sm text-red-500">{errors._form}</p>}
         <div className="flex gap-2 pt-2">
           <button
+            onClick={onClose}
+            className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors"
+          >
+            إلغاء
+          </button>
+          <button
             onClick={handleSubmit}
             disabled={saving}
             className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
             {saving ? "جاري..." : isEdit ? "حفظ" : "إضافة"}
-          </button>
-          <button
-            onClick={onClose}
-            className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors"
-          >
-            إلغاء
           </button>
         </div>
       </div>
@@ -1600,11 +1603,14 @@ function PurchasesTab() {
       {cancelTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold text-ink-900 font-arabic">تأكيد الإلغاء</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-ink-900 font-arabic">تأكيد الإلغاء</h2>
+              <button onClick={() => setCancelTarget(null)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+            </div>
             <p className="text-sm text-ink-600 font-arabic">هل أنت متأكد من إلغاء طلبية الشراء هذه؟</p>
             <div className="flex gap-2 pt-2">
-              <button onClick={() => handleCancel(cancelTarget)} className="flex-1 h-10 rounded-sm bg-red-600 text-white text-sm font-bold hover:bg-red-700 transition-colors">تأكيد الإلغاء</button>
               <button onClick={() => setCancelTarget(null)} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors">رجوع</button>
+              <button onClick={() => handleCancel(cancelTarget)} className="flex-1 h-10 rounded-sm bg-red-600 text-white text-sm font-bold hover:bg-red-700 transition-colors">تأكيد الإلغاء</button>
             </div>
           </div>
         </div>
@@ -1675,7 +1681,10 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
-        <h2 className="text-lg font-bold text-ink-900 font-arabic">طلبية شراء جديدة</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-bold text-ink-900 font-arabic">طلبية شراء جديدة</h2>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+        </div>
         {error && <p className="text-sm text-red-500 font-arabic">{error}</p>}
         <div className="space-y-3">
           <div>
@@ -1714,8 +1723,8 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
           </div>
 
           <div className="flex gap-2 pt-2">
-            <button onClick={handleCreate} disabled={!selectedSupplier || items.length === 0 || saving} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{saving ? "جاري..." : "إنشاء الطلبية"}</button>
             <button onClick={onClose} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors">إلغاء</button>
+            <button onClick={handleCreate} disabled={!selectedSupplier || items.length === 0 || saving} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{saving ? "جاري..." : "إنشاء الطلبية"}</button>
           </div>
         </div>
       </div>
@@ -1780,7 +1789,10 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
-        <h2 className="text-lg font-bold text-ink-900 font-arabic">استلام طلبية - {po.id.slice(0, 8)}</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-bold text-ink-900 font-arabic">استلام طلبية - {po.id.slice(0, 8)}</h2>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+        </div>
         <p className="text-sm text-ink-500 font-arabic">المورد: {po.supplier_name}</p>
         {loadError && <p className="text-sm text-red-500 font-arabic">{loadError}</p>}
         {receiveError && <p className="text-sm text-red-500 font-arabic">{receiveError}</p>}
@@ -1821,8 +1833,8 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
           </div>
 
           <div className="flex gap-2 pt-2">
-            <button onClick={handleReceive} disabled={saving} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{saving ? "جاري..." : "تأكيد الاستلام"}</button>
             <button onClick={onClose} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors">إلغاء</button>
+            <button onClick={handleReceive} disabled={saving} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{saving ? "جاري..." : "تأكيد الاستلام"}</button>
           </div>
         </div>
       </div>
