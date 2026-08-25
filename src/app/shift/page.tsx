@@ -409,7 +409,7 @@ export default function ShiftPage() {
       <div className="flex justify-center pt-4">
         <button
           onClick={openCloseModal}
-          className="h-14 px-10 rounded-xl bg-red-50 text-red-600 border border-red-200 font-bold text-base flex items-center gap-2.5 active:scale-[0.98] transition-all"
+          className="h-14 px-10 rounded-xl bg-danger-soft text-danger border border-danger-soft font-bold text-base flex items-center gap-2.5 active:scale-[0.98] transition-all"
         >
           <IconLogout2 className="w-5 h-5" stroke={1.75} />
           إغلاق الوردية

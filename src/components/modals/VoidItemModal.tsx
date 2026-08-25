@@ -159,7 +159,7 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
           <button
             onClick={handleConfirm}
             disabled={(!reason.trim() || (reason === "أخرى" && !customReason.trim())) || verifying || (needsManager && showPin && !pin)}
-            className="flex-1 h-12 rounded-xl bg-red-50 text-red-600 font-arabic font-bold hover:bg-red-100 disabled:opacity-50"
+            className="flex-1 h-12 rounded-xl bg-danger-soft text-danger font-arabic font-bold hover:bg-danger-soft disabled:opacity-50"
           >
             {verifying ? "جاري التحقق..." : "تأكيد الإلغاء"}
           </button>

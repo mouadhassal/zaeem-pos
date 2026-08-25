@@ -115,7 +115,7 @@ export default function SetupWizard() {
 
             <div className="bg-white border border-ink-200 rounded-md p-8">
               {error && (
-                <div className="mb-6 flex items-center gap-2 p-3 rounded-sm bg-red-50 border border-red-200 text-red-600 text-sm">
+                <div className="mb-6 flex items-center gap-2 p-3 rounded-sm bg-danger-soft border border-danger-soft text-danger text-sm">
                   <AlertCircle className="w-4 h-4 shrink-0" />
                   <span>{error}</span>
                 </div>
@@ -156,7 +156,7 @@ export default function SetupWizard() {
                         <img src={logoDataUrl} alt="شعار الفرع" className="w-16 h-16 rounded-lg object-cover border border-ink-200" />
                         <button
                           onClick={() => setLogoDataUrl(null)}
-                          className="absolute -top-2 -left-2 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center"
+                          className="absolute -top-2 -left-2 w-5 h-5 rounded-full bg-danger text-white text-xs flex items-center justify-center"
                         >
                          <X className="w-3 h-3" />
                         </button>
@@ -222,7 +222,7 @@ export default function SetupWizard() {
 
             <div className="bg-white border border-ink-200 rounded-md p-8">
               {error && (
-                <div className="mb-6 flex items-center gap-2 p-3 rounded-sm bg-red-50 border border-red-200 text-red-600 text-sm">
+                <div className="mb-6 flex items-center gap-2 p-3 rounded-sm bg-danger-soft border border-danger-soft text-danger text-sm">
                   <AlertCircle className="w-4 h-4 shrink-0" />
                   <span>{error}</span>
                 </div>
@@ -303,7 +303,7 @@ export default function SetupWizard() {
 
           <div className="bg-white border border-ink-200 rounded-md p-8">
             {error && (
-              <div className="mb-6 flex items-center gap-2 p-3 rounded-sm bg-red-50 border border-red-200 text-red-600 text-sm">
+              <div className="mb-6 flex items-center gap-2 p-3 rounded-sm bg-danger-soft border border-danger-soft text-danger text-sm">
                 <AlertCircle className="w-4 h-4 shrink-0" />
                 <span>{error}</span>
               </div>

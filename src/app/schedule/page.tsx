@@ -207,7 +207,7 @@ export default function SchedulePage() {
   }
 
   if (error && staff.length === 0) {
-    return <div className="flex items-center justify-center h-full text-red-500 font-arabic">{error}</div>;
+    return <div className="flex items-center justify-center h-full text-danger font-arabic">{error}</div>;
   }
 
   return (
@@ -241,7 +241,7 @@ export default function SchedulePage() {
         </div>
       </div>
 
-      {error && <div className="text-sm text-red-500 font-arabic">{error}</div>}
+      {error && <div className="text-sm text-danger font-arabic">{error}</div>}
 
       {staff.length === 0 ? (
         <div className="zc-card p-8 text-center text-ink-500 font-arabic">لا يوجد موظفون نشطون لعرض جدولهم</div>
@@ -312,7 +312,7 @@ export default function SchedulePage() {
               </button>
             </div>
 
-            {formErrors._form && <p className="text-xs text-red-500 font-arabic">{formErrors._form}</p>}
+            {formErrors._form && <p className="text-xs text-danger font-arabic">{formErrors._form}</p>}
 
             <div className="space-y-3">
               {!editId && (
@@ -330,7 +330,7 @@ export default function SchedulePage() {
                       </option>
                     ))}
                   </select>
-                  {formErrors.staffId && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.staffId}</p>}
+                  {formErrors.staffId && <p className="text-xs text-danger mt-1 font-arabic">{formErrors.staffId}</p>}
                 </div>
               )}
 
@@ -354,7 +354,7 @@ export default function SchedulePage() {
                     className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                     dir="ltr"
                   />
-                  {formErrors.startTime && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.startTime}</p>}
+                  {formErrors.startTime && <p className="text-xs text-danger mt-1 font-arabic">{formErrors.startTime}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-arabic text-ink-900 mb-1">إلى *</label>
@@ -365,7 +365,7 @@ export default function SchedulePage() {
                     className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                     dir="ltr"
                   />
-                  {formErrors.endTime && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.endTime}</p>}
+                  {formErrors.endTime && <p className="text-xs text-danger mt-1 font-arabic">{formErrors.endTime}</p>}
                 </div>
               </div>
 
@@ -393,7 +393,7 @@ export default function SchedulePage() {
                   onClick={deleteEntry}
                   disabled={saving}
                   aria-label="حذف"
-                  className="h-10 w-10 flex items-center justify-center rounded-sm border border-red-200 text-red-500 hover:bg-red-50 transition-colors disabled:opacity-50"
+                  className="h-10 w-10 flex items-center justify-center rounded-sm border border-danger-soft text-danger hover:bg-danger-soft transition-colors disabled:opacity-50"
                 >
                   <IconTrash className="w-4 h-4" />
                 </button>

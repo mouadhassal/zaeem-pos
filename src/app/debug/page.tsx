@@ -52,7 +52,7 @@ function DebugPageContent() {
           </div>
           <div className="flex justify-between">
             <span className="text-ink-400 font-arabic">FPS</span>
-            <span className={`font-mono ${fps < 30 ? "text-red-500" : fps < 50 ? "text-amber-500" : "text-saffron-600"}`}>
+            <span className={`font-mono ${fps < 30 ? "text-danger" : fps < 50 ? "text-amber-500" : "text-saffron-600"}`}>
               {fps}
             </span>
           </div>

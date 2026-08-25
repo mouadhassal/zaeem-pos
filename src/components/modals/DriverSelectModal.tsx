@@ -52,7 +52,7 @@ export default function DriverSelectModal({ selectedId, onSelect, onClose }: Pro
               <div className="w-6 h-6 border-2 border-ink-200 border-t-accent rounded-full animate-spin" />
             </div>
           ) : fetchError ? (
-            <div className="text-center py-8 text-red-500 font-arabic text-sm">{fetchError}</div>
+            <div className="text-center py-8 text-danger font-arabic text-sm">{fetchError}</div>
           ) : drivers.length === 0 ? (
             <div className="text-center py-8 text-ink-400">
               <Car className="w-10 h-10 mx-auto mb-2" />

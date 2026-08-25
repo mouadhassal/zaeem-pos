@@ -194,7 +194,7 @@ export default function NetworkTab({ token }: { token: string | null }) {
       </p>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-md p-3 text-red-700 font-arabic text-sm">{error}</div>
+        <div className="bg-danger-soft border border-danger-soft rounded-md p-3 text-danger font-arabic text-sm">{error}</div>
       )}
 
       <div className="bg-white rounded-md p-5 border border-ink-200 space-y-2">
@@ -370,7 +370,7 @@ export default function NetworkTab({ token }: { token: string | null }) {
                       <span className="mr-1 text-[11px] font-arabic px-2 py-0.5 rounded-full bg-ink-100 text-ink-500">{roleLabel(t.deviceRole)}</span>
                     </div>
                     {t.status === "APPROVED" && (
-                      <button onClick={() => revoke(t.id)} className="h-8 px-4 rounded-sm bg-white border-2 border-ink-200 text-red-600 text-xs font-bold hover:bg-red-50 transition-colors">
+                      <button onClick={() => revoke(t.id)} className="h-8 px-4 rounded-sm bg-white border-2 border-ink-200 text-danger text-xs font-bold hover:bg-danger-soft transition-colors">
                         إلغاء الارتباط
                       </button>
                     )}

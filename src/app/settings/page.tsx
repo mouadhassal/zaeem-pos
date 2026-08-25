@@ -941,7 +941,7 @@ export default function SettingsPage() {
                       <img src={branchLogo} alt="شعار الفرع" className="w-16 h-16 rounded-lg object-cover border border-ink-200" />
                       <button
                         onClick={() => { setBranchLogo(null); localStorage.removeItem("zaeem_branch_logo"); }}
-                        className="absolute -top-2 -left-2 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center hover:bg-red-600"
+                        className="absolute -top-2 -left-2 w-5 h-5 rounded-full bg-danger text-white text-xs flex items-center justify-center hover:bg-danger/90"
                       >
                         <X className="w-3 h-3" />
                       </button>
@@ -985,7 +985,7 @@ export default function SettingsPage() {
               <p className="text-xs text-ink-400 font-arabic">
                 أضف أو أعد تسمية أو احذف أي عدد من الطاولات -- لا يوجد حد أدنى أو أقصى (يمكن أن يكون صفر، واحدة، أو عشرين).
               </p>
-              {tableError && <p className="text-xs text-red-500 font-arabic">{tableError}</p>}
+              {tableError && <p className="text-xs text-danger font-arabic">{tableError}</p>}
               <div className="flex gap-2">
                 <input
                   type="text"
@@ -1056,7 +1056,7 @@ export default function SettingsPage() {
                               }}
                               disabled={t.status !== "FREE" || !!t.current_order_id}
                               title={t.status !== "FREE" || t.current_order_id ? "لا يمكن حذف طاولة مشغولة أو مدمجة" : "حذف"}
-                              className="h-8 w-8 rounded-sm flex items-center justify-center text-ink-500 hover:bg-red-50 hover:text-red-600 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                              className="h-8 w-8 rounded-sm flex items-center justify-center text-ink-500 hover:bg-danger-soft hover:text-danger transition-colors disabled:opacity-30 disabled:pointer-events-none"
                             >
                               <Trash className="w-3.5 h-3.5" />
                             </button>
@@ -1150,7 +1150,7 @@ export default function SettingsPage() {
               {licenseStatus?.kind === "LockedBackOffice" && (
                 <>
                   <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-red-500" />
+                    <span className="w-2.5 h-2.5 rounded-full bg-danger" />
                     <span className="font-arabic font-bold text-ink-900">منتهي</span>
                   </div>
                   <div className="flex justify-between text-sm">
@@ -1161,7 +1161,7 @@ export default function SettingsPage() {
                     <span className="font-arabic text-ink-400">انتهى في</span>
                     <span className="font-mono text-ink-900">{formatExpiry(licenseStatus.expires_at)}</span>
                   </div>
-                  <p className="text-sm font-arabic text-red-700">
+                  <p className="text-sm font-arabic text-danger">
                     الإدارة والتقارير مقفلة. نقطة البيع تعمل بشكل طبيعي. فعّل مفتاحاً جديداً أدناه لإعادة الفتح.
                   </p>
                 </>
@@ -1169,10 +1169,10 @@ export default function SettingsPage() {
               {licenseStatus?.kind === "Invalid" && (
                 <>
                   <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-red-500" />
+                    <span className="w-2.5 h-2.5 rounded-full bg-danger" />
                     <span className="font-arabic font-bold text-ink-900">لا يوجد ترخيص صالح</span>
                   </div>
-                  <p className="text-sm font-arabic text-red-700">
+                  <p className="text-sm font-arabic text-danger">
                     الإدارة والتقارير مقفلة. نقطة البيع تعمل بشكل طبيعي. فعّل مفتاحاً أدناه.
                   </p>
                 </>
@@ -1191,7 +1191,7 @@ export default function SettingsPage() {
                   className="w-full px-4 py-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-xs outline-none focus:border-saffron-600"
                 />
                 {activationError && (
-                  <p className="text-sm font-arabic text-red-700">{activationError}</p>
+                  <p className="text-sm font-arabic text-danger">{activationError}</p>
                 )}
                 {activationSuccess && (
                   <p className="text-sm font-arabic text-green-700">تم تفعيل الترخيص بنجاح.</p>

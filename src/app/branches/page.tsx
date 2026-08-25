@@ -272,7 +272,7 @@ export default function BranchesPage() {
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-full text-red-500 font-arabic">
+      <div className="flex items-center justify-center h-full text-danger font-arabic">
         {error}
       </div>
     );
@@ -317,7 +317,7 @@ export default function BranchesPage() {
                     className={`px-3 py-1 rounded-full text-xs font-arabic font-bold ${
                       b.is_active
                         ? "bg-saffron-50 text-saffron-600"
-                        : "bg-red-50 text-red-700"
+                        : "bg-danger-soft text-danger"
                     }`}
                   >
                     {b.is_active ? "نشط" : "معلق"}
@@ -381,7 +381,7 @@ export default function BranchesPage() {
                   maxLength={100}
                   className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 />
-                {formErrors.name && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.name}</p>}
+                {formErrors.name && <p className="text-xs text-danger mt-1 font-arabic">{formErrors.name}</p>}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -428,7 +428,7 @@ export default function BranchesPage() {
                       <option key={tz} value={tz}>{tz}</option>
                     ))}
                   </select>
-                  {formErrors.timezone && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.timezone}</p>}
+                  {formErrors.timezone && <p className="text-xs text-danger mt-1 font-arabic">{formErrors.timezone}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-arabic text-ink-900 mb-1">العملة *</label>
@@ -441,7 +441,7 @@ export default function BranchesPage() {
                       <option key={c} value={c}>{c}</option>
                     ))}
                   </select>
-                  {formErrors.currency && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.currency}</p>}
+                  {formErrors.currency && <p className="text-xs text-danger mt-1 font-arabic">{formErrors.currency}</p>}
                 </div>
               </div>
 
@@ -456,7 +456,7 @@ export default function BranchesPage() {
                     className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                   />
                   <p className="text-[10px] text-ink-500 mt-0.5 font-arabic">مثال: 1500 = 15%</p>
-                  {formErrors.tax_rate_cents && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.tax_rate_cents}</p>}
+                  {formErrors.tax_rate_cents && <p className="text-xs text-danger mt-1 font-arabic">{formErrors.tax_rate_cents}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-arabic text-ink-900 mb-1">عدد الطاولات *</label>
@@ -467,12 +467,12 @@ export default function BranchesPage() {
                     onChange={(e) => setForm((p) => ({ ...p, max_tables: e.target.value }))}
                     className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                   />
-                  {formErrors.max_tables && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.max_tables}</p>}
+                  {formErrors.max_tables && <p className="text-xs text-danger mt-1 font-arabic">{formErrors.max_tables}</p>}
                 </div>
               </div>
 
               {formErrors._form && (
-                <p className="text-sm text-red-500 font-arabic">{formErrors._form}</p>
+                <p className="text-sm text-danger font-arabic">{formErrors._form}</p>
               )}
             </div>
 
@@ -511,7 +511,7 @@ export default function BranchesPage() {
                     className={`px-2 py-0.5 rounded-full text-xs font-arabic font-bold ${
                       detailBranch.is_active
                         ? "bg-saffron-50 text-saffron-600"
-                        : "bg-red-50 text-red-700"
+                        : "bg-danger-soft text-danger"
                     }`}
                   >
                     {detailBranch.is_active ? "نشط" : "معلق"}
@@ -606,7 +606,7 @@ export default function BranchesPage() {
                               ? "bg-saffron-50 text-saffron-600"
                               : t.status === "OFFLINE"
                               ? "bg-amber-50 text-amber-700"
-                              : "bg-red-50 text-red-700"
+                              : "bg-danger-soft text-danger"
                           }`}
                         >
                           {t.status === "ACTIVE" ? "نشط" : t.status === "OFFLINE" ? "غير متصل" : "معطل"}

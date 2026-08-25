@@ -92,8 +92,8 @@ function getTypeKey(change_amount: number, reason: string): string {
 function StockBadge({ qty, min }: { qty: number; min: number }) {
   if (qty <= 0) {
     return (
-      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-50 text-red-600 text-xs font-medium">
-        <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-danger-soft text-danger text-xs font-medium">
+        <span className="w-1.5 h-1.5 rounded-full bg-danger" />
         نفذت
       </span>
     );
@@ -338,7 +338,7 @@ function ReceiveStockEntryModal({ onClose, onReceived }: { onClose: () => void; 
           <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
         </div>
         <p className="text-sm text-ink-500">اختر طلبية الشراء التي وصلت لتسجيل الكميات المستلمة وتحديث المخزون تلقائياً.</p>
-        {loadError && <p className="text-sm text-red-500">{loadError}</p>}
+        {loadError && <p className="text-sm text-danger">{loadError}</p>}
 
         {loading ? (
           <div className="py-10 text-center text-ink-500 text-sm">جاري التحميل...</div>
@@ -475,10 +475,10 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
   return (
     <div className="space-y-4">
       {loadError && (
-        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{loadError}</div>
+        <div className="bg-danger-soft border border-danger-soft rounded-sm p-3 text-sm text-danger font-arabic">{loadError}</div>
       )}
       {actionError && (
-        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{actionError}</div>
+        <div className="bg-danger-soft border border-danger-soft rounded-sm p-3 text-sm text-danger font-arabic">{actionError}</div>
       )}
       {lowStockCount > 0 && (
         <button
@@ -563,7 +563,7 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
                   </button>
                   <button
                     onClick={() => setRemoveTarget(ing)}
-                    className="p-2 rounded-sm text-ink-500 hover:text-red-500 hover:bg-red-50 transition-colors"
+                    className="p-2 rounded-sm text-ink-500 hover:text-danger hover:bg-danger-soft transition-colors"
                     title="تعديل يدوي: خصم كمية (تالف، هالك...)"
                   >
                     <ChevronDown className="w-4 h-4" />
@@ -736,7 +736,7 @@ function RemoveStockModal({
           className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
         />
         {qty > target.current_stock && (
-          <p className="text-red-500 text-xs">الكمية تتجاوز المخزون المتاح</p>
+          <p className="text-danger text-xs">الكمية تتجاوز المخزون المتاح</p>
         )}
         <input
           type="text"
@@ -820,21 +820,21 @@ function AddIngredientModal({
       <div className="space-y-3">
         <div>
           <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="اسم المادة" className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
-          {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name}</p>}
+          {errors.name && <p className="text-danger text-xs mt-1">{errors.name}</p>}
         </div>
         <div>
           <input type="text" value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="الوحدة (كجم, لتر, قطعة...)" className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
-          {errors.unit && <p className="text-red-500 text-xs mt-1">{errors.unit}</p>}
+          {errors.unit && <p className="text-danger text-xs mt-1">{errors.unit}</p>}
         </div>
         <div>
           <input type="number" value={cost || ""} onChange={(e) => setCost(Number(e.target.value))} placeholder="التكلفة لكل وحدة (هللة)" className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
-          {errors.cost_cents_per_unit && <p className="text-red-500 text-xs mt-1">{errors.cost_cents_per_unit}</p>}
+          {errors.cost_cents_per_unit && <p className="text-danger text-xs mt-1">{errors.cost_cents_per_unit}</p>}
         </div>
         <div>
           <input type="number" value={minStock || ""} onChange={(e) => setMinStock(Number(e.target.value))} placeholder="الحد الأدنى للمخزون" className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
-          {errors.min_stock && <p className="text-red-500 text-xs mt-1">{errors.min_stock}</p>}
+          {errors.min_stock && <p className="text-danger text-xs mt-1">{errors.min_stock}</p>}
         </div>
-        {errors._form && <p className="text-sm text-red-500">{errors._form}</p>}
+        {errors._form && <p className="text-sm text-danger">{errors._form}</p>}
         <div className="flex gap-2 pt-2">
           <button onClick={onClose} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors">إلغاء</button>
           <button onClick={handleSubmit} disabled={saving} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{saving ? "جاري..." : "إضافة"}</button>
@@ -921,7 +921,7 @@ function EditIngredientModal({
             className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
           {errors.name && (
-            <p className="text-red-500 text-xs mt-1">{errors.name}</p>
+            <p className="text-danger text-xs mt-1">{errors.name}</p>
           )}
         </div>
         <div>
@@ -933,7 +933,7 @@ function EditIngredientModal({
             className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
           {errors.unit && (
-            <p className="text-red-500 text-xs mt-1">{errors.unit}</p>
+            <p className="text-danger text-xs mt-1">{errors.unit}</p>
           )}
         </div>
         <div>
@@ -945,7 +945,7 @@ function EditIngredientModal({
             className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
           {errors.cost_cents_per_unit && (
-            <p className="text-red-500 text-xs mt-1">
+            <p className="text-danger text-xs mt-1">
               {errors.cost_cents_per_unit}
             </p>
           )}
@@ -959,10 +959,10 @@ function EditIngredientModal({
             className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
           {errors.min_stock && (
-            <p className="text-red-500 text-xs mt-1">{errors.min_stock}</p>
+            <p className="text-danger text-xs mt-1">{errors.min_stock}</p>
           )}
         </div>
-        {errors._form && <p className="text-sm text-red-500">{errors._form}</p>}
+        {errors._form && <p className="text-sm text-danger">{errors._form}</p>}
         <div className="flex gap-2 pt-2">
           <button
             onClick={onClose}
@@ -1077,13 +1077,13 @@ function SuppliersTab() {
   return (
     <div className="space-y-4">
       {loadError && (
-        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{loadError}</div>
+        <div className="bg-danger-soft border border-danger-soft rounded-sm p-3 text-sm text-danger font-arabic">{loadError}</div>
       )}
       {actionError && (
-        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{actionError}</div>
+        <div className="bg-danger-soft border border-danger-soft rounded-sm p-3 text-sm text-danger font-arabic">{actionError}</div>
       )}
       {detailError && (
-        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{detailError}</div>
+        <div className="bg-danger-soft border border-danger-soft rounded-sm p-3 text-sm text-danger font-arabic">{detailError}</div>
       )}
       <div className="flex gap-2">
         <button
@@ -1132,7 +1132,7 @@ function SuppliersTab() {
                 <td className="p-3 font-mono text-ink-900">
                   {formatCurrency(s.total_purchases_cents)}
                 </td>
-                <td className={`p-3 font-mono font-bold ${s.balance_cents > 0 ? "text-red-600" : "text-green-600"}`}>
+                <td className={`p-3 font-mono font-bold ${s.balance_cents > 0 ? "text-danger" : "text-green-600"}`}>
                   {formatCurrency(s.balance_cents)}
                 </td>
                 <td className="p-3" onClick={(e) => e.stopPropagation()}>
@@ -1160,7 +1160,7 @@ function SuppliersTab() {
                     </button>
                     <button
                       onClick={() => handleDelete(s.id)}
-                      className="px-3 py-1.5 rounded-sm bg-red-100 text-red-700 text-xs font-bold hover:bg-red-200 transition-colors"
+                      className="px-3 py-1.5 rounded-sm bg-danger-soft text-danger text-xs font-bold hover:bg-danger/20 transition-colors"
                       title="حذف"
                     >
                       <IconTrash className="w-4 h-4" />
@@ -1225,8 +1225,8 @@ function SuppliersTab() {
                   <p className="text-2xl font-bold text-saffron-600 font-mono">{formatCurrency(detail.supplier.total_paid_cents)}</p>
                   <p className="text-xs text-saffron-600 font-arabic mt-1">المدفوع</p>
                 </div>
-                <div className={`rounded-sm p-3 text-center ${detail.supplier.balance_cents > 0 ? "bg-red-50" : "bg-saffron-50"}`}>
-                  <p className={`text-2xl font-bold font-mono ${detail.supplier.balance_cents > 0 ? "text-red-600" : "text-saffron-600"}`}>{formatCurrency(detail.supplier.balance_cents)}</p>
+                <div className={`rounded-sm p-3 text-center ${detail.supplier.balance_cents > 0 ? "bg-danger-soft" : "bg-saffron-50"}`}>
+                  <p className={`text-2xl font-bold font-mono ${detail.supplier.balance_cents > 0 ? "text-danger" : "text-saffron-600"}`}>{formatCurrency(detail.supplier.balance_cents)}</p>
                   <p className="text-xs font-arabic mt-1">الرصيد المستحق</p>
                 </div>
               </div>
@@ -1312,8 +1312,8 @@ function PaySupplierModal({ supplier, onClose, onSaved }: { supplier: Supplier; 
           <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
         </div>
         <p className="text-sm font-arabic text-ink-500">المورد: <span className="font-bold">{supplier.name}</span></p>
-        <p className="text-sm font-arabic text-ink-400">الرصيد المستحق: <span className="font-mono font-bold text-red-600">{formatCurrency(supplier.balance_cents)}</span></p>
-        {error && <p className="text-sm text-red-500 font-arabic">{error}</p>}
+        <p className="text-sm font-arabic text-ink-400">الرصيد المستحق: <span className="font-mono font-bold text-danger">{formatCurrency(supplier.balance_cents)}</span></p>
+        {error && <p className="text-sm text-danger font-arabic">{error}</p>}
         <input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="المبلغ" className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-saffron-600" dir="ltr" />
         <select value={method} onChange={(e) => setMethod(e.target.value as "CASH" | "BANK" | "CARD")} className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm font-arabic focus:outline-none focus:ring-2 focus:ring-saffron-600">
           <option value="CASH">نقدي</option>
@@ -1420,7 +1420,7 @@ function SupplierModal({
             placeholder="اسم المورد"
             className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
-          {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name}</p>}
+          {errors.name && <p className="text-danger text-xs mt-1">{errors.name}</p>}
         </div>
         <input
           type="text"
@@ -1437,9 +1437,9 @@ function SupplierModal({
             placeholder="البريد الإلكتروني"
             className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
-          {errors.email && <p className="text-red-500 text-xs mt-1">{errors.email}</p>}
+          {errors.email && <p className="text-danger text-xs mt-1">{errors.email}</p>}
         </div>
-        {errors._form && <p className="text-sm text-red-500">{errors._form}</p>}
+        {errors._form && <p className="text-sm text-danger">{errors._form}</p>}
         <div className="flex gap-2 pt-2">
           <button
             onClick={onClose}
@@ -1501,7 +1501,7 @@ function PurchasesTab() {
     if (s === "PENDING") return "bg-amber-100 text-amber-700";
     if (s === "ORDERED") return "bg-blue-100 text-blue-700";
     if (s === "RECEIVED") return "bg-saffron-100 text-saffron-600";
-    if (s === "CANCELLED") return "bg-red-100 text-red-700";
+    if (s === "CANCELLED") return "bg-danger-soft text-danger";
     return "bg-white text-ink-500";
   };
 
@@ -1517,7 +1517,7 @@ function PurchasesTab() {
     if (s === "PAID") return "bg-green-100 text-green-700";
     if (s === "PARTIAL") return "bg-amber-100 text-amber-700";
     if (s === "ADVANCE") return "bg-blue-100 text-blue-700";
-    return "bg-red-100 text-red-700";
+    return "bg-danger-soft text-danger";
   };
 
   const paymentStatusLabel = (s: string) => {
@@ -1534,10 +1534,10 @@ function PurchasesTab() {
   return (
     <div className="space-y-4">
       {loadError && (
-        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{loadError}</div>
+        <div className="bg-danger-soft border border-danger-soft rounded-sm p-3 text-sm text-danger font-arabic">{loadError}</div>
       )}
       {cancelError && (
-        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{cancelError}</div>
+        <div className="bg-danger-soft border border-danger-soft rounded-sm p-3 text-sm text-danger font-arabic">{cancelError}</div>
       )}
       <div className="flex gap-2">
         <button onClick={() => setShowCreate(true)} className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors">
@@ -1583,7 +1583,7 @@ function PurchasesTab() {
                     {po.status === "PENDING" && (
                       <>
                         <button onClick={() => setReceiveTarget(po)} className="px-3 py-1.5 rounded-sm text-xs text-saffron-600 hover:bg-saffron-50 transition-colors" title="استلام"><IconPackageImport className="w-4 h-4" /></button>
-                        <button onClick={() => setCancelTarget(po.id)} className="px-3 py-1.5 rounded-sm text-xs text-red-500 hover:bg-red-50 transition-colors" title="إلغاء"><IconX className="w-4 h-4" /></button>
+                        <button onClick={() => setCancelTarget(po.id)} className="px-3 py-1.5 rounded-sm text-xs text-danger hover:bg-danger-soft transition-colors" title="إلغاء"><IconX className="w-4 h-4" /></button>
                       </>
                     )}
                   </div>
@@ -1610,7 +1610,7 @@ function PurchasesTab() {
             <p className="text-sm text-ink-600 font-arabic">هل أنت متأكد من إلغاء طلبية الشراء هذه؟</p>
             <div className="flex gap-2 pt-2">
               <button onClick={() => setCancelTarget(null)} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-saffron-50 transition-colors">رجوع</button>
-              <button onClick={() => handleCancel(cancelTarget)} className="flex-1 h-10 rounded-sm bg-red-600 text-white text-sm font-bold hover:bg-red-700 transition-colors">تأكيد الإلغاء</button>
+              <button onClick={() => handleCancel(cancelTarget)} className="flex-1 h-10 rounded-sm bg-danger text-white text-sm font-bold hover:bg-danger/90 transition-colors">تأكيد الإلغاء</button>
             </div>
           </div>
         </div>
@@ -1685,7 +1685,7 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
           <h2 className="text-lg font-bold text-ink-900 font-arabic">طلبية شراء جديدة</h2>
           <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
         </div>
-        {error && <p className="text-sm text-red-500 font-arabic">{error}</p>}
+        {error && <p className="text-sm text-danger font-arabic">{error}</p>}
         <div className="space-y-3">
           <div>
             <label className="block text-sm font-arabic text-ink-900 mb-1">المورد</label>
@@ -1712,7 +1712,7 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
                 </select>
                 <input type="number" min="0" step="0.01" value={item.quantity_ordered || ""} onChange={(e) => updateItem(idx, "quantity_ordered", Number(e.target.value))} placeholder="الكمية" className="w-24 h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
                 <input type="number" min="0" value={item.unit_cost_cents || ""} onChange={(e) => updateItem(idx, "unit_cost_cents", Number(e.target.value))} placeholder="سعر الوحدة" className="w-28 h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
-                <button onClick={() => removeItem(idx)} className="h-10 px-3 rounded-sm text-red-500 hover:bg-red-50 transition-colors"><IconX className="w-4 h-4" /></button>
+                <button onClick={() => removeItem(idx)} className="h-10 px-3 rounded-sm text-danger hover:bg-danger-soft transition-colors"><IconX className="w-4 h-4" /></button>
               </div>
             ))}
           </div>
@@ -1794,8 +1794,8 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
           <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
         </div>
         <p className="text-sm text-ink-500 font-arabic">المورد: {po.supplier_name}</p>
-        {loadError && <p className="text-sm text-red-500 font-arabic">{loadError}</p>}
-        {receiveError && <p className="text-sm text-red-500 font-arabic">{receiveError}</p>}
+        {loadError && <p className="text-sm text-danger font-arabic">{loadError}</p>}
+        {receiveError && <p className="text-sm text-danger font-arabic">{receiveError}</p>}
         <div className="space-y-3">
           {items.map((item, idx) => (
             <div key={item.id} className="bg-white rounded-sm border border-ink-200 p-3 space-y-2">
@@ -1876,7 +1876,7 @@ function PODetailModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void
           <h2 className="text-lg font-bold text-ink-900 font-arabic">تفاصيل الطلبية</h2>
           <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
         </div>
-        {loadError && <p className="text-sm text-red-500 font-arabic">{loadError}</p>}
+        {loadError && <p className="text-sm text-danger font-arabic">{loadError}</p>}
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div><span className="text-ink-400 font-arabic">رقم الطلبية: </span><span className="font-mono text-ink-900">{po.id.slice(0, 8)}</span></div>
           <div><span className="text-ink-400 font-arabic">المورد: </span><span className="text-ink-900">{po.supplier_name}</span></div>
@@ -2015,7 +2015,7 @@ function MovementsTab() {
   return (
     <div className="space-y-4">
       {loadError && (
-        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{loadError}</div>
+        <div className="bg-danger-soft border border-danger-soft rounded-sm p-3 text-sm text-danger font-arabic">{loadError}</div>
       )}
       <div className="flex gap-3 flex-wrap">
         <div>
@@ -2091,7 +2091,7 @@ function MovementsTab() {
               const typeLabel = getTypeLabel(log.change_amount, log.reason);
               const typeColors: Record<string, string> = {
                 إضافة: "text-green-600 bg-green-50",
-                خصم: "text-red-600 bg-red-50",
+                خصم: "text-danger bg-danger-soft",
                 هالك: "text-amber-600 bg-amber-50",
                 بيع: "text-blue-600 bg-blue-50",
               };
@@ -2114,7 +2114,7 @@ function MovementsTab() {
                   </td>
                   <td
                     className={`p-3 font-mono font-bold ${
-                      log.change_amount > 0 ? "text-green-600" : "text-red-600"
+                      log.change_amount > 0 ? "text-green-600" : "text-danger"
                     }`}
                   >
                     {log.change_amount > 0 ? "+" : ""}
@@ -2214,10 +2214,10 @@ function AlertsTab() {
   return (
     <div className="space-y-4">
       {loadError && (
-        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{loadError}</div>
+        <div className="bg-danger-soft border border-danger-soft rounded-sm p-3 text-sm text-danger font-arabic">{loadError}</div>
       )}
       {orderError && (
-        <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-sm text-red-600 font-arabic">{orderError}</div>
+        <div className="bg-danger-soft border border-danger-soft rounded-sm p-3 text-sm text-danger font-arabic">{orderError}</div>
       )}
       {suppliers.length === 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-sm p-4 text-sm text-amber-700 font-arabic">
@@ -2253,7 +2253,7 @@ function AlertsTab() {
             <h3 className="font-bold text-ink-900">{ing.name}</h3>
             <p className="text-sm text-ink-400 font-arabic">
               المخزون الحالي:{" "}
-              <span className="font-mono font-bold text-red-500">
+              <span className="font-mono font-bold text-danger">
                 {ing.current_stock}
               </span>{" "}
               / الحد الأدنى:{" "}

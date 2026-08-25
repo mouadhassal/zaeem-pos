@@ -111,7 +111,7 @@ export default function DebtSelectModal({ onClose, onSelect }: Props) {
                   </div>
                   <div className="text-left">
                     <p className="text-xs font-arabic text-text-muted">المتبقي</p>
-                    <p className={`font-mono font-bold text-sm ${d.balance_cents > 0 ? "text-red-500" : "text-green-500"}`}>
+                    <p className={`font-mono font-bold text-sm ${d.balance_cents > 0 ? "text-danger" : "text-green-500"}`}>
                       {d.balance_cents > 0 ? `-${d.balance_cents.toLocaleString()}` : "0"}
                     </p>
                   </div>
@@ -129,7 +129,7 @@ export default function DebtSelectModal({ onClose, onSelect }: Props) {
               <input type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)}
                 placeholder="البريد الإلكتروني" className="w-full h-9 px-3 rounded-sm bg-white border-2 border-ink-200 text-sm outline-none focus:border-accent" dir="ltr" />
               <p className="text-xs text-text-muted font-arabic">الاسم مطلوب + هاتف أو بريد</p>
-              {newError && <p className="text-xs text-red-500 font-arabic">{newError}</p>}
+              {newError && <p className="text-xs text-danger font-arabic">{newError}</p>}
               <div className="flex gap-2">
                 <button onClick={() => { setShowNew(false); setNewName(""); setNewPhone(""); setNewEmail(""); setNewError(null); }}
                   className="flex-1 h-9 rounded-sm bg-surface-alt text-text-3 text-sm font-arabic hover:bg-line transition-colors">إلغاء</button>

@@ -406,7 +406,7 @@ export default function StaffPage() {
 
   if (error && employees.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full text-red-500 font-arabic">
+      <div className="flex items-center justify-center h-full text-danger font-arabic">
         {error}
       </div>
     );
@@ -485,7 +485,7 @@ export default function StaffPage() {
                     </td>
                     <td className="p-3 text-center">
                       <span
-                        className={`inline-block w-2 h-2 rounded-full ${emp.is_active ? "bg-saffron-600" : "bg-red-400"}`}
+                        className={`inline-block w-2 h-2 rounded-full ${emp.is_active ? "bg-saffron-600" : "bg-danger"}`}
                       />
                     </td>
                     <td className="p-3 font-arabic text-ink-400 text-xs">
@@ -626,7 +626,7 @@ export default function StaffPage() {
                       <td className="p-3">
                         <span
                           className={`font-mono font-bold ${
-                            diff !== null && diff < 0 ? "text-red-500" : diff !== null && diff > 0 ? "text-saffron-600" : "text-ink-400"
+                            diff !== null && diff < 0 ? "text-danger" : diff !== null && diff > 0 ? "text-saffron-600" : "text-ink-400"
                           }`}
                         >
                           {formatCents(shift.difference_cents)}
@@ -636,7 +636,7 @@ export default function StaffPage() {
                         <span
                           className={`inline-block px-3 py-1 rounded-full text-xs font-arabic font-medium ${
                             needsReview
-                              ? "bg-red-100 text-red-700"
+                              ? "bg-danger-soft text-danger"
                               : isOpen
                                 ? "bg-amber-100 text-amber-700"
                                 : "bg-saffron-100 text-saffron-600"
@@ -949,7 +949,7 @@ export default function StaffPage() {
                   className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 />
                 {employeeErrors.name && (
-                  <p className="text-xs text-red-500 mt-1 font-arabic">{employeeErrors.name}</p>
+                  <p className="text-xs text-danger mt-1 font-arabic">{employeeErrors.name}</p>
                 )}
               </div>
 
@@ -969,7 +969,7 @@ export default function StaffPage() {
                   ))}
                 </select>
                 {employeeErrors.role && (
-                  <p className="text-xs text-red-500 mt-1 font-arabic">{employeeErrors.role}</p>
+                  <p className="text-xs text-danger mt-1 font-arabic">{employeeErrors.role}</p>
                 )}
               </div>
 
@@ -987,7 +987,7 @@ export default function StaffPage() {
                     ))}
                   </select>
                   {employeeErrors.branchId && (
-                    <p className="text-xs text-red-500 mt-1 font-arabic">{employeeErrors.branchId}</p>
+                    <p className="text-xs text-danger mt-1 font-arabic">{employeeErrors.branchId}</p>
                   )}
                 </div>
               )}
@@ -1005,7 +1005,7 @@ export default function StaffPage() {
                   dir="ltr"
                 />
                 {employeeErrors.pin && (
-                  <p className="text-xs text-red-500 mt-1 font-arabic">
+                  <p className="text-xs text-danger mt-1 font-arabic">
                     {employeeErrors.pin}
                   </p>
                 )}
@@ -1032,7 +1032,7 @@ export default function StaffPage() {
               )}
 
               {employeeErrors._form && (
-                <p className="text-sm text-red-500 font-arabic">{employeeErrors._form}</p>
+                <p className="text-sm text-danger font-arabic">{employeeErrors._form}</p>
               )}
             </div>
 
@@ -1075,7 +1075,7 @@ export default function StaffPage() {
               </button>
               <button
                 onClick={confirmSuspendEmployee}
-                className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
+                className="h-10 px-6 rounded-sm bg-danger text-white font-arabic text-sm hover:bg-danger/90 transition-colors"
               >
                 تعليق
               </button>

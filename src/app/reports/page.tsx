@@ -40,7 +40,7 @@ const ANOMALY_KIND_LABEL: Record<AnomalyKind, string> = {
 };
 
 const SEVERITY_STYLE: Record<AnomalySeverity, { badge: string; label: string }> = {
-  HIGH: { badge: "bg-red-50 text-red-600 border-red-200", label: "خطورة عالية" },
+  HIGH: { badge: "bg-danger-soft text-danger border-danger-soft", label: "خطورة عالية" },
   MEDIUM: { badge: "bg-amber-50 text-amber-700 border-amber-200", label: "خطورة متوسطة" },
   LOW: { badge: "bg-ink-100 text-ink-500 border-ink-200", label: "خطورة منخفضة" },
 };
@@ -378,7 +378,7 @@ export default function ReportsPage() {
   if (!summary) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-2">
-        <p className="text-red-500 font-arabic">{loadError || "حدث خطأ في تحميل التقرير"}</p>
+        <p className="text-danger font-arabic">{loadError || "حدث خطأ في تحميل التقرير"}</p>
         <button onClick={fetchReports} className="text-sm text-saffron-600 hover:text-saffron-700 font-bold font-arabic">إعادة المحاولة</button>
       </div>
     );
@@ -391,7 +391,7 @@ export default function ReportsPage() {
         <button
           onClick={exportPdf}
           disabled={exportingPdf}
-          className="h-10 px-4 rounded-sm bg-red-50 text-red-600 border border-red-200 text-sm font-bold hover:bg-red-100 transition-colors disabled:opacity-50"
+          className="h-10 px-4 rounded-sm bg-danger-soft text-danger border border-danger-soft text-sm font-bold hover:bg-danger-soft transition-colors disabled:opacity-50"
         >
           {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
         </button>
@@ -476,7 +476,7 @@ export default function ReportsPage() {
             <span
               className={`font-mono ${
                 inv.currentStock <= inv.minStock
-                  ? "text-red-500 font-bold"
+                  ? "text-danger font-bold"
                   : "text-ink-400"
               }`}
             >
@@ -517,7 +517,7 @@ export default function ReportsPage() {
         </div>
 
         {anomaliesError && (
-          <p className="text-sm text-red-500 font-arabic">{anomaliesError}</p>
+          <p className="text-sm text-danger font-arabic">{anomaliesError}</p>
         )}
 
         {anomalies && anomalies.length === 0 && !anomaliesError && (
@@ -561,7 +561,7 @@ export default function ReportsPage() {
           </button>
         </div>
 
-        {forecastError && <p className="text-sm text-red-500 font-arabic">{forecastError}</p>}
+        {forecastError && <p className="text-sm text-danger font-arabic">{forecastError}</p>}
 
         {forecast && forecast.items.length === 0 && !forecastError && (
           <p className="text-sm text-ink-400 font-arabic">لا توجد بيانات مبيعات كافية لإجراء توقع بعد</p>
@@ -650,7 +650,7 @@ export default function ReportsPage() {
             {forecast.ingredients.map((ing) => (
               <div key={ing.ingredient_id} className="flex items-center justify-between text-sm">
                 <span className="text-ink-900">{ing.ingredient_name}</span>
-                <span className={`font-mono ${ing.will_run_short ? "text-red-500 font-bold" : "text-ink-400"}`}>
+                <span className={`font-mono ${ing.will_run_short ? "text-danger font-bold" : "text-ink-400"}`}>
                   {ing.current_stock} / {ing.predicted_consumption} {ing.unit}
                 </span>
               </div>
@@ -676,7 +676,7 @@ export default function ReportsPage() {
           </button>
         </div>
 
-        {reconciliationError && <p className="text-sm text-red-500 font-arabic">{reconciliationError}</p>}
+        {reconciliationError && <p className="text-sm text-danger font-arabic">{reconciliationError}</p>}
 
         {reconciliation &&
           reconciliation.stale_open_orders.length === 0 &&
@@ -687,9 +687,9 @@ export default function ReportsPage() {
 
         {reconciliation && reconciliation.paid_orders_missing_payment.length > 0 && (
           <div className="space-y-2">
-            <h3 className="text-sm font-bold text-red-600 font-arabic">طلبات مدفوعة بدون دفعة مسجلة</h3>
+            <h3 className="text-sm font-bold text-danger font-arabic">طلبات مدفوعة بدون دفعة مسجلة</h3>
             {reconciliation.paid_orders_missing_payment.map((o) => (
-              <div key={o.order_id} className="flex items-center justify-between text-sm border border-red-200 bg-red-50 rounded-sm p-2">
+              <div key={o.order_id} className="flex items-center justify-between text-sm border border-danger-soft bg-danger-soft rounded-sm p-2">
                 <span className="text-ink-900 font-arabic">{o.table_name || `#${o.order_id.slice(0, 6)}`}</span>
                 <span className="text-ink-400 font-mono">{fmt(o.total_cents)}</span>
               </div>
@@ -726,7 +726,7 @@ export default function ReportsPage() {
         </div>
 
         {refundableLoading && <p className="text-sm text-ink-400 font-arabic">جاري التحميل...</p>}
-        {refundableError && <p className="text-sm text-red-500 font-arabic">{refundableError}</p>}
+        {refundableError && <p className="text-sm text-danger font-arabic">{refundableError}</p>}
         {refundableOrders && refundableOrders.length === 0 && !refundableLoading && (
           <p className="text-sm text-ink-400 font-arabic">لا توجد طلبات مدفوعة بعد</p>
         )}
@@ -744,7 +744,7 @@ export default function ReportsPage() {
                     <span className="text-ink-400 text-xs font-arabic mr-2">
                       {formatArabicDateTime(new Date(o.created_at), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
                     </span>
-                    {isRefunded && <span className="text-[10px] text-red-500 font-arabic mr-2">تم الاسترداد</span>}
+                    {isRefunded && <span className="text-[10px] text-danger font-arabic mr-2">تم الاسترداد</span>}
                   </div>
                   <div className="flex items-center gap-2">
                     <span className={`font-mono ${isRefunded ? "text-ink-400 line-through" : "text-ink-700"}`}>{fmt(o.total_cents)}</span>
@@ -752,7 +752,7 @@ export default function ReportsPage() {
                       <button
                         onClick={() => handleRefund(o)}
                         disabled={refundingId === o.id}
-                        className="h-8 px-3 rounded-sm border border-red-200 text-red-600 text-xs font-bold font-arabic hover:bg-red-50 transition-colors disabled:opacity-50"
+                        className="h-8 px-3 rounded-sm border border-danger-soft text-danger text-xs font-bold font-arabic hover:bg-danger-soft transition-colors disabled:opacity-50"
                       >
                         {refundingId === o.id ? "جارٍ..." : "استرداد"}
                       </button>

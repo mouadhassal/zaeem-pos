@@ -208,7 +208,7 @@ function calcMargin(price: number, cost: number): number {
 function marginBadge(margin: number) {
   if (margin > 30) return "bg-green-100 text-green-700";
   if (margin >= 10) return "bg-amber-100 text-amber-700";
-  return "bg-red-100 text-red-700";
+  return "bg-danger-soft text-danger";
 }
 
 export default function MenuPage() {
@@ -861,7 +861,7 @@ export default function MenuPage() {
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-full text-red-500 font-arabic">
+      <div className="flex items-center justify-center h-full text-danger font-arabic">
         {error}
       </div>
     );
@@ -1026,7 +1026,7 @@ export default function MenuPage() {
                           </button>
                           <button
                             onClick={() => setDeleteItemId(item.id)}
-                            className="p-1.5 rounded-sm text-xs text-red-500 hover:bg-red-50 transition-colors"
+                            className="p-1.5 rounded-sm text-xs text-danger hover:bg-danger-soft transition-colors"
                             title="حذف"
                           >
                             <IconTrash className="w-4 h-4" />
@@ -1084,7 +1084,7 @@ export default function MenuPage() {
                       }
                       setDeleteCategoryId(cat.id);
                     }}
-                    className="p-2 rounded-sm text-ink-500 hover:text-red-500 hover:bg-red-50 transition-colors"
+                    className="p-2 rounded-sm text-ink-500 hover:text-danger hover:bg-danger-soft transition-colors"
                     title="حذف"
                   >
                     <IconTrash className="w-4 h-4" />
@@ -1147,7 +1147,7 @@ export default function MenuPage() {
                         </button>
                         <button
                           onClick={() => setDeleteComboId(combo.id)}
-                          className="px-3 py-1.5 rounded-sm bg-red-100 text-red-700 text-xs font-bold hover:bg-red-200 transition-colors"
+                          className="px-3 py-1.5 rounded-sm bg-danger-soft text-danger text-xs font-bold hover:bg-danger/20 transition-colors"
                         >
                           حذف
                         </button>
@@ -1256,7 +1256,7 @@ export default function MenuPage() {
                           </button>
                           <button
                             onClick={() => deleteHappyHour(rule.id)}
-                            className="p-1.5 rounded-sm text-xs text-red-500 hover:bg-red-50 transition-colors"
+                            className="p-1.5 rounded-sm text-xs text-danger hover:bg-danger-soft transition-colors"
                             title="حذف"
                           >
                             <IconTrash className="w-4 h-4" />
@@ -1303,7 +1303,7 @@ export default function MenuPage() {
                   className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
                 />
                 {itemErrors.name && (
-                  <p className="text-xs text-red-500 mt-1 font-arabic">{itemErrors.name}</p>
+                  <p className="text-xs text-danger mt-1 font-arabic">{itemErrors.name}</p>
                 )}
               </div>
 
@@ -1322,7 +1322,7 @@ export default function MenuPage() {
                   ))}
                 </select>
                 {itemErrors.category_id && (
-                  <p className="text-xs text-red-500 mt-1 font-arabic">{itemErrors.category_id}</p>
+                  <p className="text-xs text-danger mt-1 font-arabic">{itemErrors.category_id}</p>
                 )}
               </div>
 
@@ -1338,7 +1338,7 @@ export default function MenuPage() {
                     className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                   />
                   {itemErrors.price_cents && (
-                    <p className="text-xs text-red-500 mt-1 font-arabic">
+                    <p className="text-xs text-danger mt-1 font-arabic">
                       {itemErrors.price_cents}
                     </p>
                   )}
@@ -1354,7 +1354,7 @@ export default function MenuPage() {
                     className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                   />
                   {itemErrors.cost_cents && (
-                    <p className="text-xs text-red-500 mt-1 font-arabic">
+                    <p className="text-xs text-danger mt-1 font-arabic">
                       {itemErrors.cost_cents}
                     </p>
                   )}
@@ -1372,7 +1372,7 @@ export default function MenuPage() {
                   className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                 />
                 {itemErrors.barcode && (
-                  <p className="text-xs text-red-500 mt-1 font-arabic">{itemErrors.barcode}</p>
+                  <p className="text-xs text-danger mt-1 font-arabic">{itemErrors.barcode}</p>
                 )}
               </div>
 
@@ -1424,7 +1424,7 @@ export default function MenuPage() {
                   </p>
                 )}
                 {photoError && (
-                  <p className="text-xs text-red-500 mt-1 font-arabic">{photoError}</p>
+                  <p className="text-xs text-danger mt-1 font-arabic">{photoError}</p>
                 )}
               </div>
 
@@ -1487,7 +1487,7 @@ export default function MenuPage() {
                               type="button"
                               onClick={() => removeRecipeRow(r.id)}
                               disabled={removingRecipeRowId === r.id}
-                              className="text-red-500 hover:text-red-600 disabled:opacity-50"
+                              className="text-danger hover:text-danger disabled:opacity-50"
                               aria-label="إزالة المكوّن"
                             >
                               <IconX className="w-4 h-4" />
@@ -1542,7 +1542,7 @@ export default function MenuPage() {
                         {savingRecipeRow ? "..." : "إضافة"}
                       </button>
                     </div>
-                    {recipeError && <p className="text-xs text-red-500 font-arabic">{recipeError}</p>}
+                    {recipeError && <p className="text-xs text-danger font-arabic">{recipeError}</p>}
                     <p className="text-[11px] text-ink-400 font-arabic">
                       كل مكوّن مرتبط ينقص تلقائياً من المخزون عند بيع الصنف.
                     </p>
@@ -1555,7 +1555,7 @@ export default function MenuPage() {
               </div>
 
               {itemErrors._form && (
-                <p className="text-sm text-red-500 font-arabic">{itemErrors._form}</p>
+                <p className="text-sm text-danger font-arabic">{itemErrors._form}</p>
               )}
             </div>
 
@@ -1599,7 +1599,7 @@ export default function MenuPage() {
               <button
                 onClick={confirmDeleteItem}
                 disabled={deletingItem}
-                className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors disabled:opacity-40"
+                className="h-10 px-6 rounded-sm bg-danger text-white font-arabic text-sm hover:bg-danger/90 transition-colors disabled:opacity-40"
               >
                 {deletingItem ? "جاري..." : "حذف"}
               </button>
@@ -1629,7 +1629,7 @@ export default function MenuPage() {
               <button
                 onClick={confirmDeleteCombo}
                 disabled={deletingCombo}
-                className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors disabled:opacity-40"
+                className="h-10 px-6 rounded-sm bg-danger text-white font-arabic text-sm hover:bg-danger/90 transition-colors disabled:opacity-40"
               >
                 {deletingCombo ? "جاري..." : "حذف"}
               </button>
@@ -1660,7 +1660,7 @@ export default function MenuPage() {
                   className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
                 />
                 {categoryErrors.name && (
-                  <p className="text-xs text-red-500 mt-1 font-arabic">{categoryErrors.name}</p>
+                  <p className="text-xs text-danger mt-1 font-arabic">{categoryErrors.name}</p>
                 )}
               </div>
 
@@ -1682,7 +1682,7 @@ export default function MenuPage() {
                   />
                 </div>
                 {categoryErrors.color && (
-                  <p className="text-xs text-red-500 mt-1 font-arabic">{categoryErrors.color}</p>
+                  <p className="text-xs text-danger mt-1 font-arabic">{categoryErrors.color}</p>
                 )}
               </div>
 
@@ -1696,7 +1696,7 @@ export default function MenuPage() {
                   className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                 />
                 {categoryErrors.sort_order && (
-                  <p className="text-xs text-red-500 mt-1 font-arabic">
+                  <p className="text-xs text-danger mt-1 font-arabic">
                     {categoryErrors.sort_order}
                   </p>
                 )}
@@ -1750,12 +1750,12 @@ export default function MenuPage() {
                   </p>
                 )}
                 {categoryPhotoError && (
-                  <p className="text-xs text-red-500 mt-1 font-arabic">{categoryPhotoError}</p>
+                  <p className="text-xs text-danger mt-1 font-arabic">{categoryPhotoError}</p>
                 )}
               </div>
 
               {categoryErrors._form && (
-                <p className="text-sm text-red-500 font-arabic">{categoryErrors._form}</p>
+                <p className="text-sm text-danger font-arabic">{categoryErrors._form}</p>
               )}
             </div>
 
@@ -1799,7 +1799,7 @@ export default function MenuPage() {
               <button
                 onClick={confirmDeleteCategory}
                 disabled={deletingCategory}
-                className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors disabled:opacity-40"
+                className="h-10 px-6 rounded-sm bg-danger text-white font-arabic text-sm hover:bg-danger/90 transition-colors disabled:opacity-40"
               >
                 {deletingCategory ? "جاري..." : "حذف"}
               </button>
@@ -1830,7 +1830,7 @@ export default function MenuPage() {
                   className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
                 />
                 {comboErrors.name && (
-                  <p className="text-xs text-red-500 mt-1 font-arabic">{comboErrors.name}</p>
+                  <p className="text-xs text-danger mt-1 font-arabic">{comboErrors.name}</p>
                 )}
               </div>
 
@@ -1849,7 +1849,7 @@ export default function MenuPage() {
                   className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                 />
                 {comboErrors.bundle_price_cents && (
-                  <p className="text-xs text-red-500 mt-1 font-arabic">
+                  <p className="text-xs text-danger mt-1 font-arabic">
                     {comboErrors.bundle_price_cents}
                   </p>
                 )}
@@ -1866,7 +1866,7 @@ export default function MenuPage() {
                   </button>
                 </div>
                 {comboErrors.items && (
-                  <p className="text-xs text-red-500 mb-2 font-arabic">{comboErrors.items}</p>
+                  <p className="text-xs text-danger mb-2 font-arabic">{comboErrors.items}</p>
                 )}
                 <div className="space-y-2">
                   {comboForm.items.map((item, idx) => (
@@ -1892,7 +1892,7 @@ export default function MenuPage() {
                       />
                       <button
                         onClick={() => removeComboItem(idx)}
-                        className="h-10 px-2 text-ink-500 hover:text-red-500 transition-colors"
+                        className="h-10 px-2 text-ink-500 hover:text-danger transition-colors"
                       >
                         <IconX className="w-4 h-4" />
                       </button>
@@ -1902,7 +1902,7 @@ export default function MenuPage() {
               </div>
 
               {comboErrors._form && (
-                <p className="text-sm text-red-500 font-arabic">{comboErrors._form}</p>
+                <p className="text-sm text-danger font-arabic">{comboErrors._form}</p>
               )}
             </div>
 
@@ -1952,7 +1952,7 @@ export default function MenuPage() {
                   ))}
                 </select>
                 {happyHourErrors.menu_item_id && (
-                  <p className="text-xs text-red-500 mt-1 font-arabic">
+                  <p className="text-xs text-danger mt-1 font-arabic">
                     {happyHourErrors.menu_item_id}
                   </p>
                 )}
@@ -1973,7 +1973,7 @@ export default function MenuPage() {
                   className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                 />
                 {happyHourErrors.discount_percent && (
-                  <p className="text-xs text-red-500 mt-1 font-arabic">
+                  <p className="text-xs text-danger mt-1 font-arabic">
                     {happyHourErrors.discount_percent}
                   </p>
                 )}
@@ -1995,7 +1995,7 @@ export default function MenuPage() {
                   ))}
                 </select>
                 {happyHourErrors.day_of_week && (
-                  <p className="text-xs text-red-500 mt-1 font-arabic">
+                  <p className="text-xs text-danger mt-1 font-arabic">
                     {happyHourErrors.day_of_week}
                   </p>
                 )}
@@ -2015,7 +2015,7 @@ export default function MenuPage() {
                     className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                   />
                   {happyHourErrors.start_time && (
-                    <p className="text-xs text-red-500 mt-1 font-arabic">
+                    <p className="text-xs text-danger mt-1 font-arabic">
                       {happyHourErrors.start_time}
                     </p>
                   )}
@@ -2033,7 +2033,7 @@ export default function MenuPage() {
                     className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                   />
                   {happyHourErrors.end_time && (
-                    <p className="text-xs text-red-500 mt-1 font-arabic">
+                    <p className="text-xs text-danger mt-1 font-arabic">
                       {happyHourErrors.end_time}
                     </p>
                   )}
@@ -2065,7 +2065,7 @@ export default function MenuPage() {
               </div>
 
               {happyHourErrors._form && (
-                <p className="text-sm text-red-500 font-arabic">{happyHourErrors._form}</p>
+                <p className="text-sm text-danger font-arabic">{happyHourErrors._form}</p>
               )}
             </div>
 

@@ -70,7 +70,7 @@ function AgingBadge({ debtor }: { debtor: DebtorRow }) {
   const days = agingDays(debtor);
   if (days === null) return <span className="text-ink-400 text-xs">-</span>;
   const tier =
-    days >= 90 ? { label: `متأخر جدًا (${days} يوم)`, className: "bg-red-100 text-red-700" }
+    days >= 90 ? { label: `متأخر جدًا (${days} يوم)`, className: "bg-danger-soft text-danger" }
     : days >= 60 ? { label: `متأخر (${days} يوم)`, className: "bg-orange-100 text-orange-700" }
     : days >= 30 ? { label: `متأخر (${days} يوم)`, className: "bg-amber-100 text-amber-700" }
     : { label: `${days} يوم`, className: "bg-ink-100 text-ink-500" };
@@ -231,7 +231,7 @@ export default function DebtPage() {
   }
 
   if (error) {
-    return <div className="flex items-center justify-center h-full text-red-500 font-arabic">{error}</div>;
+    return <div className="flex items-center justify-center h-full text-danger font-arabic">{error}</div>;
   }
 
   return (
@@ -271,16 +271,16 @@ export default function DebtPage() {
               <tr key={d.id} className="border-b border-ink-200 hover:bg-saffron-50 cursor-pointer" onClick={() => openDetail(d)}>
                 <td className="p-3 font-arabic text-ink-900 font-medium">{d.name}</td>
                 <td className="p-3 font-mono text-ink-500" dir="ltr">{d.phone}</td>
-                <td className="p-3 text-center font-mono text-red-500 font-bold">{fmt(d.total_debt_cents)}</td>
+                <td className="p-3 text-center font-mono text-danger font-bold">{fmt(d.total_debt_cents)}</td>
                 <td className="p-3 text-center font-mono text-saffron-600 font-bold">{fmt(d.total_paid_cents)}</td>
-                <td className={`p-3 text-center font-mono font-bold ${d.balance_cents > 0 ? "text-red-600" : "text-green-600"}`}>{fmt(d.balance_cents)}</td>
+                <td className={`p-3 text-center font-mono font-bold ${d.balance_cents > 0 ? "text-danger" : "text-green-600"}`}>{fmt(d.balance_cents)}</td>
                 <td className="p-3 text-center"><AgingBadge debtor={d} /></td>
                 <td className="p-3 font-arabic text-ink-400 text-xs">{fmtDateTime(d.last_transaction_at)}</td>
                 <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center justify-center gap-1">
                     <button onClick={() => { setPayModal(d); setPayAmount(""); setPayNotes(""); }} className="p-1.5 rounded-sm text-xs text-saffron-600 hover:bg-saffron-50 transition-colors" title="تسديد"><IconCash className="w-4 h-4" /></button>
                     <button onClick={() => openEdit(d)} className="p-1.5 rounded-sm text-xs text-amber-600 hover:bg-amber-50 transition-colors" title="تعديل"><IconPencil className="w-4 h-4" /></button>
-                    <button onClick={() => setDeleteId(d.id)} className="p-1.5 rounded-sm text-xs text-red-500 hover:bg-red-50 transition-colors" title="حذف"><IconTrash className="w-4 h-4" /></button>
+                    <button onClick={() => setDeleteId(d.id)} className="p-1.5 rounded-sm text-xs text-danger hover:bg-danger-soft transition-colors" title="حذف"><IconTrash className="w-4 h-4" /></button>
                   </div>
                 </td>
               </tr>
@@ -315,7 +315,7 @@ export default function DebtPage() {
                       dir={field === "phone" ? "ltr" : "rtl"}
                     />
                   )}
-                  {formErrors[field] && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors[field]}</p>}
+                  {formErrors[field] && <p className="text-xs text-danger mt-1 font-arabic">{formErrors[field]}</p>}
                 </div>
               ))}
               {!editId && (
@@ -331,7 +331,7 @@ export default function DebtPage() {
                   />
                 </div>
               )}
-              {formErrors._form && <p className="text-sm text-red-500 font-arabic">{formErrors._form}</p>}
+              {formErrors._form && <p className="text-sm text-danger font-arabic">{formErrors._form}</p>}
             </div>
             <div className="flex gap-3 justify-end pt-2">
               <button onClick={() => setShowModal(false)} className="h-10 px-6 rounded-sm bg-white border border-ink-200 text-ink-900 font-arabic text-sm hover:bg-ink-100 transition-colors">إلغاء</button>
@@ -351,7 +351,7 @@ export default function DebtPage() {
             <p className="text-sm font-arabic text-ink-500">هل أنت متأكد من حذف هذا المدين؟</p>
             <div className="flex gap-3 justify-end">
               <button onClick={() => setDeleteId(null)} className="h-10 px-6 rounded-sm bg-white border border-ink-200 text-ink-900 font-arabic text-sm hover:bg-ink-100 transition-colors">إلغاء</button>
-              <button onClick={confirmDelete} className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors">حذف</button>
+              <button onClick={confirmDelete} className="h-10 px-6 rounded-sm bg-danger text-white font-arabic text-sm hover:bg-danger/90 transition-colors">حذف</button>
             </div>
           </div>
         </div>
@@ -365,7 +365,7 @@ export default function DebtPage() {
               <button onClick={() => setPayModal(null)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
             </div>
             <p className="text-sm font-arabic text-ink-500">المدين: <span className="font-bold">{payModal.name}</span></p>
-            <p className="text-sm font-arabic text-ink-400">المتبقي: <span className="font-mono font-bold text-red-600">{fmt(payModal.balance_cents)}</span></p>
+            <p className="text-sm font-arabic text-ink-400">المتبقي: <span className="font-mono font-bold text-danger">{fmt(payModal.balance_cents)}</span></p>
             <input type="number" min="0" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder="المبلغ" className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500" dir="ltr" />
             <input type="text" value={payNotes} onChange={(e) => setPayNotes(e.target.value)} placeholder="ملاحظات (اختياري)" className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500" />
             <div className="flex gap-2 pt-2">
@@ -387,16 +387,16 @@ export default function DebtPage() {
               </div>
 
               <div className="grid grid-cols-3 gap-3">
-                <div className="bg-red-50 rounded-sm p-3 text-center">
-                  <p className="text-2xl font-bold text-red-600 font-mono">{fmt(detail.debtor.total_debt_cents)}</p>
-                  <p className="text-xs text-red-700 font-arabic mt-1">إجمالي الديون</p>
+                <div className="bg-danger-soft rounded-sm p-3 text-center">
+                  <p className="text-2xl font-bold text-danger font-mono">{fmt(detail.debtor.total_debt_cents)}</p>
+                  <p className="text-xs text-danger font-arabic mt-1">إجمالي الديون</p>
                 </div>
                 <div className="bg-saffron-50 rounded-sm p-3 text-center">
                   <p className="text-2xl font-bold text-saffron-600 font-mono">{fmt(detail.debtor.total_paid_cents)}</p>
                   <p className="text-xs text-saffron-600 font-arabic mt-1">المدفوع</p>
                 </div>
-                <div className={`rounded-sm p-3 text-center ${detail.debtor.balance_cents > 0 ? "bg-red-50" : "bg-saffron-50"}`}>
-                  <p className={`text-2xl font-bold font-mono ${detail.debtor.balance_cents > 0 ? "text-red-600" : "text-saffron-600"}`}>{fmt(detail.debtor.balance_cents)}</p>
+                <div className={`rounded-sm p-3 text-center ${detail.debtor.balance_cents > 0 ? "bg-danger-soft" : "bg-saffron-50"}`}>
+                  <p className={`text-2xl font-bold font-mono ${detail.debtor.balance_cents > 0 ? "text-danger" : "text-saffron-600"}`}>{fmt(detail.debtor.balance_cents)}</p>
                   <p className="text-xs font-arabic mt-1">المتبقي</p>
                 </div>
               </div>
@@ -408,11 +408,11 @@ export default function DebtPage() {
                     {detail.entries.map((e) => (
                       <div key={e.id} className="flex justify-between items-center text-xs py-1.5 border-b border-ink-200 last:border-0">
                         <div className="flex items-center gap-2">
-                          <span className={`inline-block w-2 h-2 rounded-full ${e.entry_type === "DEBT" ? "bg-red-400" : "bg-saffron-400"}`} />
+                          <span className={`inline-block w-2 h-2 rounded-full ${e.entry_type === "DEBT" ? "bg-danger" : "bg-saffron-400"}`} />
                           <span className="font-arabic text-ink-400">{e.entry_type === "DEBT" ? "دين" : "دفعة"}</span>
                           <span className="font-arabic text-ink-500">{fmtDateTime(e.created_at)}</span>
                         </div>
-                        <span className={`font-mono font-bold ${e.entry_type === "DEBT" ? "text-red-500" : "text-saffron-600"}`}>
+                        <span className={`font-mono font-bold ${e.entry_type === "DEBT" ? "text-danger" : "text-saffron-600"}`}>
                           {e.entry_type === "DEBT" ? "+" : "-"}{fmt(e.amount_cents)}
                         </span>
                       </div>

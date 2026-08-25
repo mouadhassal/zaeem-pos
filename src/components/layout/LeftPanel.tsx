@@ -53,7 +53,7 @@ export default function LeftPanel({ onVoidItem }: Props) {
               <div className="flex items-center gap-1">
                 <button
                   onClick={() => onVoidItem(item.id, item.name, item.unitPriceCents)}
-                  className="p-1 rounded text-ink-300 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"
+                  className="p-1 rounded text-ink-300 hover:text-danger hover:bg-danger-soft transition-colors shrink-0"
                   title="إلغاء"
                 >
                   <Trash2 className="w-3.5 h-3.5" />

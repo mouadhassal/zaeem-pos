@@ -11,7 +11,7 @@ const TYPES: { id: OrderType; label: string; description: string; icon: typeof I
   { id: "TAKEAWAY", label: "سفري", description: "طلب من العميل ومغادرة", icon: IconShoppingBag, color: "bg-blue-50 border-blue-200 hover:border-blue-400 text-blue-700" },
   { id: "DELIVERY", label: "توصيل", description: "توصيل إلى العنوان", icon: IconTruckDelivery, color: "bg-amber-50 border-amber-200 hover:border-amber-400 text-amber-700" },
   { id: "ONLINE", label: "أونلاين", description: "طلب من منصة خارجية", icon: IconWorld, color: "bg-purple-50 border-purple-200 hover:border-purple-400 text-purple-700" },
-  { id: "DEBT", label: "دين", description: "طلب بالدين (مدين معروف)", icon: IconWallet, color: "bg-red-50 border-red-200 hover:border-red-400 text-red-700" },
+  { id: "DEBT", label: "دين", description: "طلب بالدين (مدين معروف)", icon: IconWallet, color: "bg-danger-soft border-danger-soft hover:border-danger text-danger" },
 ];
 
 export default function OrderTypeSelector({ onSelect, onClose }: Props) {

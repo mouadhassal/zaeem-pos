@@ -319,7 +319,7 @@ export default function CustomersPage() {
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-full text-red-500 font-arabic">
+      <div className="flex items-center justify-center h-full text-danger font-arabic">
         {error}
       </div>
     );
@@ -418,7 +418,7 @@ export default function CustomersPage() {
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); setDeleteId(c.id); }}
-                      className="p-1.5 rounded-sm text-xs text-red-500 hover:bg-red-50 transition-colors"
+                      className="p-1.5 rounded-sm text-xs text-danger hover:bg-danger-soft transition-colors"
                       title="حذف"
                     >
                       <IconTrash className="w-4 h-4" />
@@ -459,7 +459,7 @@ export default function CustomersPage() {
                   maxLength={100}
                   className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 />
-                {formErrors.name && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.name}</p>}
+                {formErrors.name && <p className="text-xs text-danger mt-1 font-arabic">{formErrors.name}</p>}
               </div>
 
               <div>
@@ -471,7 +471,7 @@ export default function CustomersPage() {
                   className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
                   dir="ltr"
                 />
-                {formErrors.phone && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.phone}</p>}
+                {formErrors.phone && <p className="text-xs text-danger mt-1 font-arabic">{formErrors.phone}</p>}
               </div>
 
               <div>
@@ -483,7 +483,7 @@ export default function CustomersPage() {
                   className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
                   dir="ltr"
                 />
-                {formErrors.email && <p className="text-xs text-red-500 mt-1 font-arabic">{formErrors.email}</p>}
+                {formErrors.email && <p className="text-xs text-danger mt-1 font-arabic">{formErrors.email}</p>}
               </div>
 
               <div>
@@ -518,7 +518,7 @@ export default function CustomersPage() {
               </div>
 
               {formErrors._form && (
-                <p className="text-sm text-red-500 font-arabic">{formErrors._form}</p>
+                <p className="text-sm text-danger font-arabic">{formErrors._form}</p>
               )}
             </div>
 
@@ -559,7 +559,7 @@ export default function CustomersPage() {
               </button>
               <button
                 onClick={confirmDelete}
-                className="h-10 px-6 rounded-sm bg-red-500 text-white font-arabic text-sm hover:bg-red-600 transition-colors"
+                className="h-10 px-6 rounded-sm bg-danger text-white font-arabic text-sm hover:bg-danger/90 transition-colors"
               >
                 حذف
               </button>
@@ -704,7 +704,7 @@ export default function CustomersPage() {
                           </span>
                           <span className={`px-2 py-0.5 rounded-full text-[10px] font-arabic ${
                             o.status === "PAID" ? "bg-saffron-50 text-saffron-600" :
-                            o.status === "CANCELLED" ? "bg-red-50 text-red-700" :
+                            o.status === "CANCELLED" ? "bg-danger-soft text-danger" :
                             o.status === "VOIDED" ? "bg-white text-ink-400" :
                             "bg-amber-50 text-amber-700"
                           }`}>

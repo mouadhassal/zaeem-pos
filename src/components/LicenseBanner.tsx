@@ -29,7 +29,7 @@ function chipFor(status: LicenseStatus): ChipInfo | null {
 
 const COLOR_CLASSES: Record<string, { bg: string; border: string; text: string }> = {
   orange: { bg: "bg-amber-500/10", border: "border-amber-500/20", text: "text-amber-600" },
-  red: { bg: "bg-red-500/10", border: "border-red-500/20", text: "text-red-600" },
+  red: { bg: "bg-danger/10", border: "border-danger/20", text: "text-danger" },
 };
 
 export default function LicenseBanner({ onStatusChange }: Props) {

@@ -81,7 +81,7 @@ export default function DashboardPage() {
   if (loadError || !summary) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-2">
-        <p className="text-red-500 font-arabic">{loadError || "حدث خطأ في تحميل لوحة التحكم"}</p>
+        <p className="text-danger font-arabic">{loadError || "حدث خطأ في تحميل لوحة التحكم"}</p>
         <button onClick={fetchSummary} className="text-sm text-saffron-600 hover:text-saffron-700 font-bold font-arabic">إعادة المحاولة</button>
       </div>
     );
@@ -117,11 +117,11 @@ export default function DashboardPage() {
         </div>
         <div className="zc-card p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic flex items-center gap-1"><IconTrendingDown className="w-4 h-4" /> المصروفات</p>
-          <p className="text-2xl font-bold text-red-500 font-mono">{fmt(summary.total_costs_cents)}</p>
+          <p className="text-2xl font-bold text-danger font-mono">{fmt(summary.total_costs_cents)}</p>
         </div>
         <div className="zc-card p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic flex items-center gap-1"><IconCash className="w-4 h-4" /> صافي الربح</p>
-          <p className={`text-2xl font-bold font-mono ${isProfitable ? "text-green-600" : "text-red-600"}`}>{fmt(summary.total_profit_cents)}</p>
+          <p className={`text-2xl font-bold font-mono ${isProfitable ? "text-green-600" : "text-danger"}`}>{fmt(summary.total_profit_cents)}</p>
         </div>
         <div className="zc-card p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic">عدد الطلبات</p>
@@ -133,12 +133,12 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="zc-card p-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-red-50 flex items-center justify-center">
-              <IconUsers className="w-5 h-5 text-red-500" />
+            <div className="w-10 h-10 rounded-xl bg-danger-soft flex items-center justify-center">
+              <IconUsers className="w-5 h-5 text-danger" />
             </div>
             <div>
               <p className="text-ink-400 text-sm font-arabic">ديون العملاء المستحقة</p>
-              <p className="text-lg font-bold text-red-600 font-mono">{fmt(summary.total_outstanding_debt_cents)}</p>
+              <p className="text-lg font-bold text-danger font-mono">{fmt(summary.total_outstanding_debt_cents)}</p>
             </div>
           </div>
         </div>
@@ -177,8 +177,8 @@ export default function DashboardPage() {
                 <tr key={b.branch_id} className="border-b border-ink-100 hover:bg-saffron-50">
                   <td className="p-3 font-arabic text-ink-900 font-medium">{b.branch_name}</td>
                   <td className="p-3 text-center font-mono text-saffron-600">{fmt(b.revenue_cents)}</td>
-                  <td className="p-3 text-center font-mono text-red-500">{fmt(b.costs_cents)}</td>
-                  <td className={`p-3 text-center font-mono font-bold ${b.profit_cents >= 0 ? "text-green-600" : "text-red-600"}`}>{fmt(b.profit_cents)}</td>
+                  <td className="p-3 text-center font-mono text-danger">{fmt(b.costs_cents)}</td>
+                  <td className={`p-3 text-center font-mono font-bold ${b.profit_cents >= 0 ? "text-green-600" : "text-danger"}`}>{fmt(b.profit_cents)}</td>
                   <td className="p-3 text-center font-mono text-ink-900">{b.order_count}</td>
                   <td className="p-3 text-center font-mono text-ink-900">{fmt(b.avg_ticket_cents)}</td>
                 </tr>

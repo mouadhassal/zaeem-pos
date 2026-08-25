@@ -13,7 +13,7 @@ interface Props {
 const variantStyles = {
   primary: "bg-saffron-600 text-white hover:bg-saffron-700 active:bg-saffron-800",
   secondary: "bg-white text-ink-700 border border-ink-200 hover:bg-ink-50 active:bg-ink-100",
-  danger: "bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 active:bg-red-200",
+  danger: "bg-danger-soft text-danger border border-danger/30 hover:bg-danger/10 active:bg-danger/20",
   ghost: "text-ink-500 hover:text-ink-700 hover:bg-ink-100",
 };
 

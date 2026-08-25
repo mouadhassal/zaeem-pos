@@ -822,7 +822,7 @@ export default function POSPage() {
               </span>
               <button
                 onClick={() => setShowDebtSelect(true)}
-                className="h-7 px-2 rounded-[7px] text-xs font-bold bg-red-50 text-red-600 hover:bg-red-100 transition-all flex items-center gap-1"
+                className="h-7 px-2 rounded-[7px] text-xs font-bold bg-danger-soft text-danger hover:bg-danger-soft transition-all flex items-center gap-1"
               >
                 <IconWallet className="w-3 h-3" />
                 {debtorName ? "تغيير" : "اختيار مدين"}
@@ -946,7 +946,7 @@ export default function POSPage() {
               <>
                 <h2 className="text-lg font-bold text-text">{loyaltyCard.customer_name}</h2>
                 <p className="text-sm text-text-3">الرصيد: <span className="font-bold text-accent-text">{loyaltyCard.points}</span> نقطة -- {loyaltyCard.tier}</p>
-                {redeemError && <p className="text-xs text-red-500">{redeemError}</p>}
+                {redeemError && <p className="text-xs text-danger">{redeemError}</p>}
                 <div className="space-y-2 max-h-64 overflow-y-auto">
                   {loyaltyRewards.length === 0 && (
                     <p className="text-xs text-text-3 text-center py-4">لا توجد مكافآت متاحة حالياً</p>
