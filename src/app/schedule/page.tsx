@@ -383,11 +383,10 @@ export default function SchedulePage() {
 
             <div className="flex items-center gap-2 pt-2">
               <button
-                onClick={saveEntry}
-                disabled={saving}
-                className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                onClick={() => setModalOpen(false)}
+                className="h-10 px-4 rounded-sm border border-ink-200 text-ink-500 text-sm font-arabic hover:bg-surface-alt transition-colors"
               >
-                {saving ? "جارٍ الحفظ..." : "حفظ"}
+                إلغاء
               </button>
               {editId && (
                 <button
@@ -400,10 +399,11 @@ export default function SchedulePage() {
                 </button>
               )}
               <button
-                onClick={() => setModalOpen(false)}
-                className="h-10 px-4 rounded-sm border border-ink-200 text-ink-500 text-sm font-arabic hover:bg-surface-alt transition-colors"
+                onClick={saveEntry}
+                disabled={saving}
+                className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
               >
-                إلغاء
+                {saving ? "جارٍ الحفظ..." : "حفظ"}
               </button>
             </div>
           </div>

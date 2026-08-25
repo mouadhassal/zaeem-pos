@@ -295,7 +295,10 @@ export default function DebtPage() {
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-md shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-ink-900">{editId ? "تعديل مدين" : "إضافة مدين"}</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold font-arabic text-ink-900">{editId ? "تعديل مدين" : "إضافة مدين"}</h2>
+              <button onClick={() => setShowModal(false)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+            </div>
             <div className="space-y-3">
               {(["name", "phone", "email", "address", "notes"] as (keyof DebtorForm)[]).map((field) => (
                 <div key={field}>
@@ -341,7 +344,10 @@ export default function DebtPage() {
       {deleteId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-md shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد الحذف</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد الحذف</h2>
+              <button onClick={() => setDeleteId(null)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+            </div>
             <p className="text-sm font-arabic text-ink-500">هل أنت متأكد من حذف هذا المدين؟</p>
             <div className="flex gap-3 justify-end">
               <button onClick={() => setDeleteId(null)} className="h-10 px-6 rounded-sm bg-white border border-ink-200 text-ink-900 font-arabic text-sm hover:bg-ink-100 transition-colors">إلغاء</button>
@@ -354,14 +360,17 @@ export default function DebtPage() {
       {payModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-md shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-ink-900">تسديد دفعة</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold font-arabic text-ink-900">تسديد دفعة</h2>
+              <button onClick={() => setPayModal(null)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+            </div>
             <p className="text-sm font-arabic text-ink-500">المدين: <span className="font-bold">{payModal.name}</span></p>
             <p className="text-sm font-arabic text-ink-400">المتبقي: <span className="font-mono font-bold text-red-600">{fmt(payModal.balance_cents)}</span></p>
             <input type="number" min="0" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder="المبلغ" className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500" dir="ltr" />
             <input type="text" value={payNotes} onChange={(e) => setPayNotes(e.target.value)} placeholder="ملاحظات (اختياري)" className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500" />
             <div className="flex gap-2 pt-2">
-              <button onClick={handlePay} disabled={!payAmount || parseFloat(payAmount) <= 0 || paying} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{paying ? "جاري..." : "تسديد"}</button>
               <button onClick={() => setPayModal(null)} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
+              <button onClick={handlePay} disabled={!payAmount || parseFloat(payAmount) <= 0 || paying} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{paying ? "جاري..." : "تسديد"}</button>
             </div>
           </div>
         </div>

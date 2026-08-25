@@ -569,7 +569,10 @@ export default function FinancePage() {
       {showAddInvoice && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-md shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-ink-900">إنشاء فاتورة جديدة</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold font-arabic text-ink-900">إنشاء فاتورة جديدة</h2>
+              <button onClick={() => setShowAddInvoice(false)} className="text-ink-500 hover:text-ink-900 leading-none"><IconX className="w-5 h-5" /></button>
+            </div>
             <div className="space-y-3">
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">بداية الفترة</label>
@@ -615,10 +618,10 @@ export default function FinancePage() {
               <p className="text-3xl font-bold text-saffron-600 font-mono">{formatMoney(showInvoiceDetail.amount_cents)}</p>
             </div>
             <div className="flex gap-2 pt-2">
+              <button onClick={() => setShowInvoiceDetail(null)} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إغلاق</button>
               {showInvoiceDetail.status === "PENDING" && (
                 <button onClick={() => { handlePayInvoice(showInvoiceDetail); setShowInvoiceDetail(null); }} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors inline-flex items-center justify-center gap-1.5"><IconCreditCard className="w-4 h-4" /> دفع الفاتورة</button>
               )}
-              <button onClick={() => setShowInvoiceDetail(null)} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إغلاق</button>
             </div>
           </div>
         </div>
@@ -627,7 +630,10 @@ export default function FinancePage() {
       {showAddCost && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-md shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-ink-900">إضافة تكلفة</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold font-arabic text-ink-900">إضافة تكلفة</h2>
+              <button onClick={() => setShowAddCost(false)} className="text-ink-500 hover:text-ink-900 leading-none"><IconX className="w-5 h-5" /></button>
+            </div>
             <div className="space-y-3">
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">البند</label>

@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { IconX } from "@tabler/icons-react";
 
 interface Table {
   id: string;
@@ -27,13 +28,18 @@ export default function TransferOrderModal({ currentTable, tables, onTransfer, o
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">
       <div className="bg-white rounded-md border border-line shadow-sh-3 w-[450px]">
-        <div className="px-6 py-4 border-b border-ink-200">
-          <h2 className="font-arabic font-bold text-lg text-ink-900">نقل الطلبية</h2>
-          {currentTable && (
-            <p className="font-arabic text-sm text-ink-400 mt-1">
-              من {currentTable.name}
-            </p>
-          )}
+        <div className="px-6 py-4 border-b border-ink-200 flex items-center justify-between">
+          <div>
+            <h2 className="font-arabic font-bold text-lg text-ink-900">نقل الطلبية</h2>
+            {currentTable && (
+              <p className="font-arabic text-sm text-ink-400 mt-1">
+                من {currentTable.name}
+              </p>
+            )}
+          </div>
+          <button onClick={onCancel} className="w-8 h-8 rounded-lg hover:bg-surface-alt flex items-center justify-center text-ink-500 shrink-0">
+            <IconX className="w-4 h-4" />
+          </button>
         </div>
 
         <div className="p-6">

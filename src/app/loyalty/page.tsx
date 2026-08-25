@@ -6,7 +6,7 @@ import { useCurrency } from "../../hooks/useCurrency";
 import { parseMoneyInput } from "../../lib/money";
 import { formatArabicDateTime } from "../../lib/dateLocal";
 import { IconCreditCard as CreditCard, IconPlus as Plus, IconSearch as Search } from "@tabler/icons-react";
-import { IconGift, IconTag, IconPencil, IconTrash } from "@tabler/icons-react";
+import { IconGift, IconTag, IconPencil, IconTrash, IconX } from "@tabler/icons-react";
 
 interface Customer { id: string; name: string; phone: string; loyalty_points: number; total_orders: number; total_spent_cents: number; }
 interface LoyaltyCard { id: string; customer_id: string; card_number: string; points: number; tier: string; issued_at: string; last_used_at: string | null; customer_name: string; customer_phone: string | null; }
@@ -601,7 +601,10 @@ export default function LoyaltyPage() {
       {showIssue && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-md shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold text-ink-900 font-arabic">إصدار بطاقة ولاء جديدة</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-ink-900 font-arabic">إصدار بطاقة ولاء جديدة</h2>
+              <button onClick={() => { setShowIssue(false); setCardUid(""); setIssueError(null); setSelectedCustomer(""); resetNewCustomerForm(); }} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+            </div>
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="block text-sm font-arabic text-ink-900">العميل</label>
@@ -692,8 +695,8 @@ export default function LoyaltyPage() {
               {issueError && <p className="text-xs text-danger-600 mt-1 font-arabic">{issueError}</p>}
             </div>
             <div className="flex gap-2 pt-2">
-              <button onClick={handleIssueCard} disabled={!selectedCustomer || !cardUid.trim() || issuing} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{issuing ? "جاري..." : "إصدار البطاقة"}</button>
               <button onClick={() => { setShowIssue(false); setCardUid(""); setIssueError(null); setSelectedCustomer(""); resetNewCustomerForm(); }} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
+              <button onClick={handleIssueCard} disabled={!selectedCustomer || !cardUid.trim() || issuing} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40">{issuing ? "جاري..." : "إصدار البطاقة"}</button>
             </div>
           </div>
         </div>
@@ -702,7 +705,10 @@ export default function LoyaltyPage() {
       {showRewardModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-md shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold text-ink-900 font-arabic">إضافة مكافأة جديدة</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-ink-900 font-arabic">إضافة مكافأة جديدة</h2>
+              <button onClick={() => setShowRewardModal(false)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+            </div>
 
             <div>
               <label className="block text-sm font-arabic text-ink-900 mb-1">الاسم</label>
@@ -774,11 +780,11 @@ export default function LoyaltyPage() {
             {rewardFormError && <p className="text-xs text-danger-600 font-arabic">{rewardFormError}</p>}
 
             <div className="flex gap-2 pt-2">
-              <button onClick={handleSaveReward} disabled={savingReward} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50">
-                {savingReward ? "جاري الحفظ..." : "إضافة المكافأة"}
-              </button>
               <button onClick={() => setShowRewardModal(false)} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">
                 إلغاء
+              </button>
+              <button onClick={handleSaveReward} disabled={savingReward} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50">
+                {savingReward ? "جاري الحفظ..." : "إضافة المكافأة"}
               </button>
             </div>
           </div>
@@ -788,7 +794,10 @@ export default function LoyaltyPage() {
       {showTierModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-md shadow-xl w-full max-w-md mx-4 p-6 space-y-4">
-            <h2 className="text-lg font-bold text-ink-900 font-arabic">{editingTier ? "تعديل درجة" : "إضافة درجة جديدة"}</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-ink-900 font-arabic">{editingTier ? "تعديل درجة" : "إضافة درجة جديدة"}</h2>
+              <button onClick={() => setShowTierModal(false)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+            </div>
             <div>
               <label className="block text-sm font-arabic text-ink-900 mb-1">الاسم</label>
               <input type="text" value={tierForm.name} onChange={(e) => setTierForm((f) => ({ ...f, name: e.target.value }))} className="w-full h-10 px-4 rounded-sm border border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-500 font-arabic" />
@@ -809,10 +818,10 @@ export default function LoyaltyPage() {
             </div>
             {tierFormError && <p className="text-xs text-danger-600 font-arabic">{tierFormError}</p>}
             <div className="flex gap-2 pt-2">
+              <button onClick={() => setShowTierModal(false)} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
               <button onClick={handleSaveTier} disabled={savingTier} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50">
                 {savingTier ? "جاري الحفظ..." : editingTier ? "حفظ التعديلات" : "إضافة الدرجة"}
               </button>
-              <button onClick={() => setShowTierModal(false)} className="px-6 h-10 rounded-sm border border-ink-200 text-ink-500 text-sm font-bold hover:bg-white transition-colors">إلغاء</button>
             </div>
           </div>
         </div>

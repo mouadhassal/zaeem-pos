@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
 import { useCurrency } from "../../hooks/useCurrency";
+import { IconX } from "@tabler/icons-react";
 
 interface Props {
   itemName: string;
@@ -80,9 +81,14 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">
       <div className="bg-white rounded-md border border-line shadow-sh-3 w-[420px] overflow-hidden">
-        <div className="px-6 py-4 bg-danger-soft border-b border-danger-soft">
-          <h2 className="font-arabic font-bold text-lg text-danger">إلغاء الصنف</h2>
-          <p className="font-arabic text-sm text-danger mt-1">{itemName}</p>
+        <div className="px-6 py-4 bg-danger-soft border-b border-danger-soft flex items-center justify-between">
+          <div>
+            <h2 className="font-arabic font-bold text-lg text-danger">إلغاء الصنف</h2>
+            <p className="font-arabic text-sm text-danger mt-1">{itemName}</p>
+          </div>
+          <button onClick={onCancel} className="w-8 h-8 rounded-lg hover:bg-white/40 flex items-center justify-center text-danger shrink-0">
+            <IconX className="w-4 h-4" />
+          </button>
         </div>
 
         <div className="p-6 space-y-4">

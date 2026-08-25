@@ -364,9 +364,12 @@ export default function BranchesPage() {
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-md shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
-            <h2 className="text-lg font-bold font-arabic text-ink-900">
-              {editId ? "تعديل فرع" : "إضافة فرع"}
-            </h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold font-arabic text-ink-900">
+                {editId ? "تعديل فرع" : "إضافة فرع"}
+              </h2>
+              <button onClick={() => setShowModal(false)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
+            </div>
 
             <div className="space-y-3">
               <div>
