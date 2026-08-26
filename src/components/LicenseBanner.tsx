@@ -28,7 +28,7 @@ function chipFor(status: LicenseStatus): ChipInfo | null {
 }
 
 const COLOR_CLASSES: Record<string, { bg: string; border: string; text: string }> = {
-  orange: { bg: "bg-amber-500/10", border: "border-amber-500/20", text: "text-amber-600" },
+  orange: { bg: "bg-warn/10", border: "border-warn/20", text: "text-warn" },
   red: { bg: "bg-danger/10", border: "border-danger/20", text: "text-danger" },
 };
 

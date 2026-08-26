@@ -663,11 +663,11 @@ export default function CustomersPage() {
                   </p>
                   <p className="text-xs text-saffron-600 font-arabic mt-1">متوسط الفاتورة</p>
                 </div>
-                <div className="bg-amber-50 rounded-sm p-3 text-center">
-                  <p className="text-2xl font-bold text-amber-600 font-mono">
+                <div className="bg-saffron-50 rounded-sm p-3 text-center">
+                  <p className="text-2xl font-bold text-saffron-600 font-mono">
                     {detailCustomer.customer.loyalty_points}
                   </p>
-                  <p className="text-xs text-amber-700 font-arabic mt-1">نقاط الولاء</p>
+                  <p className="text-xs text-saffron-700 font-arabic mt-1">نقاط الولاء</p>
                 </div>
               </div>
 
@@ -706,7 +706,7 @@ export default function CustomersPage() {
                             o.status === "PAID" ? "bg-saffron-50 text-saffron-600" :
                             o.status === "CANCELLED" ? "bg-danger-soft text-danger" :
                             o.status === "VOIDED" ? "bg-white text-ink-400" :
-                            "bg-amber-50 text-amber-700"
+                            "bg-warn-soft text-warn"
                           }`}>
                             {o.status === "PAID" ? "مدفوع" :
                              o.status === "CANCELLED" ? "ملغي" :

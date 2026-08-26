@@ -111,7 +111,7 @@ export default function DebtSelectModal({ onClose, onSelect }: Props) {
                   </div>
                   <div className="text-left">
                     <p className="text-xs font-arabic text-text-muted">المتبقي</p>
-                    <p className={`font-mono font-bold text-sm ${d.balance_cents > 0 ? "text-danger" : "text-green-500"}`}>
+                    <p className={`font-mono font-bold text-sm ${d.balance_cents > 0 ? "text-danger" : "text-ok"}`}>
                       {d.balance_cents > 0 ? `-${d.balance_cents.toLocaleString()}` : "0"}
                     </p>
                   </div>

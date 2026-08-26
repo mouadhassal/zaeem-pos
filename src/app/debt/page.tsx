@@ -273,7 +273,7 @@ export default function DebtPage() {
                 <td className="p-3 font-mono text-ink-500" dir="ltr">{d.phone}</td>
                 <td className="p-3 text-center font-mono text-danger font-bold">{fmt(d.total_debt_cents)}</td>
                 <td className="p-3 text-center font-mono text-saffron-600 font-bold">{fmt(d.total_paid_cents)}</td>
-                <td className={`p-3 text-center font-mono font-bold ${d.balance_cents > 0 ? "text-danger" : "text-green-600"}`}>{fmt(d.balance_cents)}</td>
+                <td className={`p-3 text-center font-mono font-bold ${d.balance_cents > 0 ? "text-danger" : "text-ok"}`}>{fmt(d.balance_cents)}</td>
                 <td className="p-3 text-center"><AgingBadge debtor={d} /></td>
                 <td className="p-3 font-arabic text-ink-400 text-xs">{fmtDateTime(d.last_transaction_at)}</td>
                 <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>

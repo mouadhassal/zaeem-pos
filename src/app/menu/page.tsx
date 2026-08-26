@@ -206,8 +206,8 @@ function calcMargin(price: number, cost: number): number {
 }
 
 function marginBadge(margin: number) {
-  if (margin > 30) return "bg-green-100 text-green-700";
-  if (margin >= 10) return "bg-amber-100 text-amber-700";
+  if (margin > 30) return "bg-ok-soft text-ok";
+  if (margin >= 10) return "bg-warn-soft text-warn";
   return "bg-danger-soft text-danger";
 }
 
@@ -1215,7 +1215,7 @@ export default function MenuPage() {
                       <td className="p-3 font-arabic text-ink-900">
                         {rule.menu_item_name}
                       </td>
-                      <td className="p-3 font-mono text-amber-600 font-bold">
+                      <td className="p-3 font-mono text-saffron-600 font-bold">
                         {rule.discount_percent}%
                       </td>
                       <td className="p-3 font-arabic text-ink-900">

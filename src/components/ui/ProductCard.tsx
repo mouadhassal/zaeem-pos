@@ -27,7 +27,7 @@ export default function ProductCard({ id, name, price, image, category, isCombo,
           </div>
         )}
         {isCombo && (
-          <span className="absolute top-2 right-2 px-2 py-0.5 bg-amber-400 text-amber-900 text-[10px] font-bold rounded-sm">
+          <span className="absolute top-2 right-2 px-2 py-0.5 bg-saffron-400 text-saffron-900 text-[10px] font-bold rounded-sm">
             كومبو
           </span>
         )}

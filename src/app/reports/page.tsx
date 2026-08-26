@@ -41,7 +41,7 @@ const ANOMALY_KIND_LABEL: Record<AnomalyKind, string> = {
 
 const SEVERITY_STYLE: Record<AnomalySeverity, { badge: string; label: string }> = {
   HIGH: { badge: "bg-danger-soft text-danger border-danger-soft", label: "خطورة عالية" },
-  MEDIUM: { badge: "bg-amber-50 text-amber-700 border-amber-200", label: "خطورة متوسطة" },
+  MEDIUM: { badge: "bg-warn-soft text-warn border-warn-soft", label: "خطورة متوسطة" },
   LOW: { badge: "bg-ink-100 text-ink-500 border-ink-200", label: "خطورة منخفضة" },
 };
 
@@ -699,9 +699,9 @@ export default function ReportsPage() {
 
         {reconciliation && reconciliation.stale_open_orders.length > 0 && (
           <div className="space-y-2">
-            <h3 className="text-sm font-bold text-amber-700 font-arabic">طلبات مفتوحة منذ فترة طويلة</h3>
+            <h3 className="text-sm font-bold text-warn font-arabic">طلبات مفتوحة منذ فترة طويلة</h3>
             {reconciliation.stale_open_orders.map((o) => (
-              <div key={o.order_id} className="flex items-center justify-between text-sm border border-amber-200 bg-amber-50 rounded-sm p-2">
+              <div key={o.order_id} className="flex items-center justify-between text-sm border border-warn-soft bg-warn-soft rounded-sm p-2">
                 <div>
                   <span className="text-ink-900 font-arabic">{o.table_name || `#${o.order_id.slice(0, 6)}`}</span>
                   <span className="text-ink-400 text-xs font-arabic mr-2">({o.status})</span>

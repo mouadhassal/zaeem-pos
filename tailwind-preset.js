@@ -26,8 +26,14 @@ const preset = {
           soft: "var(--accent-soft)",
           text: "var(--accent-text)",
         },
-        ok: "var(--ok)",
-        warn: "var(--warn)",
+        ok: {
+          DEFAULT: "var(--ok)",
+          soft: "var(--ok-soft)",
+        },
+        warn: {
+          DEFAULT: "var(--warn)",
+          soft: "var(--warn-soft)",
+        },
         danger: {
           DEFAULT: "var(--danger)",
           soft: "var(--danger-soft)",

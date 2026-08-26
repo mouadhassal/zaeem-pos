@@ -245,7 +245,7 @@ export default function NetworkTab({ token }: { token: string | null }) {
               </button>
             </div>
             {joinRole === "register" && (
-              <p className="text-xs font-arabic text-amber-700 mb-2">
+              <p className="text-xs font-arabic text-warn mb-2">
                 هذا الجهاز يعمل كنقطة بيع كاملة (طلبات، دفع، ورديات) -- يجب تفعيل ترخيص خاص به من تبويب &quot;الترخيص&quot; قبل الاتصال.
               </p>
             )}
@@ -286,9 +286,9 @@ export default function NetworkTab({ token }: { token: string | null }) {
             <span className="font-mono text-ink-900" dir="ltr">{status.hubAddr}</span>
           </div>
           {status.paired ? (
-            <p className="text-sm font-arabic text-green-700">متصل ويعمل بشكل طبيعي.</p>
+            <p className="text-sm font-arabic text-ok">متصل ويعمل بشكل طبيعي.</p>
           ) : (
-            <p className="text-sm font-arabic text-amber-700">
+            <p className="text-sm font-arabic text-warn">
               {pairingWait ? "بانتظار موافقة الجهاز المركزي..." : "لم تتم الموافقة بعد"}
             </p>
           )}
@@ -364,7 +364,7 @@ export default function NetworkTab({ token }: { token: string | null }) {
                   <div key={t.id} className="flex items-center justify-between p-2.5 rounded-sm border border-ink-100">
                     <div>
                       <span className="text-sm font-arabic text-ink-900">{t.deviceName}</span>
-                      <span className={`mr-2 text-[11px] font-arabic px-2 py-0.5 rounded-full ${t.status === "APPROVED" ? "bg-green-50 text-green-700" : "bg-ink-100 text-ink-500"}`}>
+                      <span className={`mr-2 text-[11px] font-arabic px-2 py-0.5 rounded-full ${t.status === "APPROVED" ? "bg-ok-soft text-ok" : "bg-ink-100 text-ink-500"}`}>
                         {t.status === "APPROVED" ? "متصل" : "ملغى"}
                       </span>
                       <span className="mr-1 text-[11px] font-arabic px-2 py-0.5 rounded-full bg-ink-100 text-ink-500">{roleLabel(t.deviceRole)}</span>

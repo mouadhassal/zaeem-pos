@@ -605,7 +605,7 @@ export default function BranchesPage() {
                             t.status === "ACTIVE"
                               ? "bg-saffron-50 text-saffron-600"
                               : t.status === "OFFLINE"
-                              ? "bg-amber-50 text-amber-700"
+                              ? "bg-warn-soft text-warn"
                               : "bg-danger-soft text-danger"
                           }`}
                         >

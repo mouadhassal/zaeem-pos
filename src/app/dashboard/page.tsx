@@ -121,7 +121,7 @@ export default function DashboardPage() {
         </div>
         <div className="zc-card p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic flex items-center gap-1"><IconCash className="w-4 h-4" /> صافي الربح</p>
-          <p className={`text-2xl font-bold font-mono ${isProfitable ? "text-green-600" : "text-danger"}`}>{fmt(summary.total_profit_cents)}</p>
+          <p className={`text-2xl font-bold font-mono ${isProfitable ? "text-ok" : "text-danger"}`}>{fmt(summary.total_profit_cents)}</p>
         </div>
         <div className="zc-card p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic">عدد الطلبات</p>
@@ -144,12 +144,12 @@ export default function DashboardPage() {
         </div>
         <div className="zc-card p-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center">
-              <IconTruck className="w-5 h-5 text-amber-600" />
+            <div className="w-10 h-10 rounded-xl bg-warn-soft flex items-center justify-center">
+              <IconTruck className="w-5 h-5 text-warn" />
             </div>
             <div>
               <p className="text-ink-400 text-sm font-arabic">مستحقات الموردين</p>
-              <p className="text-lg font-bold text-amber-600 font-mono">{fmt(summary.total_outstanding_supplier_balance_cents)}</p>
+              <p className="text-lg font-bold text-warn font-mono">{fmt(summary.total_outstanding_supplier_balance_cents)}</p>
             </div>
           </div>
         </div>
@@ -178,7 +178,7 @@ export default function DashboardPage() {
                   <td className="p-3 font-arabic text-ink-900 font-medium">{b.branch_name}</td>
                   <td className="p-3 text-center font-mono text-saffron-600">{fmt(b.revenue_cents)}</td>
                   <td className="p-3 text-center font-mono text-danger">{fmt(b.costs_cents)}</td>
-                  <td className={`p-3 text-center font-mono font-bold ${b.profit_cents >= 0 ? "text-green-600" : "text-danger"}`}>{fmt(b.profit_cents)}</td>
+                  <td className={`p-3 text-center font-mono font-bold ${b.profit_cents >= 0 ? "text-ok" : "text-danger"}`}>{fmt(b.profit_cents)}</td>
                   <td className="p-3 text-center font-mono text-ink-900">{b.order_count}</td>
                   <td className="p-3 text-center font-mono text-ink-900">{fmt(b.avg_ticket_cents)}</td>
                 </tr>

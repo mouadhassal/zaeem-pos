@@ -100,8 +100,8 @@ function StockBadge({ qty, min }: { qty: number; min: number }) {
   }
   if (qty <= min) {
     return (
-      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 text-amber-600 text-xs font-medium">
-        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-warn-soft text-warn text-xs font-medium">
+        <span className="w-1.5 h-1.5 rounded-full bg-warn" />
         منخفض
       </span>
     );
@@ -483,13 +483,13 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
       {lowStockCount > 0 && (
         <button
           onClick={onReceiveStock}
-          className="w-full flex items-center justify-between p-3 rounded-sm bg-amber-50 border border-amber-200 hover:border-amber-400 transition-colors text-right"
+          className="w-full flex items-center justify-between p-3 rounded-sm bg-warn-soft border border-warn-soft hover:border-warn transition-colors text-right"
         >
-          <span className="flex items-center gap-2 text-sm text-amber-700 font-medium">
+          <span className="flex items-center gap-2 text-sm text-warn font-medium">
             <IconAlertTriangle className="w-4 h-4" />
             {lowStockCount} مادة عند الحد الأدنى أو أقل -- اضغط لاستلام بضاعة جديدة
           </span>
-          <IconPackageImport className="w-4 h-4 text-amber-600" />
+          <IconPackageImport className="w-4 h-4 text-warn" />
         </button>
       )}
       <div className="relative max-w-sm">
@@ -645,7 +645,7 @@ function AddStockModal({
         <p className="text-sm text-ink-900">
           المادة: <span className="font-bold">{target.name}</span>
         </p>
-        <p className="text-xs text-ink-500 bg-amber-50 border border-amber-200 rounded-sm p-2">
+        <p className="text-xs text-ink-500 bg-warn-soft border border-warn-soft rounded-sm p-2">
           هذا تعديل يدوي للمخزون فقط -- لا يرتبط بمورد ولا يسجّل تكلفة شراء. لاستلام بضاعة فعلية من مورد استخدم زر "استلام بضاعة" أعلى الصفحة.
         </p>
         <input
@@ -1132,7 +1132,7 @@ function SuppliersTab() {
                 <td className="p-3 font-mono text-ink-900">
                   {formatCurrency(s.total_purchases_cents)}
                 </td>
-                <td className={`p-3 font-mono font-bold ${s.balance_cents > 0 ? "text-danger" : "text-green-600"}`}>
+                <td className={`p-3 font-mono font-bold ${s.balance_cents > 0 ? "text-danger" : "text-ok"}`}>
                   {formatCurrency(s.balance_cents)}
                 </td>
                 <td className="p-3" onClick={(e) => e.stopPropagation()}>
@@ -1498,7 +1498,7 @@ function PurchasesTab() {
   };
 
   const statusBadge = (s: string) => {
-    if (s === "PENDING") return "bg-amber-100 text-amber-700";
+    if (s === "PENDING") return "bg-warn-soft text-warn";
     if (s === "ORDERED") return "bg-blue-100 text-blue-700";
     if (s === "RECEIVED") return "bg-saffron-100 text-saffron-600";
     if (s === "CANCELLED") return "bg-danger-soft text-danger";
@@ -1514,8 +1514,8 @@ function PurchasesTab() {
   };
 
   const paymentStatusBadge = (s: string) => {
-    if (s === "PAID") return "bg-green-100 text-green-700";
-    if (s === "PARTIAL") return "bg-amber-100 text-amber-700";
+    if (s === "PAID") return "bg-ok-soft text-ok";
+    if (s === "PARTIAL") return "bg-warn-soft text-warn";
     if (s === "ADVANCE") return "bg-blue-100 text-blue-700";
     return "bg-danger-soft text-danger";
   };
@@ -2090,9 +2090,9 @@ function MovementsTab() {
             {filteredLogs.map((log) => {
               const typeLabel = getTypeLabel(log.change_amount, log.reason);
               const typeColors: Record<string, string> = {
-                إضافة: "text-green-600 bg-green-50",
+                إضافة: "text-ok bg-ok-soft",
                 خصم: "text-danger bg-danger-soft",
-                هالك: "text-amber-600 bg-amber-50",
+                هالك: "text-warn bg-warn-soft",
                 بيع: "text-blue-600 bg-blue-50",
               };
               const colorClass = typeColors[typeLabel] ?? "text-ink-500 bg-white";
@@ -2114,7 +2114,7 @@ function MovementsTab() {
                   </td>
                   <td
                     className={`p-3 font-mono font-bold ${
-                      log.change_amount > 0 ? "text-green-600" : "text-danger"
+                      log.change_amount > 0 ? "text-ok" : "text-danger"
                     }`}
                   >
                     {log.change_amount > 0 ? "+" : ""}
@@ -2220,7 +2220,7 @@ function AlertsTab() {
         <div className="bg-danger-soft border border-danger-soft rounded-sm p-3 text-sm text-danger font-arabic">{orderError}</div>
       )}
       {suppliers.length === 0 && (
-        <div className="bg-amber-50 border border-amber-200 rounded-sm p-4 text-sm text-amber-700 font-arabic">
+        <div className="bg-warn-soft border border-warn-soft rounded-sm p-4 text-sm text-warn font-arabic">
           لا يوجد موردون. يرجى إضافة مورد أولاً لاستخدام خاصية الطلبيات التلقائية.
         </div>
       )}
@@ -2239,7 +2239,7 @@ function AlertsTab() {
       )}
 
       {lowStock.length === 0 && (
-        <div className="bg-green-50 border border-green-200 rounded-sm p-4 text-sm text-green-700 font-arabic">
+        <div className="bg-ok-soft border border-ok-soft rounded-sm p-4 text-sm text-ok font-arabic">
           لا توجد مواد منخفضة المخزون. جميع المواد ضمن الحد الآمن.
         </div>
       )}

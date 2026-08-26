@@ -681,7 +681,7 @@ export default function SettingsPage() {
                       ))}
                     </select>
                     {systemPrinters.length === 0 && (
-                      <p className="text-xs text-amber-700 font-arabic mt-1">
+                      <p className="text-xs text-warn font-arabic mt-1">
                         لم يتم العثور على أي طابعة مثبتة على هذا الجهاز -- تأكد من توصيل الطابعة وتثبيت تعريفها في نظام التشغيل أولاً.
                       </p>
                     )}
@@ -742,8 +742,8 @@ export default function SettingsPage() {
                 </div>
 
                 {printer.interface === "USB" && !printer.system_printer_name && (
-                  <div className="bg-amber-50 border border-amber-200 rounded-sm p-3 space-y-2">
-                    <p className="text-xs font-arabic text-amber-700">
+                  <div className="bg-warn-soft border border-warn-soft rounded-sm p-3 space-y-2">
+                    <p className="text-xs font-arabic text-warn">
                       هذه الطابعة غير مرتبطة بطابعة حقيقية على هذا الجهاز -- لن تطبع حتى يتم الاختيار.
                     </p>
                     <div className="flex gap-2">
@@ -1026,7 +1026,7 @@ export default function SettingsPage() {
                           <span className="text-sm font-arabic text-ink-900">{t.name}</span>
                           <span
                             className={`text-[11px] font-arabic px-2 py-0.5 rounded-full ${
-                              t.status === "FREE" ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"
+                              t.status === "FREE" ? "bg-ok-soft text-ok" : "bg-warn-soft text-warn"
                             }`}
                           >
                             {t.status === "FREE" ? "شاغرة" : t.status === "OCCUPIED" ? "مشغولة" : "مدمجة"}
@@ -1075,7 +1075,7 @@ export default function SettingsPage() {
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">الترخيص</h2>
             {!isOwner && (
-              <div className="bg-amber-50 border border-amber-200 rounded-md p-4 text-amber-700 font-arabic text-sm">
+              <div className="bg-warn-soft border border-warn-soft rounded-md p-4 text-warn font-arabic text-sm">
                 هذه الصفحة متاحة للمالك فقط
               </div>
             )}
@@ -1111,7 +1111,7 @@ export default function SettingsPage() {
               {licenseStatus?.kind === "Active" && (
                 <>
                   <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
+                    <span className="w-2.5 h-2.5 rounded-full bg-ok" />
                     <span className="font-arabic font-bold text-ink-900">نشط</span>
                   </div>
                   <div className="flex justify-between text-sm">
@@ -1131,7 +1131,7 @@ export default function SettingsPage() {
               {licenseStatus?.kind === "Grace" && (
                 <>
                   <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+                    <span className="w-2.5 h-2.5 rounded-full bg-warn" />
                     <span className="font-arabic font-bold text-ink-900">فترة سماح</span>
                   </div>
                   <div className="flex justify-between text-sm">
@@ -1142,7 +1142,7 @@ export default function SettingsPage() {
                     <span className="font-arabic text-ink-400">انتهى في</span>
                     <span className="font-mono text-ink-900">{formatExpiry(licenseStatus.expires_at)}</span>
                   </div>
-                  <p className="text-sm font-arabic text-amber-700">
+                  <p className="text-sm font-arabic text-warn">
                     يرجى تجديد الترخيص خلال {licenseStatus.days_left_in_grace} أيام. نقطة البيع تعمل بشكل طبيعي.
                   </p>
                 </>
@@ -1194,7 +1194,7 @@ export default function SettingsPage() {
                   <p className="text-sm font-arabic text-danger">{activationError}</p>
                 )}
                 {activationSuccess && (
-                  <p className="text-sm font-arabic text-green-700">تم تفعيل الترخيص بنجاح.</p>
+                  <p className="text-sm font-arabic text-ok">تم تفعيل الترخيص بنجاح.</p>
                 )}
                 <button
                   onClick={handleActivate}
