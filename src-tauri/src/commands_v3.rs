@@ -298,7 +298,12 @@ fn login_pin_v3_impl(state: &Db, pin: String, device_id: String) -> Result<Login
             params![LOGIN_PIN_FAILURES_KEY, failures.to_string()],
         ).map_err(|e| e.to_string())?;
     }
-    Err("invalid PIN".to_string())
+    // 2026-08-28 sweep fix: this was the literal English string "invalid
+    // PIN" -- authStore.ts's loginWithPin() trusts a string error from the
+    // backend verbatim (only falls back to its own Arabic default for a
+    // non-string error), so this leaked untranslated straight to the login
+    // screen while every other error in this codebase is already Arabic.
+    Err("الرمز غير صحيح".to_string())
 }
 
 /// Server-side PIN format enforcement -- `create_staff_v3`/
