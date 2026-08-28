@@ -2681,6 +2681,12 @@ pub fn delete_customer_v3(state: State<Db>, license: State<crate::license::cloud
 pub struct CustomerDetailV3 {
     pub orders: Vec<crate::repo::CustomerOrderRow>,
     pub favorite_items: Vec<crate::repo::FavoriteItemRow>,
+    // Live-computed (see Repo::customer_order_stats) -- NOT the dead
+    // customers.total_orders/total_spent_cents columns, which never get
+    // updated after row creation. The frontend previously read those
+    // stale columns and always showed 0/0 regardless of real history.
+    pub total_orders: i64,
+    pub total_spent_cents: i64,
 }
 
 #[tauri::command]
@@ -2690,9 +2696,12 @@ pub fn get_customer_detail_v3(state: State<Db>, license: State<crate::license::c
     authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let repo = Repo::new(&conn);
+    let (total_orders, total_spent_cents) = repo.customer_order_stats(&actor.tenant_id, &phone).map_err(|e| e.to_string())?;
     Ok(CustomerDetailV3 {
         orders: repo.customer_order_history(&actor.tenant_id, &phone).map_err(|e| e.to_string())?,
         favorite_items: repo.customer_favorite_items(&actor.tenant_id, &phone).map_err(|e| e.to_string())?,
+        total_orders,
+        total_spent_cents,
     })
 }
 

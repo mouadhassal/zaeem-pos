@@ -1724,6 +1724,30 @@ impl<'a> Repo<'a> {
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
 
+    /// Bug found live (QA sweep, 2026-08-28): `customers.total_orders` /
+    /// `total_spent_cents` are set to 0 at row creation (see the INSERT
+    /// above) and NEVER updated anywhere in this codebase -- confirmed via
+    /// a full grep for `UPDATE customers`, which returns exactly one
+    /// match, and it only touches name/phone/email/address/notes/birthday.
+    /// Every customer's stat cards on the Customers page permanently show
+    /// 0 orders / 0 ل.س spent regardless of real order history, while the
+    /// order list right next to those cards (`customer_order_history`,
+    /// above) correctly reflects reality -- confirmed live: a customer
+    /// with two real paid orders (45,000 + 8,000 ل.س) still showed "0"
+    /// everywhere the cached columns were read. Computed live here from
+    /// real `orders` rows instead of trusting the dead cached columns --
+    /// a real aggregate query (not capped at `customer_order_history`'s
+    /// LIMIT 20) so a high-volume customer's total isn't undercounted.
+    /// Only PAID orders count, matching what "total purchases" should mean
+    /// (a held/abandoned order was never a real purchase).
+    pub fn customer_order_stats(&self, tenant_id: &str, phone: &str) -> Result<(i64, i64), RepoError> {
+        self.conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders WHERE customer_phone = ?1 AND tenant_id = ?2 AND status = 'PAID'",
+            params![phone, tenant_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).map_err(RepoError::from)
+    }
+
     /// Same tenant-leak fix as customer_order_history.
     pub fn customer_favorite_items(&self, tenant_id: &str, phone: &str) -> Result<Vec<FavoriteItemRow>, RepoError> {
         let mut stmt = self.conn.prepare(

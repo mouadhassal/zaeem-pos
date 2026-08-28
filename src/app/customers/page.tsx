@@ -216,16 +216,26 @@ export default function CustomersPage() {
 
   const openDetail = async (customer: Customer) => {
     try {
-      const detail = await invoke<{ orders: OrderRow[]; favorite_items: FavoriteItem[] }>(
+      const detail = await invoke<{
+        orders: OrderRow[]; favorite_items: FavoriteItem[];
+        total_orders: number; total_spent_cents: number;
+      }>(
         "get_customer_detail_v3", { sessionToken: token, phone: customer.phone }
       );
 
-      const avgValue = customer.total_orders > 0
-        ? customer.total_spent_cents / customer.total_orders
+      // Bug found live (QA sweep, 2026-08-28): customer.total_orders/
+      // total_spent_cents come from the customers table's own columns,
+      // which are set to 0 at creation and never updated anywhere in the
+      // backend -- every customer's stat cards showed 0/0 regardless of
+      // real order history. get_customer_detail_v3 now computes these
+      // live from real orders instead; use ITS numbers, not the stale
+      // ones already sitting on the `customer` row passed in.
+      const avgValue = detail.total_orders > 0
+        ? detail.total_spent_cents / detail.total_orders
         : 0;
 
       setDetailCustomer({
-        customer,
+        customer: { ...customer, total_orders: detail.total_orders, total_spent_cents: detail.total_spent_cents },
         orders: detail.orders,
         favoriteItems: detail.favorite_items,
         avgOrderValue: avgValue,
