@@ -1097,14 +1097,50 @@ impl<'a> Repo<'a> {
     /// (orders, then items for those same orders) grouped in Rust, same
     /// shape as the old frontend's own two-step read, avoiding only the
     /// N+1-per-order pattern (one items query total, not one per order).
+    /// Bug found live (QA sweep, 2026-08-28), fixed here -- but read to the
+    /// end, this is only HALF the sweep's reported symptom:
+    ///
+    /// This query used to filter/read `orders.status` directly. That's the
+    /// wrong source: `update_order_status_v3` (KDS's own PENDING/PREPARING/
+    /// READY/SERVED buttons) never writes to `orders.status` at all -- it
+    /// only appends to the event-sourced `order_status_event` log and
+    /// rebuilds the `order_current` projection from it. So clicking a KDS
+    /// status button had ZERO effect on what this query returned; every
+    /// order displayed as permanently PENDING regardless of real kitchen
+    /// progress. That part is a genuine, unambiguous bug, confirmed live
+    /// (create -> shows PENDING; click "بدء التحضير" -> `order_current`
+    /// correctly updates to PREPARING and now, with this fix, KDS reflects
+    /// it -- before this fix it would have stayed stuck on PENDING). Fixed
+    /// by reading `order_current.status` instead, LEFT JOIN + COALESCE
+    /// (not INNER) because a brand-new order has no `order_current` row
+    /// until its first transition -- `create_full_order_v3`'s own PENDING
+    /// seed aside, nothing guarantees every caller does that, so this
+    /// matches `rebuild_order_current`'s/`replay_order_status`'s own
+    /// "no events yet => PENDING" default rather than assuming one.
+    ///
+    /// What this does NOT fix, and was wrong to assume when this comment
+    /// was first written: `order_current.status` ALSO becomes 'PAID' after
+    /// payment -- `Repo::take_payment` deliberately calls
+    /// `append_order_status_event(..., "PAID", ...)` + `rebuild_order_current`
+    /// itself ("T1.6: the PAID status is an append-only fact + projection
+    /// rebuild, same as every other order status transition"). So an order
+    /// paid before the kitchen finishes STILL disappears from this list --
+    /// live-reproduced even after this fix. That's not a bug in this query;
+    /// `order_lifecycle.rs`'s own header comment documents the assumed
+    /// sequence as `preparing -> ready -> served -> paid` (pay LAST) and
+    /// explicitly does not allow a PAID -> READY/SERVED transition. Whether
+    /// this business needs a "pay first, cook after" counter-service
+    /// workflow supported is a real product decision, not something to
+    /// guess at here -- flagged in the QA report, not decided in this diff.
     pub fn list_kitchen_orders(&self, scope: &Scope) -> Result<Vec<KdsOrderRow>, RepoError> {
         self.assert_scope_populated("orders", true)?;
         let (pred, binds) = Self::scope_predicate(scope);
         let pred_orders = pred.replace("tenant_id", "orders.tenant_id").replace("branch_id", "orders.branch_id");
         let sql = format!(
-            "SELECT orders.id, tables.name, orders.order_type, orders.status, orders.created_at, orders.discount_reason \
+            "SELECT orders.id, tables.name, orders.order_type, COALESCE(order_current.status, 'PENDING'), orders.created_at, orders.discount_reason \
              FROM orders LEFT JOIN tables ON tables.id = orders.table_id \
-             WHERE {pred_orders} AND orders.status IN ('PENDING', 'PREPARING', 'READY') \
+             LEFT JOIN order_current ON order_current.order_id = orders.id \
+             WHERE {pred_orders} AND COALESCE(order_current.status, 'PENDING') IN ('PENDING', 'PREPARING', 'READY') \
              ORDER BY orders.created_at ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -1123,7 +1159,8 @@ impl<'a> Repo<'a> {
              FROM order_items \
              INNER JOIN orders ON orders.id = order_items.order_id \
              INNER JOIN menu_items ON menu_items.id = order_items.menu_item_id \
-             WHERE {pred_items} AND orders.status IN ('PENDING', 'PREPARING', 'READY') AND order_items.voided = 0"
+             LEFT JOIN order_current ON order_current.order_id = orders.id \
+             WHERE {pred_items} AND COALESCE(order_current.status, 'PENDING') IN ('PENDING', 'PREPARING', 'READY') AND order_items.voided = 0"
         );
         let mut items_stmt = self.conn.prepare(&items_sql)?;
         let item_bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
