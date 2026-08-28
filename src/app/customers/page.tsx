@@ -218,24 +218,27 @@ export default function CustomersPage() {
     try {
       const detail = await invoke<{
         orders: OrderRow[]; favorite_items: FavoriteItem[];
-        total_orders: number; total_spent_cents: number;
+        total_orders: number; total_spent_cents: number; loyalty_points: number;
       }>(
         "get_customer_detail_v3", { sessionToken: token, phone: customer.phone }
       );
 
       // Bug found live (QA sweep, 2026-08-28): customer.total_orders/
-      // total_spent_cents come from the customers table's own columns,
-      // which are set to 0 at creation and never updated anywhere in the
-      // backend -- every customer's stat cards showed 0/0 regardless of
-      // real order history. get_customer_detail_v3 now computes these
-      // live from real orders instead; use ITS numbers, not the stale
-      // ones already sitting on the `customer` row passed in.
+      // total_spent_cents/loyalty_points all come from the customers
+      // table's own columns, which are set to 0 at creation and never
+      // updated anywhere in the backend -- every customer's stat cards
+      // showed 0/0/0 regardless of real order/loyalty history.
+      // get_customer_detail_v3 now computes all three live (orders from
+      // real `orders` rows, loyalty_points summed from the customer's
+      // real loyalty_cards, which is the table earning/redemption
+      // actually mutate) instead; use ITS numbers, not the stale ones
+      // already sitting on the `customer` row passed in.
       const avgValue = detail.total_orders > 0
         ? detail.total_spent_cents / detail.total_orders
         : 0;
 
       setDetailCustomer({
-        customer: { ...customer, total_orders: detail.total_orders, total_spent_cents: detail.total_spent_cents },
+        customer: { ...customer, total_orders: detail.total_orders, total_spent_cents: detail.total_spent_cents, loyalty_points: detail.loyalty_points },
         orders: detail.orders,
         favoriteItems: detail.favorite_items,
         avgOrderValue: avgValue,

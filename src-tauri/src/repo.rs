@@ -1677,9 +1677,33 @@ impl<'a> Repo<'a> {
         // phone value threw InvalidColumnType, failing the query_map
         // closure and taking down the ENTIRE customer list (not just the
         // one row) for any tenant with even one email-only customer.
+        //
+        // total_orders/total_spent_cents -- bug found live (QA sweep,
+        // 2026-08-28), same root cause as customer_order_stats above
+        // (commit 4e9cf0e): the cached columns are dead, never updated
+        // after row creation, so this list always showed 0/0 for every
+        // customer even after the single-customer detail view was fixed
+        // to compute live. This is the list-view half of that same fix,
+        // deferred at the time because it needs an aggregate across
+        // potentially many customers, not a single-row lookup -- one
+        // GROUP BY subquery joined by phone (orders has no customer_id,
+        // customer_phone is the only real link, same key
+        // customer_order_stats/customer_order_history already use), not
+        // an N+1 query per row. Only PAID orders count, matching
+        // customer_order_stats' "total purchases" meaning. An email-only
+        // customer (empty phone) can't match any order and correctly gets
+        // 0/0 rather than joining every order that also has a blank phone.
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, COALESCE(phone, ''), email, address, notes, birthday, loyalty_points, total_orders, total_spent_cents, last_order_at, last_modified \
-             FROM customers WHERE tenant_id = ?1 ORDER BY name ASC",
+            "SELECT c.id, c.name, COALESCE(c.phone, ''), c.email, c.address, c.notes, c.birthday, c.loyalty_points, \
+                    COALESCE(stats.order_count, 0), COALESCE(stats.total_spent, 0), c.last_order_at, c.last_modified \
+             FROM customers c \
+             LEFT JOIN ( \
+                 SELECT customer_phone, COUNT(*) AS order_count, SUM(total_cents) AS total_spent \
+                 FROM orders \
+                 WHERE tenant_id = ?1 AND status = 'PAID' AND customer_phone IS NOT NULL AND customer_phone != '' \
+                 GROUP BY customer_phone \
+             ) stats ON stats.customer_phone = c.phone AND c.phone IS NOT NULL AND c.phone != '' \
+             WHERE c.tenant_id = ?1 ORDER BY c.name ASC",
         )?;
         let rows = stmt.query_map(params![tenant_id], |r| {
             Ok(CustomerRow {
@@ -1745,6 +1769,28 @@ impl<'a> Repo<'a> {
             "SELECT COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders WHERE customer_phone = ?1 AND tenant_id = ?2 AND status = 'PAID'",
             params![phone, tenant_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
+        ).map_err(RepoError::from)
+    }
+
+    /// `customers.loyalty_points` (flagged, not fixed, in the commit right
+    /// above this one) is a distinct dead column -- always 0, set once at
+    /// creation, never updated. The REAL points balance lives entirely on
+    /// `loyalty_cards.points`, which `earn_loyalty_points`/redemption
+    /// actually mutate, linked to a customer via `loyalty_cards.customer_id`
+    /// (a real FK -- not phone, unlike orders' only link). No UNIQUE
+    /// constraint stops a customer from holding more than one card, so this
+    /// sums across all of them rather than assuming exactly one; a customer
+    /// with no card correctly gets 0 via COALESCE, not a missing-row error.
+    /// Takes phone (not customer_id) to match get_customer_detail_v3's
+    /// existing parameter, going through `customers` to reach the real
+    /// customer_id `loyalty_cards` actually keys on.
+    pub fn customer_loyalty_points(&self, tenant_id: &str, phone: &str) -> Result<i64, RepoError> {
+        self.conn.query_row(
+            "SELECT COALESCE(SUM(lc.points), 0) FROM loyalty_cards lc \
+             INNER JOIN customers c ON c.id = lc.customer_id \
+             WHERE c.phone = ?1 AND c.tenant_id = ?2",
+            params![phone, tenant_id],
+            |r| r.get(0),
         ).map_err(RepoError::from)
     }
 

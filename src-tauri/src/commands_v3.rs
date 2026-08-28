@@ -2687,6 +2687,12 @@ pub struct CustomerDetailV3 {
     // stale columns and always showed 0/0 regardless of real history.
     pub total_orders: i64,
     pub total_spent_cents: i64,
+    // Live-computed (see Repo::customer_loyalty_points) -- NOT the dead
+    // customers.loyalty_points column (same class of bug as the two
+    // fields above, flagged but deferred in commit 4e9cf0e). The real
+    // balance lives on loyalty_cards.points; this sums every card the
+    // customer holds.
+    pub loyalty_points: i64,
 }
 
 #[tauri::command]
@@ -2697,11 +2703,13 @@ pub fn get_customer_detail_v3(state: State<Db>, license: State<crate::license::c
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let repo = Repo::new(&conn);
     let (total_orders, total_spent_cents) = repo.customer_order_stats(&actor.tenant_id, &phone).map_err(|e| e.to_string())?;
+    let loyalty_points = repo.customer_loyalty_points(&actor.tenant_id, &phone).map_err(|e| e.to_string())?;
     Ok(CustomerDetailV3 {
         orders: repo.customer_order_history(&actor.tenant_id, &phone).map_err(|e| e.to_string())?,
         favorite_items: repo.customer_favorite_items(&actor.tenant_id, &phone).map_err(|e| e.to_string())?,
         total_orders,
         total_spent_cents,
+        loyalty_points,
     })
 }
 
