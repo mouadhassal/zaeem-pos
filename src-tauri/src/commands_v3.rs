@@ -7942,10 +7942,17 @@ mod tests {
     }
 
     /// Batch 3b, T1.9: the normal-flow proof -- one `take_payment` call
-    /// commits the order->PAID transition, the payment row, the table->FREE
-    /// release, and the order_current projection together.
+    /// commits the order->PAID transition, the payment row, and the
+    /// table->FREE release together. `order_current` (KDS's kitchen-
+    /// progress projection, a separate concern from payment -- see
+    /// `Repo::take_payment`'s own comment) is deliberately UNTOUCHED by
+    /// payment as of the pay-first/pay-last fix (2026-08-28): this order
+    /// was never sent through a single kitchen-status click, so it stays
+    /// at its create_order-seeded "PENDING" even after being paid --
+    /// exactly the pay-first case (pay immediately, kitchen tracks it
+    /// after) this fix exists to support.
     #[test]
-    fn take_payment_v3_commits_order_payment_table_and_projection_atomically() {
+    fn take_payment_v3_commits_order_payment_and_table_without_touching_kitchen_projection() {
         let (db_path, tenant_id, branch_id, table_id) = seeded_db("payment");
         let mut conn = Connection::open(&db_path).unwrap();
         let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Payment Cashier");
@@ -7958,6 +7965,13 @@ mod tests {
                 subtotal_cents: 2000, tax_cents: 200, total_cents: 2200, discount_cents: 0,
             }).unwrap();
             tx.execute("UPDATE tables SET status = 'OCCUPIED', current_order_id = ?1 WHERE id = ?2", params![id, table_id]).unwrap();
+            // Mirrors what `create_order_v3_impl` (the real command path,
+            // not exercised by this lower-level Repo test) always does
+            // right after creating an order -- the first PENDING event +
+            // projection rebuild, so order_current has the same starting
+            // row here as it would in production before payment.
+            Repo::new(&tx).append_order_status_event(&tenant_id, &branch_id, &id, "PENDING", &cashier_id, "test-device").unwrap();
+            Repo::new(&tx).rebuild_order_current(&id).unwrap();
             tx.commit().unwrap();
             id
         };
@@ -7984,8 +7998,8 @@ mod tests {
         assert_eq!(payment_count, 1);
 
         let projected_status: String = conn.query_row("SELECT status FROM order_current WHERE order_id = ?1", params![order_id], |r| r.get(0)).unwrap();
-        assert_eq!(projected_status, "PAID");
-        println!("[payment] order=PAID, table=FREE (current_order_id=NULL), exactly 1 payment row, order_current reflects PAID -- all from one commit");
+        assert_eq!(projected_status, "PENDING", "payment must not touch KDS's kitchen-progress projection -- a pay-first order stays trackable on KDS after being paid");
+        println!("[payment] order=PAID, table=FREE (current_order_id=NULL), exactly 1 payment row, order_current untouched (still PENDING) -- all from one commit");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
@@ -10279,15 +10293,41 @@ mod tests {
         let fries_item_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1 AND menu_item_id = ?2", params![order_a, fries_id], |r| r.get(0)).unwrap();
         repo.void_order_item(&scope_a, &fries_item_id, "نفذت الكمية", &cashier_a).unwrap();
 
-        // Branch A: a PAID order that must NOT appear on the kitchen feed.
-        let order_a_paid = repo.create_full_order(&scope_a, &tenant_id, &branch_a, FullOrderInput {
+        // Branch A: a PAID-BUT-NOT-YET-SERVED order -- pay-first/pay-last
+        // fix (2026-08-28): payment no longer touches KDS's kitchen-
+        // progress projection at all (see `Repo::take_payment`'s comment),
+        // so a paid order that hasn't gone through PREPARING/READY/SERVED
+        // yet MUST still appear on the feed -- that's the whole point of
+        // supporting pay-first (counter/quick-service: pay immediately,
+        // kitchen tracks and prepares it after). This used to be the "must
+        // NOT appear" case under the old (buggy) design, where `take_payment`
+        // itself terminated kitchen visibility by writing "PAID" into the
+        // projection -- inverted here on purpose, not a relaxed assertion.
+        let order_a_paid_first = repo.create_full_order(&scope_a, &tenant_id, &branch_a, FullOrderInput {
             table_id: table_a.clone(), user_id: cashier_a.clone(), order_type: "DINE_IN".into(),
             subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
             delivery_fee_cents: 0, driver_id: None, shift_id: None,
             items: vec![crate::repo::OrderItemInput { menu_item_id: burger_id.clone(), name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] }],
         }).unwrap();
-        repo.finalize_order_with_payment(&tenant_id, &branch_a, &order_a_paid, "CASH", 1000, 0, None, &cashier_a, None).unwrap();
+        repo.append_order_status_event(&tenant_id, &branch_a, &order_a_paid_first, "PENDING", &cashier_a, "test-device").unwrap();
+        repo.rebuild_order_current(&order_a_paid_first).unwrap();
+        repo.finalize_order_with_payment(&tenant_id, &branch_a, &order_a_paid_first, "CASH", 1000, 0, None, &cashier_a, None).unwrap();
+
+        // Branch A: a fully SERVED (and paid) order -- THIS is the real
+        // exclusion criterion the feed must apply, not payment status.
+        let order_a_served = repo.create_full_order(&scope_a, &tenant_id, &branch_a, FullOrderInput {
+            table_id: table_a.clone(), user_id: cashier_a.clone(), order_type: "DINE_IN".into(),
+            subtotal_cents: 500, tax_cents: 0, total_cents: 500, discount_cents: 0,
+            discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
+            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            items: vec![crate::repo::OrderItemInput { menu_item_id: fries_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
+        }).unwrap();
+        for status in ["PENDING", "PREPARING", "READY", "SERVED"] {
+            repo.append_order_status_event(&tenant_id, &branch_a, &order_a_served, status, &cashier_a, "test-device").unwrap();
+        }
+        repo.rebuild_order_current(&order_a_served).unwrap();
+        repo.finalize_order_with_payment(&tenant_id, &branch_a, &order_a_served, "CASH", 500, 0, None, &cashier_a, None).unwrap();
 
         // Branch B: its own PENDING order.
         repo.create_full_order(&scope_b, &tenant_id, &branch_b, FullOrderInput {
@@ -10299,11 +10339,19 @@ mod tests {
         }).unwrap();
 
         let feed_a = repo.list_kitchen_orders(&scope_a).unwrap();
-        assert_eq!(feed_a.len(), 1, "the PAID order must not appear on the kitchen feed, only the still-PENDING one");
-        assert_eq!(feed_a[0].id, order_a);
-        assert_eq!(feed_a[0].items.len(), 1, "the voided fries item must be excluded");
-        assert_eq!(feed_a[0].items[0].name, "Burger");
-        println!("[kds] Branch A's feed shows only its own PENDING order, with the voided item excluded");
+        assert_eq!(
+            feed_a.len(), 2,
+            "PAID alone must not hide an order from the kitchen feed -- only SERVED does (pay-first support); \
+             the original PENDING order and the paid-but-not-yet-served one must both show, the SERVED+paid one must not"
+        );
+        assert!(feed_a.iter().any(|o| o.id == order_a), "the original PENDING order must be on the feed");
+        assert!(feed_a.iter().any(|o| o.id == order_a_paid_first), "the paid-but-still-PENDING order must be on the feed -- this is the actual pay-first fix");
+        assert!(!feed_a.iter().any(|o| o.id == order_a_served), "the SERVED (and paid) order must be excluded -- it's genuinely done, regardless of payment status/order");
+
+        let order_a_row = feed_a.iter().find(|o| o.id == order_a).unwrap();
+        assert_eq!(order_a_row.items.len(), 1, "the voided fries item must be excluded");
+        assert_eq!(order_a_row.items[0].name, "Burger");
+        println!("[kds] Branch A's feed shows the PENDING order (voided item excluded) and the paid-but-unserved order; excludes the served+paid one");
 
         let feed_b = repo.list_kitchen_orders(&scope_b).unwrap();
         assert_eq!(feed_b.len(), 1);

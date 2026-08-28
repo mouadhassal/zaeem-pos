@@ -1362,10 +1362,33 @@ impl<'a> Repo<'a> {
             )?;
         }
 
-        // 5. T1.6: the PAID status is an append-only fact + projection
-        //    rebuild, same as every other order status transition.
-        self.append_order_status_event(tenant_id, branch_id, &input.order_id, "PAID", &input.actor_id, "payment-command")?;
-        self.rebuild_order_current(&input.order_id)?;
+        // 5. Pay-first/pay-last fix (QA sweep, 2026-08-28): this used to also
+        //    append a "PAID" event here and rebuild `order_current` to
+        //    match, on the theory that PAID is "just another order status
+        //    transition" (T1.6's original framing). That was the actual bug:
+        //    `order_current`/`order_status_event` is KDS's kitchen-PROGRESS
+        //    projection (see `list_kitchen_orders`), a completely separate
+        //    concern from `orders.status` (the raw column set above, step 2)
+        //    which is what reports/reconcile/assistant/finance all read as
+        //    the real "is this order paid" signal -- confirmed by grep,
+        //    `order_current` has exactly one consumer in this whole codebase
+        //    (KDS) and nothing else ever reads it. Writing "PAID" into it
+        //    meant a pay-first order (paid before the kitchen ever touches
+        //    it, e.g. counter/quick service) got its kitchen-progress
+        //    terminated immediately -- it vanished from KDS with no legal
+        //    transition back (order_lifecycle.rs's graph has no edge FROM
+        //    "PAID"), unable to ever be tracked through PREPARING/READY/
+        //    SERVED. Simply not touching order_current here fixes both
+        //    workflows at once with zero changes to the transition graph
+        //    or anything reports-side: a pay-last order still ends up
+        //    PAID+SERVED exactly as before (orders.status='PAID' from step
+        //    2, order_current.status='SERVED' from the kitchen's own last
+        //    click, correctly absent from KDS via list_kitchen_orders'
+        //    existing PENDING/PREPARING/READY filter); a pay-first order
+        //    stays visible/trackable on KDS at whatever kitchen-progress
+        //    status it was actually at (PENDING if paid immediately) while
+        //    `orders.status='PAID'` already correctly counts it everywhere
+        //    else that matters.
 
         Ok(payment_id)
     }
