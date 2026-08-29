@@ -1237,17 +1237,32 @@ pub fn toggle_menu_item_availability_v3(state: State<Db>, session_token: String,
 }
 
 #[tauri::command]
-pub fn list_combo_meals_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::ComboMealRow>, String> {
+// License-gate removed (found live, 2026-08-30): this is read by the POS
+// floor's own MenuGridContainer/menuStore.fetchMenu() -- bundled into the
+// SAME Promise.all() as list_menu_items_v3/list_categories_v3, all needed
+// just to price and sell what's already on the menu. `require_license_
+// not_locked`'s own doc comment is explicit that "order/payment/print
+// commands never call this at all" and the POS-never-stops-selling
+// guarantee is meant to be structural -- this READ was gating exactly the
+// commands that guarantee promises stay open, and because Promise.all
+// rejects on the FIRST failure, one locked combo-meal read was enough to
+// blank the entire sales floor grid to "0 items" (reproduced live: a real
+// expired-license install showed the console error "license expired --
+// back-office access is locked... Point of sale keeps working normally"
+// immediately followed by a totally empty item grid -- the opposite of
+// what that message promises). The WRITE side (create/update/delete_
+// combo_meal_v3, below) correctly keeps the gate -- editing what's on the
+// menu is a real back-office task; reading it to sell it is not.
+pub fn list_combo_meals_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::ComboMealRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_combo_meals(&actor.tenant_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn list_combo_meal_items_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::ComboItemJoinRow>, String> {
+// Same fix, same reasoning as list_combo_meals_v3 immediately above.
+pub fn list_combo_meal_items_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::ComboItemJoinRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_combo_meal_items(&actor.tenant_id).map_err(|e| e.to_string())
 }
@@ -1292,9 +1307,12 @@ pub fn delete_combo_meal_v3(state: State<Db>, license: State<crate::license::clo
 }
 
 #[tauri::command]
-pub fn list_happy_hour_rules_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::HappyHourRuleRow>, String> {
+// Same fix, same reasoning as list_combo_meals_v3's doc comment above --
+// happy-hour discount rules are read live by the sales floor to price an
+// order correctly, not a back-office-only concern. Write side (create/
+// update/delete_happy_hour_rule_v3, below) correctly keeps the gate.
+pub fn list_happy_hour_rules_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::HappyHourRuleRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_happy_hour_rules(&actor.tenant_id).map_err(|e| e.to_string())
 }
@@ -11551,9 +11569,9 @@ mod tests {
             "upload_menu_item_photo_v3", "delete_menu_item_photo_v3",
             "upload_category_photo_v3", "delete_category_photo_v3",
             "create_menu_item_v3", "update_menu_item_v3", "delete_menu_item_v3", "set_menu_item_active_v3",
-            "list_combo_meals_v3", "list_combo_meal_items_v3", "create_combo_meal_v3",
+            "create_combo_meal_v3",
             "update_combo_meal_v3", "delete_combo_meal_v3",
-            "list_happy_hour_rules_v3", "create_happy_hour_rule_v3", "update_happy_hour_rule_v3",
+            "create_happy_hour_rule_v3", "update_happy_hour_rule_v3",
             "delete_happy_hour_rule_v3", "set_happy_hour_rule_active_v3",
             "list_branches_full_v3", "create_branch_full_v3", "update_branch_full_v3",
             "set_branch_full_active_v3", "update_branch_detail_field_v3", "list_terminals_v3",
@@ -11607,6 +11625,17 @@ mod tests {
             "finalize_order_with_payment_v3", "list_tables_v3",
             "list_categories_v3", "list_menu_items_v3", "get_menu_item_photo_v3", "get_category_photo_v3",
             "list_combo_components_v3", "resolve_menu_price_v3",
+            // Found live 2026-08-30: these three were wrongly in GATED --
+            // bundled into menuStore.fetchMenu()'s single Promise.all with
+            // list_menu_items_v3/list_categories_v3, so gating them broke
+            // the ENTIRE sales-floor grid to "0 items" the moment a
+            // license lapsed, exactly the outcome require_license_not_
+            // locked's own error message promises never happens. Reading
+            // combo/happy-hour pricing to sell what's on the menu right
+            // now is the selling path, not back-office -- see the removed
+            // require_license_not_locked calls' replacement doc comments
+            // on these three functions above for the full reasoning.
+            "list_combo_meals_v3", "list_combo_meal_items_v3", "list_happy_hour_rules_v3",
             "get_receipt_config_v3", "get_chain_config_v3", "list_active_printers_v3",
             "get_discount_caps_v3", "get_manager_thresholds_v3", "get_business_mode_v3", "list_debtors_v3",
             "verify_manager_override_v3",
