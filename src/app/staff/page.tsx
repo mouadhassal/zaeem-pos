@@ -99,7 +99,11 @@ const emptyEmployeeForm: EmployeeForm = {
   branchId: "",
 };
 
-const DIFF_THRESHOLD_CENTS = 5000;
+// 2026-08-30 SYP redenomination -- was 5000 (old-scale), an independent,
+// much-lower local flag threshold than chain_config's manager-override
+// thresholds (this just visually flags a shift with a notable cash diff in
+// the staff list, not a hard block). 5000 old SYP / 100 = 50 new SYP.
+const DIFF_THRESHOLD_CENTS = 50;
 
 function formatTime(iso: string | null): string {
   if (!iso) return "---";

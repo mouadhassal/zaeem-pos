@@ -23,7 +23,16 @@ function formatCompact(amt: number) {
   return amt.toString();
 }
 
-const QUICK_AMOUNTS = [1000, 5000, 10000, 25000, 50000, 60000, 75000, 100000];
+// 2026-08-30 Syrian pound redenomination (100 old SYP = 1 new SYP, real new
+// banknotes 10/25/50/100/200/500 -- confirmed live, old notes stopped being
+// legal tender in May 2026). These used to be old-scale amounts (1000-
+// 100000) with no relationship to any bill that actually exists anymore --
+// a cashier tapping "10000" had no way to hand that as real cash. Now a mix
+// of the real single-note values (50/100/200/500 -- the smallest two notes,
+// 10/25, are rarely what a cashier is quick-entering a TOTAL tendered as)
+// plus the common multi-note totals a customer actually hands over for a
+// realistic order size (1000 = two 500s, 1500, 2000).
+const QUICK_AMOUNTS = [50, 100, 200, 500, 1000, 1500, 2000];
 
 interface Props {
   onClose: () => void;

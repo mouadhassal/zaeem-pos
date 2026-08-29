@@ -2077,6 +2077,144 @@ pub fn run_dead_table_cleanup_migration(conn: &mut Connection, _db_path: &Path) 
     Ok(())
 }
 
+pub const MIGRATION_U_VERSION: i64 = 25;
+
+/// 2026-08-30 Syrian pound redenomination (100 old SYP = 1 new SYP, real new
+/// banknotes 10/25/50/100/200/500 -- confirmed via live research, the old
+/// notes stopped being legal tender in May 2026). Every real currency AMOUNT
+/// column in this schema was still storing the old, pre-redenomination
+/// scale (confirmed live: a real seeded item, "بيتزا", was priced at 45000
+/// -- should read 450 in the new currency) -- this divides every one of
+/// them by 100, rounding to the nearest whole new-SYP unit (SYP has no
+/// minor/sub-unit denomination, same scale-0 convention `money.rs` already
+/// establishes for this currency elsewhere in this codebase).
+///
+/// Two kinds of `_cents` column exist here, handled differently:
+///
+/// 1. Plain standalone `_cents` columns (`menu_items.price_cents`,
+///    `orders.refunded_cents`, `suppliers.balance_cents`, etc.) -- just
+///    divided in place.
+/// 2. The 8 `MONEY_COLUMNS` entries (`orders.subtotal/tax/discount/total`,
+///    `order_items.unit_price`, `payments.amount/change`,
+///    `debt_entries.amount`) -- Migration A's MoneySnapshot expansion keeps
+///    THREE columns in sync per entry (`{prefix}_cents`, `{prefix}_minor`,
+///    `{prefix}_base_minor`, see that migration's own `UPDATE ... SET
+///    {prefix}_minor = {legacy_col}, {prefix}_base_minor = {legacy_col}`).
+///    All three get divided together so they stay consistent with each
+///    other, and `{prefix}_denom_epoch` (present on this schema
+///    specifically to mark a redenomination event, though nothing reads it
+///    yet) is bumped from 2 to 3 on every row touched, so the schema's own
+///    versioning stays honest even though no other code currently branches
+///    on it.
+///
+/// Explicitly, deliberately NOT touched -- these are percentage/basis-point
+/// RATES, not absolute currency amounts, and a tax rate doesn't change just
+/// because the currency's base unit did (confirmed via `pricing.rs`'s own
+/// `round_div(subtotal_cents * config.tax_rate_cents, 10_000)`, i.e.
+/// `tax_rate_cents` is actually "rate in basis points," a naming collision
+/// with the real money `_cents` columns, not a real amount):
+/// `chain_config.tax_rate_cents`/`secondary_tax_rate_cents`/
+/// `service_charge_rate_cents`, `branches.tax_rate_cents`,
+/// `loyalty_reward.value_percent_bps`, `happy_hour_rules.discount_percent`,
+/// `loyalty_tier.points_multiplier`.
+///
+/// Historical orders/payments/debts rung up before this migration are
+/// intentionally included, not just future ones -- a real past 45,000
+/// order becomes a real past 450 order, same transaction, correctly
+/// denominated, so shift reports and order history stay internally
+/// consistent (a historical order's total still equals the sum of its own
+/// line items after this runs, verified live, not just assumed).
+pub fn run_syp_redenomination_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_U_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+
+    // Plain standalone `_cents` columns: (table, column).
+    const PLAIN_MONEY_COLUMNS: &[(&str, &str)] = &[
+        ("menu_items", "price_cents"),
+        ("menu_items", "cost_cents"),
+        ("ingredients", "cost_cents_per_unit"),
+        ("combo_meals", "bundle_price_cents"),
+        ("orders", "refunded_cents"),
+        ("orders", "delivery_fee_cents"),
+        ("suppliers", "total_purchases_cents"),
+        ("suppliers", "total_owed_cents"),
+        ("suppliers", "total_paid_cents"),
+        ("suppliers", "balance_cents"),
+        ("purchase_orders", "total_cents"),
+        ("purchase_orders", "amount_paid_cents"),
+        ("purchase_order_items", "unit_cost_cents"),
+        ("delivery_zones", "fee_cents"),
+        ("delivery_zones", "min_order_cents"),
+        ("invoices", "amount_cents"),
+        ("operational_costs", "amount_cents"),
+        ("debtors", "total_debt_cents"),
+        ("debtors", "total_paid_cents"),
+        ("debtors", "balance_cents"),
+        ("supplier_payments", "amount_cents"),
+        ("loyalty_reward", "value_cents"),
+        ("chain_config", "void_manager_threshold_cents"),
+        ("chain_config", "shift_diff_manager_threshold_cents"),
+        ("refunds", "amount_cents"),
+    ];
+    let mut plain_touched: Vec<String> = Vec::new();
+    for (table, col) in PLAIN_MONEY_COLUMNS {
+        if table_exists(&tx, table)? && column_exists(&tx, table, col)? {
+            tx.execute(
+                &format!("UPDATE {table} SET {col} = CAST(ROUND({col} / 100.0) AS INTEGER) WHERE {col} IS NOT NULL"),
+                [],
+            )?;
+            plain_touched.push(format!("{table}.{col}"));
+        }
+    }
+
+    // MONEY_COLUMNS registry entries: _cents + _minor + _base_minor together, denom_epoch bumped.
+    let mut snapshot_touched: Vec<String> = Vec::new();
+    for (table, prefix) in MONEY_COLUMNS {
+        if !table_exists(&tx, table)? {
+            continue;
+        }
+        let cents_col = format!("{prefix}_cents");
+        let minor_col = format!("{prefix}_minor");
+        let base_minor_col = format!("{prefix}_base_minor");
+        let epoch_col = format!("{prefix}_denom_epoch");
+        if !column_exists(&tx, table, &cents_col)? {
+            continue;
+        }
+        let mut sets = vec![format!("{cents_col} = CAST(ROUND({cents_col} / 100.0) AS INTEGER)")];
+        if column_exists(&tx, table, &minor_col)? {
+            sets.push(format!("{minor_col} = CAST(ROUND({minor_col} / 100.0) AS INTEGER)"));
+        }
+        if column_exists(&tx, table, &base_minor_col)? {
+            sets.push(format!("{base_minor_col} = CAST(ROUND({base_minor_col} / 100.0) AS INTEGER)"));
+        }
+        if column_exists(&tx, table, &epoch_col)? {
+            sets.push(format!("{epoch_col} = 3"));
+        }
+        tx.execute(&format!("UPDATE {table} SET {}", sets.join(", ")), [])?;
+        snapshot_touched.push(format!("{table}.{prefix}"));
+    }
+
+    println!(
+        "v25_syp_redenomination: divided {} plain money columns and {} MoneySnapshot column groups by 100 (100 old SYP = 1 new SYP)",
+        plain_touched.len(),
+        snapshot_touched.len()
+    );
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_U_VERSION, "0025_syp_redenomination", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2828,6 +2966,121 @@ mod tests {
             ).unwrap();
             assert!(exists, "{table} must NOT be dropped by Migration T");
         }
+
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(integrity, "ok");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// U1: the SYP redenomination migration -- idempotent, divides every
+    /// real currency amount by 100, leaves rate/percentage columns
+    /// (`chain_config.tax_rate_cents`) completely untouched, and a real
+    /// order's total stays internally consistent (subtotal - discount + tax
+    /// == total) after the division, not just each column independently
+    /// migrated and hoping they still agree with each other.
+    #[test]
+    fn test_syp_redenomination_migration_is_idempotent_and_internally_consistent() {
+        let db_path = fresh_db_path("syp_redenomination_migration");
+        build_base_fixture(&db_path);
+        {
+            let mut conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+
+            // A real tax rate, set explicitly so we can assert it's untouched
+            // (5% == 500 basis points / 10_000, matching pricing.rs's own
+            // round_div(subtotal_cents * tax_rate_cents, 10_000) formula).
+            conn.execute("UPDATE chain_config SET tax_rate_cents = 500 WHERE id = 'default'", []).unwrap();
+
+            // One deterministic, internally-consistent old-scale order:
+            // subtotal 10,000 - discount 500 + tax 500 = total 10,000.
+            conn.execute_batch(
+                "INSERT INTO orders (id, table_id, user_id, status, order_type, subtotal_cents, tax_cents, total_cents, discount_cents, delivery_fee_cents, created_at)
+                 VALUES ('order-u1', 'tbl-1', 'user-1', 'PAID', 'DINE_IN', 10000, 500, 10000, 500, 0, datetime('now'));
+                 INSERT INTO order_items (id, order_id, menu_item_id, quantity, unit_price_cents)
+                 VALUES ('oi-u1', 'order-u1', 'item-1', 2, 5000);
+                 INSERT INTO payments (id, order_id, method, amount_cents, change_cents, created_at)
+                 VALUES ('pay-u1', 'order-u1', 'CASH', 10000, 0, datetime('now'));"
+            ).expect("failed to seed U1 order fixture");
+
+            run_expand_migration(&mut conn, &db_path).expect("Migration A failed");
+            run_remap_migration(&mut conn, &db_path).expect("Migration B failed");
+            run_identity_migration(&mut conn, &db_path).expect("Migration C failed");
+            run_drift_fix_migration(&mut conn, &db_path).expect("Migration D failed");
+            run_index_migration(&mut conn, &db_path).expect("Migration E failed");
+            run_discount_cap_migration(&mut conn, &db_path).expect("Migration F failed");
+            run_sync_outbox_migration(&mut conn, &db_path).expect("Migration G failed");
+            run_supplier_ledger_migration(&mut conn, &db_path).expect("Migration H failed");
+            run_loyalty_migration(&mut conn, &db_path).expect("Migration I failed");
+            run_staff_sync_migration(&mut conn, &db_path).expect("Migration J failed");
+            run_lan_pairing_migration(&mut conn, &db_path).expect("Migration K failed");
+            run_printer_system_name_migration(&mut conn, &db_path).expect("Migration L failed");
+            run_manager_threshold_migration(&mut conn, &db_path).expect("Migration M failed");
+            run_business_mode_migration(&mut conn, &db_path).expect("Migration N failed");
+            run_roster_entry_migration(&mut conn, &db_path).expect("Migration O failed");
+            run_refund_migration(&mut conn, &db_path).expect("Migration P failed");
+            run_manager_threshold_syp_rescale_migration(&mut conn, &db_path).expect("Migration Q failed");
+            run_ingredient_sync_migration(&mut conn, &db_path).expect("Migration R failed");
+            run_item_kind_migration(&mut conn, &db_path).expect("Migration S failed");
+            run_dead_table_cleanup_migration(&mut conn, &db_path).expect("Migration T failed");
+            run_syp_redenomination_migration(&mut conn, &db_path).expect("Migration U failed (first run)");
+            // Second run must be a stable no-op, not a second division.
+            run_syp_redenomination_migration(&mut conn, &db_path).expect("Migration U failed (second run -- must be idempotent)");
+        }
+        let conn = Connection::open(&db_path).unwrap();
+
+        // menu_items: 5000/2000 (Burger) -> 50/20. Migration B remaps every
+        // menu_items.id from the legacy string id to a fresh UUIDv7 (same
+        // as the S-migration test above), so resolve by name, not by the
+        // pre-migration literal 'item-1'.
+        let (price, cost): (i64, i64) = conn.query_row(
+            "SELECT price_cents, cost_cents FROM menu_items WHERE name = 'Burger'", [], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(price, 50, "menu_items.price_cents must be divided by 100 exactly once, not zero or two times");
+        assert_eq!(cost, 20, "menu_items.cost_cents must be divided by 100 exactly once");
+
+        // chain_config: void threshold divided (5,000,000 -> 50,000, the
+        // Migration Q SYP-realistic default), tax_rate_cents left ALONE
+        // (still 500 -- it's a basis-point rate, not an amount).
+        let (void_threshold, tax_rate): (i64, i64) = conn.query_row(
+            "SELECT void_manager_threshold_cents, tax_rate_cents FROM chain_config WHERE id = 'default'", [], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(void_threshold, 50000, "chain_config.void_manager_threshold_cents must be divided by 100");
+        assert_eq!(tax_rate, 500, "chain_config.tax_rate_cents is a RATE (basis points), must NOT be divided -- a 5% tax stays 5% regardless of currency scale");
+
+        // The order: Migration B remaps orders.id/order_items.id/payments.id
+        // too (same reason as menu_items above) -- the fixture seeds exactly
+        // one PAID order, so resolve it as "the" order rather than by its
+        // stale literal id.
+        let order_id: String = conn.query_row("SELECT id FROM orders WHERE status = 'PAID'", [], |r| r.get(0)).unwrap();
+
+        // every MONEY_COLUMNS field divided, AND still internally
+        // consistent with itself post-division (100 - 5 + 5 == 100), not
+        // just each column independently correct.
+        let (subtotal, tax, total, discount): (i64, i64, i64, i64) = conn.query_row(
+            "SELECT subtotal_cents, tax_cents, total_cents, discount_cents FROM orders WHERE id = ?1", params![order_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        ).unwrap();
+        assert_eq!((subtotal, tax, total, discount), (100, 5, 100, 5), "order money columns must all be divided by 100");
+        assert_eq!(subtotal - discount + tax, total, "order must still be internally consistent (subtotal - discount + tax == total) after redenomination, not just each column independently divided");
+
+        let unit_price: i64 = conn.query_row(
+            "SELECT unit_price_cents FROM order_items WHERE order_id = ?1", params![order_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(unit_price, 50, "order_items.unit_price_cents must be divided by 100");
+
+        let payment_amount: i64 = conn.query_row(
+            "SELECT amount_cents FROM payments WHERE order_id = ?1", params![order_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(payment_amount, 100, "payments.amount_cents must be divided by 100, matching the order total it settles");
+
+        // MoneySnapshot twin columns (_minor/_base_minor) stayed in sync
+        // with _cents, and denom_epoch was bumped to mark the event.
+        let (total_minor, total_base_minor, total_epoch): (i64, i64, i64) = conn.query_row(
+            "SELECT total_minor, total_base_minor, total_denom_epoch FROM orders WHERE id = ?1", params![order_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert_eq!(total_minor, 100, "orders.total_minor must stay in sync with total_cents");
+        assert_eq!(total_base_minor, 100, "orders.total_base_minor must stay in sync with total_cents");
+        assert_eq!(total_epoch, 3, "orders.total_denom_epoch must be bumped to mark the redenomination event");
 
         let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
         assert_eq!(integrity, "ok");
