@@ -158,7 +158,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
       <div className="h-12 shrink-0 flex items-center gap-2 px-3 border-b border-line">
         <button
           onClick={() => setShowSearch((v) => !v)}
-          className="w-11 h-[34px] rounded-[9px] bg-surface-alt flex items-center justify-center text-text-muted transition-all active:scale-95"
+          className="w-11 h-11 rounded-[9px] bg-surface-alt flex items-center justify-center text-text-muted transition-transform active:scale-95"
           style={{ minWidth: 44 }}
         >
           <IconSearch className="w-4 h-4" stroke={1.75} />
@@ -222,7 +222,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem, showNumpa
               <button
                 key={combo.id}
                 onClick={() => handleAddCombo(combo)}
-                className="shrink-0 rounded-[10px] px-3 py-2 text-start transition-all active:scale-[0.98]"
+                className="shrink-0 rounded-[10px] px-3 py-2 text-start transition-transform active:scale-[0.98]"
                 style={{ background: "#FFF4EC", border: "1px solid #F04E23", minWidth: 160 }}
               >
                 <div className="text-[12px] font-medium text-text truncate">{combo.name}</div>

@@ -195,11 +195,12 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
                 <button
                   key={m}
                   onClick={() => setMethod(m)}
-                  className={`flex-1 py-2.5 rounded-lg font-arabic font-medium text-sm transition-all flex items-center justify-center gap-1.5 ${
+                  className={`flex-1 py-2.5 rounded-lg font-arabic font-medium text-sm transition-[background-color,color,border-color,transform] active:scale-[0.98] flex items-center justify-center gap-1.5 ${
                     method === m
                       ? "bg-white text-ink-900 border border-line"
                       : "text-ink-400 hover:text-ink-900"
                   }`}
+                  style={{ minHeight: 44 }}
                 >
                   <MethodIcon className="w-4 h-4" stroke={1.75} />
                   {m === "CASH" ? "نقدي" : m === "CARD" ? "بطاقة" : m === "WALLET" ? "محفظة" : "دين"}
@@ -221,7 +222,7 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
                   inputMode="decimal"
                   value={receivedStr}
                   onChange={(e) => setReceivedStr(e.target.value)}
-                  className="w-full h-14 text-right font-mono text-2xl font-bold text-ink-900 bg-white border-2 border-ink-200 rounded-sm px-4 focus:border-accent outline-none transition-all"
+                  className="w-full h-14 text-right font-mono text-2xl font-bold text-ink-900 bg-white border-2 border-ink-200 rounded-sm px-4 focus:border-accent outline-none transition-[border-color]"
                   placeholder="٠"
                   autoFocus
                   dir="ltr"
@@ -237,7 +238,7 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
                 <button
                   key={amt}
                   onClick={() => setReceivedStr(String(amt))}
-                  className="h-10 rounded-lg bg-surface-alt font-mono font-medium text-ink-900 hover:bg-accent-soft hover:text-accent-text transition-colors"
+                  className="h-11 rounded-lg bg-surface-alt font-mono font-medium text-ink-900 hover:bg-accent-soft hover:text-accent-text transition-[background-color,color,transform] active:scale-[0.97]"
                 >
                   {formatCompact(amt)}
                 </button>
@@ -399,14 +400,14 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
         <div className="px-6 py-4 border-t border-ink-200 flex gap-3">
           <button
             onClick={onClose}
-            className="flex-1 h-14 rounded-xl bg-surface-alt text-ink-900 font-arabic font-bold hover:bg-ink-200 transition-colors"
+            className="flex-1 h-14 rounded-xl bg-surface-alt text-ink-900 font-arabic font-bold hover:bg-ink-200 active:scale-[0.98] transition-[background-color,transform]"
           >
             إلغاء
           </button>
           <button
             onClick={handleConfirm}
             disabled={!sufficient || processing}
-            className="flex-1 h-14 rounded-xl bg-saffron-600 text-white font-arabic font-bold hover:bg-accent-text active:scale-[0.98] transition-all disabled:opacity-50 disabled:shadow-none"
+            className="flex-1 h-14 rounded-xl bg-saffron-600 text-white font-arabic font-bold hover:bg-accent-text active:scale-[0.98] transition-[background-color,transform,opacity] disabled:opacity-50 disabled:shadow-none"
           >
             {processing ? "...جارٍ" : "تأكيد وطباعة"}
           </button>

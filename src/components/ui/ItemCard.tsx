@@ -31,7 +31,7 @@ export default function ItemCard({
 
   return (
     <div
-      className={`bg-white rounded-lg flex flex-col overflow-hidden transition-all active:scale-[0.98] relative border ${inCart ? 'border-danger' : 'border-ink-200 hover:border-saffron-400'}`}
+      className={`bg-white rounded-lg flex flex-col overflow-hidden transition-[border-color,transform] active:scale-[0.98] relative border ${inCart ? 'border-danger' : 'border-ink-200 hover:border-saffron-400'}`}
     >
       {badge && (
         <span

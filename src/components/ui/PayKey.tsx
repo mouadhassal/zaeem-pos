@@ -11,8 +11,8 @@ export default function PayKey({ disabled, onClick, onHold, holdDisabled }: Prop
       <button
         onClick={onClick}
         disabled={disabled}
-        className="flex-1 bg-saffron-500 text-white font-bold text-base rounded-[12px] transition-all active:scale-[0.98] disabled:opacity-40"
-        style={{ height: 50, minHeight: 50 }}
+        className="flex-1 bg-saffron-500 text-white font-bold text-base rounded-[12px] transition-[transform,opacity] active:scale-[0.98] disabled:opacity-40"
+        style={{ height: 52, minHeight: 52 }}
       >
         دفع
       </button>
@@ -20,8 +20,8 @@ export default function PayKey({ disabled, onClick, onHold, holdDisabled }: Prop
         <button
           onClick={onHold}
           disabled={holdDisabled}
-          className="px-4 rounded-[12px] bg-surface-alt text-text-2 text-sm font-medium transition-all active:scale-[0.98] disabled:opacity-40"
-          style={{ minHeight: 50, minWidth: 44 }}
+          className="px-4 rounded-[12px] bg-surface-alt text-text-2 text-sm font-medium transition-[transform,opacity] active:scale-[0.98] disabled:opacity-40"
+          style={{ minHeight: 52, minWidth: 48 }}
         >
           تعليق
         </button>

@@ -69,9 +69,9 @@ export default function OrderLine({
                   type="button"
                   onClick={() => onDecrement?.(id)}
                   aria-label="إنقاص الكمية"
-                  className="w-6 h-6 rounded-[7px] bg-surface-alt text-text-2 flex items-center justify-center hover:bg-line transition-colors"
+                  className="w-7 h-7 rounded-[7px] bg-surface-alt text-text-2 flex items-center justify-center hover:bg-line transition-[background-color] active:scale-95"
                 >
-                  <Minus className="w-3 h-3" />
+                  <Minus className="w-3.5 h-3.5" />
                 </button>
                 <span className="tabular text-sm text-text w-4 text-center">{quantity}</span>
                 {/* Color discipline: this is the one allowed non-logo/nav/pay
@@ -80,9 +80,9 @@ export default function OrderLine({
                   type="button"
                   onClick={() => onIncrement?.(id)}
                   aria-label="زيادة الكمية"
-                  className="w-6 h-6 rounded-[7px] bg-accent text-white flex items-center justify-center hover:opacity-90 transition-opacity"
+                  className="w-7 h-7 rounded-[7px] bg-accent text-white flex items-center justify-center hover:opacity-90 transition-[opacity,transform] active:scale-95"
                 >
-                  <Plus className="w-3 h-3" />
+                  <Plus className="w-3.5 h-3.5" />
                 </button>
               </>
             )}
@@ -91,7 +91,7 @@ export default function OrderLine({
                 type="button"
                 onClick={() => onVoid(id)}
                 aria-label="إلغاء الصنف"
-                className="w-6 h-6 rounded-[7px] text-text-muted flex items-center justify-center hover:bg-surface-alt hover:text-danger transition-colors"
+                className="w-7 h-7 rounded-[7px] text-text-muted flex items-center justify-center hover:bg-surface-alt hover:text-danger transition-[background-color,color] active:scale-95"
               >
                 <X className="w-3.5 h-3.5" />
               </button>

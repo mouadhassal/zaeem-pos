@@ -186,7 +186,7 @@ export default function KDSPage() {
 
       <div className="flex gap-2 px-6 py-3 bg-surface border-b border-ink-200">
         {["all", "PENDING", "PREPARING", "READY"].map((t) => (
-            <button key={t} onClick={() => setActiveTab(t)} className={`px-4 py-1.5 rounded-lg text-sm font-arabic transition-colors ${activeTab === t ? "bg-ink-900 text-white" : "bg-surface text-ink-500 hover:bg-ink-200"}`}>
+            <button key={t} onClick={() => setActiveTab(t)} className={`px-4 rounded-lg text-sm font-arabic transition-colors ${activeTab === t ? "bg-ink-900 text-white" : "bg-surface text-ink-500 hover:bg-ink-200"}`} style={{ minHeight: 40 }}>
             {t === "all" ? "الكل" : STATUS_LABELS[t] ?? t}
           </button>
         ))}
@@ -263,21 +263,21 @@ export default function KDSPage() {
 
                 <div className="p-3 border-t border-ink-200">
                   {order.status === "PENDING" && (
-                    <button onClick={() => handleStatusChange(order.id, order.status)} className="w-full h-10 rounded-xl bg-ink-800 text-white text-sm font-bold hover:bg-ink-900 transition-colors">
+                    <button onClick={() => handleStatusChange(order.id, order.status)} className="w-full h-12 rounded-xl bg-ink-800 text-white text-sm font-bold hover:bg-ink-900 transition-[background-color,transform] active:scale-[0.98]">
                       بدء التحضير
                     </button>
                   )}
                   {order.status === "PREPARING" && (
-                    <button onClick={() => handleStatusChange(order.id, order.status)} className="w-full h-10 rounded-xl bg-ok text-white text-sm font-bold hover:bg-ok transition-colors">
+                    <button onClick={() => handleStatusChange(order.id, order.status)} className="w-full h-12 rounded-xl bg-ok text-white text-sm font-bold hover:bg-ok transition-[background-color,transform] active:scale-[0.98]">
                       تم التجهيز
                     </button>
                   )}
                   {order.status === "READY" && (
                     <div className="flex gap-2">
-                      <button onClick={() => handleStatusChange(order.id, order.status)} className="flex-1 h-10 rounded-xl bg-ink-200 text-ink-500 text-sm font-bold hover:bg-ink-300 transition-colors">
+                      <button onClick={() => handleStatusChange(order.id, order.status)} className="flex-1 h-12 rounded-xl bg-ink-200 text-ink-500 text-sm font-bold hover:bg-ink-300 transition-[background-color,transform] active:scale-[0.98]">
                         تم التقديم
                       </button>
-                      <button onClick={() => handleStatusChange(order.id, "PREPARING")} className="px-4 h-10 rounded-xl bg-surface-alt text-warn text-sm font-bold hover:bg-ink-200 transition-colors">
+                      <button onClick={() => handleStatusChange(order.id, "PREPARING")} className="px-4 h-12 rounded-xl bg-surface-alt text-warn text-sm font-bold hover:bg-ink-200 transition-[background-color,transform] active:scale-[0.98]">
                         إعادة
                       </button>
                     </div>

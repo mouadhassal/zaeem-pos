@@ -9,7 +9,7 @@ export default function Stepper({ quantity, onAdd, onRemove }: Props) {
     return (
       <button
         onClick={onAdd}
-        className="w-[26px] h-[26px] rounded-[7px] flex items-center justify-center bg-saffron-500 text-white text-base font-medium transition-all active:scale-95"
+        className="w-[34px] h-[34px] rounded-[9px] flex items-center justify-center bg-saffron-500 text-white text-lg font-medium transition-transform active:scale-95"
         aria-label="إضافة"
       >
         +
@@ -23,7 +23,7 @@ export default function Stepper({ quantity, onAdd, onRemove }: Props) {
     <div className="flex items-center gap-1">
       <button
         onClick={onAdd}
-        className="w-[26px] h-[26px] rounded-[7px] flex items-center justify-center bg-saffron-500 text-white text-base font-medium transition-all active:scale-95"
+        className="w-[34px] h-[34px] rounded-[9px] flex items-center justify-center bg-saffron-500 text-white text-lg font-medium transition-transform active:scale-95"
         aria-label="زيادة"
       >
         +
@@ -34,7 +34,7 @@ export default function Stepper({ quantity, onAdd, onRemove }: Props) {
       {onRemove && (
         <button
           onClick={onRemove}
-          className="w-[26px] h-[26px] rounded-[7px] flex items-center justify-center bg-surface-alt text-text-3 text-base font-medium transition-all active:scale-95"
+          className="w-[34px] h-[34px] rounded-[9px] flex items-center justify-center bg-surface-alt text-text-3 text-lg font-medium transition-transform active:scale-95"
           aria-label="تقليل"
         >
           −
