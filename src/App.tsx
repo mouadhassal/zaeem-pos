@@ -23,7 +23,6 @@ const CustomersPage = lazy(() => import("./app/customers/page"));
 const KDSPage = lazy(() => import("./app/kds/page"));
 const BranchesPage = lazy(() => import("./app/branches/page"));
 const FinancePage = lazy(() => import("./app/finance/page"));
-const DeliveryPage = lazy(() => import("./app/delivery/page"));
 const SettingsPage = lazy(() => import("./app/settings/page"));
 const AIPage = lazy(() => import("./app/ai/page"));
 const AiOnboardingPage = lazy(() => import("./app/ai-onboarding/page"));
@@ -111,7 +110,6 @@ function PosLayout({ children }: { children: React.ReactNode }) {
       case "debt": return <DebtPage />;
       case "kds": return <KDSPage />;
       case "customers": return <CustomersPage />;
-      case "delivery": return <DeliveryPage />;
       case "branches": return <BranchesPage />;
       case "finance": return <FinancePage />;
       case "loyalty": return <LoyaltyPage />;
@@ -151,10 +149,22 @@ export default function App() {
   const isLoading = useAuthStore((s) => s.isLoading);
   const needsSetup = useAuthStore((s) => s.needsSetup);
   const checkNeedsSetup = useAuthStore((s) => s.checkNeedsSetup);
+  const checkSession = useAuthStore((s) => s.checkSession);
 
   useEffect(() => {
-    checkNeedsSetup();
-  }, [checkNeedsSetup]);
+    // 2026-09-06 platform-audit fix: checkSession was defined but never
+    // called, so the verified-session restore (see authStore.ts) never ran
+    // and every launch forced a fresh PIN login. checkNeedsSetup must NOT
+    // run over a restored session -- it force-clears isAuthenticated --
+    // so it only runs when no verified session was restored.
+    const boot = async () => {
+      await checkSession();
+      if (!useAuthStore.getState().isAuthenticated) {
+        await checkNeedsSetup();
+      }
+    };
+    boot();
+  }, [checkSession, checkNeedsSetup]);
 
   if (isLoading) {
     return (

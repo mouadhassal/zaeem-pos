@@ -18,16 +18,15 @@ const MergeTablesModal = lazy(() => import("../../components/modals/MergeTablesM
 const VoidItemModal = lazy(() => import("../../components/modals/VoidItemModal"));
 const TransferOrderModal = lazy(() => import("../../components/modals/TransferOrderModal"));
 const OnScreenReceiptModal = lazy(() => import("../../components/modals/OnScreenReceiptModal"));
-const DriverSelectModal = lazy(() => import("../../components/modals/DriverSelectModal"));
 const DebtSelectModal = lazy(() => import("../../components/modals/DebtSelectModal"));
 import MenuGridContainer from "./MenuGridContainer";
 import OrderPanel from "../../components/ui/OrderPanel";
 import PayKey from "../../components/ui/PayKey";
 import {
-  IconAward as Award, IconTruck as Truck,
+  IconAward as Award,
   IconArrowsSplit2 as Split, IconArrowsLeftRight as ArrowLeftRight,
   IconPrinter as Printer, IconTrash as Trash2,
-  IconToolsKitchen2, IconShoppingBag, IconTruckDelivery, IconWorld, IconWallet, IconX,
+  IconToolsKitchen2, IconShoppingBag, IconWorld, IconWallet, IconX,
 } from "@tabler/icons-react";
 import { useCartStore } from "../../stores/cartStore";
 import { useAuthStore } from "../../stores/authStore";
@@ -41,7 +40,6 @@ import { createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, splitBill, me
 import type { LoyaltyRewardOption } from "../../lib/orderService";
 import { enableBarcodeScanner, disableBarcodeScanner } from "../../lib/barcodeScanner";
 import { retryPrintQueue, printReceipt } from "../../lib/printer";
-import { assignDriver, getZones } from "../../lib/deliveryService";
 import type { ReceiptData } from "../../lib/printer";
 import type { SplitItem } from "../../stores/cartStore";
 
@@ -67,7 +65,6 @@ export default function POSPage() {
   const [showVoid, setShowVoid] = useState(false);
   const [showTransfer, setShowTransfer] = useState(false);
   const [showOnScreenReceipt, setShowOnScreenReceipt] = useState(false);
-  const [showDriverSelect, setShowDriverSelect] = useState(false);
   const [showLoyaltyScan, setShowLoyaltyScan] = useState(false);
   const [showDebtSelect, setShowDebtSelect] = useState(false);
   // Split-bill payment queue (2026-08-18 persistence-bug fix): `split_bill_v3`
@@ -102,7 +99,7 @@ export default function POSPage() {
   const [hasTables, setHasTables] = useState(true);
 
   const { items, tableId, tableName, setTable, addItem, clearCart, voidItem, updateQuantity } = useCartStore();
-  const { orderType, setOrderType, customerName, customerPhone, deliveryAddress, driverId, deliveryZoneId, deliveryFeeCents, debtorId, debtorName, resetOrderInfo, setDriverId, setDeliveryZone } = useOrderTypeStore();
+  const { orderType, setOrderType, customerName, customerPhone, debtorId, debtorName, resetOrderInfo } = useOrderTypeStore();
   const user = useAuthStore((s) => s.user);
   const shiftId = useShiftStore((s) => s.activeShiftId);
   const setActiveShiftId = useShiftStore((s) => s.setActiveShiftId);
@@ -182,17 +179,6 @@ export default function POSPage() {
 
   useEffect(() => {
     getBusinessMode().then((m) => setHasTables(m.has_tables)).catch(() => {});
-  }, []);
-
-  // 2026-08-14 backend hardening pass: delivery zones (fee/minimum/ETA)
-  // were fully configurable in Settings but never reachable from checkout
-  // at all -- no zone-matching UI existed anywhere, so the fee was always
-  // silently 0 regardless of what an Owner configured. No geo-matching
-  // exists in this app, so the cashier picks the zone by name (same
-  // manual-selection pattern as picking a table or a driver).
-  const [zones, setZones] = useState<{ id: string; name: string; fee_cents: number }[]>([]);
-  useEffect(() => {
-    getZones().then((z) => setZones(z as { id: string; name: string; fee_cents: number }[])).catch(() => {});
   }, []);
 
   // 2026-08-03 "next phase": when tables are off, the cashier never picks
@@ -354,7 +340,6 @@ export default function POSPage() {
         if (held.customerName) {
           useOrderTypeStore.getState().setCustomerName(held.customerName);
           if (held.customerPhone) useOrderTypeStore.getState().setCustomerPhone(held.customerPhone);
-          if (held.deliveryAddress) useOrderTypeStore.getState().setDeliveryAddress(held.deliveryAddress);
         }
       }
     }
@@ -376,33 +361,11 @@ export default function POSPage() {
         state.total(), state.discountCents, state.discountReason,
         orderType !== "DINE_IN" && orderType !== "DEBT" ? customerName : undefined,
         orderType !== "DINE_IN" && orderType !== "DEBT" ? customerPhone : undefined,
-        orderType === "DELIVERY" ? deliveryAddress : undefined,
+        undefined,
         state.savings(), shiftId ?? undefined,
-        orderType === "DELIVERY" ? driverId : undefined,
         discountOverridePin ?? undefined,
-        orderType === "DELIVERY" ? deliveryFeeCents : 0,
       );
       setDiscountOverridePin(null);
-
-      // 2026-08-14 backend hardening pass (README.md #8's known-gaps
-      // list): driverId was captured here and threaded into
-      // create_full_order_v3 (a display-only field on `orders`) but
-      // nothing ever created the actual `delivery_log` row --
-      // assign_driver_to_delivery_v3 (already atomic: log row + driver ->
-      // BUSY in one transaction, see deliveryService.ts's assignDriver
-      // doc comment) existed and worked, it just had no caller at
-      // checkout. The order never appeared in Delivery -> Active
-      // Deliveries and its status could never be updated. Non-fatal by
-      // design, same reasoning as the printing failure just below --
-      // a delivery-assignment hiccup must never block a completed sale.
-      if (orderType === "DELIVERY" && driverId) {
-        try {
-          await assignDriver(orderId, driverId);
-        } catch {
-          setSuccessMsg("تم البيع، لكن تعذر تعيين السائق -- عيّنه يدوياً من صفحة التوصيل");
-          setTimeout(() => setSuccessMsg(null), 5000);
-        }
-      }
 
       const cfg = await getReceiptConfig();
       const receipt: ReceiptData = {
@@ -412,10 +375,9 @@ export default function POSPage() {
         items: items.filter((i) => !i.voided).map((i) => ({ name: i.name, quantity: i.quantity, priceCents: i.unitPriceCents, modifiers: i.modifiers, ...(i.comboId ? { comboId: i.comboId } : {}) })),
         subtotalCents: state.subtotal(), taxCents: t.taxCents, secondaryTaxCents: t.secondaryTaxCents,
         serviceChargeCents: t.serviceChargeCents, discountCents: state.discountCents,
-        savingsCents: state.savings(), totalCents: state.total() + (orderType === "DELIVERY" ? deliveryFeeCents : 0), paymentMethod: method, changeCents,
+        savingsCents: state.savings(), totalCents: state.total(), paymentMethod: method, changeCents,
         ...(orderType !== "DINE_IN" && orderType !== "DEBT" && customerName ? { customerName } : {}),
         ...(orderType !== "DINE_IN" && orderType !== "DEBT" && customerPhone ? { customerPhone } : {}),
-        ...(orderType === "DELIVERY" && deliveryAddress ? { deliveryAddress } : {}),
       };
       let pointsEarned: number | null = null;
       try {
@@ -584,21 +546,17 @@ export default function POSPage() {
   [items, menuItemsById]);
 
   const cartTotalCents = useCartStore((s) => s.total());
-  // Delivery fee folded in here so OrderPanel's displayed total always
-  // matches what PaymentModal collects and what orderService.ts's
-  // createOrder records as total_cents -- three separate reads of the
-  // same underlying number, now all consistent.
-  const totalCents = cartTotalCents + (orderType === "DELIVERY" ? deliveryFeeCents : 0);
+  const totalCents = cartTotalCents;
   const subtotalCents = useCartStore((s) => s.subtotal());
   const discountCents = useCartStore((s) => s.discountCents);
   const orderNumber = useMemo(() => tableId?.slice(0, 8) || "0000", [tableId]);
   const currentOrderId = tables.find((t) => t.id === tableId)?.current_order_id;
 
   const ORDER_TYPE_LABELS: Record<string, string> = {
-    DINE_IN: "صالة", TAKEAWAY: "سفري", DELIVERY: "توصيل", ONLINE: "أونلاين", DEBT: "دين",
+    DINE_IN: "صالة", TAKEAWAY: "سفري", ONLINE: "أونلاين", DEBT: "دين",
   };
   const ORDER_TYPE_ICONS: Record<string, typeof IconToolsKitchen2> = {
-    DINE_IN: IconToolsKitchen2, TAKEAWAY: IconShoppingBag, DELIVERY: IconTruckDelivery, ONLINE: IconWorld, DEBT: IconWallet,
+    DINE_IN: IconToolsKitchen2, TAKEAWAY: IconShoppingBag, ONLINE: IconWorld, DEBT: IconWallet,
   };
   const OrderTypeIconComponent = ORDER_TYPE_ICONS[orderType] || IconToolsKitchen2;
   // 2026-08-03 "next phase": with tables off, `tableId` is always the
@@ -636,10 +594,9 @@ export default function POSPage() {
       items: items.filter((i) => !i.voided).map((i) => ({ name: i.name, quantity: i.quantity, priceCents: i.unitPriceCents, modifiers: i.modifiers, ...(i.comboId ? { comboId: i.comboId } : {}) })),
       subtotalCents: state.subtotal(), taxCents: t.taxCents, secondaryTaxCents: t.secondaryTaxCents,
       serviceChargeCents: t.serviceChargeCents, discountCents: state.discountCents,
-      savingsCents: state.savings(), totalCents: state.total() + (orderType === "DELIVERY" ? deliveryFeeCents : 0), paymentMethod: "", changeCents: 0,
+      savingsCents: state.savings(), totalCents: state.total(), paymentMethod: "", changeCents: 0,
       ...(orderType !== "DINE_IN" && customerName ? { customerName } : {}),
       ...(orderType !== "DINE_IN" && customerPhone ? { customerPhone } : {}),
-      ...(orderType === "DELIVERY" && deliveryAddress ? { deliveryAddress } : {}),
     };
     try {
       await printReceipt(receipt);
@@ -748,14 +705,6 @@ export default function POSPage() {
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Prominent Order Type Bar - always visible for fast switching */}
         <div className="h-11 shrink-0 bg-surface border-b border-line flex items-center gap-1 px-2" dir="rtl">
-          {/* 2026-08-04: DELIVERY removed from this app's own order-type
-              picker on request -- the underlying delivery_service.ts/
-              DriverSelectModal.tsx/app/delivery/page.tsx code all still
-              exist and still work (deliberately not deleted), just
-              unreachable from here now. Every `orderType === "DELIVERY"`
-              branch below (customer/driver fields, payload building) is
-              consequently dead but harmless -- orderType can never become
-              "DELIVERY" via this picker anymore. */}
           {(["DINE_IN", "TAKEAWAY", "DEBT"] as const)
             // 2026-08-03 "next phase": DINE_IN implies a dining room --
             // meaningless once tables are off.
@@ -828,40 +777,6 @@ export default function POSPage() {
                 {debtorName ? "تغيير" : "اختيار مدين"}
               </button>
             </div>
-          )}
-          {orderType === "DELIVERY" && (
-            <>
-              <input
-                value={deliveryAddress}
-                onChange={(e) => useOrderTypeStore.getState().setDeliveryAddress(e.target.value)}
-                placeholder="عنوان التوصيل"
-                className="h-7 px-2 rounded-[7px] border border-line text-xs flex-1 min-w-[100px] bg-surface-alt focus:outline-none focus:border-accent font-arabic"
-              />
-              {zones.length > 0 && (
-                <select
-                  value={deliveryZoneId}
-                  onChange={(e) => {
-                    const zone = zones.find((z) => z.id === e.target.value);
-                    setDeliveryZone(zone?.id ?? "", zone?.fee_cents ?? 0);
-                  }}
-                  className="h-7 px-2 rounded-[7px] border border-line text-xs bg-surface-alt focus:outline-none focus:border-accent font-arabic"
-                >
-                  <option value="">بدون منطقة</option>
-                  {zones.map((z) => (
-                    <option key={z.id} value={z.id}>{z.name} ({z.fee_cents})</option>
-                  ))}
-                </select>
-              )}
-              <button
-                onClick={() => setShowDriverSelect(true)}
-                className={`h-7 px-2 rounded-[7px] text-xs font-bold transition-all flex items-center gap-1 ${
-                  driverId ? "bg-accent-soft text-accent-text" : "bg-surface-alt text-text-3"
-                }`}
-              >
-                <Truck className="w-3 h-3" />
-                {driverId ? "سائق" : "سائق"}
-              </button>
-            </>
           )}
         </div>
 
@@ -1000,14 +915,6 @@ export default function POSPage() {
       )}
 
       <Suspense fallback={null}>
-      {showDriverSelect && (
-        <DriverSelectModal
-          selectedId={driverId}
-          onSelect={(id) => { setDriverId(id); setShowDriverSelect(false); }}
-          onClose={() => setShowDriverSelect(false)}
-        />
-      )}
-
       {showDebtSelect && (
         <DebtSelectModal
           onClose={() => setShowDebtSelect(false)}

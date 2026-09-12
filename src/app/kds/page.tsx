@@ -52,7 +52,6 @@ const STATUS_BG: Record<string, string> = {
 const ORDER_TYPE_LABELS: Record<string, string> = {
   DINE_IN: "داخلي",
   TAKEAWAY: "طلبات خارجية",
-  DELIVERY: "توصيل",
   ONLINE: "أونلاين",
 };
 

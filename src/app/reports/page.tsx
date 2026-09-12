@@ -171,8 +171,50 @@ interface RefundableOrder {
 }
 
 const ORDER_TYPE_LABEL: Record<string, string> = {
-  DINE_IN: "داخلي", TAKEAWAY: "سفري", DELIVERY: "توصيل", ONLINE: "أونلاين",
+  DINE_IN: "داخلي", TAKEAWAY: "سفري", ONLINE: "أونلاين",
 };
+
+// Mirrors repo.rs's CogsVarianceRow -- see Repo::compute_cogs_variance's
+// doc comment for what each field means. `estimated_opening`/
+// `estimated_closing` MUST gate the UI: without a real physical count on
+// that side, the variance number is not measured, it's a guess equal to
+// zero by construction (the ledger compared to itself), and showing it
+// with the same visual weight as a real variance would be the exact
+// fake-precision problem this report exists to avoid.
+interface CogsVarianceRow {
+  ingredient_id: string;
+  ingredient_name: string;
+  unit: string;
+  opening_stock: number;
+  estimated_opening: boolean;
+  closing_stock: number;
+  estimated_closing: boolean;
+  purchases: number;
+  theoretical_usage: number;
+  actual_usage: number;
+  variance_qty: number;
+  variance_cost_cents: number;
+  cost_cents_per_unit: number;
+  last_count_at: string | null;
+}
+
+// Mirrors repo.rs's MenuMarginRow.
+interface MenuMarginRow {
+  menu_item_id: string;
+  name: string;
+  units_sold: number;
+  revenue_cents: number;
+  food_cost_cents: number;
+  margin_cents: number;
+  margin_pct: number;
+}
+
+// A variance is only worth flagging once it's big enough that a real
+// count, not measurement noise, likely explains it -- 5% of the
+// ingredient's own theoretical cost for the period, floored so a
+// near-zero-volume ingredient doesn't get flagged over a few grams.
+const VARIANCE_FLAG_THRESHOLD_PCT = 0.05;
+const MARGIN_FLOOR_PCT = 40;
 
 export default function ReportsPage() {
   const { fmt } = useCurrency();
@@ -211,6 +253,18 @@ export default function ReportsPage() {
   const [refundableLoading, setRefundableLoading] = useState(true);
   const [refundableError, setRefundableError] = useState<string | null>(null);
   const [refundingId, setRefundingId] = useState<string | null>(null);
+
+  const [variance, setVariance] = useState<CogsVarianceRow[] | null>(null);
+  const [varianceLoading, setVarianceLoading] = useState(false);
+  const [varianceError, setVarianceError] = useState<string | null>(null);
+  const [countModalIngredient, setCountModalIngredient] = useState<CogsVarianceRow | null>(null);
+  const [countValue, setCountValue] = useState("");
+  const [countNote, setCountNote] = useState("");
+  const [savingCount, setSavingCount] = useState(false);
+
+  const [margins, setMargins] = useState<MenuMarginRow[] | null>(null);
+  const [marginsLoading, setMarginsLoading] = useState(false);
+  const [marginsError, setMarginsError] = useState<string | null>(null);
 
   const fetchReports = useCallback(async () => {
     setLoading(true);
@@ -294,6 +348,74 @@ export default function ReportsPage() {
       setReconciliationLoading(false);
     }
   };
+
+  // Reuses the page's own date-range selection (same [start, end) window
+  // as the sales summary above) rather than a separate picker -- one
+  // range to reason about, not two. `rangeEnd`'s `null` ("up to now")
+  // becomes an explicit "right now" timestamp since the backend queries
+  // need a concrete closed window, not an open-ended one.
+  const currentRangeIso = useCallback((): [string, string] => {
+    const start = rangeStart(dateRange, customStart);
+    const end = rangeEnd(dateRange, customEnd) ?? new Date();
+    return [start.toISOString(), end.toISOString()];
+  }, [dateRange, customStart, customEnd]);
+
+  const runVarianceReport = async () => {
+    setVarianceLoading(true);
+    setVarianceError(null);
+    try {
+      const [start, end] = currentRangeIso();
+      const rows = await invoke<CogsVarianceRow[]>("get_cogs_variance_report_v3", { sessionToken: token, rangeStartIso: start, rangeEndIso: end });
+      setVariance(rows);
+    } catch (e) {
+      console.error("COGS variance error:", e);
+      setVarianceError("تعذر حساب تباين المخزون. حاول مرة أخرى.");
+    } finally {
+      setVarianceLoading(false);
+    }
+  };
+
+  const runMarginReport = async () => {
+    setMarginsLoading(true);
+    setMarginsError(null);
+    try {
+      const [start, end] = currentRangeIso();
+      const rows = await invoke<MenuMarginRow[]>("get_menu_margin_report_v3", { sessionToken: token, rangeStartIso: start, rangeEndIso: end });
+      setMargins(rows);
+    } catch (e) {
+      console.error("Margin report error:", e);
+      setMarginsError("تعذر حساب هامش الأصناف. حاول مرة أخرى.");
+    } finally {
+      setMarginsLoading(false);
+    }
+  };
+
+  async function handleSaveCount() {
+    if (!countModalIngredient) return;
+    const parsed = parseFloat(countValue);
+    if (Number.isNaN(parsed) || parsed < 0) {
+      window.alert("أدخل كمية جرد صحيحة (رقم موجب)");
+      return;
+    }
+    setSavingCount(true);
+    try {
+      await invoke("record_stock_count_v3", {
+        sessionToken: token,
+        ingredientId: countModalIngredient.ingredient_id,
+        countedStock: parsed,
+        note: countNote || null,
+      });
+      setCountModalIngredient(null);
+      setCountValue("");
+      setCountNote("");
+      await runVarianceReport();
+    } catch (e) {
+      console.error("Record stock count error:", e);
+      window.alert(`تعذر تسجيل الجرد: ${e}`);
+    } finally {
+      setSavingCount(false);
+    }
+  }
 
   const fetchRefundableOrders = useCallback(async () => {
     setRefundableLoading(true);
@@ -712,6 +834,169 @@ export default function ReportsPage() {
           </div>
         )}
       </div>
+
+      <div className="zc-card p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="font-bold text-ink-900 font-arabic">تباين المخزون (النظري مقابل الفعلي)</h2>
+            <p className="text-xs text-ink-400 font-arabic mt-0.5">
+              استهلاك الوصفات المتوقع مقابل انخفاض المخزون الفعلي، للفترة المحددة أعلاه -- يحتاج جرد فعلي مسجل ليكون دقيقًا
+            </p>
+          </div>
+          <button
+            onClick={runVarianceReport}
+            disabled={varianceLoading}
+            className="h-10 px-4 rounded-sm bg-ink-900 text-white text-sm font-bold hover:bg-ink-800 transition-colors disabled:opacity-50 shrink-0 font-arabic"
+          >
+            {varianceLoading ? "جاري الحساب..." : "احسب الآن"}
+          </button>
+        </div>
+
+        {varianceError && <p className="text-sm text-danger font-arabic">{varianceError}</p>}
+
+        {variance && variance.length === 0 && !varianceError && (
+          <p className="text-sm text-ink-400 font-arabic">لا توجد مكونات مرتبطة بوصفات لعرض تباينها</p>
+        )}
+
+        {variance && variance.length > 0 && (
+          <div className="space-y-2">
+            {variance.map((row) => {
+              // "5% of the ingredient's own theoretical cost" avoids
+              // flagging a tiny ingredient over a few grams of noise while
+              // still catching a real pattern on a high-volume one.
+              const theoreticalCostCents = row.theoretical_usage * row.cost_cents_per_unit;
+              const flagged = theoreticalCostCents > 0 && Math.abs(row.variance_cost_cents) > theoreticalCostCents * VARIANCE_FLAG_THRESHOLD_PCT;
+              const isEstimated = row.estimated_opening || row.estimated_closing;
+              return (
+                <div
+                  key={row.ingredient_id}
+                  className={`border rounded-sm p-3 space-y-2 ${flagged && !isEstimated ? "border-danger-soft bg-danger-soft" : "border-ink-200"}`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-ink-900">{row.ingredient_name}</span>
+                      {isEstimated && (
+                        <span className="text-[10px] font-arabic text-ink-400 border border-ink-200 rounded-sm px-1.5 py-0.5">
+                          بدون جرد فعلي -- تقديري
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => { setCountModalIngredient(row); setCountValue(String(row.closing_stock)); setCountNote(""); }}
+                      className="text-xs text-saffron-600 font-arabic hover:underline shrink-0"
+                    >
+                      تسجيل جرد
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs font-arabic">
+                    <span className="text-ink-400">استهلاك نظري (وصفات)</span>
+                    <span className="font-mono text-ink-900 text-left">{row.theoretical_usage.toFixed(2)} {row.unit}</span>
+                    <span className="text-ink-400">استهلاك فعلي (مخزون)</span>
+                    <span className="font-mono text-ink-900 text-left">{row.actual_usage.toFixed(2)} {row.unit}</span>
+                    <span className="text-ink-400">الفرق</span>
+                    <span className={`font-mono text-left ${flagged && !isEstimated ? "text-danger font-bold" : "text-ink-900"}`}>
+                      {row.variance_qty > 0 ? "+" : ""}{row.variance_qty.toFixed(2)} {row.unit} ({fmt(row.variance_cost_cents)})
+                    </span>
+                    <span className="text-ink-400">آخر جرد</span>
+                    <span className="text-ink-500 text-left">{row.last_count_at ? formatArabicDateTime(new Date(row.last_count_at)) : "لا يوجد"}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="zc-card p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="font-bold text-ink-900 font-arabic">هامش الأصناف</h2>
+            <p className="text-xs text-ink-400 font-arabic mt-0.5">
+              السعر ناقص تكلفة المكونات لكل صنف، للفترة المحددة أعلاه -- الأسوأ هامشًا أولًا
+            </p>
+          </div>
+          <button
+            onClick={runMarginReport}
+            disabled={marginsLoading}
+            className="h-10 px-4 rounded-sm bg-ink-900 text-white text-sm font-bold hover:bg-ink-800 transition-colors disabled:opacity-50 shrink-0 font-arabic"
+          >
+            {marginsLoading ? "جاري الحساب..." : "احسب الآن"}
+          </button>
+        </div>
+
+        {marginsError && <p className="text-sm text-danger font-arabic">{marginsError}</p>}
+
+        {margins && margins.length === 0 && !marginsError && (
+          <p className="text-sm text-ink-400 font-arabic">لا توجد مبيعات في هذه الفترة</p>
+        )}
+
+        {margins && margins.length > 0 && (
+          <div className="space-y-1.5">
+            {margins.map((row) => {
+              const poor = row.margin_pct < MARGIN_FLOOR_PCT;
+              return (
+                <div key={row.menu_item_id} className="flex items-center justify-between text-sm border-b border-ink-100 last:border-0 pb-1.5 last:pb-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-ink-900">{row.name}</span>
+                    <span className="text-ink-300 text-xs">×{row.units_sold}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-ink-400 text-xs font-mono">{fmt(row.revenue_cents)}</span>
+                    <span className={`font-mono font-bold text-xs px-1.5 py-0.5 rounded-sm ${poor ? "text-danger bg-danger-soft" : "text-ink-700"}`}>
+                      {row.margin_pct.toFixed(0)}%
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {countModalIngredient && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" dir="rtl">
+          <div className="zc-card bg-white p-5 space-y-4 w-full max-w-sm">
+            <h2 className="font-bold text-ink-900 font-arabic">تسجيل جرد -- {countModalIngredient.ingredient_name}</h2>
+            <div className="space-y-1">
+              <label className="text-xs text-ink-400 font-arabic">الكمية المعدودة ({countModalIngredient.unit})</label>
+              <input
+                type="number"
+                step="any"
+                min="0"
+                value={countValue}
+                onChange={(e) => setCountValue(e.target.value)}
+                className="w-full h-10 px-3 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500 font-mono"
+                autoFocus
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-ink-400 font-arabic">ملاحظة (اختياري)</label>
+              <input
+                type="text"
+                value={countNote}
+                onChange={(e) => setCountNote(e.target.value)}
+                className="w-full h-10 px-3 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500 font-arabic"
+              />
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setCountModalIngredient(null)}
+                disabled={savingCount}
+                className="h-10 px-4 rounded-sm border border-ink-200 text-ink-700 text-sm font-bold hover:bg-ink-100 transition-colors font-arabic"
+              >
+                إلغاء
+              </button>
+              <button
+                onClick={handleSaveCount}
+                disabled={savingCount}
+                className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50 font-arabic"
+              >
+                {savingCount ? "جاري الحفظ..." : "حفظ"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="pt-2">
         <h2 className="text-xs font-bold tracking-[0.15em] text-ink-400 font-arabic uppercase">الإجراءات</h2>

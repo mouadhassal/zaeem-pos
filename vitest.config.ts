@@ -6,6 +6,11 @@ import { defineConfig } from "vitest/config";
 // and fails on mocha's `describe` not being defined.
 export default defineConfig({
   test: {
+    environment: "node",
+    // authStore.ts touches `window`/`localStorage` at module load
+    // (isBrowserPreview) and inside checkSession -- Node has neither, so
+    // those are stubbed in vitest.setup.ts to represent a normal built app.
+    setupFiles: ["./vitest.setup.ts"],
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
   },
 });

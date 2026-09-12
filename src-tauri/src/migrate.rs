@@ -72,6 +72,18 @@ pub fn embedded_migrations() -> BTreeMap<i64, (String, String, String)> {
         ("0001", include_str!("../migrations/0001_init.sql")),
         ("0002", include_str!("../migrations/0002_reconcile.sql")),
         ("0003", include_str!("../migrations/0003_schema_v2.sql")),
+        // 2026-09-07: NOT "0004" -- this legacy numbered chain and
+        // migrate_v3.rs's Migration A-U chain share the SAME
+        // `schema_migrations` table/version space (migrate_v3's own
+        // MIGRATION_A_VERSION is already 4, going up to
+        // MIGRATION_U_VERSION = 25). A colliding version here would make
+        // whichever migration runs second silently no-op via the
+        // "already applied" version guard -- caught in testing when it
+        // silently skipped Migration A and broke the remap migration
+        // right after it ("no such column: legacy_id"). 26 is the first
+        // free slot past migrate_v3's ceiling (0027 is the second).
+        ("0026", include_str!("../migrations/0026_stock_counts.sql")),
+        ("0027", include_str!("../migrations/0027_fleet_removal.sql")),
     ];
     for (version_str, sql) in files {
         let version: i64 = version_str.parse().expect("Invalid migration version");
@@ -438,10 +450,11 @@ mod tests {
         };
         assert!(fk_violations.is_empty(), "FK violations: {:?}", fk_violations);
 
-        // 3. schema_migrations table has correct entries
+        // 3. schema_migrations table has correct entries -- 5 as of the
+        // 0027_fleet_removal.sql addition (2026-09-07), not 4.
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("Failed to count migrations");
-        assert_eq!(count, 3, "Expected 3 applied migrations");
+        assert_eq!(count, 5, "Expected 5 applied migrations");
 
         // 4. Verify migration checksums
         let migrations = embedded_migrations();
@@ -510,7 +523,7 @@ mod tests {
             rows.filter_map(|r| r.ok()).collect()
         };
         assert!(o_cols.contains(&"delivery_fee_cents".to_string()), "orders.delivery_fee_cents missing");
-        assert!(o_cols.contains(&"delivery_zone_id".to_string()), "orders.delivery_zone_id missing");
+        assert!(!o_cols.contains(&"delivery_zone_id".to_string()), "orders.delivery_zone_id must be gone (fleet removal, 0027)");
 
         drop(conn);
     }
@@ -682,7 +695,7 @@ mod tests {
         {
             let conn = Connection::open(&db_path).unwrap();
             let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-            assert_eq!(count, 3, "Expected 3 applied migrations");
+            assert_eq!(count, 5, "Expected 5 applied migrations (0001-0003 SQL, 0026 stock counts, 0027 fleet removal)");
             drop(conn);
         }
 
@@ -697,7 +710,7 @@ mod tests {
         {
             let conn = Connection::open(&db_path).unwrap();
             let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-            assert_eq!(count, 3, "Re-run should not add duplicate migrations");
+            assert_eq!(count, 5, "Re-run should not add duplicate migrations");
         }
 
         let _ = fs::remove_dir_all(&temp);

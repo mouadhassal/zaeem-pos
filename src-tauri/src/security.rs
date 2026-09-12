@@ -122,13 +122,11 @@ pub enum Permission {
     /// Batch 3a, Decision B -- one Permission per DRIFT-broken command group,
     /// rather than a separate Create/View/Update variant for each of the ~15
     /// new commands. Rank matches how these features are gated today
-    /// (customers/delivery handoff are cashier-facing; PO/driver-roster/
-    /// printer-config are manager-facing setup & procurement).
+    /// (customers are cashier-facing; PO/printer-config are manager-facing
+    /// setup & procurement).
     ManageCustomers,
     ManagePurchaseOrders,
-    ManageDrivers,
     ManagePrinters,
-    ManageDelivery,
     /// Batch 3b, T1.9's critical acceptance criterion -- the same rank as
     /// `CreateOrder` (a Cashier who can build an order can also close it out).
     TakePayment,
@@ -201,8 +199,8 @@ impl Permission {
             Permission::CreateStaff | Permission::UpdateStaff => Role::Manager.rank(),
             Permission::ViewOrders | Permission::CreateOrder | Permission::UpdateOrderStatus | Permission::TakePayment => Role::Cashier.rank(),
             Permission::ChangeOwnPassword => Role::Cashier.rank(),
-            Permission::ManageCustomers | Permission::ManageDelivery => Role::Cashier.rank(),
-            Permission::ManagePurchaseOrders | Permission::ManageDrivers | Permission::ManagePrinters => Role::Manager.rank(),
+            Permission::ManageCustomers => Role::Cashier.rank(),
+            Permission::ManagePurchaseOrders | Permission::ManagePrinters => Role::Manager.rank(),
             Permission::ManageMenu => Role::Manager.rank(),
             Permission::ManageIngredients => Role::Manager.rank(),
             Permission::AdjustStock => Role::Cashier.rank(),
@@ -412,9 +410,7 @@ pub fn authorize(actor: &Actor, perm: Permission) -> Result<(), SecurityError> {
                 Permission::ChangeOwnPassword => "ChangeOwnPassword",
                 Permission::ManageCustomers => "ManageCustomers",
                 Permission::ManagePurchaseOrders => "ManagePurchaseOrders",
-                Permission::ManageDrivers => "ManageDrivers",
                 Permission::ManagePrinters => "ManagePrinters",
-                Permission::ManageDelivery => "ManageDelivery",
                 Permission::TakePayment => "TakePayment",
                 Permission::ManageMenu => "ManageMenu",
                 Permission::ManageIngredients => "ManageIngredients",
@@ -467,11 +463,11 @@ mod tests {
     use super::*;
 
     const ALL_ROLES: [Role; 6] = [Role::Platform, Role::Owner, Role::Manager, Role::Cashier, Role::Kitchen, Role::Server];
-    const ALL_PERMS: [Permission; 24] = [
+    const ALL_PERMS: [Permission; 22] = [
         Permission::CreateBranch, Permission::CreateStaff, Permission::UpdateStaff,
         Permission::ViewOrders, Permission::CreateOrder, Permission::UpdateOrderStatus, Permission::ChangeOwnPassword,
-        Permission::ManageCustomers, Permission::ManagePurchaseOrders, Permission::ManageDrivers,
-        Permission::ManagePrinters, Permission::ManageDelivery, Permission::TakePayment, Permission::ManageMenu,
+        Permission::ManageCustomers, Permission::ManagePurchaseOrders,
+        Permission::ManagePrinters, Permission::TakePayment, Permission::ManageMenu,
         Permission::ManageIngredients, Permission::AdjustStock, Permission::ManageShift, Permission::ManageLoyalty,
         Permission::ManageDebt, Permission::ManageFinance, Permission::ViewReports, Permission::ManageSettings,
         Permission::UsePrinter, Permission::ManageBranches,

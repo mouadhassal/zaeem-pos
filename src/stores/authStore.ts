@@ -121,6 +121,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
+  // 2026-09-06 platform-audit fix: this used to trust the raw localStorage
+  // blob and flip isAuthenticated with ZERO backend calls, so a hand-forged
+  // `zaeem_auth_token`/`zaeem_user` rendered the full authenticated POS. The
+  // Rust layer rejects forged tokens at every command, but the UI was
+  // claiming a session it never proved. It was also dead code -- never wired
+  // into the boot flow (App.tsx), so the e2e-documented intent ("cashier
+  // isn't re-PIN'ing every restart", login-and-navigate.spec.ts) had
+  // silently regressed to a forced login on every launch.
+  //
+  // Now: verify the stored token against the authoritative `session_v3`
+  // table BEFORE trusting it, using the cheapest existing authn-only read.
+  // `list_categories_v3` has no license lock and no role gate, and its
+  // `authenticate_actor()` covers Standalone/Hub AND Satellite cashiers (LAN
+  // hub fallback). Any failure = stale/forged/dead session -> clear. Still
+  // offline-first: a standalone terminal verifies against its own local DB.
   checkSession: async () => {
     if (isBrowserPreview) {
       set({ user: demoUser(), token: "demo-token", isAuthenticated: true, isLoading: false });
@@ -131,9 +146,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (storedUser && storedToken) {
       try {
         const parsed = JSON.parse(storedUser);
+        await invoke("list_categories_v3", { sessionToken: storedToken });
         set({ user: parsed, token: storedToken, isAuthenticated: true, isLoading: false });
         return;
-      } catch { /* corrupted data, clear */ }
+      } catch { /* verified dead/corrupted -- clear below */ }
       localStorage.removeItem("zaeem_auth_token");
       localStorage.removeItem("zaeem_user");
     }

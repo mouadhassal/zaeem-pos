@@ -101,9 +101,6 @@ pub enum RepoError {
     /// earn_loyalty_points must never accept a non-positive amount --
     /// see that function's own doc comment for why.
     InvalidLoyaltyPoints { points: i64 },
-    /// Same shape as StaffBranchMismatch, for create_delivery_log's driver
-    /// cross-check.
-    DriverBranchMismatch { driver_id: String, target_branch_id: String },
     /// 2026-08-13: refund_order guard -- only a PAID, not-yet-refunded
     /// order can be refunded. `reason` carries the specific "why" (not
     /// PAID vs. already refunded) since both are real, distinct failure
@@ -117,6 +114,12 @@ pub enum RepoError {
     OrderItemAlreadyVoided { item_id: String },
     /// A manual adjust_stock call that would drive current_stock negative.
     StockAdjustmentBelowZero { ingredient_id: String, current_stock: f64, change_amount: f64 },
+    /// A physical stock count entered as negative -- always a typo/scanner
+    /// error, never a real count. Distinct from StockAdjustmentBelowZero
+    /// because a count can legitimately be a large *decrease* (shrinkage is
+    /// the whole point) -- only the count value itself being negative is
+    /// invalid, not the resulting delta.
+    NegativeStockCount { ingredient_id: String, counted_stock: f64 },
 }
 
 impl fmt::Display for RepoError {
@@ -159,13 +162,13 @@ impl fmt::Display for RepoError {
             ),
             Self::ShiftAlreadyClosed { shift_id } => write!(f, "shift {shift_id} is already closed -- refusing to overwrite its reconciliation numbers"),
             Self::InvalidLoyaltyPoints { points } => write!(f, "points must be positive, got {points}"),
-            Self::DriverBranchMismatch { driver_id, target_branch_id } => write!(
-                f, "driver {driver_id} does not belong to branch {target_branch_id} -- cannot assign them there"
-            ),
             Self::OrderNotRefundable { order_id, reason } => write!(f, "order {order_id} cannot be refunded: {reason}"),
             Self::OrderItemAlreadyVoided { item_id } => write!(f, "order item {item_id} is already voided"),
             Self::StockAdjustmentBelowZero { ingredient_id, current_stock, change_amount } => write!(
                 f, "ingredient {ingredient_id} has {current_stock} in stock -- a change of {change_amount} would drive it below zero"
+            ),
+            Self::NegativeStockCount { ingredient_id, counted_stock } => write!(
+                f, "ingredient {ingredient_id}: counted stock of {counted_stock} is negative -- not a valid physical count"
             ),
         }
     }
@@ -235,10 +238,6 @@ pub struct NewOrder {
     pub tax_cents: i64,
     pub total_cents: i64,
     pub discount_cents: i64,
-    // NOTE: deliberately no `driver_id` field routed to a nonexistent column
-    // (DRIFT_REPORT.md Finding #1) -- delivery driver assignment happens via
-    // a separate, explicit follow-up write once `orders` genuinely has the
-    // column (tracked, not silently reintroduced here).
 }
 
 /// Batch 3b -- T1.9's critical acceptance criterion. Everything `take_payment`
@@ -292,13 +291,6 @@ pub struct FullOrderInput {
     pub customer_phone: Option<String>,
     pub delivery_address: Option<String>,
     pub delivery_fee_cents: i64,
-    /// Accepted from the frontend (`create_full_order_v3`'s `driver_id`
-    /// param) but deliberately never written -- `orders.driver_id` doesn't
-    /// exist (Finding #1). Kept on the struct only so the command's public
-    /// signature doesn't need to change; assign a driver via
-    /// `assign_driver_to_delivery` after order creation instead.
-    #[allow(dead_code)]
-    pub driver_id: Option<String>,
     pub shift_id: Option<String>,
     pub items: Vec<OrderItemInput>,
 }
@@ -359,8 +351,8 @@ pub struct LoyaltyCardLookup {
     pub tier: String,
 }
 
-/// Batch 3a, Decision B -- row shapes for the 5 DRIFT-broken command groups
-/// (customers, purchase_orders, drivers, printers, delivery). Deliberately
+/// Batch 3a, Decision B -- row shapes for the 3 DRIFT-broken command groups
+/// (customers, purchase_orders, printers). Deliberately
 /// narrower than `SELECT *`: exactly the fields the frontend pages named in
 /// DRIFT_REPORT.md Findings #2/#5 actually read.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -452,6 +444,54 @@ pub struct RecipeIngredientRow {
     pub ingredient_name: String,
     pub unit: String,
     pub quantity_needed: f64,
+}
+
+/// One physical count -- `record_stock_count`'s own write, listed back for
+/// the ingredient's count history (`reports/page.tsx`'s "last counted at").
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StockCountRow {
+    pub id: String,
+    pub ingredient_id: String,
+    pub counted_stock: f64,
+    pub counted_by: String,
+    pub note: Option<String>,
+    pub created_at: String,
+}
+
+/// One ingredient's theoretical-vs-actual COGS variance over a window --
+/// see `Repo::compute_cogs_variance`'s doc comment for exactly what each
+/// field means and why `estimated_opening`/`estimated_closing` exist.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CogsVarianceRow {
+    pub ingredient_id: String,
+    pub ingredient_name: String,
+    pub unit: String,
+    pub opening_stock: f64,
+    pub estimated_opening: bool,
+    pub closing_stock: f64,
+    pub estimated_closing: bool,
+    pub purchases: f64,
+    pub theoretical_usage: f64,
+    pub actual_usage: f64,
+    pub variance_qty: f64,
+    pub variance_cost_cents: i64,
+    pub cost_cents_per_unit: i64,
+    pub last_count_at: Option<String>,
+}
+
+/// One menu item's margin over a window -- `Repo::menu_margin_report`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MenuMarginRow {
+    pub menu_item_id: String,
+    pub name: String,
+    pub units_sold: i64,
+    pub revenue_cents: i64,
+    pub food_cost_cents: i64,
+    pub margin_cents: i64,
+    /// `0.0` when `revenue_cents` is 0 (never sold in the window) rather
+    /// than a divide-by-zero -- still worth showing so an owner sees zero-
+    /// volume items in the same table, not a silently dropped row.
+    pub margin_pct: f64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -817,12 +857,12 @@ pub struct PurchaseOrderRow {
 }
 
 /// `suppliers` has NO `address`/`notes` columns in the real schema
-/// (0001_init.sql) -- the old frontend's `SupplierModal` referenced both,
-/// meaning supplier creation/update with an address or notes has silently
-/// no-opped on every fresh install since inception. Same DRIFT class as
-/// Finding #1 (`driver_id`)/Finding #5 (`operational_costs.description`,
-/// `invoices.notes`, `loyalty_cards.is_active`). Dropped here, not carried
-/// forward.
+    /// (0001_init.sql) -- the old frontend's `SupplierModal` referenced both,
+    /// meaning supplier creation/update with an address or notes has silently
+    /// no-opped on every fresh install since inception. Same DRIFT class as
+    /// Finding #5 (`operational_costs.description`,
+    /// `invoices.notes`, `loyalty_cards.is_active`). Dropped here, not carried
+    /// forward.
 /// `total_owed_cents`/`total_paid_cents`/`balance_cents` (T2.0 supplier
 /// ledger): cached running-balance columns, same pattern and same
 /// maintenance discipline as `DebtorRow`'s three -- always a rollup of
@@ -880,79 +920,6 @@ pub struct InventoryLogRow {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct DriverRow {
-    pub id: String,
-    pub name: String,
-    pub phone: Option<String>,
-    pub vehicle_type: String,
-    pub vehicle_plate: Option<String>,
-    pub license_number: Option<String>,
-    pub status: String,
-    pub current_lat: Option<f64>,
-    pub current_lng: Option<f64>,
-    /// Batch 3b, final slice, group 2 -- widened for `DriversView`'s card
-    /// (photo/rating/delivery count) and the management tab's need to see
-    /// deactivated drivers (`is_active`).
-    pub photo_path: Option<String>,
-    pub total_deliveries: i64,
-    pub rating: Option<f64>,
-    pub is_active: i64,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ActiveDeliveryRow {
-    pub log_id: String,
-    pub delivery_status: String,
-    pub assigned_at: Option<String>,
-    pub picked_up_at: Option<String>,
-    pub order_id: String,
-    pub customer_name: Option<String>,
-    pub customer_phone: Option<String>,
-    pub delivery_address: Option<String>,
-    pub total_cents: i64,
-    pub driver_id: String,
-    pub driver_name: String,
-    pub driver_phone: Option<String>,
-    pub vehicle_type: String,
-    pub vehicle_plate: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct DeliveryHistoryRow {
-    pub log_id: String,
-    pub delivery_status: String,
-    pub assigned_at: Option<String>,
-    pub delivered_at: Option<String>,
-    pub failure_reason: Option<String>,
-    pub order_id: String,
-    pub customer_name: Option<String>,
-    pub total_cents: i64,
-    pub driver_name: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct DriverDeliveryRow {
-    pub log_id: String,
-    pub status: String,
-    pub assigned_at: Option<String>,
-    pub delivered_at: Option<String>,
-    pub customer_name: Option<String>,
-    pub delivery_address: Option<String>,
-    pub total_cents: i64,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct DeliveryZoneRow {
-    pub id: String,
-    pub name: String,
-    pub boundaries: String,
-    pub fee_cents: i64,
-    pub min_order_cents: i64,
-    pub estimated_minutes: i64,
-    pub is_active: i64,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
 pub struct PrinterRow {
     pub id: String,
     pub name: String,
@@ -982,18 +949,6 @@ pub struct PrinterRow {
     /// Tauri's webview). `None` until re-selected via Settings' printer
     /// picker for any printer created before this column existed.
     pub system_printer_name: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct DeliveryLogRow {
-    pub id: String,
-    pub order_id: String,
-    pub driver_id: String,
-    pub status: String,
-    pub assigned_at: Option<String>,
-    pub picked_up_at: Option<String>,
-    pub delivered_at: Option<String>,
-    pub failed_at: Option<String>,
 }
 
 impl<'a> Repo<'a> {
@@ -3222,292 +3177,6 @@ impl<'a> Repo<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn create_driver(&self, tenant_id: &str, branch_id: &str, name: &str, phone: Option<&str>, vehicle_type: &str, license_number: Option<&str>, vehicle_plate: Option<&str>) -> Result<String, RepoError> {
-        self.assert_scope_populated("drivers", true)?;
-        let id = uuid::Uuid::now_v7().to_string();
-        self.conn.execute(
-            "INSERT INTO drivers (id, tenant_id, branch_id, name, phone, vehicle_type, license_number, vehicle_plate, status, is_active, last_modified, sync_status) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'AVAILABLE', 1, datetime('now'), 'pending')",
-            params![id, tenant_id, branch_id, name, phone, vehicle_type, license_number, vehicle_plate],
-        )?;
-        Ok(id)
-    }
-
-    pub fn update_driver_location(&self, scope: &Scope, driver_id: &str, lat: f64, lng: f64) -> Result<(), RepoError> {
-        self.assert_scope_populated("drivers", true)?;
-        self.assert_row_in_scope("drivers", driver_id, scope)?;
-        self.conn.execute(
-            "UPDATE drivers SET current_lat = ?1, current_lng = ?2, last_modified = datetime('now') WHERE id = ?3",
-            params![lat, lng, driver_id],
-        )?;
-        Ok(())
-    }
-
-    const DRIVER_COLUMNS: &'static str = "id, name, phone, vehicle_type, vehicle_plate, license_number, status, current_lat, current_lng, photo_path, total_deliveries, rating, is_active";
-
-    fn driver_row_from(r: &rusqlite::Row) -> rusqlite::Result<DriverRow> {
-        Ok(DriverRow {
-            id: r.get(0)?, name: r.get(1)?, phone: r.get(2)?, vehicle_type: r.get(3)?, vehicle_plate: r.get(4)?,
-            license_number: r.get(5)?, status: r.get(6)?, current_lat: r.get(7)?, current_lng: r.get(8)?,
-            photo_path: r.get(9)?, total_deliveries: r.get(10)?, rating: r.get(11)?, is_active: r.get(12)?,
-        })
-    }
-
-    pub fn list_drivers(&self, scope: &Scope) -> Result<Vec<DriverRow>, RepoError> {
-        self.assert_scope_populated("drivers", true)?;
-        let (predicate, args) = Self::scope_predicate(scope);
-        let sql = format!("SELECT {} FROM drivers WHERE {predicate} AND is_active = 1 ORDER BY name ASC", Self::DRIVER_COLUMNS);
-        let mut stmt = self.conn.prepare(&sql)?;
-        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(params_refs.as_slice(), Self::driver_row_from)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
-    }
-
-    /// `DriversView`'s management tab -- unlike `list_drivers`, includes
-    /// deactivated drivers so a manager can see (and eventually reactivate)
-    /// them, same reasoning as `list_printers`' widening.
-    pub fn list_all_drivers(&self, scope: &Scope) -> Result<Vec<DriverRow>, RepoError> {
-        self.assert_scope_populated("drivers", true)?;
-        let (predicate, args) = Self::scope_predicate(scope);
-        let sql = format!("SELECT {} FROM drivers WHERE {predicate} ORDER BY name ASC", Self::DRIVER_COLUMNS);
-        let mut stmt = self.conn.prepare(&sql)?;
-        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(params_refs.as_slice(), Self::driver_row_from)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
-    }
-
-    /// `DriverSelectModal`'s pick-a-driver list -- only drivers free to take
-    /// a new delivery right now.
-    pub fn list_available_drivers(&self, scope: &Scope) -> Result<Vec<DriverRow>, RepoError> {
-        self.assert_scope_populated("drivers", true)?;
-        let (predicate, args) = Self::scope_predicate(scope);
-        let sql = format!("SELECT {} FROM drivers WHERE {predicate} AND is_active = 1 AND status = 'AVAILABLE' ORDER BY name ASC", Self::DRIVER_COLUMNS);
-        let mut stmt = self.conn.prepare(&sql)?;
-        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(params_refs.as_slice(), Self::driver_row_from)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn update_driver(&self, scope: &Scope, driver_id: &str, name: &str, phone: Option<&str>, vehicle_type: &str, vehicle_plate: Option<&str>, license_number: Option<&str>) -> Result<(), RepoError> {
-        self.assert_row_in_scope("drivers", driver_id, scope)?;
-        self.conn.execute(
-            "UPDATE drivers SET name = ?1, phone = ?2, vehicle_type = ?3, vehicle_plate = ?4, license_number = ?5, last_modified = datetime('now') WHERE id = ?6",
-            params![name, phone, vehicle_type, vehicle_plate, license_number, driver_id],
-        )?;
-        Ok(())
-    }
-
-    /// Soft delete, matching the old frontend's `deleteDriver` -- a driver
-    /// with delivery history can't be hard-deleted without orphaning
-    /// `delivery_logs.driver_id` (`NOT NULL REFERENCES drivers`).
-    pub fn deactivate_driver(&self, scope: &Scope, driver_id: &str) -> Result<(), RepoError> {
-        self.assert_row_in_scope("drivers", driver_id, scope)?;
-        self.conn.execute(
-            "UPDATE drivers SET is_active = 0, status = 'INACTIVE', last_modified = datetime('now') WHERE id = ?1",
-            params![driver_id],
-        )?;
-        Ok(())
-    }
-
-    /// The assignment atomicity pair: the new `delivery_logs` row (the fact)
-    /// and the driver flipping to BUSY (the derived state) commit together.
-    /// Deliberately does NOT touch `orders.driver_id` -- that column does
-    /// not exist in the real schema (DRIFT_REPORT.md Finding #1).
-    ///
-    /// T1.9 finding: `driver_id`/`order_id` were never checked against
-    /// `scope` -- a Branch actor could assign another tenant's/branch's
-    /// driver to (or log a delivery against) an order that wasn't theirs.
-    /// Both are now verified inside `create_delivery_log`.
-    pub fn assign_driver_to_delivery(&self, scope: &Scope, tenant_id: &str, branch_id: &str, order_id: &str, driver_id: &str) -> Result<String, RepoError> {
-        let log_id = self.create_delivery_log(scope, tenant_id, branch_id, order_id, driver_id)?;
-        self.conn.execute(
-            "UPDATE drivers SET status = 'BUSY', last_modified = datetime('now') WHERE id = ?1",
-            params![driver_id],
-        )?;
-        Ok(log_id)
-    }
-
-    /// The receiving-end atomicity pair for a delivery reaching a terminal
-    /// status: the `delivery_logs` transition and the driver freeing back up
-    /// (+ `total_deliveries` bump on an actual DELIVERED) commit together --
-    /// same principle as `assign_driver_to_delivery`, just the reverse edge.
-    /// `failure_reason` is a real column (0001_init.sql); the old frontend's
-    /// `notes` field on this same call is NOT (dropped, DRIFT).
-    pub fn update_delivery_status_and_driver(&self, scope: &Scope, delivery_log_id: &str, new_status: &str, failure_reason: Option<&str>) -> Result<(), RepoError> {
-        self.assert_scope_populated("delivery_logs", true)?;
-        self.assert_row_in_scope("delivery_logs", delivery_log_id, scope)?;
-        let driver_id: String = self.conn.query_row(
-            "SELECT driver_id FROM delivery_logs WHERE id = ?1", params![delivery_log_id], |r| r.get(0),
-        )?;
-        let ts_column = match new_status {
-            "PICKED_UP" => Some("picked_up_at"),
-            "DELIVERED" => Some("delivered_at"),
-            "FAILED" => Some("failed_at"),
-            _ => None,
-        };
-        match ts_column {
-            Some(col) => {
-                self.conn.execute(
-                    &format!("UPDATE delivery_logs SET status = ?1, failure_reason = ?2, {col} = datetime('now'), last_modified = datetime('now') WHERE id = ?3"),
-                    params![new_status, failure_reason, delivery_log_id],
-                )?;
-            }
-            None => {
-                self.conn.execute(
-                    "UPDATE delivery_logs SET status = ?1, failure_reason = ?2, last_modified = datetime('now') WHERE id = ?3",
-                    params![new_status, failure_reason, delivery_log_id],
-                )?;
-            }
-        }
-        if matches!(new_status, "DELIVERED" | "FAILED" | "CANCELLED") {
-            let bump: i64 = if new_status == "DELIVERED" { 1 } else { 0 };
-            self.conn.execute(
-                "UPDATE drivers SET status = 'AVAILABLE', total_deliveries = total_deliveries + ?1, last_modified = datetime('now') WHERE id = ?2",
-                params![bump, driver_id],
-            )?;
-        }
-        Ok(())
-    }
-
-    pub fn list_active_deliveries(&self, scope: &Scope) -> Result<Vec<ActiveDeliveryRow>, RepoError> {
-        self.assert_scope_populated("delivery_logs", true)?;
-        let (predicate, args) = Self::scope_predicate(scope);
-        let predicate = predicate.replace("tenant_id", "delivery_logs.tenant_id").replace("branch_id", "delivery_logs.branch_id");
-        let sql = format!(
-            "SELECT delivery_logs.id, delivery_logs.status, delivery_logs.assigned_at, delivery_logs.picked_up_at, \
-                    orders.id, orders.customer_name, orders.customer_phone, orders.delivery_address, orders.total_cents, \
-                    drivers.id, drivers.name, drivers.phone, drivers.vehicle_type, drivers.vehicle_plate \
-             FROM delivery_logs \
-             INNER JOIN orders ON orders.id = delivery_logs.order_id \
-             INNER JOIN drivers ON drivers.id = delivery_logs.driver_id \
-             WHERE {predicate} AND delivery_logs.status IN ('ASSIGNED', 'PICKED_UP', 'IN_TRANSIT') \
-             ORDER BY delivery_logs.assigned_at DESC"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(params_refs.as_slice(), |r| {
-            Ok(ActiveDeliveryRow {
-                log_id: r.get(0)?, delivery_status: r.get(1)?, assigned_at: r.get(2)?, picked_up_at: r.get(3)?,
-                order_id: r.get(4)?, customer_name: r.get(5)?, customer_phone: r.get(6)?, delivery_address: r.get(7)?, total_cents: r.get(8)?,
-                driver_id: r.get(9)?, driver_name: r.get(10)?, driver_phone: r.get(11)?, vehicle_type: r.get(12)?, vehicle_plate: r.get(13)?,
-            })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
-    }
-
-    pub fn list_delivery_history(&self, scope: &Scope, limit: i64, offset: i64) -> Result<Vec<DeliveryHistoryRow>, RepoError> {
-        self.assert_scope_populated("delivery_logs", true)?;
-        let (predicate, args) = Self::scope_predicate(scope);
-        let predicate = predicate.replace("tenant_id", "delivery_logs.tenant_id").replace("branch_id", "delivery_logs.branch_id");
-        let sql = format!(
-            "SELECT delivery_logs.id, delivery_logs.status, delivery_logs.assigned_at, delivery_logs.delivered_at, delivery_logs.failure_reason, \
-                    orders.id, orders.customer_name, orders.total_cents, drivers.name \
-             FROM delivery_logs \
-             INNER JOIN orders ON orders.id = delivery_logs.order_id \
-             INNER JOIN drivers ON drivers.id = delivery_logs.driver_id \
-             WHERE {predicate} AND delivery_logs.status IN ('DELIVERED', 'FAILED', 'CANCELLED') \
-             ORDER BY delivery_logs.assigned_at DESC LIMIT ? OFFSET ?"
-        );
-        let mut full_args: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
-        full_args.push(&limit);
-        full_args.push(&offset);
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(full_args.as_slice(), |r| {
-            Ok(DeliveryHistoryRow {
-                log_id: r.get(0)?, delivery_status: r.get(1)?, assigned_at: r.get(2)?, delivered_at: r.get(3)?, failure_reason: r.get(4)?,
-                order_id: r.get(5)?, customer_name: r.get(6)?, total_cents: r.get(7)?, driver_name: r.get(8)?,
-            })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
-    }
-
-    /// Security audit finding (pre-launch pass): previously no scope filter
-    /// at all -- a Manager with ManageDelivery in one tenant could pass
-    /// another tenant's driver_id and read that tenant's delivery records.
-    pub fn list_driver_deliveries(&self, scope: &Scope, driver_id: &str) -> Result<Vec<DriverDeliveryRow>, RepoError> {
-        // delivery_logs and orders both carry tenant_id/branch_id -- qualify
-        // with the "orders." alias explicitly so the join doesn't produce an
-        // ambiguous-column error (same reasoning as shift_stats above).
-        let (predicate, args): (&str, Vec<String>) = match scope {
-            Scope::Platform => ("1=1", vec![]),
-            Scope::Tenant { tenant_id } => ("orders.tenant_id = ?1", vec![tenant_id.clone()]),
-            Scope::Branch { tenant_id, branch_id } => {
-                ("orders.tenant_id = ?1 AND orders.branch_id = ?2", vec![tenant_id.clone(), branch_id.clone()])
-            }
-        };
-        let id_placeholder = format!("?{}", args.len() + 1);
-        let mut bind_args = args;
-        bind_args.push(driver_id.to_string());
-        let sql = format!(
-            "SELECT delivery_logs.id, delivery_logs.status, delivery_logs.assigned_at, delivery_logs.delivered_at, \
-                    orders.customer_name, orders.delivery_address, orders.total_cents \
-             FROM delivery_logs INNER JOIN orders ON orders.id = delivery_logs.order_id \
-             WHERE delivery_logs.driver_id = {id_placeholder} AND {predicate} ORDER BY delivery_logs.assigned_at DESC LIMIT 20"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(bind_args.iter()), |r| {
-            Ok(DriverDeliveryRow {
-                log_id: r.get(0)?, status: r.get(1)?, assigned_at: r.get(2)?, delivered_at: r.get(3)?,
-                customer_name: r.get(4)?, delivery_address: r.get(5)?, total_cents: r.get(6)?,
-            })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
-    }
-
-    // -----------------------------------------------------------------
-    // Batch 3b, final slice, group 2 -- delivery zones. `delivery_zones` is
-    // `TENANT_BRANCH_TABLES`; every column the old `deliveryService.ts`
-    // referenced (name/boundaries/fee_cents/min_order_cents/
-    // estimated_minutes/is_active) is real (0001_init.sql), no DRIFT here.
-    // -----------------------------------------------------------------
-
-    pub fn list_delivery_zones(&self, scope: &Scope) -> Result<Vec<DeliveryZoneRow>, RepoError> {
-        self.assert_scope_populated("delivery_zones", true)?;
-        let (predicate, args) = Self::scope_predicate(scope);
-        let sql = format!(
-            "SELECT id, name, boundaries, fee_cents, min_order_cents, estimated_minutes, is_active FROM delivery_zones WHERE {predicate} AND is_active = 1 ORDER BY name ASC"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(params_refs.as_slice(), |r| {
-            Ok(DeliveryZoneRow { id: r.get(0)?, name: r.get(1)?, boundaries: r.get(2)?, fee_cents: r.get(3)?, min_order_cents: r.get(4)?, estimated_minutes: r.get(5)?, is_active: r.get(6)? })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_delivery_zone(&self, tenant_id: &str, branch_id: &str, name: &str, boundaries: &str, fee_cents: i64, min_order_cents: i64, estimated_minutes: i64) -> Result<String, RepoError> {
-        let id = uuid::Uuid::now_v7().to_string();
-        self.conn.execute(
-            "INSERT INTO delivery_zones (id, tenant_id, branch_id, name, boundaries, fee_cents, min_order_cents, estimated_minutes, is_active, last_modified, sync_status) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, datetime('now'), 'pending')",
-            params![id, tenant_id, branch_id, name, boundaries, fee_cents, min_order_cents, estimated_minutes],
-        )?;
-        Ok(id)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn update_delivery_zone(&self, scope: &Scope, zone_id: &str, name: &str, fee_cents: i64, min_order_cents: i64, estimated_minutes: i64) -> Result<(), RepoError> {
-        self.assert_row_in_scope("delivery_zones", zone_id, scope)?;
-        self.conn.execute(
-            "UPDATE delivery_zones SET name = ?1, fee_cents = ?2, min_order_cents = ?3, estimated_minutes = ?4, last_modified = datetime('now') WHERE id = ?5",
-            params![name, fee_cents, min_order_cents, estimated_minutes, zone_id],
-        )?;
-        Ok(())
-    }
-
-    pub fn deactivate_delivery_zone(&self, scope: &Scope, zone_id: &str) -> Result<(), RepoError> {
-        self.assert_row_in_scope("delivery_zones", zone_id, scope)?;
-        self.conn.execute(
-            "UPDATE delivery_zones SET is_active = 0, last_modified = datetime('now') WHERE id = ?1",
-            params![zone_id],
-        )?;
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn create_printer(&self, tenant_id: &str, branch_id: &str, name: &str, printer_type: &str, interface: &str, vendor_id: Option<&str>, product_id: Option<&str>, drawer_pulse_ms: i64, is_primary: bool, system_printer_name: Option<&str>, ip_address: Option<&str>, port: Option<i64>) -> Result<String, RepoError> {
         self.assert_scope_populated("printers", true)?;
         let id = uuid::Uuid::now_v7().to_string();
@@ -3564,84 +3233,6 @@ impl<'a> Repo<'a> {
     pub fn update_printer_paper_width(&self, scope: &Scope, printer_id: &str, paper_width_mm: i64) -> Result<(), RepoError> {
         self.assert_row_in_scope("printers", printer_id, scope)?;
         self.conn.execute("UPDATE printers SET paper_width_mm = ?1, last_modified = datetime('now') WHERE id = ?2", params![paper_width_mm, printer_id])?;
-        Ok(())
-    }
-
-    pub fn list_delivery_logs(&self, scope: &Scope) -> Result<Vec<DeliveryLogRow>, RepoError> {
-        self.assert_scope_populated("delivery_logs", true)?;
-        let (predicate, args) = Self::scope_predicate(scope);
-        let sql = format!(
-            "SELECT id, order_id, driver_id, status, assigned_at, picked_up_at, delivered_at, failed_at FROM delivery_logs WHERE {predicate} ORDER BY assigned_at DESC"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(params_refs.as_slice(), |r| {
-            Ok(DeliveryLogRow { id: r.get(0)?, order_id: r.get(1)?, driver_id: r.get(2)?, status: r.get(3)?, assigned_at: r.get(4)?, picked_up_at: r.get(5)?, delivered_at: r.get(6)?, failed_at: r.get(7)? })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
-    }
-
-    /// `assigned_at` is set here, at creation -- matching the status the row
-    /// starts in (`ASSIGNED`), never left NULL for a status the row claims
-    /// to already be in.
-    /// T1.9 finding: neither `order_id` nor `driver_id` was ever checked
-    /// against `scope` -- a Branch actor could log a delivery against
-    /// another tenant's/branch's order or driver by id.
-    pub fn create_delivery_log(&self, scope: &Scope, tenant_id: &str, branch_id: &str, order_id: &str, driver_id: &str) -> Result<String, RepoError> {
-        self.assert_scope_populated("delivery_logs", true)?;
-        self.assert_order_in_scope(order_id, scope)?;
-        self.assert_row_in_scope("drivers", driver_id, scope)?;
-        // 2026-08-13: same class of gap the create_roster_entry fix closed
-        // -- assert_row_in_scope alone only proves the driver belongs to
-        // the caller's TENANT (trivially true for every branch when the
-        // actor is a Tenant-scoped Owner). branch_id here is the CALLER's
-        // resolved operating branch, not necessarily the driver's own --
-        // an Owner on a Branch A terminal could assign a Branch B driver
-        // to a delivery filed under Branch A. NULL driver.branch_id is a
-        // deliberate wildcard, same convention as staff.branch_id.
-        let driver_branch_id: Option<String> = self.conn.query_row(
-            "SELECT branch_id FROM drivers WHERE id = ?1", params![driver_id], |r| r.get(0),
-        )?;
-        if let Some(db) = &driver_branch_id {
-            if db != branch_id {
-                return Err(RepoError::DriverBranchMismatch { driver_id: driver_id.to_string(), target_branch_id: branch_id.to_string() });
-            }
-        }
-        let id = uuid::Uuid::now_v7().to_string();
-        self.conn.execute(
-            "INSERT INTO delivery_logs (id, tenant_id, branch_id, order_id, driver_id, status, assigned_at, created_at, last_modified, sync_status) \
-             VALUES (?1, ?2, ?3, ?4, ?5, 'ASSIGNED', datetime('now'), datetime('now'), datetime('now'), 'pending')",
-            params![id, tenant_id, branch_id, order_id, driver_id],
-        )?;
-        Ok(id)
-    }
-
-    /// Append-only in spirit, same as order status (SCHEMA_V3.md §6): each
-    /// status transition stamps its own timestamp column and never touches
-    /// the ones a prior transition already set.
-    pub fn update_delivery_status(&self, scope: &Scope, delivery_log_id: &str, new_status: &str) -> Result<(), RepoError> {
-        self.assert_scope_populated("delivery_logs", true)?;
-        self.assert_row_in_scope("delivery_logs", delivery_log_id, scope)?;
-        let ts_column = match new_status {
-            "PICKED_UP" => Some("picked_up_at"),
-            "DELIVERED" => Some("delivered_at"),
-            "FAILED" => Some("failed_at"),
-            _ => None,
-        };
-        match ts_column {
-            Some(col) => {
-                self.conn.execute(
-                    &format!("UPDATE delivery_logs SET status = ?1, {col} = datetime('now'), last_modified = datetime('now') WHERE id = ?2"),
-                    params![new_status, delivery_log_id],
-                )?;
-            }
-            None => {
-                self.conn.execute(
-                    "UPDATE delivery_logs SET status = ?1, last_modified = datetime('now') WHERE id = ?2",
-                    params![new_status, delivery_log_id],
-                )?;
-            }
-        }
         Ok(())
     }
 
@@ -4138,6 +3729,207 @@ impl<'a> Repo<'a> {
     }
 
     // -----------------------------------------------------------------
+    // Physical stock counts + COGS variance. `adjust_stock` (above) is the
+    // only thing that ever changes `ingredients.current_stock` outside
+    // recipe depletion, and it's ledger-only -- a human typing a number
+    // they believe is true, never independently checked against reality.
+    // A physical count is the one fact in this table that's actually
+    // measured, not derived, which is what makes a theoretical-vs-actual
+    // variance report meaningful instead of circular.
+    // -----------------------------------------------------------------
+
+    /// Records the count as an immutable fact (`stock_counts`), then
+    /// reconciles `ingredients.current_stock` to it -- same atomicity pair
+    /// as `adjust_stock` (ledger update + `inventory_logs` row), just
+    /// setting the absolute value instead of applying a signed delta, since
+    /// a count can legitimately swing the ledger down (shrinkage/theft) as
+    /// well as up (a previously under-logged receipt).
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_stock_count(&self, scope: &Scope, tenant_id: &str, branch_id: &str, ingredient_id: &str, counted_stock: f64, actor_id: &str, note: Option<&str>) -> Result<String, RepoError> {
+        self.assert_scope_populated("ingredients", true)?;
+        self.assert_row_in_scope("ingredients", ingredient_id, scope)?;
+        if counted_stock < 0.0 {
+            return Err(RepoError::NegativeStockCount { ingredient_id: ingredient_id.to_string(), counted_stock });
+        }
+        let current_stock: f64 = self.conn.query_row(
+            "SELECT current_stock FROM ingredients WHERE id = ?1", params![ingredient_id], |r| r.get(0),
+        )?;
+        let change_amount = counted_stock - current_stock;
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO stock_counts (id, tenant_id, branch_id, ingredient_id, counted_stock, counted_by, note, created_at, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, 'pending')",
+            params![id, tenant_id, branch_id, ingredient_id, counted_stock, actor_id, note, now],
+        )?;
+        self.conn.execute(
+            "UPDATE ingredients SET current_stock = ?1, last_modified = ?2 WHERE id = ?3",
+            params![counted_stock, now, ingredient_id],
+        )?;
+        let log_id = uuid::Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'physical_count', ?6, ?7, ?7, 'pending')",
+            params![log_id, tenant_id, branch_id, ingredient_id, change_amount, actor_id, now],
+        )?;
+        Ok(id)
+    }
+
+    /// Count history for one ingredient, most recent first -- the "last
+    /// counted" column on the variance report and the count-log modal.
+    pub fn list_stock_counts(&self, scope: &Scope, ingredient_id: &str) -> Result<Vec<StockCountRow>, RepoError> {
+        self.assert_row_in_scope("ingredients", ingredient_id, scope)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ingredient_id, counted_stock, counted_by, note, created_at \
+             FROM stock_counts WHERE ingredient_id = ?1 ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map(params![ingredient_id], |r| {
+            Ok(StockCountRow {
+                id: r.get(0)?, ingredient_id: r.get(1)?, counted_stock: r.get(2)?,
+                counted_by: r.get(3)?, note: r.get(4)?, created_at: r.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// Theoretical-vs-actual COGS variance, one row per ingredient that has
+    /// a recipe link, over `[range_start_iso, range_end_iso)`.
+    ///
+    /// - `opening_stock`/`closing_stock`: the physical count at/before each
+    ///   bound. When no count exists yet on one side, falls back to the
+    ///   ledger's `current_stock` and sets `estimated_*: true` -- the UI
+    ///   must show this as "no count yet, estimated" rather than a real
+    ///   number, or the report becomes exactly the fake-precision problem
+    ///   this feature exists to avoid.
+    /// - `purchases`: positive `inventory_logs` entries in range (anything
+    ///   that isn't a sale depletion or a physical-count reconciliation --
+    ///   i.e. `adjust_stock` calls with a positive `change_amount`, reason
+    ///   not 'physical_count').
+    /// - `theoretical_usage`: recipe-implied consumption, same join shape
+    ///   `sync_enqueue_recipe_ingredients_for_order` (commands_v3.rs) uses
+    ///   to find what a paid order touched, extended with quantity_needed
+    ///   and the order's own date window.
+    /// - `actual_usage = opening_stock + purchases - closing_stock`.
+    /// - `variance_qty = theoretical_usage - actual_usage`: positive means
+    ///   more was theoretically consumed than the stock decline explains
+    ///   (over-portioning, waste, or theft never logged); negative means
+    ///   stock fell by more than recipes explain (under-logged waste, a
+    ///   bad count, or theft of raw stock before it ever became a sale).
+    pub fn compute_cogs_variance(&self, scope: &Scope, range_start_iso: &str, range_end_iso: &str) -> Result<Vec<CogsVarianceRow>, RepoError> {
+        let (pred, args) = Self::scope_predicate(scope);
+        let ing_pred = pred.replace("tenant_id", "ingredients.tenant_id").replace("branch_id", "ingredients.branch_id");
+
+        // Only ingredients actually linked to a recipe -- an ingredient
+        // nobody cooks with has no theoretical usage to compare against.
+        let sql = format!(
+            "SELECT DISTINCT ingredients.id, ingredients.name, ingredients.unit, ingredients.current_stock, ingredients.cost_cents_per_unit \
+             FROM ingredients INNER JOIN recipes ON recipes.ingredient_id = ingredients.id \
+             WHERE {ing_pred}",
+        );
+        let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let ingredients: Vec<(String, String, String, f64, i64)> = stmt
+            .query_map(params_refs.as_slice(), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut out = Vec::with_capacity(ingredients.len());
+        for (ingredient_id, name, unit, current_stock, cost_cents_per_unit) in ingredients {
+            let opening_count: Option<(f64, String)> = self.conn.query_row(
+                "SELECT counted_stock, created_at FROM stock_counts WHERE ingredient_id = ?1 AND created_at <= ?2 ORDER BY created_at DESC LIMIT 1",
+                params![ingredient_id, range_start_iso], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).optional()?;
+            let (opening_stock, estimated_opening) = match &opening_count {
+                Some((v, _)) => (*v, false),
+                None => (current_stock, true),
+            };
+
+            let closing_count: Option<(f64, String)> = self.conn.query_row(
+                "SELECT counted_stock, created_at FROM stock_counts WHERE ingredient_id = ?1 AND created_at <= ?2 ORDER BY created_at DESC LIMIT 1",
+                params![ingredient_id, range_end_iso], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).optional()?;
+            let (closing_stock, estimated_closing) = match &closing_count {
+                Some((v, _)) => (*v, false),
+                None => (current_stock, true),
+            };
+            let last_count_at = closing_count.map(|(_, at)| at).or_else(|| opening_count.map(|(_, at)| at));
+
+            let purchases: f64 = self.conn.query_row(
+                "SELECT COALESCE(SUM(change_amount), 0) FROM inventory_logs \
+                 WHERE ingredient_id = ?1 AND reason != 'physical_count' AND change_amount > 0 \
+                 AND created_at >= ?2 AND created_at < ?3",
+                params![ingredient_id, range_start_iso, range_end_iso], |r| r.get(0),
+            )?;
+
+            let theoretical_usage: f64 = self.conn.query_row(
+                "SELECT COALESCE(SUM(recipes.quantity_needed * order_items.quantity), 0) \
+                 FROM order_items \
+                 INNER JOIN recipes ON recipes.menu_item_id = order_items.menu_item_id AND recipes.ingredient_id = ?1 \
+                 INNER JOIN orders ON orders.id = order_items.order_id \
+                 WHERE order_items.voided = 0 AND orders.status = 'PAID' \
+                 AND orders.closed_at >= ?2 AND orders.closed_at < ?3",
+                params![ingredient_id, range_start_iso, range_end_iso], |r| r.get(0),
+            )?;
+
+            let actual_usage = opening_stock + purchases - closing_stock;
+            let variance_qty = theoretical_usage - actual_usage;
+            let variance_cost_cents = (variance_qty * cost_cents_per_unit as f64).round() as i64;
+
+            out.push(CogsVarianceRow {
+                ingredient_id, ingredient_name: name, unit,
+                opening_stock, estimated_opening, closing_stock, estimated_closing,
+                purchases, theoretical_usage, actual_usage, variance_qty, variance_cost_cents,
+                cost_cents_per_unit, last_count_at,
+            });
+        }
+        // Worst (most negative-for-the-owner, i.e. largest unexplained
+        // cost) first -- same "surface the surprise first" principle as
+        // menu_margin_report's ordering.
+        out.sort_by(|a, b| b.variance_cost_cents.abs().cmp(&a.variance_cost_cents.abs()));
+        Ok(out)
+    }
+
+    /// Per-item margin over `[range_start_iso, range_end_iso)`, worst
+    /// margin % first -- what `menu_items.price_cents`/`cost_cents` were
+    /// always able to answer but nothing ever computed per sale. A
+    /// "best seller" losing money after food cost is exactly the number an
+    /// owner can't currently see anywhere in the app.
+    pub fn menu_margin_report(&self, scope: &Scope, range_start_iso: &str, range_end_iso: &str) -> Result<Vec<MenuMarginRow>, RepoError> {
+        let (pred, args) = Self::scope_predicate(scope);
+        let pred = pred.replace("tenant_id", "orders.tenant_id").replace("branch_id", "orders.branch_id");
+        let sql = format!(
+            "SELECT menu_items.id, menu_items.name, \
+                    SUM(order_items.quantity), \
+                    SUM(order_items.quantity * menu_items.price_cents), \
+                    SUM(order_items.quantity * menu_items.cost_cents) \
+             FROM order_items \
+             INNER JOIN menu_items ON menu_items.id = order_items.menu_item_id \
+             INNER JOIN orders ON orders.id = order_items.order_id \
+             WHERE {pred} AND orders.status = 'PAID' AND order_items.voided = 0 \
+             AND orders.closed_at >= ?{a} AND orders.closed_at < ?{b} \
+             GROUP BY menu_items.id, menu_items.name",
+            a = args.len() + 1, b = args.len() + 2,
+        );
+        let mut all_args = args.clone();
+        all_args.push(range_start_iso.to_string());
+        all_args.push(range_end_iso.to_string());
+        let params_refs: Vec<&dyn rusqlite::ToSql> = all_args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut out: Vec<MenuMarginRow> = stmt
+            .query_map(params_refs.as_slice(), |r| {
+                let units_sold: i64 = r.get(2)?;
+                let revenue_cents: i64 = r.get(3)?;
+                let food_cost_cents: i64 = r.get(4)?;
+                let margin_cents = revenue_cents - food_cost_cents;
+                let margin_pct = if revenue_cents > 0 { margin_cents as f64 / revenue_cents as f64 * 100.0 } else { 0.0 };
+                Ok(MenuMarginRow { menu_item_id: r.get(0)?, name: r.get(1)?, units_sold, revenue_cents, food_cost_cents, margin_cents, margin_pct })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        out.sort_by(|a, b| a.margin_pct.partial_cmp(&b.margin_pct).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(out)
+    }
+
+    // -----------------------------------------------------------------
     // Batch 3b, slice 2, group 3 -- shifts. `shifts` is a
     // `TENANT_BRANCH_TABLES` entry, `user_id` already repointed at
     // `staff(id)` by Decision A's Migration C.
@@ -4590,16 +4382,6 @@ impl<'a> Repo<'a> {
     /// Atomic full order creation: order + items + modifiers + table→OCCUPIED.
     /// Replaces the frontend `orderService.createOrder`. Uses one transaction
     /// so a kill-9 either writes all or none.
-    /// `input.driver_id` is deliberately NEVER written -- `orders.driver_id`
-    /// does not exist in the real schema (DRIFT_REPORT.md Finding #1, same
-    /// as `NewOrder`'s doc comment above). Found and fixed during Slice A
-    /// verification: this method's `INSERT` previously listed `driver_id`
-    /// as a real column, which would hard-fail every DELIVERY order (and,
-    /// since it's one shared `INSERT`, every order type) with "table orders
-    /// has no column named driver_id" the first time it actually ran --
-    /// caught only because nothing had exercised this path with a test yet.
-    /// Delivery driver assignment happens via `assign_driver_to_delivery`
-    /// against `delivery_logs`, a separate explicit follow-up call.
     /// T1.9 finding (2026-07-17), attack "zero a total": `create_full_order`/
     /// `hold_order`/`schedule_delayed_order` never verified any relationship
     /// between `input.items`, `subtotal_cents`, `tax_cents`, `discount_cents`,
@@ -4956,9 +4738,6 @@ impl<'a> Repo<'a> {
     /// `delete_customer` (tenant-only, now `assert_tenant_owns_row`) plus
     /// `update_debtor`/`deactivate_debtor`/`list_debt_entries`,
     /// `mark_invoice_paid`, `update_supplier`/`delete_supplier`,
-    /// `update_driver`/`update_driver_location`/`deactivate_driver`,
-    /// `update_delivery_status`/`update_delivery_status_and_driver`,
-    /// `update_delivery_zone`/`deactivate_delivery_zone`,
     /// `set_printer_active`/`update_printer_paper_width`, and
     /// `update_ingredient` all took only a bare id -- any authenticated
     /// staff member, any tenant or branch, could mutate any row in these
@@ -5888,6 +5667,125 @@ mod tests {
         let low_stock = repo.list_low_stock_ingredients(&scope).unwrap();
         assert_eq!(low_stock.len(), 1);
         assert!(!low_stock[0].last_modified.is_empty(), "list_low_stock_ingredients must carry last_modified too");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// `stock_counts` has no tenant_id/branch_id SQL FK to another tenant's
+    /// data, only the same implicit scoping every other ingredient-linked
+    /// write uses (`assert_row_in_scope("ingredients", ...)`). Proves
+    /// Tenant Two genuinely cannot record a count against, or read the
+    /// count history of, Tenant One's ingredient by id -- same guarantee
+    /// `add_recipe_ingredient`'s own cross-tenant test establishes for the
+    /// `recipes` table right above this one.
+    #[test]
+    fn record_stock_count_is_tenant_scoped() {
+        let db_path = fresh_migrated_db("stock_count_scoping");
+        let conn = Connection::open(&db_path).unwrap();
+        let repo = Repo::new(&conn);
+
+        let (tenant1, branch1): (String, String) =
+            conn.query_row("SELECT tenant_id, id FROM branch LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let tenant2 = uuid::Uuid::now_v7().to_string();
+        conn.execute("INSERT INTO tenant (id, name, base_currency) VALUES (?1, 'Tenant Two', 'USD')", params![tenant2]).unwrap();
+        let branch2 = repo.create_branch(&tenant2, "Branch Two", "USD").unwrap();
+        let actor2 = repo.create_staff(&tenant2, None, None, "OWNER", 100, "Owner Two", Some("$2b$dummy"), None).unwrap();
+
+        let ingredient1 = repo.create_ingredient(&tenant1, &branch1, "دقيق", "kg", 500, 5.0).unwrap();
+
+        let scope2 = Scope::Branch { tenant_id: tenant2.clone(), branch_id: branch2.clone() };
+        assert!(
+            repo.record_stock_count(&scope2, &tenant2, &branch2, &ingredient1, 10.0, &actor2, None).is_err(),
+            "Tenant Two must not be able to record a physical count against Tenant One's ingredient"
+        );
+        assert!(
+            repo.list_stock_counts(&scope2, &ingredient1).is_err(),
+            "Tenant Two must not be able to read Tenant One's count history by ingredient id"
+        );
+
+        let actor1 = repo.create_staff(&tenant1, None, None, "OWNER", 100, "Owner One", Some("$2b$dummy"), None).unwrap();
+        let scope1 = Scope::Branch { tenant_id: tenant1.clone(), branch_id: branch1.clone() };
+        assert!(
+            repo.record_stock_count(&scope1, &tenant1, &branch1, &ingredient1, 10.0, &actor1, None).is_ok(),
+            "Tenant One recording a count against its own ingredient must succeed"
+        );
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// The controlled-fixture case: a known recipe, a known number sold,
+    /// and a known count on each side of the window, so the variance is
+    /// hand-computable and this test is the arithmetic check, not just a
+    /// "doesn't crash" smoke test.
+    ///
+    /// Setup: burger recipe needs 1 bun each. Opening count: 50 buns.
+    /// 3 burgers sold within the window (theoretical usage = 3). Closing
+    /// count: 45 buns (actual drop = 5, not 3) -- 2 buns unaccounted for,
+    /// i.e. variance_qty = 3 - 5 = -2 (stock fell further than recipes
+    /// explain -- exactly the "16 buns unexplained" shape from the
+    /// product pitch this feature was built for, just signed the other
+    /// way to prove the math isn't just always reporting theft).
+    #[test]
+    fn compute_cogs_variance_matches_hand_calculated_expectation() {
+        let db_path = fresh_migrated_db("cogs_variance_math");
+        let conn = Connection::open(&db_path).unwrap();
+        let (tenant_id, branch_id): (String, String) =
+            conn.query_row("SELECT tenant_id, id FROM branch LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let repo = Repo::new(&conn);
+        let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+
+        let actor_id = repo.create_staff(&tenant_id, None, None, "OWNER", 100, "Owner", Some("$2b$dummy"), None).unwrap();
+        let table_id = repo.create_table(&tenant_id, &branch_id, "T1").unwrap();
+        let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+        let item_id = repo.create_menu_item(&tenant_id, "Burger", &category_id, 500, 200, None, None).unwrap();
+        let bun_id = repo.create_ingredient(&tenant_id, &branch_id, "Buns", "pcs", 20, 2.0).unwrap();
+        conn.execute("UPDATE ingredients SET current_stock = 50.0 WHERE id = ?1", params![bun_id]).unwrap();
+        conn.execute(
+            "INSERT INTO recipes (id, tenant_id, menu_item_id, ingredient_id, quantity_needed) VALUES ('r1', ?1, ?2, ?3, 1.0)",
+            params![tenant_id, item_id, bun_id],
+        ).unwrap();
+
+        let range_start = "2026-01-01T00:00:00Z";
+        // Opening count, timestamped before the window, at the true
+        // current_stock -- record_stock_count also reconciles the ledger,
+        // which is fine here since it's already 50.0.
+        conn.execute(
+            "INSERT INTO stock_counts (id, tenant_id, branch_id, ingredient_id, counted_stock, counted_by, created_at) \
+             VALUES ('sc-open', ?1, ?2, ?3, 50.0, ?4, '2025-12-31T23:00:00Z')",
+            params![tenant_id, branch_id, bun_id, actor_id],
+        ).unwrap();
+
+        // Sell 3 burgers, backdated into the window via closed_at.
+        let order_id = repo.create_full_order(&scope, &tenant_id, &branch_id, FullOrderInput {
+            table_id, user_id: actor_id.clone(), order_type: "DINE_IN".to_string(),
+            subtotal_cents: 1500, tax_cents: 0, total_cents: 1500, discount_cents: 0,
+            discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
+            delivery_fee_cents: 0, shift_id: None,
+            items: vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 3, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
+        }).unwrap();
+        repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CASH", 1500, 0, None, &actor_id, None).unwrap();
+        conn.execute("UPDATE orders SET closed_at = '2026-01-15T12:00:00Z' WHERE id = ?1", params![order_id]).unwrap();
+
+        // Ledger is now 47.0 (50 - 3 sold). A physical count finds 45.0 --
+        // 2 more than recipes alone explain.
+        let range_end = "2026-01-31T00:00:00Z";
+        conn.execute(
+            "INSERT INTO stock_counts (id, tenant_id, branch_id, ingredient_id, counted_stock, counted_by, created_at) \
+             VALUES ('sc-close', ?1, ?2, ?3, 45.0, ?4, '2026-01-20T00:00:00Z')",
+            params![tenant_id, branch_id, bun_id, actor_id],
+        ).unwrap();
+
+        let rows = repo.compute_cogs_variance(&scope, range_start, range_end).unwrap();
+        let bun_row = rows.iter().find(|r| r.ingredient_id == bun_id).expect("bun must appear -- it has a recipe link");
+        assert!(!bun_row.estimated_opening, "an opening count exists in range, must not be flagged estimated");
+        assert!(!bun_row.estimated_closing, "a closing count exists in range, must not be flagged estimated");
+        assert!((bun_row.opening_stock - 50.0).abs() < 0.001);
+        assert!((bun_row.closing_stock - 45.0).abs() < 0.001);
+        assert!((bun_row.theoretical_usage - 3.0).abs() < 0.001, "3 burgers sold -> 3.0 theoretical buns, got {}", bun_row.theoretical_usage);
+        assert!((bun_row.actual_usage - 5.0).abs() < 0.001, "50 - 45 = 5.0 actual usage, got {}", bun_row.actual_usage);
+        assert!((bun_row.variance_qty - (-2.0)).abs() < 0.001, "3 theoretical - 5 actual = -2.0 variance, got {}", bun_row.variance_qty);
+        // cost_cents_per_unit is 20 -- -2.0 * 20 = -40 cents.
+        assert_eq!(bun_row.variance_cost_cents, -40);
+        println!("[cogs] compute_cogs_variance matches the hand-calculated -2.0 bun variance exactly");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }

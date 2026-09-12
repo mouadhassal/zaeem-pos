@@ -81,10 +81,6 @@ pub enum Action {
     SupplierChanged,
     PurchaseOrderChanged,
     PurchaseOrderReceived,
-    DriverChanged,
-    DeliveryAssigned,
-    DeliveryStatusChanged,
-    DeliveryZoneChanged,
     /// Slice B -- the manager PIN/password override is an anti-theft
     /// control (it authorizes voids/discounts); granting one must be
     /// logged, same as any other privileged action.
@@ -139,10 +135,6 @@ impl Action {
             Action::SupplierChanged => "SupplierChanged",
             Action::PurchaseOrderChanged => "PurchaseOrderChanged",
             Action::PurchaseOrderReceived => "PurchaseOrderReceived",
-            Action::DriverChanged => "DriverChanged",
-            Action::DeliveryAssigned => "DeliveryAssigned",
-            Action::DeliveryStatusChanged => "DeliveryStatusChanged",
-            Action::DeliveryZoneChanged => "DeliveryZoneChanged",
             Action::ManagerOverrideGranted => "ManagerOverrideGranted",
             Action::ComboMealChanged => "ComboMealChanged",
             Action::HappyHourRuleChanged => "HappyHourRuleChanged",

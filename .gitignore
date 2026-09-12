@@ -8,3 +8,4 @@ target/
 # Real credentials -- service_role key bypasses RLS entirely, never committed.
 docs/supabase.txt
 
+.next/

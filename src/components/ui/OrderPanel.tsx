@@ -26,7 +26,7 @@ interface Props {
       current order type; falls back to the old copy if omitted. */
   emptyMessage?: string;
   onEditOrder?: (() => void) | undefined;
-  /** Icon for the current order type (DINE_IN/TAKEAWAY/DELIVERY/ONLINE) -- rendered inside the visible order-type pill, not just a bare edit pencil. */
+  /** Icon for the current order type (DINE_IN/TAKEAWAY/ONLINE/DEBT) -- rendered inside the visible order-type pill, not just a bare edit pencil. */
   orderTypeIcon?: ReactNode;
   orderTypeLabel?: string;
   children?: ReactNode;

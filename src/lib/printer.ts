@@ -349,7 +349,7 @@ function renderReceiptCanvas(data: ReceiptData, paperWidthMm: number): HTMLCanva
   if (data.tableName) drawTwoCol(b, "طاولة", data.tableName);
 
   const typeLabels: Record<string, string> = {
-    DINE_IN: "داخلي", TAKEAWAY: "سفري", DELIVERY: "توصيل", ONLINE: "أونلاين",
+    DINE_IN: "داخلي", TAKEAWAY: "سفري", ONLINE: "أونلاين",
   };
   drawTwoCol(b, "النوع", typeLabels[data.orderType] ?? data.orderType);
 
@@ -398,7 +398,7 @@ function renderKitchenTicketCanvas(data: KitchenTicketData, paperWidthMm: number
   drawRule(b);
 
   const typeLabels: Record<string, string> = {
-    DINE_IN: "داخلي", TAKEAWAY: "سفري", DELIVERY: "توصيل", ONLINE: "أونلاين",
+    DINE_IN: "داخلي", TAKEAWAY: "سفري", ONLINE: "أونلاين",
   };
   if (data.tableName) drawTwoCol(b, "طاولة", data.tableName);
   drawTwoCol(b, "رقم", data.orderNumber);

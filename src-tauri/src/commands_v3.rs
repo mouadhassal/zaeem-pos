@@ -1581,6 +1581,69 @@ pub fn adjust_stock_v3(state: State<Db>, license: State<crate::license::cloud::C
 }
 
 // ---------------------------------------------------------------------------
+// Physical stock counts + COGS variance / margin reporting. Same
+// `Permission::AdjustStock` gate as `adjust_stock_v3` -- a physical count is
+// a stock-affecting write, same trust boundary. `stock_counts` rows
+// themselves are not pushed through `sync::enqueue` (single-branch fact,
+// not yet part of the cross-device sync contract) -- only the ingredient's
+// reconciled `current_stock` propagates, same as any other adjust_stock.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn record_stock_count_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String, counted_stock: f64, note: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::AdjustStock).map_err(|e| e.to_string())?;
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
+    };
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let count_id = Repo::new(&tx).record_stock_count(&actor.scope(), &tenant_id, &branch_id, &ingredient_id, counted_stock, &actor.id, note.as_deref()).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "physical_count": counted_stock, "count_id": count_id }))).map_err(|e| e.to_string())?;
+
+    let license_status = license.cached_status();
+    sync_enqueue_ingredient(&tx, &tenant_id, &branch_id, &ingredient_id, &actor.device_id, &license_status)?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(count_id)
+}
+
+/// Count history for one ingredient, most recent first -- the "last
+/// counted" column on the variance report and the count-log modal.
+#[tauri::command]
+pub fn list_stock_counts_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String) -> Result<Vec<crate::repo::StockCountRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::AdjustStock).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_stock_counts(&actor.scope(), &ingredient_id).map_err(|e| e.to_string())
+}
+
+/// Theoretical-vs-actual COGS variance over `[range_start_iso, range_end_iso)`
+/// -- see `Repo::compute_cogs_variance` for the exact semantics.
+#[tauri::command]
+pub fn get_cogs_variance_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, range_start_iso: String, range_end_iso: String) -> Result<Vec<crate::repo::CogsVarianceRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).compute_cogs_variance(&actor.scope(), &range_start_iso, &range_end_iso).map_err(|e| e.to_string())
+}
+
+/// Per-item margin over `[range_start_iso, range_end_iso)`, worst margin %
+/// first -- see `Repo::menu_margin_report` for the exact semantics.
+#[tauri::command]
+pub fn get_menu_margin_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, range_start_iso: String, range_end_iso: String) -> Result<Vec<crate::repo::MenuMarginRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).menu_margin_report(&actor.scope(), &range_start_iso, &range_end_iso).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // 2026-08-20 -- recipe (BOM) management. Same `Permission::ManageMenu` gate
 // as menu item create/update -- attaching what an item consumes is part of
 // managing the menu, not a separate inventory-only permission.
@@ -3258,111 +3321,6 @@ pub fn list_low_stock_ingredients_v3(state: State<Db>, license: State<crate::lic
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_driver_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: Option<String>, vehicle_type: String, license_number: Option<String>, vehicle_plate: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let driver_id = Repo::new(&tx)
-        .create_driver(&tenant_id, &branch_id, &name, phone.as_deref(), &vehicle_type, license_number.as_deref(), vehicle_plate.as_deref())
-        .map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::DriverChanged, "driver", &driver_id,
-        None, Some(&serde_json::json!({ "name": name, "vehicle_type": vehicle_type })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(driver_id)
-}
-
-#[tauri::command]
-pub fn update_driver_location_v3(state: State<Db>, session_token: String, driver_id: String, lat: f64, lng: f64) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).update_driver_location(&actor.scope(), &driver_id, lat, lng).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn list_drivers_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::DriverRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_drivers(&actor.scope()).map_err(|e| e.to_string())
-}
-
-/// `DriversView`'s management tab -- includes deactivated drivers.
-#[tauri::command]
-pub fn list_all_drivers_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::DriverRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_all_drivers(&actor.scope()).map_err(|e| e.to_string())
-}
-
-/// `DriverSelectModal`'s pick-a-driver list -- Cashier+ (assigning a driver
-/// at order time is register-floor work, same rank as `ManageDelivery`).
-#[tauri::command]
-pub fn list_available_drivers_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::DriverRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_available_drivers(&actor.scope()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn update_driver_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, driver_id: String, name: String, phone: Option<String>, vehicle_type: String, vehicle_plate: Option<String>, license_number: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_driver(&scope, &driver_id, &name, phone.as_deref(), &vehicle_type, vehicle_plate.as_deref(), license_number.as_deref()).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::DriverChanged, "driver", &driver_id,
-        None, Some(&serde_json::json!({ "name": name })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn deactivate_driver_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, driver_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).deactivate_driver(&scope, &driver_id).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::DriverChanged, "driver", &driver_id,
-        None, Some(&serde_json::json!({ "is_active": false })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub fn create_printer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, printer_type: String, interface: String, vendor_id: Option<String>, product_id: Option<String>, drawer_pulse_ms: i64, is_primary: bool, system_printer_name: Option<String>, ip_address: Option<String>, port: Option<i64>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
@@ -3405,210 +3363,6 @@ pub fn list_active_printers_v3(state: State<Db>, session_token: String) -> Resul
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Ok(Repo::new(&conn).list_printers(&actor.scope()).map_err(|e| e.to_string())?
         .into_iter().filter(|p| p.is_active == 1).collect())
-}
-
-#[tauri::command]
-pub fn list_delivery_logs_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::DeliveryLogRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_delivery_logs(&actor.scope()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn create_delivery_log_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, order_id: String, driver_id: String) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let log_id = Repo::new(&tx)
-        .create_delivery_log(&scope, &tenant_id, &branch_id, &order_id, &driver_id)
-        .map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::DeliveryAssigned, "delivery_log", &log_id,
-        None, Some(&serde_json::json!({ "order_id": order_id, "driver_id": driver_id, "status": "ASSIGNED" })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(log_id)
-}
-
-/// The atomicity target for assignment -- see `Repo::assign_driver_to_delivery`.
-#[tauri::command]
-pub fn assign_driver_to_delivery_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, order_id: String, driver_id: String) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let log_id = Repo::new(&tx)
-        .assign_driver_to_delivery(&scope, &tenant_id, &branch_id, &order_id, &driver_id)
-        .map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::DeliveryAssigned, "delivery_log", &log_id,
-        None, Some(&serde_json::json!({ "order_id": order_id, "driver_id": driver_id, "status": "ASSIGNED" })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(log_id)
-}
-
-#[tauri::command]
-pub fn update_delivery_status_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, delivery_log_id: String, new_status: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_delivery_status(&scope, &delivery_log_id, &new_status).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::DeliveryStatusChanged, "delivery_log", &delivery_log_id,
-        None, Some(&serde_json::json!({ "status": new_status })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// The atomicity target for a delivery reaching a terminal status -- see
-/// `Repo::update_delivery_status_and_driver`. `failure_reason` is real
-/// (0001_init.sql); the old frontend's `notes` field on this same call is
-/// NOT a real `delivery_logs` column and is dropped, not carried forward.
-#[tauri::command]
-pub fn update_delivery_status_and_driver_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, delivery_log_id: String, new_status: String, failure_reason: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_delivery_status_and_driver(&scope, &delivery_log_id, &new_status, failure_reason.as_deref()).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::DeliveryStatusChanged, "delivery_log", &delivery_log_id,
-        None, Some(&serde_json::json!({ "status": new_status })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn list_active_deliveries_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::ActiveDeliveryRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_active_deliveries(&actor.scope()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn list_delivery_history_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, limit: i64, offset: i64) -> Result<Vec<crate::repo::DeliveryHistoryRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_delivery_history(&actor.scope(), limit, offset).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn list_driver_deliveries_v3(state: State<Db>, session_token: String, driver_id: String) -> Result<Vec<crate::repo::DriverDeliveryRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ManageDelivery).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_driver_deliveries(&actor.scope(), &driver_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn list_delivery_zones_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::DeliveryZoneRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_delivery_zones(&actor.scope()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn create_delivery_zone_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, boundaries: Option<String>, fee_cents: i64, min_order_cents: i64, estimated_minutes: i64) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let zone_id = Repo::new(&tx)
-        .create_delivery_zone(&tenant_id, &branch_id, &name, boundaries.as_deref().unwrap_or("[]"), fee_cents, min_order_cents, estimated_minutes)
-        .map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::DeliveryZoneChanged, "delivery_zone", &zone_id,
-        None, Some(&serde_json::json!({ "name": name })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(zone_id)
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn update_delivery_zone_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, zone_id: String, name: String, fee_cents: i64, min_order_cents: i64, estimated_minutes: i64) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_delivery_zone(&scope, &zone_id, &name, fee_cents, min_order_cents, estimated_minutes).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::DeliveryZoneChanged, "delivery_zone", &zone_id,
-        None, Some(&serde_json::json!({ "name": name })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn deactivate_delivery_zone_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, zone_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageDrivers).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).deactivate_delivery_zone(&scope, &zone_id).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::DeliveryZoneChanged, "delivery_zone", &zone_id,
-        None, None,
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 /// Fixes the pre-existing account-takeover bug (FEATURE_TRUTH.md, `change_password`
@@ -3939,14 +3693,13 @@ pub fn create_full_order_v3(
     customer_phone: Option<String>,
     delivery_address: Option<String>,
     delivery_fee_cents: i64,
-    driver_id: Option<String>,
     shift_id: Option<String>,
     manager_override_pin: Option<String>,
 ) -> Result<String, String> {
     create_full_order_v3_impl(
         &state, &license, session_token, table_id, order_type, items, subtotal_cents, tax_cents,
         total_cents, discount_cents, discount_reason, customer_name, customer_phone,
-        delivery_address, delivery_fee_cents, driver_id, shift_id, manager_override_pin,
+        delivery_address, delivery_fee_cents, shift_id, manager_override_pin,
     )
 }
 
@@ -3973,7 +3726,6 @@ fn create_full_order_v3_impl(
     customer_phone: Option<String>,
     delivery_address: Option<String>,
     delivery_fee_cents: i64,
-    driver_id: Option<String>,
     // No longer trusted -- see the real `shift_id` binding resolved
     // server-side below, right before it's used.
     _shift_id: Option<String>,
@@ -4018,7 +3770,7 @@ fn create_full_order_v3_impl(
         table_id, user_id: actor.id.clone(), order_type: order_type.clone(),
         subtotal_cents, tax_cents, total_cents, discount_cents,
         discount_reason, customer_name, customer_phone, delivery_address,
-        delivery_fee_cents, driver_id, shift_id, items,
+        delivery_fee_cents, shift_id, items,
     };
     let order_id = Repo::new(&tx).create_full_order(&scope, &tenant_id, &branch_id, input)
         .map_err(|e| e.to_string())?;
@@ -4191,7 +3943,7 @@ fn hold_order_v3_impl(
         table_id, user_id: actor.id.clone(), order_type: order_type.clone(),
         subtotal_cents, tax_cents, total_cents, discount_cents: 0,
         discount_reason: None, customer_name: None, customer_phone: None,
-        delivery_address: None, delivery_fee_cents: 0, driver_id: None, shift_id, items,
+        delivery_address: None, delivery_fee_cents: 0, shift_id, items,
     };
     let order_id = Repo::new(&tx).hold_order(&scope, &tenant_id, &branch_id, input)
         .map_err(|e| e.to_string())?;
@@ -4464,7 +4216,7 @@ fn schedule_delayed_order_v3_impl(
         table_id, user_id: actor.id.clone(), order_type: order_type.clone(),
         subtotal_cents, tax_cents, total_cents, discount_cents: 0,
         discount_reason: None, customer_name: None, customer_phone: None,
-        delivery_address: None, delivery_fee_cents: 0, driver_id: None, shift_id: None, items,
+        delivery_address: None, delivery_fee_cents: 0, shift_id: None, items,
     };
     let order_id = Repo::new(&tx).schedule_delayed_order(&scope, &tenant_id, &branch_id, input, &scheduled_at)
         .map_err(|e| e.to_string())?;
@@ -5114,13 +4866,12 @@ pub fn dispatch_lan_rpc(
             let customer_phone: Option<String> = lan_arg(&args, "customerPhone")?;
             let delivery_address: Option<String> = lan_arg(&args, "deliveryAddress")?;
             let delivery_fee_cents: i64 = args.get("deliveryFeeCents").and_then(|v| v.as_i64()).unwrap_or(0);
-            let driver_id: Option<String> = lan_arg(&args, "driverId")?;
             let shift_id: Option<String> = lan_arg(&args, "shiftId")?;
             let manager_override_pin: Option<String> = lan_arg(&args, "managerOverridePin")?;
             let r = create_full_order_v3_impl(
                 db, license, session_token, table_id, order_type, items, subtotal_cents, tax_cents,
                 total_cents, discount_cents, discount_reason, customer_name, customer_phone,
-                delivery_address, delivery_fee_cents, driver_id, shift_id, manager_override_pin,
+                delivery_address, delivery_fee_cents, shift_id, manager_override_pin,
             )?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
@@ -5407,7 +5158,7 @@ mod tests {
             table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".to_string(),
             subtotal_cents: subtotal, tax_cents: 0, total_cents: subtotal, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
-            delivery_fee_cents: 0, driver_id: None, shift_id: None, items: vec![],
+            delivery_fee_cents: 0, shift_id: None, items: vec![],
         };
 
         // --- committed transaction: both the fact and its outbox row persist ---
@@ -5581,7 +5332,7 @@ mod tests {
             let order_id = create_full_order_v3_impl(
                 &db, &license,
                 session, table_id, "DINE_IN".to_string(), items,
-                2000, 0, 2000, 0, None, None, None, None, 0, None, None, None,
+                2000, 0, 2000, 0, None, None, None, None, 0, None, None,
             ).expect("create_full_order_v3 must succeed through the real wrapper body");
 
             let conn = Connection::open(&db_path).unwrap();
@@ -5637,7 +5388,7 @@ mod tests {
                 // total is 1 cent too, internally "consistent" with the
                 // fabricated unit price above -- exactly what the old
                 // self-consistency-only check would have accepted.
-                1, 0, 1, 0, None, None, None, None, 0, None, None, None,
+                1, 0, 1, 0, None, None, None, None, 0, None, None,
             ).expect("order creation must still succeed -- it's re-priced, not rejected");
 
             let conn = Connection::open(&db_path).unwrap();
@@ -5692,7 +5443,7 @@ mod tests {
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license, session.clone(), table_id, "DINE_IN".to_string(), items,
-                1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None,
             ).unwrap();
 
             for next in ["PREPARING", "READY", "SERVED"] {
@@ -5745,7 +5496,7 @@ mod tests {
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license, session.clone(), table_id, "DINE_IN".to_string(), items,
-                1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None,
             ).unwrap();
 
             let skip_result = update_order_status_v3_impl(&db, session.clone(), order_id.clone(), "SERVED".to_string());
@@ -5945,14 +5696,14 @@ mod tests {
 
             let no_shift = create_full_order_v3_impl(
                 &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(), vec![],
-                0, 0, 0, 0, None, None, None, None, 0, None, Some("fake-shift-id".to_string()), None,
+                0, 0, 0, 0, None, None, None, None, 0, Some("fake-shift-id".to_string()), None,
             );
             assert!(no_shift.is_err(), "creating an order with no real open shift must be rejected, even if a shiftId was claimed");
 
             let real_shift_id = open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let order_id = create_full_order_v3_impl(
                 &db, &license, session, table_id, "DINE_IN".to_string(), vec![],
-                0, 0, 0, 0, None, None, None, None, 0, None, Some("some-other-claimed-id".to_string()), None,
+                0, 0, 0, 0, None, None, None, None, 0, Some("some-other-claimed-id".to_string()), None,
             ).expect("creating an order with a real open shift must succeed regardless of what shiftId was claimed");
 
             let conn = Connection::open(&db_path).unwrap();
@@ -6016,7 +5767,7 @@ mod tests {
             let order_id = create_full_order_v3_impl(
                 &db, &license,
                 session.clone(), table_id.clone(), "DINE_IN".to_string(), items,
-                1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None,
             ).unwrap();
             let item_db_id: String = {
                 let conn = Connection::open(&db_path).unwrap();
@@ -6064,7 +5815,7 @@ mod tests {
             // stamps `tables.current_order_id`, so it can't be used here.
             create_full_order_v3_impl(
                 &db, &license, session.clone(), table_2_id.clone(), "DINE_IN".to_string(), vec![],
-                0, 0, 0, 0, None, None, None, None, 0, None, None, None,
+                0, 0, 0, 0, None, None, None, None, 0, None, None,
             ).unwrap();
 
             // `source_table_ids` must include the target table itself --
@@ -6229,7 +5980,7 @@ mod tests {
             let order_id = create_full_order_v3_impl(
                 &db, &license, session.clone(), table_id, "DINE_IN".to_string(),
                 vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 3, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
-                1500, 0, 1500, 0, None, None, None, None, 0, None, None, None,
+                1500, 0, 1500, 0, None, None, None, None, 0, None, None,
             ).unwrap();
 
             take_payment_v3_impl(&db, &license, session, order_id.clone(), "CASH".to_string(), 1500, 0, None)
@@ -6271,7 +6022,7 @@ mod tests {
                 table_id, user_id: cashier_id.clone(), order_type: "DINE_IN".to_string(),
                 subtotal_cents: 2000, tax_cents: 0, total_cents: 2000, discount_cents: 0,
                 discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
-                delivery_fee_cents: 0, driver_id: None, shift_id: None,
+                delivery_fee_cents: 0, shift_id: None,
                 items: vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] }],
             }).unwrap();
             let item_row_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_id], |r| r.get(0)).unwrap();
@@ -6391,7 +6142,7 @@ mod tests {
             let order_id = create_full_order_v3_impl(
                 &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
                 vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
-                1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None,
             ).unwrap();
             take_payment_v3_impl(&db, &license, session, order_id, "CASH".to_string(), 1000, 0, None).unwrap();
 
@@ -6431,7 +6182,7 @@ mod tests {
             let order_id = create_full_order_v3_impl(
                 &db, &license,
                 session.clone(), table_id, "DINE_IN".to_string(), items,
-                1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None,
             ).unwrap();
             let item_db_id: String = {
                 let conn = Connection::open(&db_path).unwrap();
@@ -6489,7 +6240,7 @@ mod tests {
             let order_id = create_full_order_v3_impl(
                 &db, &license,
                 session.clone(), table_id, "DINE_IN".to_string(), items,
-                6000000, 0, 6000000, 0, None, None, None, None, 0, None, None, None,
+                6000000, 0, 6000000, 0, None, None, None, None, 0, None, None,
             ).unwrap();
             let item_db_id: String = {
                 let conn = Connection::open(&db_path).unwrap();
@@ -6655,7 +6406,7 @@ mod tests {
             let order_id = create_full_order_v3_impl(
                 &db, &license,
                 session, "".to_string(), "TAKEAWAY".to_string(), items,
-                1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None,
             ).expect("a TAKEAWAY order with no table_id must succeed, not fail the FK/NOT NULL constraint");
 
             let conn = Connection::open(&db_path).unwrap();
@@ -6702,7 +6453,7 @@ mod tests {
                 create_full_order_v3_impl(
                     &db, &license,
                     session.clone(), "".to_string(), "TAKEAWAY".to_string(), items,
-                    1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+                    1000, 0, 1000, 0, None, None, None, None, 0, None, None,
                 ).expect("each empty-table_id TAKEAWAY order must succeed");
             }
 
@@ -6748,7 +6499,7 @@ mod tests {
             let order_id = create_full_order_v3_impl(
                 &db, &license,
                 session, table_id.clone(), "DINE_IN".to_string(), items,
-                1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None,
             ).expect("a DINE_IN order with a real table_id must still succeed");
 
             let conn = Connection::open(&db_path).unwrap();
@@ -6847,7 +6598,7 @@ mod tests {
             let order_id = create_full_order_v3_impl(
                 &db, &license,
                 session.clone(), table_id.clone(), "DINE_IN".to_string(), items,
-                2000, 0, 2000, 0, None, None, None, None, 0, None, None, None,
+                2000, 0, 2000, 0, None, None, None, None, 0, None, None,
             ).unwrap();
 
             let split_ids = split_bill_v3_impl(
@@ -7101,7 +6852,7 @@ mod tests {
             open_shift_v3_impl(&db, &license, avg_session.clone(), 10000, None).unwrap();
             create_full_order_v3_impl(
                 &db, &license, avg_session, table_id.clone(), "DINE_IN".to_string(), items_of(20),
-                10000, 0, 10000, 0, None, None, None, None, 0, None, None, None,
+                10000, 0, 10000, 0, None, None, None, None, 0, None, None,
             ).unwrap();
 
             // High-void cashier: 20 items sold, 10 of them voided -- well
@@ -7113,7 +6864,7 @@ mod tests {
             open_shift_v3_impl(&db, &license, high_session.clone(), 10000, None).unwrap();
             let high_order_id = create_full_order_v3_impl(
                 &db, &license, high_session.clone(), table_id, "DINE_IN".to_string(), items_of(20),
-                10000, 0, 10000, 0, None, None, None, None, 0, None, None, None,
+                10000, 0, 10000, 0, None, None, None, None, 0, None, None,
             ).unwrap();
             let high_item_ids: Vec<String> = {
                 let conn = Connection::open(&db_path).unwrap();
@@ -7212,7 +6963,7 @@ mod tests {
                 let voided_order_id = create_full_order_v3_impl(
                     &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
                     vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
-                    500, 0, 500, 0, None, None, None, None, 0, None, None, None,
+                    500, 0, 500, 0, None, None, None, None, 0, None, None,
                 ).unwrap();
                 let voided_item_db_id: String = {
                     let conn = Connection::open(&db_path).unwrap();
@@ -7223,7 +6974,7 @@ mod tests {
                 let resale_order_id = create_full_order_v3_impl(
                     &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
                     vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
-                    500, 0, 500, 0, None, None, None, None, 0, None, None, None,
+                    500, 0, 500, 0, None, None, None, None, 0, None, None,
                 ).unwrap();
                 take_payment_v3_impl(&db, &license, session.clone(), resale_order_id, "CASH".to_string(), 500, 0, None).unwrap();
             }
@@ -7275,7 +7026,7 @@ mod tests {
                 let order_id = create_full_order_v3_impl(
                     &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
                     vec![OrderItemInput { menu_item_id: popular_item_id.clone(), name: None, quantity: 3, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
-                    1500, 0, 1500, 0, None, None, None, None, 0, None, None, None,
+                    1500, 0, 1500, 0, None, None, None, None, 0, None, None,
                 ).unwrap();
                 let backdated = (chrono::Utc::now() - chrono::Duration::days(7 * weeks_ago)).format("%Y-%m-%d %H:%M:%S").to_string();
                 let conn = Connection::open(&db_path).unwrap();
@@ -7287,7 +7038,7 @@ mod tests {
             let rare_order_id = create_full_order_v3_impl(
                 &db, &license, session.clone(), table_id, "DINE_IN".to_string(),
                 vec![OrderItemInput { menu_item_id: rare_item_id.clone(), name: None, quantity: 2, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
-                1000, 0, 1000, 0, None, None, None, None, 0, None, None, None,
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None,
             ).unwrap();
             let backdated = (chrono::Utc::now() - chrono::Duration::days(7)).format("%Y-%m-%d %H:%M:%S").to_string();
             {
@@ -7360,7 +7111,7 @@ mod tests {
                 let order_id = create_full_order_v3_impl(
                     &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
                     vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 8, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
-                    4000, 0, 4000, 0, None, None, None, None, 0, None, None, None,
+                    4000, 0, 4000, 0, None, None, None, None, 0, None, None,
                 ).unwrap();
                 let backdated = (chrono::Utc::now() - chrono::Duration::days(7 * weeks_ago)).format("%Y-%m-%d %H:%M:%S").to_string();
                 let conn = Connection::open(&db_path).unwrap();
@@ -7800,7 +7551,7 @@ mod tests {
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
-    /// Batch 3a, Decision B: proves each of the 5 DRIFT-broken command groups
+    /// Batch 3a, Decision B: proves each of the 3 DRIFT-broken command groups
     /// now writes/reads exactly the columns DRIFT_REPORT.md Findings #2/#5
     /// said were missing -- this is the same class of test as T1.1's
     /// bit-identical-revenue check, just applied to "does the write succeed
@@ -7809,9 +7560,7 @@ mod tests {
     fn drift_broken_groups_create_and_list_round_trip_through_the_previously_missing_columns() {
         let (db_path, tenant_id, branch_id, _table_id) = seeded_db("driftgroups");
         let conn = Connection::open(&db_path).unwrap();
-        let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Drift Test Cashier");
         let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Drift Test Manager");
-        let cashier = security::authenticate(&conn, &security::create_session(&conn, &cashier_id, "d1").unwrap()).unwrap();
         let manager = security::authenticate(&conn, &security::create_session(&conn, &manager_id, "d2").unwrap()).unwrap();
         let repo = Repo::new(&conn);
 
@@ -7827,38 +7576,6 @@ mod tests {
         let pos = repo.list_purchase_orders(&manager.scope()).unwrap();
         assert!(pos.iter().any(|p| p.id == po_id && p.created_by == manager.id && p.notes.as_deref() == Some("طلبية عاجلة")));
         println!("[drift-groups] purchase order created and listed with created_by/notes -- Finding #2 columns round-trip");
-
-        // drivers + delivery_logs (Finding #5, "delivery"): current_lat/lng,
-        // license_number, vehicle_plate, and the 4 timestamp columns.
-        let driver_id = repo.create_driver(&tenant_id, &branch_id, "سائق تجريبي", Some("0988888888"), "MOTORCYCLE", Some("LIC-123"), Some("PLATE-9"))
-            .unwrap();
-        repo.update_driver_location(&manager.scope(), &driver_id, 33.5138, 36.2765).unwrap();
-        let drivers = repo.list_drivers(&manager.scope()).unwrap();
-        let driver = drivers.iter().find(|d| d.id == driver_id).unwrap();
-        assert_eq!(driver.license_number.as_deref(), Some("LIC-123"));
-        assert_eq!(driver.vehicle_plate.as_deref(), Some("PLATE-9"));
-        assert_eq!(driver.current_lat, Some(33.5138));
-        println!("[drift-groups] driver created with license_number/vehicle_plate and located (current_lat/lng) -- Finding #5 columns round-trip");
-
-        let order_id = repo.create_order(&cashier.scope(), &tenant_id, &branch_id, NewOrder {
-            table_id: "tbl-1".to_string(), user_id: cashier.id.clone(), order_type: "DELIVERY".into(),
-            subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0,
-        }).unwrap();
-        let log_id = repo.create_delivery_log(&cashier.scope(), &tenant_id, &branch_id, &order_id, &driver_id).unwrap();
-        let logs = repo.list_delivery_logs(&cashier.scope()).unwrap();
-        let log = logs.iter().find(|l| l.id == log_id).unwrap();
-        assert_eq!(log.status, "ASSIGNED");
-        assert!(log.assigned_at.is_some());
-        assert!(log.picked_up_at.is_none());
-
-        repo.update_delivery_status(&cashier.scope(), &log_id, "PICKED_UP").unwrap();
-        repo.update_delivery_status(&cashier.scope(), &log_id, "DELIVERED").unwrap();
-        let logs = repo.list_delivery_logs(&cashier.scope()).unwrap();
-        let log = logs.iter().find(|l| l.id == log_id).unwrap();
-        assert_eq!(log.status, "DELIVERED");
-        assert!(log.picked_up_at.is_some(), "picked_up_at must be stamped, not left NULL, once the delivery passed through PICKED_UP");
-        assert!(log.delivered_at.is_some());
-        println!("[drift-groups] delivery_logs: status progressed ASSIGNED -> PICKED_UP -> DELIVERED, each transition stamping its own timestamp column, none overwritten");
 
         // printers (Finding #5): drawer_pulse_ms/is_primary/is_secondary/vendor_id/product_id.
         let printer_id = repo.create_printer(&tenant_id, &branch_id, "طابعة المطبخ", "KITCHEN", "USB", Some("04b8"), Some("0202"), 250, true, None, None, None).unwrap();
@@ -9323,7 +9040,7 @@ mod tests {
             table_id: table_id.clone(), user_id: manager_id.clone(), order_type: "DINE_IN".to_string(),
             subtotal_cents: 2000, tax_cents: 0, total_cents: 2000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
-            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            delivery_fee_cents: 0, shift_id: None,
             items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 2, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] }],
         }).unwrap();
         repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CREDIT", 2000, 0, Some(&debtor_id), &manager_id, Some("REFUND-CARD")).unwrap();
@@ -9431,96 +9148,6 @@ mod tests {
         let _ = fs::remove_dir_all(other_db.parent().unwrap());
     }
 
-    /// Batch 3b, final slice, group 2: driver CRUD (soft delete), zones,
-    /// and the two atomicity pairs -- assignment (delivery_log + driver
-    /// BUSY) and terminal status (delivery_log transition + driver
-    /// AVAILABLE + total_deliveries bump on DELIVERED only).
-    #[test]
-    fn delivery_lifecycle_drivers_zones_assignment_and_status_atomicity() {
-        let (db_path, tenant_id, branch_id, table_id) = seeded_db("delivery_lifecycle");
-        let conn = Connection::open(&db_path).unwrap();
-        let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Delivery Manager");
-        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-        let repo = Repo::new(&conn);
-
-        // Driver CRUD.
-        let driver_id = repo.create_driver(&tenant_id, &branch_id, "سائق أحمد", Some("0999111222"), "MOTORCYCLE", None, None).unwrap();
-        assert_eq!(repo.list_drivers(&scope).unwrap().len(), 1);
-        repo.update_driver(&scope, &driver_id, "سائق أحمد المعدل", Some("0999111222"), "CAR", Some("PLATE-1"), Some("LIC-1")).unwrap();
-        let all = repo.list_all_drivers(&scope).unwrap();
-        assert_eq!(all[0].name, "سائق أحمد المعدل");
-        assert_eq!(all[0].vehicle_type, "CAR");
-        println!("[delivery] driver created and updated");
-
-        assert_eq!(repo.list_available_drivers(&scope).unwrap().len(), 1, "a fresh driver starts AVAILABLE and must show up in the pick-a-driver list");
-
-        // Zones.
-        let zone_id = repo.create_delivery_zone(&tenant_id, &branch_id, "حي النزهة", "[]", 500, 2000, 30).unwrap();
-        assert_eq!(repo.list_delivery_zones(&scope).unwrap().len(), 1);
-        repo.update_delivery_zone(&scope, &zone_id, "حي النزهة المحدث", 700, 2500, 25).unwrap();
-        let zones = repo.list_delivery_zones(&scope).unwrap();
-        assert_eq!(zones[0].name, "حي النزهة المحدث");
-        assert_eq!(zones[0].fee_cents, 700);
-        repo.deactivate_delivery_zone(&scope, &zone_id).unwrap();
-        assert_eq!(repo.list_delivery_zones(&scope).unwrap().len(), 0, "deactivated zones must not appear in the active list");
-        println!("[delivery] zone created, updated, deactivated");
-
-        // Assignment atomicity: a DELIVERY order, then assign the driver.
-        let order_id = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
-            table_id, user_id: manager_id.clone(), order_type: "DELIVERY".into(),
-            subtotal_cents: 5000, tax_cents: 0, total_cents: 5000, discount_cents: 0,
-        }).unwrap();
-        let log_id = repo.assign_driver_to_delivery(&scope, &tenant_id, &branch_id, &order_id, &driver_id).unwrap();
-        assert_eq!(repo.list_all_drivers(&scope).unwrap()[0].status, "BUSY", "assignment must flip the driver to BUSY in the same call");
-        assert_eq!(repo.list_available_drivers(&scope).unwrap().len(), 0, "a BUSY driver must not show up as available");
-        let active = repo.list_active_deliveries(&scope).unwrap();
-        assert_eq!(active.len(), 1);
-        assert_eq!(active[0].driver_name, "سائق أحمد المعدل");
-        assert_eq!(active[0].total_cents, 5000);
-        println!("[delivery] assign_driver_to_delivery: delivery_log created ASSIGNED, driver flipped to BUSY, both visible via list_active_deliveries");
-
-        // Terminal-status atomicity: DELIVERED bumps total_deliveries and frees the driver.
-        repo.update_delivery_status_and_driver(&scope, &log_id, "PICKED_UP", None).unwrap();
-        assert_eq!(repo.list_all_drivers(&scope).unwrap()[0].status, "BUSY", "still BUSY mid-delivery, not a terminal status");
-        repo.update_delivery_status_and_driver(&scope, &log_id, "DELIVERED", None).unwrap();
-        let driver_after = repo.list_all_drivers(&scope).unwrap().into_iter().find(|d| d.id == driver_id).unwrap();
-        assert_eq!(driver_after.status, "AVAILABLE", "DELIVERED must free the driver back to AVAILABLE in the same call");
-        assert_eq!(driver_after.total_deliveries, 1, "DELIVERED must bump total_deliveries");
-        assert_eq!(repo.list_active_deliveries(&scope).unwrap().len(), 0, "a DELIVERED log must drop out of the active list");
-        let history = repo.list_delivery_history(&scope, 10, 0).unwrap();
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].delivery_status, "DELIVERED");
-        println!("[delivery] terminal status DELIVERED: driver freed to AVAILABLE + total_deliveries bumped to 1, log moved from active to history");
-
-        // A second delivery that FAILS must free the driver WITHOUT bumping total_deliveries.
-        let order_id_2 = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
-            table_id: "tbl-1".to_string(), user_id: manager_id.clone(), order_type: "DELIVERY".into(),
-            subtotal_cents: 3000, tax_cents: 0, total_cents: 3000, discount_cents: 0,
-        }).unwrap();
-        let log_id_2 = repo.assign_driver_to_delivery(&scope, &tenant_id, &branch_id, &order_id_2, &driver_id).unwrap();
-        repo.update_delivery_status_and_driver(&scope, &log_id_2, "FAILED", Some("العميل غير متواجد")).unwrap();
-        let driver_after_fail = repo.list_all_drivers(&scope).unwrap().into_iter().find(|d| d.id == driver_id).unwrap();
-        assert_eq!(driver_after_fail.status, "AVAILABLE", "FAILED must also free the driver");
-        assert_eq!(driver_after_fail.total_deliveries, 1, "FAILED must NOT bump total_deliveries -- only an actual DELIVERED counts");
-        let history_2 = repo.list_delivery_history(&scope, 10, 0).unwrap();
-        assert_eq!(history_2.len(), 2);
-        let failed_entry = history_2.iter().find(|h| h.log_id == log_id_2).unwrap();
-        assert_eq!(failed_entry.failure_reason.as_deref(), Some("العميل غير متواجد"));
-        println!("[delivery] FAILED: driver freed but total_deliveries NOT bumped (only DELIVERED counts), failure_reason persisted");
-
-        let driver_deliveries = repo.list_driver_deliveries(&scope, &driver_id).unwrap();
-        assert_eq!(driver_deliveries.len(), 2, "list_driver_deliveries must show both this driver's deliveries");
-
-        // Soft delete.
-        repo.deactivate_driver(&scope, &driver_id).unwrap();
-        assert_eq!(repo.list_drivers(&scope).unwrap().len(), 0, "list_drivers (active-only) must exclude a deactivated driver");
-        assert_eq!(repo.list_all_drivers(&scope).unwrap().len(), 1, "list_all_drivers must still show it (soft delete, not gone)");
-        assert_eq!(repo.list_all_drivers(&scope).unwrap()[0].is_active, 0);
-        println!("[delivery] driver deactivated: excluded from list_drivers, still visible via list_all_drivers with is_active=0");
-
-        let _ = fs::remove_dir_all(db_path.parent().unwrap());
-    }
-
     /// Slice A verification: the money-touching POS-flow commands
     /// (`split_bill`, `void_order_item`, `merge_tables`/`unmerge_tables`,
     /// `transfer_order`, `finalize_order_with_payment`) had ZERO tests
@@ -9548,7 +9175,7 @@ mod tests {
             table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".into(),
             subtotal_cents: 1200, tax_cents: 120, total_cents: 1320, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
-            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            delivery_fee_cents: 0, shift_id: None,
             items: vec![
                 crate::repo::OrderItemInput { menu_item_id: item_a.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] },
                 crate::repo::OrderItemInput { menu_item_id: item_b.clone(), name: None, quantity: 1, unit_price_cents: 700, notes: None, combo_id: None, modifiers: vec![] },
@@ -9650,7 +9277,7 @@ mod tests {
             table_id: table_b.clone(), user_id: cashier_b.clone(), order_type: "DINE_IN".into(),
             subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
-            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            delivery_fee_cents: 0, shift_id: None,
             items: vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] }],
         }).unwrap();
         let item_b_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_b], |r| r.get(0)).unwrap();
@@ -10319,7 +9946,7 @@ mod tests {
             table_id: table_a.clone(), user_id: cashier_a.clone(), order_type: "DINE_IN".into(),
             subtotal_cents: 1500, tax_cents: 0, total_cents: 1500, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
-            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            delivery_fee_cents: 0, shift_id: None,
             items: vec![
                 crate::repo::OrderItemInput { menu_item_id: burger_id.clone(), name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] },
                 crate::repo::OrderItemInput { menu_item_id: fries_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] },
@@ -10342,7 +9969,7 @@ mod tests {
             table_id: table_a.clone(), user_id: cashier_a.clone(), order_type: "DINE_IN".into(),
             subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
-            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            delivery_fee_cents: 0, shift_id: None,
             items: vec![crate::repo::OrderItemInput { menu_item_id: burger_id.clone(), name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] }],
         }).unwrap();
         repo.append_order_status_event(&tenant_id, &branch_a, &order_a_paid_first, "PENDING", &cashier_a, "test-device").unwrap();
@@ -10355,7 +9982,7 @@ mod tests {
             table_id: table_a.clone(), user_id: cashier_a.clone(), order_type: "DINE_IN".into(),
             subtotal_cents: 500, tax_cents: 0, total_cents: 500, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
-            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            delivery_fee_cents: 0, shift_id: None,
             items: vec![crate::repo::OrderItemInput { menu_item_id: fries_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
         }).unwrap();
         for status in ["PENDING", "PREPARING", "READY", "SERVED"] {
@@ -10369,7 +9996,7 @@ mod tests {
             table_id: table_b, user_id: cashier_b, order_type: "DINE_IN".into(),
             subtotal_cents: 2000, tax_cents: 0, total_cents: 2000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
-            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            delivery_fee_cents: 0, shift_id: None,
             items: vec![crate::repo::OrderItemInput { menu_item_id: burger_id, name: None, quantity: 2, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] }],
         }).unwrap();
 
@@ -10398,14 +10025,14 @@ mod tests {
     }
 
     /// T1.9 regression gate (2026-07-17): permanent guard for every one of
-    /// the 22 cross-tenant/cross-branch holes found and fixed during T1.9's
+    /// the 18 cross-tenant/cross-branch holes found and fixed during T1.9's
     /// pre-sweep audit. Each of these repo methods used to take a bare
     /// client-supplied id with NO `Scope`/`tenant_id` check at all -- any
     /// authenticated staff member, any tenant, could mutate another
-    /// tenant's row by guessing/enumerating its id. `driver_id` and
-    /// loyalty `is_active` both regressed earlier this sprint because
-    /// their fixes shipped with no guarding test -- this test exists so
-    /// that can't happen to any of these 22: deleting the `assert_row_in_
+    /// tenant's row by guessing/enumerating its id. The fleet layer's
+    /// `driver_id` and loyalty `is_active` both regressed earlier this sprint
+    /// because their fixes shipped with no guarding test -- this test exists so
+    /// that can't happen to any of these 18: deleting the `assert_row_in_
     /// scope`/`assert_tenant_owns_row` call from any one of them below
     /// must fail this test, not just weaken theoretical coverage.
     ///
@@ -10417,7 +10044,7 @@ mod tests {
     /// the other tenant's row is rejected with `TenantOwnershipViolation`.
     #[test]
     fn t1_9_all_newly_scoped_repo_methods_reject_cross_tenant_access() {
-        let (db_path, tenant_id, branch_id, table_id) = seeded_db("t1_9_scope_regression");
+        let (db_path, tenant_id, branch_id, _table_id) = seeded_db("t1_9_scope_regression");
         let conn = Connection::open(&db_path).unwrap();
         let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "T1.9 Manager");
         let repo = Repo::new(&conn);
@@ -10497,88 +10124,7 @@ mod tests {
             other => panic!("expected TenantOwnershipViolation, got {other:?}"),
         }
 
-        // ---- 10/11/12: drivers (update_driver, update_driver_location, deactivate_driver) ----
-        let driver_id = repo.create_driver(&tenant_id, &branch_id, "سائق محلي", None, "CAR", None, None).unwrap();
-        repo.update_driver(&scope, &driver_id, "سائق محلي محدث", None, "CAR", None, None).unwrap();
-        repo.update_driver_location(&scope, &driver_id, 1.0, 1.0).unwrap();
-        println!("[t1.9] driver writes succeed for an in-scope driver");
-        let other_driver = "other-tenant-driver";
-        conn.execute("INSERT INTO drivers (id, tenant_id, branch_id, name, vehicle_type, status) VALUES (?1, 'other-tenant', 'other-branch', 'X', 'CAR', 'AVAILABLE')", params![other_driver]).unwrap();
-        match repo.update_driver(&scope, other_driver, "hijacked", None, "CAR", None, None) {
-            Err(RepoError::TenantOwnershipViolation { table, .. }) => { assert_eq!(table, "drivers"); println!("[t1.9] update_driver correctly rejects another tenant's driver"); }
-            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
-        }
-        match repo.update_driver_location(&scope, other_driver, 2.0, 2.0) {
-            Err(RepoError::TenantOwnershipViolation { table, .. }) => { assert_eq!(table, "drivers"); println!("[t1.9] update_driver_location correctly rejects another tenant's driver"); }
-            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
-        }
-        match repo.deactivate_driver(&scope, other_driver) {
-            Err(RepoError::TenantOwnershipViolation { table, .. }) => { assert_eq!(table, "drivers"); println!("[t1.9] deactivate_driver correctly rejects another tenant's driver"); }
-            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
-        }
-
-        // ---- 13/14: delivery assignment (create_delivery_log, assign_driver_to_delivery) ----
-        let order_id = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
-            table_id: table_id.clone(), user_id: manager_id.clone(), order_type: "DELIVERY".into(),
-            subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0,
-        }).unwrap();
-        let log_id = repo.create_delivery_log(&scope, &tenant_id, &branch_id, &order_id, &driver_id).unwrap();
-        println!("[t1.9] create_delivery_log succeeds for an in-scope order+driver");
-        // Reject on an out-of-scope driver_id (order in-scope).
-        match repo.create_delivery_log(&scope, &tenant_id, &branch_id, &order_id, other_driver) {
-            Err(RepoError::TenantOwnershipViolation { table, .. }) => { assert_eq!(table, "drivers"); println!("[t1.9] create_delivery_log correctly rejects another tenant's driver"); }
-            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
-        }
-        // Reject on an out-of-scope order_id (via assert_order_in_scope, not TenantOwnershipViolation).
-        let other_order = "other-tenant-order";
-        conn.execute(
-            "INSERT INTO orders (id, tenant_id, branch_id, table_id, user_id, status, order_type, subtotal_cents, tax_cents, total_cents, discount_cents) \
-             VALUES (?1, 'other-tenant', 'other-branch', ?2, ?3, 'PENDING', 'DINE_IN', 100, 0, 100, 0)",
-            params![other_order, table_id, manager_id],
-        ).unwrap();
-        match repo.create_delivery_log(&scope, &tenant_id, &branch_id, other_order, &driver_id) {
-            Err(RepoError::OrderOutOfScope { .. }) => println!("[t1.9] create_delivery_log correctly rejects another tenant's order"),
-            other => panic!("expected OrderOutOfScope, got {other:?}"),
-        }
-        match repo.assign_driver_to_delivery(&scope, &tenant_id, &branch_id, &order_id, other_driver) {
-            Err(RepoError::TenantOwnershipViolation { table, .. }) => { assert_eq!(table, "drivers"); println!("[t1.9] assign_driver_to_delivery correctly rejects another tenant's driver"); }
-            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
-        }
-
-        // ---- 15/16: delivery status (update_delivery_status, update_delivery_status_and_driver) ----
-        repo.update_delivery_status(&scope, &log_id, "PICKED_UP").unwrap();
-        println!("[t1.9] update_delivery_status succeeds for an in-scope delivery log");
-        let other_log = "other-tenant-delivery-log";
-        conn.execute(
-            "INSERT INTO delivery_logs (id, tenant_id, branch_id, order_id, driver_id, status, assigned_at) \
-             VALUES (?1, 'other-tenant', 'other-branch', ?2, ?3, 'ASSIGNED', datetime('now'))",
-            params![other_log, other_order, other_driver],
-        ).unwrap();
-        match repo.update_delivery_status(&scope, other_log, "PICKED_UP") {
-            Err(RepoError::TenantOwnershipViolation { table, .. }) => { assert_eq!(table, "delivery_logs"); println!("[t1.9] update_delivery_status correctly rejects another tenant's delivery log"); }
-            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
-        }
-        match repo.update_delivery_status_and_driver(&scope, other_log, "DELIVERED", None) {
-            Err(RepoError::TenantOwnershipViolation { table, .. }) => { assert_eq!(table, "delivery_logs"); println!("[t1.9] update_delivery_status_and_driver correctly rejects another tenant's delivery log"); }
-            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
-        }
-
-        // ---- 17/18: delivery zones (update_delivery_zone, deactivate_delivery_zone) ----
-        let zone_id = repo.create_delivery_zone(&tenant_id, &branch_id, "منطقة محلية", "{}", 500, 2000, 30).unwrap();
-        repo.update_delivery_zone(&scope, &zone_id, "منطقة محلية محدثة", 600, 2000, 30).unwrap();
-        println!("[t1.9] update_delivery_zone succeeds for an in-scope zone");
-        let other_zone = "other-tenant-zone";
-        conn.execute("INSERT INTO delivery_zones (id, tenant_id, branch_id, name, boundaries, fee_cents, min_order_cents, estimated_minutes) VALUES (?1, 'other-tenant', 'other-branch', 'X', '{}', 0, 0, 0)", params![other_zone]).unwrap();
-        match repo.update_delivery_zone(&scope, other_zone, "hijacked", 0, 0, 0) {
-            Err(RepoError::TenantOwnershipViolation { table, .. }) => { assert_eq!(table, "delivery_zones"); println!("[t1.9] update_delivery_zone correctly rejects another tenant's zone"); }
-            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
-        }
-        match repo.deactivate_delivery_zone(&scope, other_zone) {
-            Err(RepoError::TenantOwnershipViolation { table, .. }) => { assert_eq!(table, "delivery_zones"); println!("[t1.9] deactivate_delivery_zone correctly rejects another tenant's zone"); }
-            other => panic!("expected TenantOwnershipViolation, got {other:?}"),
-        }
-
-        // ---- 19/20: printers (set_printer_active, update_printer_paper_width) ----
+        // ---- 9/10: printers (set_printer_active, update_printer_paper_width) ----
         let printer_id = repo.create_printer(&tenant_id, &branch_id, "طابعة محلية", "RECEIPT", "USB", None, None, 200, true, None, None, None).unwrap();
         repo.set_printer_active(&scope, &printer_id, false).unwrap();
         println!("[t1.9] set_printer_active succeeds for an in-scope printer");
@@ -10593,7 +10139,7 @@ mod tests {
             other => panic!("expected TenantOwnershipViolation, got {other:?}"),
         }
 
-        // ---- 21/22: ingredients (update_ingredient, adjust_stock) ----
+        // ---- 11/12: ingredients (update_ingredient, adjust_stock) ----
         let ing_id = repo.create_ingredient(&tenant_id, &branch_id, "مكون محلي", "kg", 100, 1.0).unwrap();
         repo.update_ingredient(&scope, &ing_id, "مكون محلي محدث", "kg", 100, 1.0).unwrap();
         repo.adjust_stock(&scope, &tenant_id, &branch_id, &ing_id, 5.0, "test", &manager_id).unwrap();
@@ -10609,7 +10155,7 @@ mod tests {
             other => panic!("expected TenantOwnershipViolation, got {other:?}"),
         }
 
-        // ---- 23: chain_config global-singleton fix (get/update_chain_currency/update_chain_tax) ----
+        // ---- 13: chain_config global-singleton fix (get/update_chain_currency/update_chain_tax) ----
         let cfg = repo.get_chain_config(&tenant_id).unwrap();
         assert_eq!(cfg.currency, "SYP", "our tenant's default before any update");
         repo.update_chain_currency(&tenant_id, "USD").unwrap();
@@ -10621,7 +10167,7 @@ mod tests {
         assert_eq!(repo.get_chain_config(&tenant_id).unwrap().tax_rate_cents, 0, "another tenant's tax update must NOT leak into our tenant's config");
         println!("[t1.9] chain_config is now tenant-scoped: two tenants' currency/tax updates are fully isolated from each other");
 
-        // ---- 24: get_receipt_config global-singleton + arbitrary-branch fix ----
+        // ---- 14: get_receipt_config global-singleton + arbitrary-branch fix ----
         // Insert a real legacy `branches` row (the table get_receipt_config's
         // branch_name lookup actually reads) so this proves real leakage, not
         // two fallback-default strings looking coincidentally equal.
@@ -11030,7 +10576,7 @@ mod tests {
             table_id: table_a.clone(), user_id: cashier_a.clone(), order_type: "DINE_IN".into(),
             subtotal_cents: 0, tax_cents: 0, total_cents: 0, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
-            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            delivery_fee_cents: 0, shift_id: None,
             items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![] }],
         });
         match zeroed {
@@ -11042,7 +10588,7 @@ mod tests {
             table_id: table_a.clone(), user_id: cashier_a.clone(), order_type: "DINE_IN".into(),
             subtotal_cents: 10000, tax_cents: 0, total_cents: 10000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
-            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            delivery_fee_cents: 0, shift_id: None,
             items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![] }],
         }).unwrap();
         match repo.take_payment(&tenant_id, &branch_a, crate::repo::PaymentInput { order_id: real_order.clone(), method: "CASH".into(), amount_cents: 0, change_cents: 0, debtor_id: None, actor_id: cashier_a.clone() }) {
@@ -11068,7 +10614,7 @@ mod tests {
             table_id: table_b, user_id: cashier_b.clone(), order_type: "DINE_IN".into(),
             subtotal_cents: 10000, tax_cents: 0, total_cents: 10000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
-            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            delivery_fee_cents: 0, shift_id: None,
             items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![] }],
         }).unwrap();
         let item_b_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_b], |r| r.get(0)).unwrap();
@@ -11128,7 +10674,7 @@ mod tests {
             table_id: table_a.clone(), user_id: cashier_a.clone(), order_type: "DINE_IN".into(),
             subtotal_cents: 10000, tax_cents: 0, total_cents: 10000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
-            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            delivery_fee_cents: 0, shift_id: None,
             items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![] }],
         }).unwrap();
         // Tendered 20000 with change_cents=0 (pocketing 10000 of phantom change) instead of the correct change_cents=10000.
@@ -11153,7 +10699,7 @@ mod tests {
             table_id: table_a, user_id: cashier_a.clone(), order_type: "DINE_IN".into(),
             subtotal_cents: 10000, tax_cents: 0, total_cents: 10000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
-            delivery_fee_cents: 0, driver_id: None, shift_id: None,
+            delivery_fee_cents: 0, shift_id: None,
             items: vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![] }],
         }).unwrap();
         let item_for_void: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_for_void], |r| r.get(0)).unwrap();
@@ -11533,9 +11079,9 @@ mod tests {
     }
 
     /// Extends the license lock from `list_staff_v3`/`get_sales_report_v3`
-    /// (the original two) to every other back-office command. 149 total
-    /// `_v3` commands in this file; 94 are gated (the 2 original plus 92
-    /// added here), 55 are the POS selling path plus auth/license
+    /// (the original two) to every other back-office command. 134 total
+    /// `_v3` commands in this file; 89 are gated (the 2 original plus 87
+    /// added here), 45 are the POS selling path plus auth/license
     /// infrastructure, deliberately never gated -- see the license task's
     /// "POS must keep selling" mandate.
     ///
@@ -11556,9 +11102,8 @@ mod tests {
         /// Back-office: reports, settings, staff/branch management, menu
         /// admin, inventory, finance, debt management (CUD -- list_debtors_v3
         /// itself stays open, PaymentModal needs it), customers, loyalty
-        /// admin, purchase orders/suppliers, delivery roster/zone admin, and
-        /// order analytics (AI page). Every one of these must be BLOCKED
-        /// when back-office is locked.
+        /// admin, purchase orders/suppliers, and order analytics (AI page).
+        /// Every one of these must be BLOCKED when back-office is locked.
         const GATED: &[&str] = &[
             "list_staff_v3", "get_sales_report_v3", "ask_assistant_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
             "create_branch_v3", "create_staff_v3", "update_staff_v3", "update_staff_profile_v3",
@@ -11577,6 +11122,8 @@ mod tests {
             "set_branch_full_active_v3", "update_branch_detail_field_v3", "list_terminals_v3",
             "get_tenant_today_stats_v3", "get_branch_today_stats_v3", "get_staff_counts_by_branch_v3", "get_terminal_counts_by_branch_v3",
             "list_ingredients_v3", "create_ingredient_v3", "update_ingredient_v3", "adjust_stock_v3",
+            "record_stock_count_v3", "list_stock_counts_v3",
+            "get_cogs_variance_report_v3", "get_menu_margin_report_v3",
             "list_inventory_logs_v3", "list_low_stock_ingredients_v3",
             "list_recipe_ingredients_v3", "add_recipe_ingredient_v3", "update_recipe_ingredient_v3", "delete_recipe_ingredient_v3",
             "create_debtor_v3", "update_debtor_v3", "deactivate_debtor_v3",
@@ -11597,9 +11144,6 @@ mod tests {
             "list_purchase_order_items_v3", "receive_purchase_order_v3",
             "list_suppliers_v3", "create_supplier_v3", "update_supplier_v3", "delete_supplier_v3",
             "record_supplier_payment_v3", "list_supplier_payments_v3",
-            "create_driver_v3", "update_driver_v3", "deactivate_driver_v3", "list_all_drivers_v3",
-            "create_delivery_zone_v3", "update_delivery_zone_v3", "deactivate_delivery_zone_v3",
-            "list_delivery_zones_v3", "list_delivery_history_v3",
             "list_orders_v3",
             "create_table_v3", "rename_table_v3", "delete_table_v3",
             "refund_order_v3", "list_recent_paid_orders_v3",
@@ -11607,8 +11151,7 @@ mod tests {
 
         /// The selling path: order/table/payment/print, the menu reads the
         /// POS grid needs, shift open/close (running the register day to
-        /// day), delivery fulfillment for an order already in flight, the
-        /// manager-override check (used by void/discount overrides at
+        /// day), the manager-override check (used by void/discount overrides at
         /// checkout), inline loyalty lookup/earn, auth, and the license
         /// commands themselves (which obviously can never gate on their own
         /// result). Every one of these must stay OPEN when back-office is
@@ -11644,10 +11187,6 @@ mod tests {
             "export_pdf_v3",
             "get_active_shift_v3", "open_shift_v3", "close_shift_v3", "get_shift_stats_v3",
             "list_shift_orders_v3", "clock_in_v3", "clock_out_v3",
-            "assign_driver_to_delivery_v3", "update_delivery_status_v3",
-            "update_delivery_status_and_driver_v3", "list_active_deliveries_v3",
-            "list_available_drivers_v3", "list_drivers_v3", "list_driver_deliveries_v3",
-            "update_driver_location_v3", "create_delivery_log_v3", "list_delivery_logs_v3",
         ];
 
         pub(super) fn function_body(source: &str, name: &str) -> String {

@@ -48,8 +48,6 @@ if (import.meta.env.DEV && !("__TAURI__" in window)) {
       list_employees_v3: [],
       list_shifts_v3: [],
       list_branches_v3: [],
-      list_delivery_drivers_v3: [],
-      list_delivery_zones_v3: [],
       list_debtors_v3: [],
       list_debt_records_v3: [],
       get_tax_collected_v3: 0,

@@ -142,7 +142,6 @@ export async function createOrder(
   deliveryAddress?: string,
   _savingsCents?: number,
   shiftId?: string,
-  driverId?: string,
   managerOverridePin?: string,
   deliveryFeeCents = 0
 ): Promise<string> {
@@ -176,7 +175,6 @@ export async function createOrder(
     customerPhone: customerPhone ?? null,
     deliveryAddress: deliveryAddress ?? null,
     deliveryFeeCents,
-    driverId: driverId ?? null,
     shiftId: shiftId ?? null,
     // Re-verified server-side inside create_full_order_v3 (via
     // enforce_discount_cap) -- this is proof to Rust, not a trusted flag.

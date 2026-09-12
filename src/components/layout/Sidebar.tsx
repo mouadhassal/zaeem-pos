@@ -9,7 +9,7 @@ import {
   IconLogout as LogOut,
   IconCashRegister, IconToolsKitchen2, IconClipboardList, IconBox,
   IconChartBar, IconUsers, IconClock, IconReceipt2, IconWallet,
-  IconTruck, IconBuilding, IconCoin, IconGift, IconRobot, IconWand,
+  IconBuilding, IconCoin, IconGift, IconRobot, IconWand,
   IconSettings, IconTool, IconLayoutDashboard, IconShoppingCart, IconCalendar,
   type Icon,
 } from "@tabler/icons-react";
@@ -26,7 +26,6 @@ const ICON_BY_ID: Record<string, Icon> = {
   shift: IconClock,
   customers: IconReceipt2,
   debt: IconWallet,
-  delivery: IconTruck,
   marketplace: IconShoppingCart,
   branches: IconBuilding,
   finance: IconCoin,

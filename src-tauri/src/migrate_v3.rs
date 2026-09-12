@@ -128,7 +128,7 @@ const TENANT_BRANCH_TABLES: &[&str] = &[
     "order_modifiers", "payments", "shifts", "audit_logs", "printers", "chain_config",
     "delayed_orders", "suppliers", "purchase_orders", "purchase_order_items",
     "loyalty_transactions", "invoices", "operational_costs", "attendance", "terminals",
-    "notifications", "drivers", "delivery_zones", "delivery_logs", "debtors", "debt_entries",
+    "notifications", "debtors", "debt_entries",
     "login_sessions",
 ];
 
@@ -659,8 +659,6 @@ const FK_EDGES: &[(&str, &str, &str)] = &[
     ("attendance", "user_id", "users"),
     ("terminals", "branch_id", "branches"),
     ("notifications", "user_id", "users"),
-    ("delivery_logs", "order_id", "orders"),
-    ("delivery_logs", "driver_id", "drivers"),
     ("debt_entries", "debtor_id", "debtors"),
 ];
 
@@ -671,7 +669,7 @@ const ID_OWNING_TABLES: &[&str] = &[
     "printers", "combo_meals", "combo_items", "happy_hour_rules", "delayed_orders",
     "branches", "customers", "suppliers", "purchase_orders", "purchase_order_items",
     "loyalty_cards", "loyalty_transactions", "invoices", "operational_costs",
-    "attendance", "terminals", "drivers", "delivery_zones", "delivery_logs",
+    "attendance", "terminals",
     "debtors", "debt_entries", "notifications",
 ];
 
@@ -991,17 +989,14 @@ pub fn run_identity_migration(conn: &mut Connection, db_path: &Path) -> Result<(
 
 pub const MIGRATION_D_VERSION: i64 = 7;
 
-/// Columns DRIFT_REPORT.md Finding #2/#5 found missing, for the 4 tables
-/// Decision B named (customers, purchase_orders, drivers, printers,
-/// delivery_logs -- "delivery" is the two tables `delivery/page.tsx` uses).
+/// Columns DRIFT_REPORT.md Finding #2/#5 found missing, for the 3 tables
+/// Decision B named (customers, purchase_orders, printers).
 /// Additive only -- these are real, wanted fields (unlike Finding #1's
 /// `driver_id`, which the fix was to simply never write), so the fix here is
 /// "make the column exist", not "avoid referencing it".
 const DRIFT_FIX_COLUMNS: &[(&str, &[(&str, &str)])] = &[
     ("customers", &[("address", "TEXT"), ("birthday", "TEXT"), ("last_order_at", "TEXT"), ("loyalty_points", "INTEGER"), ("notes", "TEXT")]),
     ("purchase_orders", &[("created_by", "TEXT"), ("notes", "TEXT")]),
-    ("drivers", &[("current_lat", "REAL"), ("current_lng", "REAL"), ("license_number", "TEXT"), ("vehicle_plate", "TEXT")]),
-    ("delivery_logs", &[("assigned_at", "TEXT"), ("picked_up_at", "TEXT"), ("delivered_at", "TEXT"), ("failed_at", "TEXT")]),
     ("printers", &[("drawer_pulse_ms", "INTEGER"), ("is_primary", "INTEGER"), ("is_secondary", "INTEGER"), ("vendor_id", "TEXT"), ("product_id", "TEXT")]),
 ];
 
@@ -1161,8 +1156,6 @@ pub fn run_index_migration(conn: &mut Connection, _db_path: &Path) -> Result<(),
         ("orders", "shift_id", "idx_orders_shift_id"),
         ("orders", "table_id", "idx_orders_table_id"),
         ("menu_items", "category_id", "idx_menu_items_category_id"),
-        ("delivery_logs", "order_id", "idx_delivery_logs_order_id"),
-        ("delivery_logs", "driver_id", "idx_delivery_logs_driver_id"),
         ("purchase_order_items", "po_id", "idx_purchase_order_items_po_id"),
         ("inventory_logs", "ingredient_id", "idx_inventory_logs_ingredient_id"),
         ("debt_entries", "debtor_id", "idx_debt_entries_debtor_id"),
@@ -2149,8 +2142,6 @@ pub fn run_syp_redenomination_migration(conn: &mut Connection, _db_path: &Path) 
         ("purchase_orders", "total_cents"),
         ("purchase_orders", "amount_paid_cents"),
         ("purchase_order_items", "unit_cost_cents"),
-        ("delivery_zones", "fee_cents"),
-        ("delivery_zones", "min_order_cents"),
         ("invoices", "amount_cents"),
         ("operational_costs", "amount_cents"),
         ("debtors", "total_debt_cents"),
