@@ -19,6 +19,14 @@ import { open } from "@tauri-apps/plugin-shell";
 // been silently opening a broken page ever since.
 const MARKETPLACE_URL = "https://market.wenzdes.com";
 
+// 2026-09-13 audit fix: apps/marketplace is still "not deployed yet" per
+// the note above -- market.wenzdes.com is not a live target today, so the
+// "اطلب من المتجر" button that calls openMarketplace() was a live-looking
+// link to a dead destination. Gate every call site behind this flag
+// instead of ripping the integration out; flip it once marketplace is
+// actually deployed.
+export const MARKETPLACE_ENABLED = false;
+
 export async function openMarketplace(): Promise<void> {
   await open(`${MARKETPLACE_URL}/buyer`);
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
-import { realErrorText } from "../../lib/errors";
+import { realErrorText, friendlyDeleteErrorText } from "../../lib/errors";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import { IconPackage as Package, IconSearch as Search, IconEdit as Edit3, IconChevronDown as ChevronDown, IconChevronUp as ChevronUp, IconShoppingCart as ShoppingCart } from "@tabler/icons-react";
@@ -8,7 +8,7 @@ import { IconPencil, IconTrash, IconClipboardList, IconEye, IconPackageImport, I
 import EmptyState from "../../components/ui/EmptyState";
 import DatePicker from "../../components/ui/DatePicker";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
-import { openMarketplace } from "../../lib/marketplace";
+import { openMarketplace, MARKETPLACE_ENABLED } from "../../lib/marketplace";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { formatArabicDateTime, formatArabicDate } from "../../lib/dateLocal";
 
@@ -575,7 +575,10 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
                   >
                     <Edit3 className="w-4 h-4" />
                   </button>
-                  {required > 0 && (
+                  {/* 2026-09-13 audit fix: apps/marketplace isn't deployed
+                      yet (see lib/marketplace.ts) -- hidden behind this
+                      flag rather than shown as a live-looking dead link. */}
+                  {MARKETPLACE_ENABLED && required > 0 && (
                     <button
                       onClick={() => openMarketplace()}
                       className="p-2 rounded-sm text-ink-500 hover:text-saffron-600 hover:bg-saffron-50 transition-colors"
@@ -1027,7 +1030,7 @@ function SuppliersTab() {
       await invoke("delete_supplier_v3", { sessionToken: token, supplierId: id });
       await fetch();
     } catch (err) {
-      setActionError(`حدث خطأ في حذف المورد: ${realErrorText(err)}`);
+      setActionError(friendlyDeleteErrorText(err, "هذا المورد"));
     }
   };
 

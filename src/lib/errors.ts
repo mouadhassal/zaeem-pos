@@ -13,3 +13,24 @@ export function realErrorText(err: unknown): string {
   if (typeof err === "string") return err;
   return String(err);
 }
+
+/**
+ * 2026-09-13 audit fix: delete_menu_item_v3/delete_category_v3/
+ * delete_supplier_v3 (and friends) don't catch SQLite's FOREIGN KEY
+ * constraint errors on the Rust side -- repo.rs just propagates whatever
+ * rusqlite/SQLite says (e.g. "FOREIGN KEY constraint failed", or a raw
+ * "UNIQUE constraint failed: ..." for other cases), and that raw
+ * English/SQL text was reaching the Arabic delete-confirmation flow
+ * verbatim. This recognizes the common FK-violation shape (deleting a
+ * row something else still references -- an order line, a purchase,
+ * a payment...) and returns one friendly Arabic sentence for it; any
+ * other error still falls through to the real message via realErrorText,
+ * never swallowed.
+ */
+export function friendlyDeleteErrorText(err: unknown, whatArabic: string): string {
+  const raw = realErrorText(err);
+  if (/FOREIGN KEY constraint failed/i.test(raw) || /foreign key/i.test(raw)) {
+    return `لا يمكن حذف ${whatArabic} لأنه مستخدم في سجلات أخرى (طلبات أو فواتير سابقة) -- يمكنك تعطيله بدلاً من حذفه.`;
+  }
+  return `حدث خطأ في الحذف: ${raw}`;
+}
