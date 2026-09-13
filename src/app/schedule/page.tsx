@@ -34,6 +34,27 @@ interface RosterEntry {
 
 const DAY_NAMES = ["السبت", "الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"];
 
+// 2026-09-13 audit fix: a separate backend pass is adding real overlap
+// detection to create_roster_entry_v3/update_roster_entry_v3 (a staff
+// member scheduled twice in the same window). Until/unless that lands in
+// this worktree, `realErrorText` alone would show whatever raw string the
+// backend throws verbatim -- fine for most errors (already Arabic per this
+// codebase's convention of translating command-side errors), but if the
+// overlap check ships as an English/untranslated variant or a raw SQLite
+// constraint message, it needs to render as one clear, specific sentence
+// here instead of a generic "the save failed" toast. This maps every
+// overlap-shaped signal (English or Arabic) to one friendly message and
+// otherwise falls back to the real error text, never silently swallowing
+// unknown failures.
+function friendlyRosterError(err: unknown): string {
+  const raw = realErrorText(err);
+  const lower = raw.toLowerCase();
+  if (lower.includes("overlap") || raw.includes("تعارض") || raw.includes("متداخل") || raw.includes("تداخل")) {
+    return "هذا الموظف لديه دوام آخر يتعارض مع هذا التوقيت -- عدّل الوقت أو احذف الدوام المتعارض أولاً.";
+  }
+  return raw;
+}
+
 const entrySchema = z.object({
   staffId: z.string().min(1, "اختر الموظف"),
   workDate: z.string().min(1),
@@ -178,7 +199,7 @@ export default function SchedulePage() {
       setModalOpen(false);
       await fetchEntries();
     } catch (err) {
-      setFormErrors({ _form: realErrorText(err) });
+      setFormErrors({ _form: friendlyRosterError(err) });
     } finally {
       setSaving(false);
     }
