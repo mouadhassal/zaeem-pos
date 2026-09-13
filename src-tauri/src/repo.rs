@@ -139,6 +139,22 @@ pub enum RepoError {
     /// There is no "over-receive allowed" flag anywhere in the PO
     /// schema/flow to make an above-ordered receipt an intentional case.
     InvalidReceiveQuantity { item_id: String, quantity_ordered: f64, quantity_received: f64 },
+    /// 2026-09-13: create_roster_entry/update_roster_entry only ever
+    /// checked `end_time > start_time` -- nothing stopped the SAME staff
+    /// member being scheduled twice on overlapping windows the same day
+    /// (e.g. 09:00-17:00 and 14:00-22:00), silently double-booking them
+    /// with no warning anywhere. Hard-blocked, not just a warning --
+    /// same posture this codebase already takes for the analogous
+    /// double-booking case, `ShiftAlreadyOpen` (a staff member cannot have
+    /// two concurrent open cash-drawer shifts either), rather than the
+    /// override-able pattern (there is no manager-override concept for
+    /// roster entries anywhere in this codebase to hook into, unlike
+    /// void/discount).
+    RosterOverlap { staff_id: String, work_date: String, existing_start: String, existing_end: String },
+    /// 2026-09-13: a debtor with a configured `credit_limit_cents` would
+    /// exceed it if this debt were extended. NULL (unset) limits never
+    /// produce this error -- see `assert_within_credit_limit`.
+    CreditLimitExceeded { debtor_id: String, credit_limit_cents: i64, balance_cents: i64, amount_cents: i64 },
 }
 
 impl fmt::Display for RepoError {
@@ -194,6 +210,12 @@ impl fmt::Display for RepoError {
             ),
             Self::InvalidReceiveQuantity { item_id, quantity_ordered, quantity_received } => write!(
                 f, "purchase order item {item_id}: quantity_received={quantity_received} is invalid for quantity_ordered={quantity_ordered} -- must be between 0 and the ordered quantity"
+            ),
+            Self::RosterOverlap { staff_id, work_date, existing_start, existing_end } => write!(
+                f, "staff {staff_id} already has a roster entry on {work_date} from {existing_start} to {existing_end} that overlaps this one"
+            ),
+            Self::CreditLimitExceeded { debtor_id, credit_limit_cents, balance_cents, amount_cents } => write!(
+                f, "debtor {debtor_id} has a credit limit of {credit_limit_cents} cents (currently owes {balance_cents}) -- adding {amount_cents} cents would exceed it"
             ),
         }
     }
@@ -808,6 +830,12 @@ pub struct DebtorRow {
     pub balance_cents: i64,
     pub last_transaction_at: Option<String>,
     pub is_active: i64,
+    /// 2026-09-13: nullable maximum debt limit. NULL = unlimited, matching
+    /// pre-existing behavior for every debtor that never gets one set.
+    /// Enforced by `assert_within_credit_limit`, called from every path
+    /// that can increase `balance_cents` (`record_initial_debt`,
+    /// `take_payment`, `finalize_order_with_payment`).
+    pub credit_limit_cents: Option<i64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1292,6 +1320,12 @@ impl<'a> Repo<'a> {
                 got_cents: input.amount_cents - input.change_cents,
             });
         }
+        // 2026-09-13: checked up-front, before any write, same fail-fast
+        // posture as the amount-mismatch check just above -- see
+        // `assert_within_credit_limit`'s own doc comment.
+        if let Some(debtor_id) = &input.debtor_id {
+            self.assert_within_credit_limit(debtor_id, input.amount_cents)?;
+        }
 
         let now = chrono::Utc::now().to_rfc3339();
         let currency: String = self.conn.query_row("SELECT currency FROM branch WHERE id = ?1", params![branch_id], |r| r.get(0))?;
@@ -1329,6 +1363,7 @@ impl<'a> Repo<'a> {
         )?;
 
         // 4. Optional debt entry -- same transaction, not a follow-up write.
+        // (credit-limit checked up-front, before step 1 -- see above.)
         if let Some(debtor_id) = &input.debtor_id {
             let debt_entry_id = uuid::Uuid::now_v7().to_string();
             self.conn.execute(
@@ -2013,7 +2048,7 @@ impl<'a> Repo<'a> {
         // reason: DebtorRow.phone is non-optional String but the column is
         // nullable and create_debtor now allows email-only debtors.
         let sql = format!(
-            "SELECT id, name, COALESCE(phone, ''), email, address, notes, total_debt_cents, total_paid_cents, balance_cents, last_transaction_at, is_active \
+            "SELECT id, name, COALESCE(phone, ''), email, address, notes, total_debt_cents, total_paid_cents, balance_cents, last_transaction_at, is_active, credit_limit_cents \
              FROM debtors WHERE {predicate} AND is_active = 1 ORDER BY name ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -2022,6 +2057,7 @@ impl<'a> Repo<'a> {
             Ok(DebtorRow {
                 id: r.get(0)?, name: r.get(1)?, phone: r.get(2)?, email: r.get(3)?, address: r.get(4)?, notes: r.get(5)?,
                 total_debt_cents: r.get(6)?, total_paid_cents: r.get(7)?, balance_cents: r.get(8)?, last_transaction_at: r.get(9)?, is_active: r.get(10)?,
+                credit_limit_cents: r.get(11)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
@@ -2035,14 +2071,38 @@ impl<'a> Repo<'a> {
     // before this function was ever called -- the debtor was silently
     // never created, so the debtor list looked permanently empty.
     #[allow(clippy::too_many_arguments)]
-    pub fn create_debtor(&self, tenant_id: &str, branch_id: &str, name: &str, phone: Option<&str>, email: Option<&str>, address: Option<&str>, notes: Option<&str>) -> Result<String, RepoError> {
+    pub fn create_debtor(&self, tenant_id: &str, branch_id: &str, name: &str, phone: Option<&str>, email: Option<&str>, address: Option<&str>, notes: Option<&str>, credit_limit_cents: Option<i64>) -> Result<String, RepoError> {
         let id = uuid::Uuid::now_v7().to_string();
         self.conn.execute(
-            "INSERT INTO debtors (id, tenant_id, branch_id, name, phone, email, address, notes, total_debt_cents, total_paid_cents, balance_cents, is_active, last_modified, sync_status) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 0, 0, 1, datetime('now'), 'pending')",
-            params![id, tenant_id, branch_id, name, phone, email, address, notes],
+            "INSERT INTO debtors (id, tenant_id, branch_id, name, phone, email, address, notes, total_debt_cents, total_paid_cents, balance_cents, is_active, credit_limit_cents, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 0, 0, 1, ?9, datetime('now'), 'pending')",
+            params![id, tenant_id, branch_id, name, phone, email, address, notes, credit_limit_cents],
         )?;
         Ok(id)
+    }
+
+    /// 2026-09-13: shared by every path that can increase a debtor's
+    /// `balance_cents` (`record_initial_debt`, `take_payment`,
+    /// `finalize_order_with_payment`). `credit_limit_cents` is nullable --
+    /// NULL means unlimited, so a debtor that never had one set behaves
+    /// exactly as before this feature existed. `amount_cents` is the
+    /// amount about to be ADDED to the current balance, not the resulting
+    /// total.
+    fn assert_within_credit_limit(&self, debtor_id: &str, amount_cents: i64) -> Result<(), RepoError> {
+        let (balance_cents, credit_limit_cents): (i64, Option<i64>) = self.conn.query_row(
+            "SELECT balance_cents, credit_limit_cents FROM debtors WHERE id = ?1",
+            params![debtor_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if let Some(limit) = credit_limit_cents {
+            let new_balance = balance_cents + amount_cents;
+            if new_balance > limit {
+                return Err(RepoError::CreditLimitExceeded {
+                    debtor_id: debtor_id.to_string(), credit_limit_cents: limit, balance_cents, amount_cents,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Optional initial balance at debtor-creation time -- same DEBT-entry
@@ -2053,6 +2113,7 @@ impl<'a> Repo<'a> {
     /// `create_debtor` -- a debtor with a stated opening balance and no
     /// corresponding entry would be a silently wrong number on day one.
     pub fn record_initial_debt(&self, tenant_id: &str, branch_id: &str, debtor_id: &str, amount_cents: i64, actor_id: &str) -> Result<String, RepoError> {
+        self.assert_within_credit_limit(debtor_id, amount_cents)?;
         let id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
@@ -2080,11 +2141,11 @@ impl<'a> Repo<'a> {
     // creation time -- the row already has whichever one(s) it was
     // created with).
     #[allow(clippy::too_many_arguments)]
-    pub fn update_debtor(&self, scope: &Scope, debtor_id: &str, name: &str, phone: Option<&str>, email: Option<&str>, address: Option<&str>, notes: Option<&str>) -> Result<(), RepoError> {
+    pub fn update_debtor(&self, scope: &Scope, debtor_id: &str, name: &str, phone: Option<&str>, email: Option<&str>, address: Option<&str>, notes: Option<&str>, credit_limit_cents: Option<i64>) -> Result<(), RepoError> {
         self.assert_row_in_scope("debtors", debtor_id, scope)?;
         self.conn.execute(
-            "UPDATE debtors SET name = ?1, phone = ?2, email = ?3, address = ?4, notes = ?5, last_modified = datetime('now') WHERE id = ?6",
-            params![name, phone, email, address, notes, debtor_id],
+            "UPDATE debtors SET name = ?1, phone = ?2, email = ?3, address = ?4, notes = ?5, credit_limit_cents = ?6, last_modified = datetime('now') WHERE id = ?7",
+            params![name, phone, email, address, notes, credit_limit_cents, debtor_id],
         )?;
         Ok(())
     }
@@ -4312,6 +4373,35 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
+    /// Shared by create/update: same staff_id, same work_date, a
+    /// half-open time-range overlap (`existing.start < new.end AND
+    /// existing.end > new.start` -- standard interval-overlap test,
+    /// correctly treats back-to-back entries like 09:00-13:00 and
+    /// 13:00-17:00 as NOT overlapping). `exclude_entry_id` lets
+    /// `update_roster_entry` compare a moved entry against every OTHER
+    /// entry without tripping over itself. `start_time`/`end_time` are
+    /// plain "HH:MM" strings -- lexical comparison is correct here, same
+    /// assumption `end_time <= start_time`'s existing check already
+    /// relies on.
+    fn assert_no_roster_overlap(
+        &self, staff_id: &str, work_date: &str, start_time: &str, end_time: &str, exclude_entry_id: Option<&str>,
+    ) -> Result<(), RepoError> {
+        let sql = "SELECT start_time, end_time FROM roster_entry \
+                    WHERE staff_id = ?1 AND work_date = ?2 AND deleted_at IS NULL \
+                    AND id != ?3 AND start_time < ?4 AND end_time > ?5 LIMIT 1";
+        let hit: Option<(String, String)> = self.conn.query_row(
+            sql,
+            params![staff_id, work_date, exclude_entry_id.unwrap_or(""), end_time, start_time],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?;
+        if let Some((existing_start, existing_end)) = hit {
+            return Err(RepoError::RosterOverlap {
+                staff_id: staff_id.to_string(), work_date: work_date.to_string(), existing_start, existing_end,
+            });
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn create_roster_entry(
         &self, scope: &Scope, tenant_id: &str, branch_id: &str, staff_id: &str, created_by: &str,
@@ -4335,6 +4425,7 @@ impl<'a> Repo<'a> {
         if end_time <= start_time {
             return Err(RepoError::InvalidRosterTimes { start: start_time.to_string(), end: end_time.to_string() });
         }
+        self.assert_no_roster_overlap(staff_id, work_date, start_time, end_time, None)?;
         let id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
@@ -4353,6 +4444,14 @@ impl<'a> Repo<'a> {
         if end_time <= start_time {
             return Err(RepoError::InvalidRosterTimes { start: start_time.to_string(), end: end_time.to_string() });
         }
+        // Need the entry's own staff_id to check it against every OTHER
+        // roster entry for that same staff member -- update_roster_entry's
+        // params never carry staff_id (it can't be reassigned to a
+        // different staff member), only the entry_id being moved.
+        let staff_id: String = self.conn.query_row(
+            "SELECT staff_id FROM roster_entry WHERE id = ?1", params![entry_id], |r| r.get(0),
+        )?;
+        self.assert_no_roster_overlap(&staff_id, work_date, start_time, end_time, Some(entry_id))?;
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
             "UPDATE roster_entry SET work_date = ?1, start_time = ?2, end_time = ?3, notes = ?4, updated_at_hlc = ?5, device_id = ?6, rev = rev + 1 WHERE id = ?7",
@@ -5299,6 +5398,14 @@ impl<'a> Repo<'a> {
     /// #5). The INSERT also omitted `tenant_id`/`branch_id`
     /// (`loyalty_transactions` is `TENANT_BRANCH_TABLES`), which -- unlike
     /// `description` -- would have actually crashed the very first call.
+    ///
+    /// 2026-09-13: its only caller, the standalone `earn_loyalty_points_v3`
+    /// command, was removed (dead, superseded, and a real integrity
+    /// hazard -- see that removal's commit message in commands_v3.rs).
+    /// Kept here, `#[allow(dead_code)]`, purely because it still has its
+    /// own direct unit test coverage below and is a reasonable building
+    /// block if a real caller ever needs it again.
+    #[allow(dead_code)]
     pub fn earn_loyalty_points(&self, tenant_id: &str, branch_id: &str, card_number: &str, points: i64, order_id: &str) -> Result<(), RepoError> {
         // 2026-08-13: no floor at all on `points` -- this command is
         // superseded by finalize_order_with_payment's own atomic,
@@ -5373,6 +5480,11 @@ impl<'a> Repo<'a> {
             return Err(RepoError::PaymentAmountMismatch {
                 order_id: order_id.to_string(), expected_cents: order_total_cents, got_cents: amount_cents - change_cents,
             });
+        }
+        // 2026-09-13: checked up-front, before any write -- see
+        // `assert_within_credit_limit`'s own doc comment.
+        if let Some(debtor_id) = debtor_id {
+            self.assert_within_credit_limit(debtor_id, amount_cents)?;
         }
 
         let now = chrono::Utc::now().to_rfc3339();
@@ -5604,6 +5716,8 @@ mod tests {
         migrate_v3::run_remap_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_identity_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_drift_fix_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
         db_path
     }
 

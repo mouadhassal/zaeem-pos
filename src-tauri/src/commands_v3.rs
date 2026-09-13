@@ -1985,6 +1985,7 @@ pub fn create_roster_entry_v3(
 ) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageRoster).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -2052,7 +2053,7 @@ pub fn list_debtors_v3(state: State<Db>, session_token: String) -> Result<Vec<cr
 /// been added to it.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>, initial_debt_cents: Option<i64>) -> Result<String, String> {
+pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>, initial_debt_cents: Option<i64>, credit_limit_cents: Option<i64>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     require_plan_includes_management(&license)?;
@@ -2066,13 +2067,18 @@ pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::cloud::
     if initial_debt_cents < 0 {
         return Err("initial debt amount cannot be negative".to_string());
     }
+    if let Some(limit) = credit_limit_cents {
+        if limit < 0 {
+            return Err("credit limit cannot be negative".to_string());
+        }
+    }
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         resolve_operating_branch(&conn, &actor, &license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let debtor_id = Repo::new(&tx).create_debtor(&tenant_id, &branch_id, &name, phone.as_deref(), email.as_deref(), address.as_deref(), notes.as_deref()).map_err(|e| e.to_string())?;
+    let debtor_id = Repo::new(&tx).create_debtor(&tenant_id, &branch_id, &name, phone.as_deref(), email.as_deref(), address.as_deref(), notes.as_deref(), credit_limit_cents).map_err(|e| e.to_string())?;
     if initial_debt_cents > 0 {
         // Local-only fact (see `record_initial_debt`'s doc comment) --
         // customer debt does not sync to the cloud, deliberately: the web
@@ -2094,16 +2100,21 @@ pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::cloud::
 // `create_debtor_v3` exactly.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn update_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String, name: String, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>) -> Result<(), String> {
+pub fn update_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String, name: String, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>, credit_limit_cents: Option<i64>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
     let phone = phone.filter(|p| !p.trim().is_empty());
     let email = email.filter(|e| !e.trim().is_empty());
+    if let Some(limit) = credit_limit_cents {
+        if limit < 0 {
+            return Err("credit limit cannot be negative".to_string());
+        }
+    }
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_debtor(&actor.scope(), &debtor_id, &name, phone.as_deref(), email.as_deref(), address.as_deref(), notes.as_deref()).map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_debtor(&actor.scope(), &debtor_id, &name, phone.as_deref(), email.as_deref(), address.as_deref(), notes.as_deref(), credit_limit_cents).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
@@ -5008,6 +5019,8 @@ mod tests {
         migrate_v3::run_manager_threshold_syp_rescale_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_ingredient_sync_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_item_kind_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -5645,6 +5658,8 @@ mod tests {
             migrate_v3::run_manager_threshold_syp_rescale_migration(&mut conn, &db_path).unwrap();
             migrate_v3::run_ingredient_sync_migration(&mut conn, &db_path).unwrap();
             migrate_v3::run_item_kind_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
 
             let fx = seed_two_tenant_two_branch("recipe_scope", &conn);
             let repo = Repo::new(&conn);
@@ -8309,7 +8324,7 @@ mod tests {
         let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
         let repo = Repo::new(&conn);
 
-        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "بقالة الحي", Some("0955443322"), None, None, None).unwrap();
+        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "بقالة الحي", Some("0955443322"), None, None, None, None).unwrap();
         let list = repo.list_debtors(&scope).unwrap();
         assert!(list.iter().any(|d| d.id == debtor_id && d.balance_cents == 0));
         println!("[debt] debtor created with balance_cents=0");
@@ -8357,7 +8372,7 @@ mod tests {
         assert!(entries.iter().any(|e| e.entry_type == "DEBT" && e.amount_cents == 5000));
         println!("[debt] list_debt_entries shows both facts: DEBT(5000) and PAYMENT(2000)");
 
-        repo.update_debtor(&scope, &debtor_id, "بقالة الحي الجديدة", Some("0955443322"), Some("shop@x.com"), None, None).unwrap();
+        repo.update_debtor(&scope, &debtor_id, "بقالة الحي الجديدة", Some("0955443322"), Some("shop@x.com"), None, None, None).unwrap();
         assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == debtor_id).unwrap().name, "بقالة الحي الجديدة");
 
         // 2026-09-13 fix: a debtor created phone-less (email-only, same as
@@ -8367,8 +8382,8 @@ mod tests {
         // deserialize at the Tauri IPC boundary before this ever ran, so
         // the debtor was PERMANENTLY stuck un-editable. `Option<&str>` +
         // `None` here proves the update succeeds and phone stays absent.
-        let phoneless_id = repo.create_debtor(&tenant_id, &branch_id, "عميل بلا هاتف", None, Some("noph@x.com"), None, None).unwrap();
-        repo.update_debtor(&scope, &phoneless_id, "عميل بلا هاتف محدث", None, Some("noph@x.com"), None, None).unwrap();
+        let phoneless_id = repo.create_debtor(&tenant_id, &branch_id, "عميل بلا هاتف", None, Some("noph@x.com"), None, None, None).unwrap();
+        repo.update_debtor(&scope, &phoneless_id, "عميل بلا هاتف محدث", None, Some("noph@x.com"), None, None, None).unwrap();
         let updated = repo.list_debtors(&scope).unwrap().into_iter().find(|d| d.id == phoneless_id).unwrap();
         assert_eq!(updated.name, "عميل بلا هاتف محدث");
         assert_eq!(updated.phone, "", "phone stays absent (COALESCE'd to '') after an update that didn't supply one");
@@ -8377,6 +8392,91 @@ mod tests {
         repo.deactivate_debtor(&scope, &debtor_id).unwrap();
         assert!(!repo.list_debtors(&scope).unwrap().iter().any(|d| d.id == debtor_id), "deactivated debtors must not appear in the active list");
         println!("[debt] debtor updated then deactivated -- no longer in the active list");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// 2026-09-13 audit finding: there was previously no way to configure a
+    /// maximum debt limit per debtor and nothing enforced one anywhere.
+    /// Proves: (1) a NULL/unset limit preserves old behavior (unlimited),
+    /// (2) record_initial_debt rejects an opening balance that alone would
+    /// exceed a configured limit, (3) take_payment's CREDIT/debt path
+    /// rejects a sale that would push balance_cents over the limit and
+    /// leaves the order untouched (still not PAID) when it does, (4)
+    /// finalize_order_with_payment's debt path enforces the same limit,
+    /// (5) a payment that brings the balance back under the limit allows a
+    /// following debt sale to succeed again.
+    #[test]
+    fn debtor_credit_limit_is_enforced_on_every_debt_extending_path() {
+        let (db_path, tenant_id, branch_id, table_id) = seeded_db("credit_limit");
+        let conn = Connection::open(&db_path).unwrap();
+        let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Credit Limit Cashier");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let repo = Repo::new(&conn);
+
+        // No limit set (NULL) -- a large initial debt must succeed unchanged, preserving old behavior.
+        let unlimited_id = repo.create_debtor(&tenant_id, &branch_id, "بلا حد ائتماني", Some("0500000001"), None, None, None, None).unwrap();
+        repo.record_initial_debt(&tenant_id, &branch_id, &unlimited_id, 1_000_000, &cashier_id).unwrap();
+        assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == unlimited_id).unwrap().balance_cents, 1_000_000);
+        println!("[credit-limit] a NULL credit_limit_cents never blocks debt -- unlimited, matches pre-existing behavior");
+
+        // A debtor with a 5000-cent limit.
+        let limited_id = repo.create_debtor(&tenant_id, &branch_id, "بحد ائتماني", Some("0500000002"), None, None, None, Some(5000)).unwrap();
+        assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == limited_id).unwrap().credit_limit_cents, Some(5000));
+
+        // record_initial_debt: an opening balance ABOVE the limit is rejected outright.
+        match repo.record_initial_debt(&tenant_id, &branch_id, &limited_id, 6000, &cashier_id) {
+            Err(RepoError::CreditLimitExceeded { credit_limit_cents, balance_cents, amount_cents, .. }) => {
+                assert_eq!(credit_limit_cents, 5000);
+                assert_eq!(balance_cents, 0);
+                assert_eq!(amount_cents, 6000);
+                println!("[credit-limit] record_initial_debt correctly rejects an opening balance above the limit");
+            }
+            other => panic!("expected CreditLimitExceeded, got {other:?}"),
+        }
+        assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == limited_id).unwrap().balance_cents, 0, "a rejected initial debt must not have touched balance_cents");
+
+        // An opening balance AT the limit exactly must be allowed (>, not >=).
+        repo.record_initial_debt(&tenant_id, &branch_id, &limited_id, 5000, &cashier_id).unwrap();
+        assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == limited_id).unwrap().balance_cents, 5000);
+        println!("[credit-limit] a balance landing exactly AT the limit is allowed");
+
+        // take_payment's CREDIT/debt path: any further debt sale must now be rejected (already at the limit).
+        let order_id = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
+            table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".into(),
+            subtotal_cents: 100, tax_cents: 0, total_cents: 100, discount_cents: 0,
+        }).unwrap();
+        match repo.take_payment(&tenant_id, &branch_id, crate::repo::PaymentInput {
+            order_id: order_id.clone(), method: "CREDIT".into(), amount_cents: 100, change_cents: 0, debtor_id: Some(limited_id.clone()), actor_id: cashier_id.clone(),
+        }) {
+            Err(RepoError::CreditLimitExceeded { .. }) => println!("[credit-limit] take_payment correctly rejects a debt sale that would exceed the limit"),
+            other => panic!("expected CreditLimitExceeded, got {other:?}"),
+        }
+        // The order must be untouched -- still not PAID, no partial writes from the rejected attempt.
+        let order_status: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+        assert_ne!(order_status, "PAID", "a rejected over-limit debt sale must leave the order un-paid, not partially applied");
+        assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == limited_id).unwrap().balance_cents, 5000, "the rejected sale must not have touched balance_cents");
+
+        // Pay it back down under the limit, then the same kind of debt sale must succeed.
+        repo.record_debt_payment(&scope, &limited_id, 4900, None, &cashier_id).unwrap();
+        assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == limited_id).unwrap().balance_cents, 100);
+        repo.take_payment(&tenant_id, &branch_id, crate::repo::PaymentInput {
+            order_id: order_id.clone(), method: "CREDIT".into(), amount_cents: 100, change_cents: 0, debtor_id: Some(limited_id.clone()), actor_id: cashier_id.clone(),
+        }).unwrap();
+        assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == limited_id).unwrap().balance_cents, 200, "100 (paid down to) + 100 (new sale) = 200");
+        println!("[credit-limit] once back under the limit, a debt sale succeeds again");
+
+        // finalize_order_with_payment's debt path enforces the same limit.
+        let order_id2 = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
+            table_id, user_id: cashier_id.clone(), order_type: "DINE_IN".into(),
+            subtotal_cents: 10000, tax_cents: 0, total_cents: 10000, discount_cents: 0,
+        }).unwrap();
+        match repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id2, "CREDIT", 10000, 0, Some(&limited_id), &cashier_id, None) {
+            Err(RepoError::CreditLimitExceeded { .. }) => println!("[credit-limit] finalize_order_with_payment correctly rejects a debt sale that would exceed the limit"),
+            other => panic!("expected CreditLimitExceeded, got {other:?}"),
+        }
+        let order2_status: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id2], |r| r.get(0)).unwrap();
+        assert_ne!(order2_status, "PAID", "a rejected over-limit debt sale via finalize_order_with_payment must leave the order un-paid");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
@@ -8400,7 +8500,7 @@ mod tests {
         let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
         let repo = Repo::new(&conn);
 
-        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "عميل بريد فقط", None, Some("client@example.com"), None, None).unwrap();
+        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "عميل بريد فقط", None, Some("client@example.com"), None, None, None).unwrap();
         let list = repo.list_debtors(&scope).unwrap();
         let d = list.iter().find(|d| d.id == debtor_id).unwrap();
         assert_eq!(d.phone, "", "phone column stores NULL as empty string via rusqlite's String getter, not an error");
@@ -8429,7 +8529,7 @@ mod tests {
 
         // Created under a specific branch (the normal path -- a debtor
         // must belong to one).
-        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "مدين", Some("0911111111"), None, None, None).unwrap();
+        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "مدين", Some("0911111111"), None, None, None, None).unwrap();
         // Seed a pre-existing balance directly -- record_debt_payment only
         // ever *reduces* balance_cents (real debt entries come from
         // take_payment_v3's CREDIT path, already covered by the test
@@ -8454,7 +8554,7 @@ mod tests {
         let (other_db, other_tenant, other_branch, _) = seeded_db("debt_owner_scope_other_tenant");
         let other_conn = Connection::open(&other_db).unwrap();
         let other_repo = Repo::new(&other_conn);
-        let other_debtor = other_repo.create_debtor(&other_tenant, &other_branch, "مدين آخر", Some("0922222222"), None, None, None).unwrap();
+        let other_debtor = other_repo.create_debtor(&other_tenant, &other_branch, "مدين آخر", Some("0922222222"), None, None, None, None).unwrap();
         match repo.record_debt_payment(&owner_scope, &other_debtor, 100, None, &owner_id) {
             Err(_) => println!("[debt] cross-tenant debtor payment correctly rejected"),
             Ok(_) => panic!("an Owner must NEVER be able to pay down a debtor belonging to a different tenant"),
@@ -8725,6 +8825,76 @@ mod tests {
         let fk_result = repo.delete_supplier(&scope, &supplier_id);
         assert!(fk_result.is_err(), "deleting a supplier with existing purchase_orders rows must fail the FK constraint, not silently orphan them");
         println!("[po] deleting a supplier with existing POs correctly fails FK (matches old frontend's failure mode, not silently fixed)");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// 2026-09-13 audit findings: (1) create_purchase_order_with_items had
+    /// no server-side check on a line's quantity_ordered/unit_cost_cents
+    /// (only inventory/page.tsx validated it, client-side, bypassable via
+    /// direct IPC); (2) receive_purchase_order applied a client-supplied
+    /// quantity_received straight to current_stock with no floor/ceiling
+    /// (unlike adjust_stock's StockAdjustmentBelowZero guard). Proves both
+    /// are now rejected server-side, and that a rejected receive leaves
+    /// stock/quantity_received/PO status completely untouched.
+    #[test]
+    fn purchase_order_create_and_receive_quantities_are_server_validated() {
+        let (db_path, tenant_id, branch_id, _table_id) = seeded_db("po_validation");
+        let conn = Connection::open(&db_path).unwrap();
+        let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "PO Validation Manager");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let repo = Repo::new(&conn);
+        let supplier_id = repo.create_supplier(&tenant_id, &branch_id, "مورد التحقق", None, None).unwrap();
+        let ing_id = repo.create_ingredient(&tenant_id, &branch_id, "مكوّن", "kg", 100, 5.0).unwrap();
+
+        // create_purchase_order_with_items: non-positive quantity_ordered rejected.
+        match repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), 0.0, 100)]) {
+            Err(RepoError::InvalidPurchaseOrderItem { .. }) => println!("[po-validation] create correctly rejects quantity_ordered = 0"),
+            other => panic!("expected InvalidPurchaseOrderItem, got {other:?}"),
+        }
+        match repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), -5.0, 100)]) {
+            Err(RepoError::InvalidPurchaseOrderItem { .. }) => println!("[po-validation] create correctly rejects a negative quantity_ordered"),
+            other => panic!("expected InvalidPurchaseOrderItem, got {other:?}"),
+        }
+        // Negative unit_cost_cents rejected.
+        match repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), 10.0, -1)]) {
+            Err(RepoError::InvalidPurchaseOrderItem { .. }) => println!("[po-validation] create correctly rejects a negative unit_cost_cents"),
+            other => panic!("expected InvalidPurchaseOrderItem, got {other:?}"),
+        }
+        assert_eq!(repo.list_purchase_orders(&scope).unwrap().len(), 0, "every rejected create must leave zero purchase_orders rows behind");
+
+        // A valid PO to test receive-time caps against.
+        let po_id = repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), 10.0, 100)]).unwrap();
+        let items = repo.list_purchase_order_items(&po_id, &scope).unwrap();
+        let item_id = items[0].id.clone();
+
+        // receive_purchase_order: a negative quantity_received is rejected.
+        match repo.receive_purchase_order(&tenant_id, &branch_id, &po_id, &manager_id, &scope, &[(item_id.clone(), ing_id.clone(), -1.0)], 0, None) {
+            Err(RepoError::InvalidReceiveQuantity { quantity_ordered, quantity_received, .. }) => {
+                assert_eq!(quantity_ordered, 10.0);
+                assert_eq!(quantity_received, -1.0);
+                println!("[po-validation] receive correctly rejects a negative quantity_received");
+            }
+            other => panic!("expected InvalidReceiveQuantity, got {other:?}"),
+        }
+        // A quantity_received ABOVE quantity_ordered (10.0) is rejected -- no over-receive-allowed flag exists.
+        match repo.receive_purchase_order(&tenant_id, &branch_id, &po_id, &manager_id, &scope, &[(item_id.clone(), ing_id.clone(), 15.0)], 0, None) {
+            Err(RepoError::InvalidReceiveQuantity { quantity_ordered, quantity_received, .. }) => {
+                assert_eq!(quantity_ordered, 10.0);
+                assert_eq!(quantity_received, 15.0);
+                println!("[po-validation] receive correctly rejects quantity_received above quantity_ordered");
+            }
+            other => panic!("expected InvalidReceiveQuantity, got {other:?}"),
+        }
+        // Both rejections above must have left the PO fully untouched: still PENDING, stock unchanged, quantity_received unchanged.
+        assert_eq!(repo.list_ingredients(&scope).unwrap().iter().find(|i| i.id == ing_id).unwrap().current_stock, 0.0, "a rejected receive must not have touched current_stock");
+        assert_eq!(repo.list_purchase_order_items(&po_id, &scope).unwrap()[0].quantity_received, 0.0, "a rejected receive must not have touched quantity_received");
+        assert_eq!(repo.list_purchase_orders(&scope).unwrap().iter().find(|p| p.id == po_id).unwrap().status, "PENDING", "a rejected receive must leave the PO PENDING, not RECEIVED");
+
+        // Receiving exactly quantity_ordered (the ceiling itself) must still succeed.
+        repo.receive_purchase_order(&tenant_id, &branch_id, &po_id, &manager_id, &scope, &[(item_id, ing_id.clone(), 10.0)], 0, None).unwrap();
+        assert_eq!(repo.list_ingredients(&scope).unwrap().iter().find(|i| i.id == ing_id).unwrap().current_stock, 10.0);
+        println!("[po-validation] receiving exactly the ordered quantity (the ceiling) still succeeds");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
@@ -9047,7 +9217,7 @@ mod tests {
         let customer_id = repo.create_customer(&tenant_id, "عميل استرداد", Some("0501234567"), None, None, None, None).unwrap();
         let card_id = repo.issue_loyalty_card(&tenant_id, &customer_id, "REFUND-CARD").unwrap();
         let _ = card_id;
-        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "دائن استرداد", Some("0509999999"), None, None, None).unwrap();
+        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "دائن استرداد", Some("0509999999"), None, None, None, None).unwrap();
 
         // 2 burgers, 2000 cents total, paid on CREDIT with a loyalty card attached.
         let order_id = repo.create_full_order(&scope, &tenant_id, &branch_id, crate::repo::FullOrderInput {
@@ -9856,6 +10026,66 @@ mod tests {
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
+    /// 2026-09-13 fix: create_roster_entry/update_roster_entry previously
+    /// only checked `end_time > start_time` -- nothing stopped the SAME
+    /// staff member being scheduled twice on overlapping windows the same
+    /// day. Proves the new overlap guard rejects a genuine overlap,
+    /// allows a back-to-back (non-overlapping) entry, allows the same
+    /// window for a DIFFERENT staff member or a different day, and
+    /// doesn't trip over the entry being moved when updating it in place.
+    #[test]
+    fn roster_entry_overlap_is_rejected() {
+        let (db_path, tenant_id, branch_a, _table_id) = seeded_db("roster_overlap");
+        let conn = Connection::open(&db_path).unwrap();
+        let repo = Repo::new(&conn);
+        let manager_a = seed_staff(&conn, &tenant_id, Some(&branch_a), Role::Manager, "Manager A");
+        let cashier_a = seed_staff(&conn, &tenant_id, Some(&branch_a), Role::Cashier, "Cashier A");
+        let cashier_b = seed_staff(&conn, &tenant_id, Some(&branch_a), Role::Cashier, "Cashier B");
+        let scope_a = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_a.clone() };
+
+        let morning = repo.create_roster_entry(&scope_a, &tenant_id, &branch_a, &cashier_a, &manager_a, "2026-08-20", "09:00", "17:00", None, "test-device").unwrap();
+
+        // A genuinely overlapping window for the SAME staff member, same day, must be rejected.
+        match repo.create_roster_entry(&scope_a, &tenant_id, &branch_a, &cashier_a, &manager_a, "2026-08-20", "14:00", "22:00", None, "test-device") {
+            Err(RepoError::RosterOverlap { staff_id, work_date, .. }) => {
+                assert_eq!(staff_id, cashier_a);
+                assert_eq!(work_date, "2026-08-20");
+                println!("[roster] overlapping create correctly rejected (09:00-17:00 vs 14:00-22:00)");
+            }
+            other => panic!("expected RosterOverlap, got {other:?}"),
+        }
+        // An entry fully containing an existing one must also be rejected (not just partial overlaps).
+        match repo.create_roster_entry(&scope_a, &tenant_id, &branch_a, &cashier_a, &manager_a, "2026-08-20", "08:00", "18:00", None, "test-device") {
+            Err(RepoError::RosterOverlap { .. }) => println!("[roster] a window fully containing an existing entry is correctly rejected too"),
+            other => panic!("expected RosterOverlap, got {other:?}"),
+        }
+
+        // Back-to-back (13:00 shared boundary, no actual time overlap) must be allowed.
+        let evening = repo.create_roster_entry(&scope_a, &tenant_id, &branch_a, &cashier_a, &manager_a, "2026-08-20", "17:00", "22:00", None, "test-device").unwrap();
+        println!("[roster] a back-to-back entry (17:00 boundary shared, no overlap) is correctly allowed");
+
+        // The same window for a DIFFERENT staff member must be allowed.
+        repo.create_roster_entry(&scope_a, &tenant_id, &branch_a, &cashier_b, &manager_a, "2026-08-20", "09:00", "17:00", None, "test-device").unwrap();
+        println!("[roster] the identical window for a different staff member is correctly allowed");
+
+        // The same window on a DIFFERENT day must be allowed.
+        repo.create_roster_entry(&scope_a, &tenant_id, &branch_a, &cashier_a, &manager_a, "2026-08-21", "09:00", "17:00", None, "test-device").unwrap();
+        println!("[roster] the identical window on a different day is correctly allowed");
+
+        // Updating an entry in place (same id) must not trip over itself.
+        repo.update_roster_entry(&scope_a, &morning, "2026-08-20", "08:30", "17:00", None, "test-device").unwrap();
+        println!("[roster] update_roster_entry does not falsely overlap against its own prior row");
+
+        // But moving it to overlap a DIFFERENT existing entry must still be rejected.
+        match repo.update_roster_entry(&scope_a, &morning, "2026-08-20", "08:30", "18:00", None, "test-device") {
+            Err(RepoError::RosterOverlap { .. }) => println!("[roster] update correctly rejected moving into an overlap with another staff member's other entry"),
+            other => panic!("expected RosterOverlap, got {other:?}"),
+        }
+        let _ = evening;
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
     /// Slice C, `branches/page.tsx`'s multi-branch admin CRUD (the LEGACY
     /// `branches` table, distinct from T1.1's `branch`). Full CRUD +
     /// terminal listing + tenant-wide today stats, plus cross-tenant
@@ -10080,8 +10310,8 @@ mod tests {
         }
 
         // ---- 3/4/5/6: debtors (update_debtor, deactivate_debtor, list_debt_entries, record_debt_payment) ----
-        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "دائن محلي", Some("0992220000"), None, None, None).unwrap();
-        repo.update_debtor(&scope, &debtor_id, "دائن محلي محدث", Some("0992220000"), None, None, None).unwrap();
+        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "دائن محلي", Some("0992220000"), None, None, None, None).unwrap();
+        repo.update_debtor(&scope, &debtor_id, "دائن محلي محدث", Some("0992220000"), None, None, None, None).unwrap();
         repo.list_debt_entries(&scope, &debtor_id).unwrap();
         // This test is purely about scope isolation, not debt amounts --
         // give the debtor a real balance first so a 100-cent payment isn't
@@ -10091,7 +10321,7 @@ mod tests {
         println!("[t1.9] debtor writes succeed for an in-scope debtor");
         let other_debtor = "other-tenant-debtor";
         conn.execute("INSERT INTO debtors (id, tenant_id, branch_id, name, phone) VALUES (?1, 'other-tenant', 'other-branch', 'X', 'Y')", params![other_debtor]).unwrap();
-        match repo.update_debtor(&scope, other_debtor, "hijacked", Some("0000"), None, None, None) {
+        match repo.update_debtor(&scope, other_debtor, "hijacked", Some("0000"), None, None, None, None) {
             Err(RepoError::TenantOwnershipViolation { table, .. }) => { assert_eq!(table, "debtors"); println!("[t1.9] update_debtor correctly rejects another tenant's debtor"); }
             other => panic!("expected TenantOwnershipViolation, got {other:?}"),
         }
@@ -10338,6 +10568,8 @@ mod tests {
         migrate_v3::run_drift_fix_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_index_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_supplier_ledger_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("dashboard", &conn);
@@ -10367,7 +10599,7 @@ mod tests {
         ).unwrap();
 
         // Outstanding debt/supplier balances, one per branch (running totals, not date-ranged).
-        let debtor_1a = repo.create_debtor(&fx.tenant1, &fx.branch1a, "مدين 1A", Some("0501"), None, None, None).unwrap();
+        let debtor_1a = repo.create_debtor(&fx.tenant1, &fx.branch1a, "مدين 1A", Some("0501"), None, None, None, None).unwrap();
         conn.execute("UPDATE debtors SET balance_cents = 700 WHERE id = ?1", params![debtor_1a]).unwrap();
         let supplier_1a = repo.create_supplier(&fx.tenant1, &fx.branch1a, "مورد 1A", None, None).unwrap();
         conn.execute("UPDATE suppliers SET balance_cents = 300 WHERE id = ?1", params![supplier_1a]).unwrap();
@@ -10450,6 +10682,8 @@ mod tests {
         // minimal chain intentionally skips (discount_cap/sync_outbox/etc),
         // so it's safe to run directly after Migration E.
         migrate_v3::run_item_kind_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("matrix", &conn);
@@ -10989,7 +11223,7 @@ mod tests {
         let mut conn = Connection::open(&db_path).unwrap();
         let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Kill100 Cashier");
         let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-        let debtor_id = Repo::new(&conn).create_debtor(&tenant_id, &branch_id, "دائن كسر-9", Some("0900000000"), None, None, None).unwrap();
+        let debtor_id = Repo::new(&conn).create_debtor(&tenant_id, &branch_id, "دائن كسر-9", Some("0900000000"), None, None, None, None).unwrap();
 
         let mut never_paid_on_occupied = 0u32;
         let mut never_payment_without_order = 0u32;
