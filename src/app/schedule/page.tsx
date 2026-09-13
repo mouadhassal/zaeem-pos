@@ -151,11 +151,15 @@ export default function SchedulePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, weekStart]);
 
-  useEffect(() => {
+  const fetchAll = useCallback(() => {
     setLoading(true);
     setError(null);
-    Promise.all([fetchStaff(), fetchEntries(), fetchBranches()]).finally(() => setLoading(false));
+    return Promise.all([fetchStaff(), fetchEntries(), fetchBranches()]).finally(() => setLoading(false));
   }, [fetchStaff, fetchEntries, fetchBranches]);
+
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
 
   function openAdd(staffId: string, workDate: string) {
     setEditId(null);
@@ -227,10 +231,6 @@ export default function SchedulePage() {
     return <div className="flex items-center justify-center h-full text-ink-500 font-arabic">جاري التحميل...</div>;
   }
 
-  if (error && staff.length === 0) {
-    return <div className="flex items-center justify-center h-full text-danger font-arabic">{error}</div>;
-  }
-
   return (
     <div className="bg-canvas p-6 space-y-4 overflow-y-auto h-full" dir="rtl">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -262,7 +262,21 @@ export default function SchedulePage() {
         </div>
       </div>
 
-      {error && <div className="text-sm text-danger font-arabic">{error}</div>}
+      {/* Used to be an `if (error && staff.length === 0) return <bare error
+          text>` that replaced this whole page (title/week-nav included)
+          with no way back except a full remount. Now the chrome always
+          renders and a retry button re-runs the fetch that failed. */}
+      {error && (
+        <div className="flex items-center justify-between gap-3 rounded-sm bg-danger/10 border border-danger/30 px-4 py-3 text-danger font-arabic text-sm">
+          <span>{error}</span>
+          <button
+            onClick={fetchAll}
+            className="shrink-0 h-8 px-3 rounded-sm bg-danger text-white text-xs font-bold hover:opacity-90 transition-opacity"
+          >
+            إعادة المحاولة
+          </button>
+        </div>
+      )}
 
       {staff.length === 0 ? (
         <div className="zc-card p-8 text-center text-ink-500 font-arabic">لا يوجد موظفون نشطون لعرض جدولهم</div>

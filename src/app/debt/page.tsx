@@ -240,14 +240,6 @@ export default function DebtPage() {
     }
   };
 
-  if (loading) {
-    return <div className="flex items-center justify-center h-full text-ink-500 font-arabic">جاري التحميل...</div>;
-  }
-
-  if (error) {
-    return <div className="flex items-center justify-center h-full text-danger font-arabic">{error}</div>;
-  }
-
   return (
     <div className="bg-canvas p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
       <div className="flex items-center justify-between">
@@ -260,6 +252,26 @@ export default function DebtPage() {
         </div>
       </div>
 
+      {/* A failed fetch used to replace this whole page (title/add-button/nav
+          included) with bare error text and no way back except a full
+          remount -- now the chrome stays and a retry button re-runs the
+          fetch that failed, in place. */}
+      {error && (
+        <div className="flex items-center justify-between gap-3 rounded-sm bg-danger/10 border border-danger/30 px-4 py-3 text-danger font-arabic text-sm">
+          <span>{error}</span>
+          <button
+            onClick={fetchAll}
+            className="shrink-0 h-8 px-3 rounded-sm bg-danger text-white text-xs font-bold hover:opacity-90 transition-opacity"
+          >
+            إعادة المحاولة
+          </button>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="flex items-center justify-center py-16 text-ink-500 font-arabic">جاري التحميل...</div>
+      ) : (
+        <>
       <input
         type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
         placeholder="ابحث بالاسم أو الهاتف..."
@@ -305,6 +317,8 @@ export default function DebtPage() {
           </tbody>
         </table>
       </div>
+        </>
+      )}
 
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
