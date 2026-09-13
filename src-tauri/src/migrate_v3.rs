@@ -2206,7 +2206,18 @@ pub fn run_syp_redenomination_migration(conn: &mut Connection, _db_path: &Path) 
     Ok(())
 }
 
-pub const MIGRATION_V_VERSION: i64 = 26;
+// 30, not 26: originally landed at 26, which collided with migrate.rs's
+// OWN embedded SQL chain (0026_stock_counts.sql) sharing this exact same
+// `schema_migrations` version space (see that module's own comment on
+// its 0026/0027 files for the first time this exact collision shape bit
+// this codebase). That collision was real and caught by re-running the
+// full merged test suite: this migration's own "already applied" guard
+// saw version 26 already marked applied by the OTHER chain and silently
+// no-op'd, so `payments.reference_code` was never actually added.
+// 30/31 are clear of every existing claim in this shared version space
+// (migrate.rs's legacy chain: up to 27; migrate_v3's A-U chain: up to 25;
+// this module's own X/Y pair, added the same day: 28/29).
+pub const MIGRATION_V_VERSION: i64 = 30;
 
 /// 2026-09-13 audit fix (honest CARD/WALLET confirmation): `payments` had no
 /// column to hold anything from the payment terminal/wallet app -- the
@@ -2229,18 +2240,18 @@ pub fn run_payment_reference_code_migration(conn: &mut Connection, _db_path: &Pa
     if table_exists(&tx, "payments")? {
         add_column_if_missing(&tx, "payments", "reference_code", "TEXT")?;
     }
-    println!("v26_payment_reference_code: payments.reference_code added (terminal/wallet approval code, cashier-entered for CARD/WALLET)");
+    println!("v30_payment_reference_code: payments.reference_code added (terminal/wallet approval code, cashier-entered for CARD/WALLET)");
 
     let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
     tx.execute(
         "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
-        params![MIGRATION_V_VERSION, "0026_payment_reference_code", applied_at, "n/a-programmatic"],
+        params![MIGRATION_V_VERSION, "0030_payment_reference_code", applied_at, "n/a-programmatic"],
     )?;
     tx.commit()?;
     Ok(())
 }
 
-pub const MIGRATION_W_VERSION: i64 = 27;
+pub const MIGRATION_W_VERSION: i64 = 31;
 
 /// 2026-09-13 audit fix (real disaster-recovery backups): backups (see
 /// backup.rs) used to be manual-only and same-disk -- a dead machine lost
@@ -2276,12 +2287,12 @@ pub fn run_backup_settings_migration(conn: &mut Connection, _db_path: &Path) -> 
          ON CONFLICT(id) DO NOTHING",
         [],
     )?;
-    println!("v27_backup_settings: backup_settings table created (default row: no secondary path, 24h frequency), backing a real background scheduler");
+    println!("v31_backup_settings: backup_settings table created (default row: no secondary path, 24h frequency), backing a real background scheduler");
 
     let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
     tx.execute(
         "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
-        params![MIGRATION_W_VERSION, "0027_backup_settings", applied_at, "n/a-programmatic"],
+        params![MIGRATION_W_VERSION, "0031_backup_settings", applied_at, "n/a-programmatic"],
     )?;
     tx.commit()?;
     Ok(())

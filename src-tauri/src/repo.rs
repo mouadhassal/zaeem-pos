@@ -5944,6 +5944,19 @@ mod tests {
         migrate_v3::run_remap_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_identity_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_drift_fix_migration(&mut conn, &db_path).unwrap();
+        // Merge-repair note: this helper only ever ran a hand-picked subset
+        // of the real migrate_v3 chain (never the full sequence init_db()
+        // runs), which is how `run_payment_reference_code_migration` and
+        // `run_backup_settings_migration` -- added by a sibling agent in a
+        // separate worktree the same day as the two calls below -- got left
+        // out here entirely: this list was last hand-edited before those two
+        // existed. Confirmed as a real gap (not a hypothetical one) by the
+        // full merged test suite: `payments.reference_code` genuinely
+        // doesn't exist in a DB built by this helper without it, and every
+        // test here that pays an order via `finalize_order_with_payment`
+        // fails on exactly that missing column.
+        migrate_v3::run_payment_reference_code_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_backup_settings_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
         db_path

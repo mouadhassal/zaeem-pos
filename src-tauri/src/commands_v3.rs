@@ -5152,6 +5152,8 @@ mod tests {
         migrate_v3::run_manager_threshold_syp_rescale_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_ingredient_sync_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_item_kind_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_payment_reference_code_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_backup_settings_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
 
@@ -5791,6 +5793,8 @@ mod tests {
             migrate_v3::run_manager_threshold_syp_rescale_migration(&mut conn, &db_path).unwrap();
             migrate_v3::run_ingredient_sync_migration(&mut conn, &db_path).unwrap();
             migrate_v3::run_item_kind_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_payment_reference_code_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_backup_settings_migration(&mut conn, &db_path).unwrap();
             migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
             migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
 
@@ -10873,6 +10877,8 @@ mod tests {
         migrate_v3::run_drift_fix_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_index_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_supplier_ledger_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_payment_reference_code_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_backup_settings_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
@@ -10987,6 +10993,8 @@ mod tests {
         // minimal chain intentionally skips (discount_cap/sync_outbox/etc),
         // so it's safe to run directly after Migration E.
         migrate_v3::run_item_kind_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_payment_reference_code_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_backup_settings_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
@@ -11714,6 +11722,12 @@ mod tests {
             "change_own_password_v3",
             "get_cached_license_status_v3", "check_license_v3", "renew_license_v3", "activate_license_v3", "get_device_id_v3",
             "backup_database_v3", "list_backups_v3", "send_diagnostics_report_v3",
+            // Same reasoning as backup_database_v3/list_backups_v3 right
+            // above: a lapsed license must never be able to block an owner
+            // from configuring (or checking the status of) their disaster-
+            // recovery backup schedule -- that is exactly the moment a
+            // real off-machine backup destination matters most.
+            "get_backup_settings_v3", "update_backup_settings_v3",
             "create_order_v3", "update_order_status_v3", "take_payment_v3",
             "create_full_order_v3", "hold_order_v3", "retrieve_held_order_v3",
             "list_pending_orders_for_table_v3",
