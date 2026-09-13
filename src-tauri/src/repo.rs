@@ -335,6 +335,15 @@ pub struct HeldOrderResult {
     pub delivery_address: Option<String>,
 }
 
+/// One outstanding (unpaid) PENDING order for a table -- see
+/// `Repo::list_pending_orders_for_table`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingOrderSummary {
+    pub id: String,
+    pub total_cents: i64,
+    pub items: Vec<HeldOrderItem>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ReceiptConfig {
     pub chain_name: String,
@@ -4663,6 +4672,60 @@ impl<'a> Repo<'a> {
         }
 
         Ok(Some(HeldOrderResult { items, customer_name, customer_phone, delivery_address }))
+    }
+
+    /// Lists PENDING orders for a table -- surfaces split-bill child orders
+    /// left unpaid when a cashier closes the payment modal mid-split-queue
+    /// (see `pos/page.tsx`'s `PaymentModal onClose` comment, and
+    /// `split_bill`'s doc comment above). `split_bill` points
+    /// `tables.current_order_id` at only the FIRST split order; every split
+    /// after that has no reachable pointer anywhere else in the schema
+    /// except `table_id` on the order row itself -- so this is a `table_id`
+    /// scan, not a `current_order_id` lookup, and deliberately returns
+    /// every PENDING order for the table (including the one
+    /// `current_order_id` already points at) so the frontend has one
+    /// consistent list to resume from.
+    pub fn list_pending_orders_for_table(&self, scope: &Scope, table_id: &str) -> Result<Vec<PendingOrderSummary>, RepoError> {
+        self.assert_table_in_scope(table_id, scope)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, total_cents FROM orders WHERE table_id = ?1 AND status = 'PENDING' ORDER BY created_at ASC"
+        )?;
+        let rows: Vec<(String, i64)> = stmt.query_map(params![table_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .filter_map(|r| r.ok()).collect();
+        drop(stmt);
+
+        let mut result = Vec::with_capacity(rows.len());
+        for (order_id, total_cents) in rows {
+            let mut items_stmt = self.conn.prepare(
+                "SELECT id, menu_item_id, quantity, unit_price_cents, notes FROM order_items WHERE order_id = ?1 AND voided = 0"
+            )?;
+            let raw_items: Vec<(String, String, i64, i64, Option<String>)> = items_stmt.query_map(params![order_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?.filter_map(|r| r.ok()).collect();
+            drop(items_stmt);
+
+            let mut items = Vec::with_capacity(raw_items.len());
+            for (db_item_id, menu_item_id, quantity, unit_price_cents, notes) in raw_items {
+                let name: String = self.conn.query_row(
+                    "SELECT name FROM menu_items WHERE id = ?1", params![menu_item_id], |r| r.get(0)
+                ).unwrap_or_default();
+
+                let mut mod_stmt = self.conn.prepare(
+                    "SELECT name, price_cents FROM order_modifiers WHERE order_item_id = ?1"
+                )?;
+                let modifiers: Vec<HeldOrderModifier> = mod_stmt.query_map(params![db_item_id], |r| {
+                    Ok(HeldOrderModifier { name: r.get(0)?, price_cents: r.get(1)? })
+                })?.filter_map(|r| r.ok()).collect();
+                drop(mod_stmt);
+
+                items.push(HeldOrderItem {
+                    db_item_id, menu_item_id, name, quantity, unit_price_cents,
+                    notes: notes.unwrap_or_default(), modifiers,
+                });
+            }
+            result.push(PendingOrderSummary { id: order_id, total_cents, items });
+        }
+        Ok(result)
     }
 
     /// Verifies `order_id` belongs to the caller's tenant/branch before any
