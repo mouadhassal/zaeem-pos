@@ -42,6 +42,26 @@ interface Branch {
 
 const PAPER_WIDTHS = [58, 80];
 
+// Was hardcoded to "الليرة السورية" (Syrian Lira) regardless of the
+// tenant's actual configured currency -- contradicted branches/page.tsx's
+// own 11-currency picker (its CURRENCIES list), which lets any branch be
+// set to any of these. Names for that same currency set, keyed by the ISO
+// code `get_chain_config_v3` returns, so this label always matches what
+// was actually configured instead of lying about it being SYP.
+const CURRENCY_NAMES: Record<string, string> = {
+  SYP: "الليرة السورية",
+  SAR: "الريال السعودي",
+  AED: "الدرهم الإماراتي",
+  QAR: "الريال القطري",
+  KWD: "الدينار الكويتي",
+  BHD: "الدينار البحريني",
+  OMR: "الريال العماني",
+  JOD: "الدينار الأردني",
+  EGP: "الجنيه المصري",
+  LBP: "الليرة اللبنانية",
+  SDG: "الجنيه السوداني",
+};
+
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: "general", label: "عام" },
   { id: "printer", label: "الطابعة" },
@@ -101,7 +121,7 @@ export default function SettingsPage() {
   const token = useAuthStore((s) => s.token);
   const isOwner = user?.role === "OWNER";
 
-  const [, setConfig] = useState<ChainConfig | null>(null);
+  const [config, setConfig] = useState<ChainConfig | null>(null);
   // 2026-08-03 "next phase" (see nextphase.md §2): both default true so an
   // existing restaurant's experience never changes unless they opt out.
   const [hasTables, setHasTables] = useState(true);
@@ -592,7 +612,10 @@ export default function SettingsPage() {
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">العملة</label>
                 <p className="h-10 flex items-center px-4 rounded-sm bg-ink-50 border-2 border-ink-200 text-ink-900 font-arabic text-sm">
-                  الليرة السورية ({CURRENCY_SYMBOL})
+                  {CURRENCY_NAMES[config?.currency ?? "SYP"] ?? config?.currency ?? "الليرة السورية"} ({CURRENCY_SYMBOL})
+                </p>
+                <p className="text-[10px] text-ink-500 mt-1 font-arabic">
+                  عملة الفرع تُحدَّد من تبويب &quot;الفروع&quot;
                 </p>
               </div>
             </div>
