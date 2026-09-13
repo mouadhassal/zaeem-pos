@@ -83,9 +83,16 @@ export default function KDSPage() {
       const kdsOrders = await invoke<KDSOrder[]>("list_kitchen_orders_v3", { sessionToken: token });
 
       setOrders((prev) => {
-        const currCount = kdsOrders.filter((o) => o.status === "PENDING").length;
-        const prevCountVal = prev.filter((o) => o.status === "PENDING").length;
-        if (currCount > prevCountVal) playAlert();
+        // Was a net-count comparison (curr PENDING count > prev PENDING
+        // count) -- missed a brand-new PENDING order landing in the same
+        // poll window as another PENDING order advancing to PREPARING,
+        // since the counts could stay equal (or even drop) with zero
+        // sound despite a real new order arriving. Set-difference on IDs
+        // instead: alert on any order ID that's PENDING now and either
+        // wasn't present last poll, or was present but not yet PENDING.
+        const prevPendingIds = new Set(prev.filter((o) => o.status === "PENDING").map((o) => o.id));
+        const hasNewPending = kdsOrders.some((o) => o.status === "PENDING" && !prevPendingIds.has(o.id));
+        if (hasNewPending) playAlert();
         return kdsOrders;
       });
     } catch (err) {
