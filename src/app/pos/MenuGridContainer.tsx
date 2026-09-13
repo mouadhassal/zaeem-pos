@@ -9,6 +9,7 @@ import { getCategoryStyle } from "../../components/ui/CategoryConfig";
 import Typeahead from "../../components/ui/Typeahead";
 import CategoryChip from "../../components/ui/CategoryChip";
 import ItemCard from "../../components/ui/ItemCard";
+import { formatAmount } from "../../lib/money";
 
 // list_menu_items_v3 returns "HAS_PHOTO" (not a real path/URL, see its
 // P0-fix doc comment) when an item has a photo, null otherwise -- this
@@ -202,7 +203,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
               <div className="flex items-center justify-between gap-3">
                 <span className="text-ink-900 font-medium">{item.name}</span>
                 <span className="font-mono text-ink-500 text-xs" dir="ltr">
-                  {item.effectivePriceCents.toLocaleString("en-US")} {currencySymbol}
+                  {formatAmount(item.effectivePriceCents)} {currencySymbol}
                 </span>
               </div>
             )}
@@ -225,7 +226,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
               >
                 <div className="text-[12px] font-medium text-text truncate">{combo.name}</div>
                 <div className="tabular text-[12px] font-semibold" style={{ color: "#F04E23" }} dir="ltr">
-                  {combo.bundlePriceCents.toLocaleString("en-US")} {currencySymbol}
+                  {formatAmount(combo.bundlePriceCents)} {currencySymbol}
                 </div>
               </button>
             ))}

@@ -2,6 +2,7 @@ import { IconMinus as Minus, IconPlus as Plus, IconX as X } from "@tabler/icons-
 import { getCategoryStyle } from "./CategoryConfig";
 import { useMenuItemPhoto } from "../../hooks/useMenuItemPhoto";
 import { useAuthStore } from "../../stores/authStore";
+import { formatAmount } from "../../lib/money";
 
 interface Props {
   id: string;
@@ -27,8 +28,9 @@ export default function OrderLine({
   const token = useAuthStore((s) => s.token);
   const photoUrl = useMenuItemPhoto(menuItemId ?? id, !!hasPhoto, token);
 
-  const fmt = (c: number) =>
-    c.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  // Currency-scale-aware -- was raw cents.toLocaleString(), which silently
+  // assumed scale 0 (see lib/money.ts's formatAmount doc comment).
+  const fmt = formatAmount;
 
   return (
     // Two rows, not one packed row: thumbnail(34)+name+steppers(72)+total(68)+void(32)

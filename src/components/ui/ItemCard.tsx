@@ -1,5 +1,6 @@
 import CategoryGlyph from "./CategoryGlyph";
 import Stepper from "./Stepper";
+import { formatAmount } from "../../lib/money";
 
 interface Props {
   name: string;
@@ -20,12 +21,10 @@ export default function ItemCard({
   name, priceCents, originalPriceCents, categoryName, photoUrl,
   quantity, currencySymbol, onAdd, onRemove, badge,
 }: Props) {
-  const formatted = priceCents.toLocaleString("en-US", {
-    minimumFractionDigits: 0, maximumFractionDigits: 0,
-  });
-  const formattedOriginal = originalPriceCents != null
-    ? originalPriceCents.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })
-    : null;
+  // Currency-scale-aware -- was raw cents.toLocaleString(), which silently
+  // assumed scale 0 (see lib/money.ts's formatAmount doc comment).
+  const formatted = formatAmount(priceCents);
+  const formattedOriginal = originalPriceCents != null ? formatAmount(originalPriceCents) : null;
 
   const inCart = quantity > 0;
 
