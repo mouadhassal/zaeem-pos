@@ -8,6 +8,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { IconCash, IconPencil, IconTrash, IconX } from "@tabler/icons-react";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 import { formatArabicDateTime, formatArabicDate } from "../../lib/dateLocal";
+import { useToast } from "../../hooks/useToast";
 
 interface DebtorRow {
   id: string;
@@ -92,6 +93,7 @@ function AgingBadge({ debtor }: { debtor: DebtorRow }) {
 }
 
 export default function DebtPage() {
+  const toast = useToast();
   const { fmt } = useCurrency();
   const token = useAuthStore((s) => s.token);
   const [debtors, setDebtors] = useState<DebtorRow[]>([]);
@@ -173,6 +175,7 @@ export default function DebtPage() {
         await invoke("create_debtor_v3", { ...args, initialDebtCents });
       }
       setShowModal(false);
+      toast.success(editId ? "تم تحديث بيانات المدين ✓" : "تمت إضافة المدين ✓");
       await fetchAll();
     } catch (err) {
       setFormErrors({ _form: `حدث خطأ في الحفظ: ${realErrorText(err)}` });
@@ -184,6 +187,7 @@ export default function DebtPage() {
     try {
       await invoke("deactivate_debtor_v3", { sessionToken: token, debtorId: deleteId });
       setDeleteId(null);
+      toast.success("تم حذف المدين ✓");
       await fetchAll();
     } catch (err) { setError(`حدث خطأ في الحذف: ${realErrorText(err)}`); }
   };
@@ -206,6 +210,7 @@ export default function DebtPage() {
       setPayModal(null);
       setPayAmount("");
       setPayNotes("");
+      toast.success("تم تسجيل الدفعة ✓");
       await fetchAll();
       if (detail && detail.debtor.id === payModal.id) {
         openDetail(payModal);

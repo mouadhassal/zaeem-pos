@@ -11,6 +11,7 @@ import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 import { openMarketplace, MARKETPLACE_ENABLED } from "../../lib/marketplace";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { formatArabicDateTime, formatArabicDate } from "../../lib/dateLocal";
+import { useToast } from "../../hooks/useToast";
 
 const editSchema = z.object({
   name: z.string().min(1, "الاسم مطلوب"),
@@ -408,6 +409,7 @@ function TabBar({
 /* ============= TAB 1: المخزون ============= */
 
 function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiveStock: () => void }) {
+  const toast = useToast();
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [filtered, setFiltered] = useState<Ingredient[]>([]);
   const [search, setSearch] = useState("");
@@ -456,6 +458,7 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
     try {
       const token = useAuthStore.getState().token;
       await invoke("adjust_stock_v3", { sessionToken: token, ingredientId: ingredient.id, changeAmount: change, reason });
+      toast.success("تم تعديل المخزون ✓");
       await fetch();
     } catch (err) {
       setActionError(`حدث خطأ في تعديل المخزون: ${realErrorText(err)}`);
@@ -784,6 +787,7 @@ function AddIngredientModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const toast = useToast();
   const [name, setName] = useState("");
   const [unit, setUnit] = useState("");
   const [cost, setCost] = useState(0);
@@ -813,6 +817,7 @@ function AddIngredientModal({
         costCentsPerUnit: parsed.data.cost_cents_per_unit,
         minStock: parsed.data.min_stock,
       });
+      toast.success("تمت إضافة المادة ✓");
       onSaved();
     } catch (err) { setErrors({ _form: `حدث خطأ في الحفظ: ${realErrorText(err)}` }); }
     finally { setSaving(false); }
@@ -856,6 +861,7 @@ function EditIngredientModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const toast = useToast();
   const [name, setName] = useState("");
   const [unit, setUnit] = useState("");
   const [cost, setCost] = useState(0);
@@ -903,6 +909,7 @@ function EditIngredientModal({
         costCentsPerUnit: parsed.data.cost_cents_per_unit,
         minStock: parsed.data.min_stock,
       });
+      toast.success("تم تحديث المادة ✓");
       onSaved();
       onClose();
     } catch (err) {
@@ -1280,6 +1287,7 @@ function SuppliersTab() {
 }
 
 function PaySupplierModal({ supplier, onClose, onSaved }: { supplier: Supplier; onClose: () => void; onSaved: () => void }) {
+  const toast = useToast();
   const token = useAuthStore((s) => s.token);
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<"CASH" | "BANK" | "CARD">("CASH");
@@ -1299,6 +1307,7 @@ function PaySupplierModal({ supplier, onClose, onSaved }: { supplier: Supplier; 
         method,
         notes: notes || null,
       });
+      toast.success("تم تسجيل الدفعة ✓");
       onSaved();
     } catch (err) {
       setError(`حدث خطأ في تسجيل الدفعة: ${realErrorText(err)}`);
@@ -1346,6 +1355,7 @@ function SupplierModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const toast = useToast();
   const token = useAuthStore((s) => s.token);
   const isEdit = !!target;
   const [name, setName] = useState("");
@@ -1403,6 +1413,7 @@ function SupplierModal({
           email: parsed.data.email ?? null,
         });
       }
+      toast.success(isEdit ? "تم تحديث المورد ✓" : "تمت إضافة المورد ✓");
       onSaved();
       onClose();
     } catch (err) {
@@ -1624,6 +1635,7 @@ function PurchasesTab() {
 
 /* Create PO Modal */
 function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () => void; onSaved: () => void; initialSupplierId?: string }) {
+  const toast = useToast();
   const token = useAuthStore((s) => s.token);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
@@ -1673,6 +1685,7 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
         notes: notes || null,
         items: items.map((item) => [item.ingredient_id, item.quantity_ordered, item.unit_cost_cents]),
       });
+      toast.success("تم إنشاء طلبية الشراء ✓");
       onSaved();
     } catch (err) {
       setError(`حدث خطأ في إنشاء الطلبية: ${realErrorText(err)}`);
@@ -1737,6 +1750,7 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
 
 /* Receive PO Modal */
 function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: () => void; onSaved: () => void }) {
+  const toast = useToast();
   const token = useAuthStore((s) => s.token);
   const [items, setItems] = useState<PurchaseOrderItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1775,6 +1789,7 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
         amountPaidCents,
         method: amountPaidCents > 0 ? payMethod : null,
       });
+      toast.success("تم استلام الطلبية وتحديث المخزون ✓");
       onSaved();
     } catch (err) {
       setReceiveError(`حدث خطأ في الاستلام: ${realErrorText(err)}`);

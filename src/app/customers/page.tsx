@@ -9,6 +9,7 @@ import Typeahead from "../../components/ui/Typeahead";
 import DatePicker from "../../components/ui/DatePicker";
 import { formatMoney } from "../../lib/money";
 import { formatArabicDate } from "../../lib/dateLocal";
+import { useToast } from "../../hooks/useToast";
 
 interface Customer {
   id: string;
@@ -114,6 +115,7 @@ function formatDateTime(dateStr: string | null): string {
 }
 
 export default function CustomersPage() {
+  const toast = useToast();
   const token = useAuthStore((s) => s.token);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loyaltyCards, setLoyaltyCards] = useState<LoyaltyCardSummary[]>([]);
@@ -223,6 +225,7 @@ export default function CustomersPage() {
         await invoke("create_customer_v3", args);
       }
       setShowModal(false);
+      toast.success(editId ? "تم تحديث بيانات العميل ✓" : "تمت إضافة العميل ✓");
       await fetchAll();
     } catch (err: any) {
       if (typeof err === "string" && err.includes("UNIQUE")) {
@@ -240,6 +243,7 @@ export default function CustomersPage() {
     try {
       await invoke("delete_customer_v3", { sessionToken: token, customerId: deleteId });
       setDeleteId(null);
+      toast.success("تم حذف العميل ✓");
       await fetchAll();
     } catch (err) {
       setError(`حدث خطأ في الحذف: ${realErrorText(err)}`);

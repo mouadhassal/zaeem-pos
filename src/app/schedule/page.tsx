@@ -6,6 +6,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { IconChevronRight, IconChevronLeft, IconPlus, IconX, IconTrash } from "@tabler/icons-react";
 import DatePicker from "../../components/ui/DatePicker";
 import { toLocalDateStr, formatArabicDate } from "../../lib/dateLocal";
+import { useToast } from "../../hooks/useToast";
 
 // HR_AND_GENERALIZATION_PLAN.md Part A -- a manager's calendar of who's
 // scheduled to work when. Deliberately named "roster" everywhere (matches
@@ -84,6 +85,7 @@ function startOfWeek(from: Date): Date {
 }
 
 export default function SchedulePage() {
+  const toast = useToast();
   const token = useAuthStore((s) => s.token);
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [staff, setStaff] = useState<StaffOption[]>([]);
@@ -201,6 +203,7 @@ export default function SchedulePage() {
         });
       }
       setModalOpen(false);
+      toast.success(editId ? "تم تحديث الوردية ✓" : "تمت إضافة الوردية ✓");
       await fetchEntries();
     } catch (err) {
       setFormErrors({ _form: friendlyRosterError(err) });
@@ -215,6 +218,7 @@ export default function SchedulePage() {
     try {
       await invoke("delete_roster_entry_v3", { sessionToken: token, id: editId });
       setModalOpen(false);
+      toast.success("تم حذف الوردية ✓");
       await fetchEntries();
     } catch (err) {
       setFormErrors({ _form: realErrorText(err) });

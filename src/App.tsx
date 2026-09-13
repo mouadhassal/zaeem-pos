@@ -3,6 +3,7 @@ import { useAuthStore } from "./stores/authStore";
 import LoginPage from "./components/LoginPage";
 import SetupWizard from "./components/SetupWizard";
 import SessionExpiredOverlay from "./components/SessionExpiredOverlay";
+import ToastContainer from "./components/ui/ToastContainer";
 import Sidebar from "./components/layout/Sidebar";
 import TopBar from "./components/layout/TopBar";
 import LicenseBanner from "./components/LicenseBanner";
@@ -185,6 +186,7 @@ export default function App() {
   return (
     <>
       <SessionExpiredOverlay />
+      <ToastContainer />
       <PosLayout>
         <POSPage />
       </PosLayout>

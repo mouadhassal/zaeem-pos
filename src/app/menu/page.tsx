@@ -8,6 +8,7 @@ import { z } from "zod";
 import { realErrorText, friendlyDeleteErrorText } from "../../lib/errors";
 import { IconPencil, IconTrash, IconX } from "@tabler/icons-react";
 import Typeahead from "../../components/ui/Typeahead";
+import { useToast } from "../../hooks/useToast";
 
 interface Category {
   id: string;
@@ -213,6 +214,7 @@ function marginBadge(margin: number) {
 
 export default function MenuPage() {
   const token = useAuthStore((s) => s.token);
+  const toast = useToast();
   const [tab, setTab] = useState<Tab>("items");
   const [offerSubTab, setOfferSubTab] = useState<OfferSubTab>("combos");
   const [loading, setLoading] = useState(true);
@@ -534,6 +536,7 @@ export default function MenuPage() {
         await invoke("create_menu_item_v3", args);
       }
       setShowItemModal(false);
+      toast.success(editItemId ? "تم تحديث الصنف ✓" : "تمت إضافة الصنف ✓");
       await fetchAll();
     } catch (err: any) {
       if (typeof err === "string" && err.includes("UNIQUE")) {
@@ -552,6 +555,7 @@ export default function MenuPage() {
     try {
       await invoke("delete_menu_item_v3", { sessionToken: token, itemId: deleteItemId });
       setDeleteItemId(null);
+      toast.success("تم حذف الصنف ✓");
       await fetchAll();
     } catch (err) {
       setError(friendlyDeleteErrorText(err, "هذا الصنف"));
@@ -664,6 +668,7 @@ export default function MenuPage() {
         await invoke("create_category_v3", args);
       }
       setShowCategoryModal(false);
+      toast.success(editCategoryId ? "تم تحديث التصنيف ✓" : "تمت إضافة التصنيف ✓");
       await fetchAll();
     } catch (err) {
       setCategoryErrors({ _form: `حدث خطأ في الحفظ: ${realErrorText(err)}` });
@@ -678,6 +683,7 @@ export default function MenuPage() {
     try {
       await invoke("delete_category_v3", { sessionToken: token, categoryId: deleteCategoryId });
       setDeleteCategoryId(null);
+      toast.success("تم حذف التصنيف ✓");
       await fetchAll();
     } catch (err) {
       setError(friendlyDeleteErrorText(err, "هذا التصنيف"));
@@ -731,6 +737,7 @@ export default function MenuPage() {
       }
 
       setShowComboModal(false);
+      toast.success(editComboId ? "تم تحديث العرض ✓" : "تمت إضافة العرض ✓");
       await fetchAll();
     } catch (err) {
       setComboErrors({ _form: `حدث خطأ في الحفظ: ${realErrorText(err)}` });
@@ -745,6 +752,7 @@ export default function MenuPage() {
     try {
       await invoke("delete_combo_meal_v3", { sessionToken: token, comboId: deleteComboId });
       setDeleteComboId(null);
+      toast.success("تم حذف العرض ✓");
       await fetchAll();
     } catch (err) {
       setError(`حدث خطأ في الحذف: ${realErrorText(err)}`);

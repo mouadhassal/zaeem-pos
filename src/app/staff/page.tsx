@@ -9,6 +9,7 @@ import { IconDeviceMobile, IconPencil, IconLock, IconX } from "@tabler/icons-rea
 import DatePicker from "../../components/ui/DatePicker";
 import { formatMoney } from "../../lib/money";
 import { toLocalDateStr, parseLocalDateStr, formatArabicDate, formatArabicTime } from "../../lib/dateLocal";
+import { useToast } from "../../hooks/useToast";
 /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 type Tab = "employees" | "shifts" | "attendance";
@@ -150,6 +151,7 @@ function formatCents(cents: number | null): string {
 }
 
 export default function StaffPage() {
+  const toast = useToast();
   const user = useAuthStore((s) => s.user);
   const token = useAuthStore((s) => s.token);
   const [tab, setTab] = useState<Tab>("employees");
@@ -347,6 +349,7 @@ export default function StaffPage() {
         }).catch(() => {});
       }
       setShowEmployeeModal(false);
+      toast.success(editEmployeeId ? "تم تحديث بيانات الموظف ✓" : "تمت إضافة الموظف ✓");
       await fetchEmployees();
     } catch (err) {
       setEmployeeErrors({ _form: typeof err === "string" ? err : `حدث خطأ في الحفظ: ${realErrorText(err)}` });
@@ -360,6 +363,7 @@ export default function StaffPage() {
     try {
       await invoke("set_staff_active_v3", { sessionToken: token, targetStaffId: suspendEmployeeId, isActive: false });
       setSuspendEmployeeId(null);
+      toast.success("تم تعليق الموظف ✓");
       await fetchEmployees();
     } catch (err) {
       setError(`حدث خطأ في التعليق: ${realErrorText(err)}`);
@@ -380,6 +384,7 @@ export default function StaffPage() {
     try {
       await invoke("force_close_shift_v3", { sessionToken: token, shiftId });
       setForceCloseShiftId(null);
+      toast.success("تم إغلاق الوردية ✓");
       await fetchShifts();
     } catch (err) {
       setError(`حدث خطأ في إغلاق الوردية: ${realErrorText(err)}`);
