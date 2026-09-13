@@ -2206,6 +2206,87 @@ pub fn run_syp_redenomination_migration(conn: &mut Connection, _db_path: &Path) 
     Ok(())
 }
 
+pub const MIGRATION_V_VERSION: i64 = 26;
+
+/// 2026-09-13 audit fix (honest CARD/WALLET confirmation): `payments` had no
+/// column to hold anything from the payment terminal/wallet app -- the
+/// cashier's "Confirm" tap was the ENTIRE evidence a CARD/WALLET payment
+/// ever happened (see PaymentModal.tsx before this fix: `sufficient` was
+/// hardcoded `true` for both methods). This adds `reference_code`
+/// (nullable -- CASH/CREDIT payments never populate it, and old rows have
+/// none) so the cashier's now-mandatory terminal approval-code entry has
+/// somewhere real to land, giving a genuine audit trail tying a POS payment
+/// row to a specific terminal receipt.
+pub fn run_payment_reference_code_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_V_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    if table_exists(&tx, "payments")? {
+        add_column_if_missing(&tx, "payments", "reference_code", "TEXT")?;
+    }
+    println!("v26_payment_reference_code: payments.reference_code added (terminal/wallet approval code, cashier-entered for CARD/WALLET)");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_V_VERSION, "0026_payment_reference_code", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub const MIGRATION_W_VERSION: i64 = 27;
+
+/// 2026-09-13 audit fix (real disaster-recovery backups): backups (see
+/// backup.rs) used to be manual-only and same-disk -- a dead machine lost
+/// them along with the live DB. This adds the one settings row a real
+/// background scheduler (wired up in `lib.rs::run`, independent of whether
+/// Settings is even open) and an optional off-machine secondary destination
+/// (any filesystem path -- a mapped network share or a USB drive covers the
+/// "off this machine" requirement without needing real cloud credentials
+/// this task doesn't have) both read from. `frequency_hours` defaults to 24
+/// (once a day); `secondary_path` NULL means "local-only," the exact
+/// pre-existing behavior, so an install that never touches the new Settings
+/// field keeps working unchanged.
+pub fn run_backup_settings_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_W_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS backup_settings (
+            id TEXT PRIMARY KEY,
+            secondary_path TEXT,
+            frequency_hours INTEGER NOT NULL DEFAULT 24,
+            last_auto_backup_at TEXT
+        );",
+    )?;
+    tx.execute(
+        "INSERT INTO backup_settings (id, secondary_path, frequency_hours, last_auto_backup_at) \
+         VALUES ('default', NULL, 24, NULL) \
+         ON CONFLICT(id) DO NOTHING",
+        [],
+    )?;
+    println!("v27_backup_settings: backup_settings table created (default row: no secondary path, 24h frequency), backing a real background scheduler");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_W_VERSION, "0027_backup_settings", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
