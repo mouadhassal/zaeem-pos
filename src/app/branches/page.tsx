@@ -127,10 +127,28 @@ export default function BranchesPage() {
     try {
       const rows = await invoke<Branch[]>("list_branches_full_v3", { sessionToken: token });
 
-      const todayData = await invoke<{ order_count: number; revenue_cents: number; staff_count: number }>(
-        "get_tenant_today_stats_v3", { sessionToken: token }
-      );
-      const terminalCounts = await invoke<[string, number][]>("get_terminal_counts_by_branch_v3", { sessionToken: token });
+      // Real per-branch numbers -- `get_tenant_today_stats_v3` returns a
+      // single tenant-wide aggregate and used to get stamped onto every
+      // branch card identically. `get_branch_today_stats_v3` and
+      // `get_staff_counts_by_branch_v3` return one row per branch instead
+      // (branches with no orders/staff today simply have no row, so they
+      // default to 0 below).
+      const [branchStats, staffCounts, terminalCounts] = await Promise.all([
+        invoke<[string, number, number][]>("get_branch_today_stats_v3", { sessionToken: token }),
+        invoke<[string, number][]>("get_staff_counts_by_branch_v3", { sessionToken: token }),
+        invoke<[string, number][]>("get_terminal_counts_by_branch_v3", { sessionToken: token }),
+      ]);
+
+      const orderMap: Record<string, number> = {};
+      const revenueMap: Record<string, number> = {};
+      for (const [branchId, orderCount, revenueCents] of branchStats) {
+        orderMap[branchId] = orderCount;
+        revenueMap[branchId] = revenueCents;
+      }
+      const staffMap: Record<string, number> = {};
+      for (const [branchId, count] of staffCounts) {
+        staffMap[branchId] = count;
+      }
       const terminalMap: Record<string, number> = {};
       for (const [branchId, count] of terminalCounts) {
         terminalMap[branchId] = count;
@@ -139,10 +157,10 @@ export default function BranchesPage() {
       const statsMap: Record<string, BranchStats> = {};
       for (const b of rows) {
         statsMap[b.id] = {
-          todayOrders: todayData.order_count,
-          todayRevenue: todayData.revenue_cents,
+          todayOrders: orderMap[b.id] ?? 0,
+          todayRevenue: revenueMap[b.id] ?? 0,
           terminalCount: terminalMap[b.id] ?? 0,
-          staffCount: todayData.staff_count,
+          staffCount: staffMap[b.id] ?? 0,
         };
       }
 
@@ -231,15 +249,16 @@ export default function BranchesPage() {
 
   const openDetail = async (branch: Branch) => {
     try {
-      const [terminals, todayData] = await Promise.all([
-        invoke<Terminal[]>("list_terminals_v3", { sessionToken: token, branchId: branch.id }),
-        invoke<{ order_count: number; revenue_cents: number; staff_count: number }>("get_tenant_today_stats_v3", { sessionToken: token }),
-      ]);
+      const terminals = await invoke<Terminal[]>("list_terminals_v3", { sessionToken: token, branchId: branch.id });
 
+      // Reuse this branch's own real numbers from `stats` (populated by
+      // fetchAll's per-branch calls) instead of re-fetching the tenant-wide
+      // aggregate -- see fetchAll's comment for why that used to be wrong.
+      const s = stats[branch.id];
       setDetailBranch(branch);
       setDetailTerminals(terminals);
-      setDetailStaffCount(todayData.staff_count);
-      setDetailTodaySales(todayData.revenue_cents);
+      setDetailStaffCount(s?.staffCount ?? 0);
+      setDetailTodaySales(s?.todayRevenue ?? 0);
       setDetailOpen(true);
     } catch (err) {
       setError(`حدث خطأ في تحميل التفاصيل: ${realErrorText(err)}`);
