@@ -26,7 +26,7 @@ import {
   IconAward as Award,
   IconArrowsSplit2 as Split, IconArrowsLeftRight as ArrowLeftRight,
   IconPrinter as Printer, IconTrash as Trash2,
-  IconToolsKitchen2, IconShoppingBag, IconWorld, IconWallet, IconX,
+  IconToolsKitchen2, IconShoppingBag, IconWallet, IconX,
 } from "@tabler/icons-react";
 import { useCartStore } from "../../stores/cartStore";
 import { useAuthStore } from "../../stores/authStore";
@@ -36,7 +36,8 @@ import { useMenuStore } from "../../stores/menuStore";
 import { CURRENCY_SYMBOLS } from "../../hooks/useCurrency";
 import { setCurrency, parseMoneyInput } from "../../lib/money";
 import { useDiscountCap } from "../../hooks/useDiscountCap";
-import { createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, lookupLoyaltyCard, listActiveLoyaltyRewards, redeemLoyaltyReward, getBusinessMode } from "../../lib/orderService";
+import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
+import { createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, lookupLoyaltyCard, listActiveLoyaltyRewards, redeemLoyaltyReward, getBusinessMode, listPendingOrdersForTable } from "../../lib/orderService";
 import type { LoyaltyRewardOption } from "../../lib/orderService";
 import { enableBarcodeScanner, disableBarcodeScanner } from "../../lib/barcodeScanner";
 import { retryPrintQueue, printReceipt } from "../../lib/printer";
@@ -80,11 +81,28 @@ export default function POSPage() {
     items: { name: string; quantity: number; priceCents: number; modifiers: { name: string; priceCents: number }[] }[];
   }[] | null>(null);
   const [splitQueueIndex, setSplitQueueIndex] = useState(0);
+  // Resume-unpaid-splits affordance (see PaymentModal's `onClose` comment
+  // below): populated whenever the selected table has PENDING orders --
+  // `split_bill` only points `tables.current_order_id` at the FIRST split,
+  // so these are otherwise invisible after the payment modal is closed
+  // mid-queue. `null` means "not checked / none found".
+  const [resumableSplits, setResumableSplits] = useState<{
+    orderId: string;
+    label: string;
+    amountCents: number;
+    items: { name: string; quantity: number; priceCents: number; modifiers: { name: string; priceCents: number }[] }[];
+  }[] | null>(null);
   const [loyaltyCard, setLoyaltyCard] = useState<{ card_number: string; customer_name: string; points: number; tier: string } | null>(null);
   const [loyaltyRewards, setLoyaltyRewards] = useState<LoyaltyRewardOption[]>([]);
   const [redeemingReward, setRedeemingReward] = useState(false);
   const [redeemError, setRedeemError] = useState<string | null>(null);
   const [receiptData, setReceiptData] = useState<ReceiptData | null>(null);
+  // F-key "Print" shortcut target (see useKeyboardShortcuts wiring below):
+  // the most recently printed/finalized receipt, so a cashier can reprint
+  // it without re-opening the on-screen receipt flow. Not the same as
+  // `receiptData`, which is scoped to the on-screen-receipt fallback modal
+  // and gets cleared/reused for that separate purpose.
+  const [lastReceipt, setLastReceipt] = useState<ReceiptData | null>(null);
   const [pinAction, setPinAction] = useState<string>("");
   const [discountOverridePin, setDiscountOverridePin] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -92,7 +110,6 @@ export default function POSPage() {
   const [voidTargetName, setVoidTargetName] = useState("");
   const [voidTargetPrice, setVoidTargetPrice] = useState(0);
   const [currencySymbol, setCurrencySymbol] = useState("ل.س");
-  const [showNumpad] = useState(false);
   // 2026-08-03 "next phase" (see nextphase.md §2) -- default true matches
   // the backend default, so the table bar/DINE_IN option never flash-hide
   // before the real value loads.
@@ -331,6 +348,7 @@ export default function POSPage() {
       }
     }
     setTable(table.id, table.name);
+    setResumableSplits(null);
     if (table.status === "OCCUPIED" && table.current_order_id) {
       const held = await retrieveHeldOrder(table.current_order_id);
       if (held) {
@@ -343,6 +361,38 @@ export default function POSPage() {
         }
       }
     }
+    if (table.status === "OCCUPIED") {
+      try {
+        const pending = await listPendingOrdersForTable(table.id);
+        if (pending.length > 0) {
+          setResumableSplits(
+            pending.map((o, i) => ({
+              orderId: o.id,
+              label: pending.length > 1 ? `قسم ${i + 1}` : "الفاتورة المعلّقة",
+              amountCents: o.totalCents,
+              items: o.items,
+            }))
+          );
+        }
+      } catch {
+        // Best-effort discoverability only -- selecting the table itself
+        // (above) already succeeded, never block on this.
+      }
+    }
+  };
+
+  // Re-enters the split-payment queue for orders `split_bill` created that
+  // never got paid (see `resumableSplits`'s doc comment above and
+  // PaymentModal's `onClose` comment below). Reuses the exact same queue
+  // mechanism `handleSplitConfirm` sets up right after a fresh split, so
+  // `handleSplitPaymentSuccess` (order-id-driven, already resilient to
+  // being called for any PENDING order id) needs no changes at all.
+  const handleResumeSplits = () => {
+    if (!resumableSplits) return;
+    setSplitQueue(resumableSplits);
+    setSplitQueueIndex(0);
+    setResumableSplits(null);
+    setShowPayment(true);
   };
 
   const handlePaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string) => {
@@ -384,6 +434,7 @@ export default function POSPage() {
         pointsEarned = await finalizeOrder(orderId, effectiveMethod, receivedCents, changeCents, receipt, effectiveDebtorId ?? undefined, loyaltyCard?.card_number);
       } catch {
         setReceiptData(receipt);
+        setLastReceipt(receipt);
         setShowOnScreenReceipt(true);
         setShowPayment(false);
         setSuccessMsg("فشلت الطباعة، تم عرض الإيصال على الشاشة");
@@ -394,6 +445,7 @@ export default function POSPage() {
         fetchTables();
         return;
       }
+      setLastReceipt(receipt);
       setShowPayment(false);
       setSuccessMsg(pointsEarned ? `تم الدفع ✓ (+${pointsEarned} نقطة ولاء)` : "تم الدفع ✓");
       setTimeout(() => setSuccessMsg(null), 3000);
@@ -460,6 +512,7 @@ export default function POSPage() {
         savingsCents: 0, totalCents: current.amountCents, paymentMethod: method, changeCents,
       };
       await finalizeOrder(current.orderId, method, receivedCents, changeCents, receipt, debtorId);
+      setLastReceipt(receipt);
       const nextIndex = splitQueueIndex + 1;
       if (nextIndex < splitQueue.length) {
         setSplitQueueIndex(nextIndex);
@@ -553,10 +606,10 @@ export default function POSPage() {
   const currentOrderId = tables.find((t) => t.id === tableId)?.current_order_id;
 
   const ORDER_TYPE_LABELS: Record<string, string> = {
-    DINE_IN: "صالة", TAKEAWAY: "سفري", ONLINE: "أونلاين", DEBT: "دين",
+    DINE_IN: "صالة", TAKEAWAY: "سفري", DEBT: "دين",
   };
   const ORDER_TYPE_ICONS: Record<string, typeof IconToolsKitchen2> = {
-    DINE_IN: IconToolsKitchen2, TAKEAWAY: IconShoppingBag, ONLINE: IconWorld, DEBT: IconWallet,
+    DINE_IN: IconToolsKitchen2, TAKEAWAY: IconShoppingBag, DEBT: IconWallet,
   };
   const OrderTypeIconComponent = ORDER_TYPE_ICONS[orderType] || IconToolsKitchen2;
   // 2026-08-03 "next phase": with tables off, `tableId` is always the
@@ -605,6 +658,60 @@ export default function POSPage() {
       setShowOnScreenReceipt(true);
     }
   };
+
+  // F4 "Print" shortcut: reprints the last completed sale (`lastReceipt`),
+  // not the in-progress cart draft the toolbar's own print button
+  // (`handlePrintDraft`) targets -- falls back to the draft print only if
+  // nothing has actually been sold yet this session, so the shortcut is
+  // never a silent no-op.
+  const handleReprintLast = async () => {
+    if (!lastReceipt) {
+      await handlePrintDraft();
+      return;
+    }
+    try {
+      await printReceipt(lastReceipt);
+    } catch {
+      setReceiptData(lastReceipt);
+      setShowOnScreenReceipt(true);
+    }
+  };
+
+  // F-key shortcuts for the core sales flow -- Pay/Hold/Void/Print, the
+  // same actions their equivalent on-screen buttons trigger (PayKey's
+  // onClick, handleHold, handleVoidLineClick, handleReprintLast). The hook
+  // maps digit-row keys 1-4 to "F1"-"F4" (see useKeyboardShortcuts.ts);
+  // typing in a real input is already guarded there.
+  useKeyboardShortcuts({
+    F1: () => {
+      if (items.length === 0 || (!tableId && orderType === "DINE_IN")) return;
+      if (!shiftId) { setShowOpenShift(true); return; }
+      const cartSubtotal = useCartStore.getState().subtotal();
+      const discountPercent = cartSubtotal > 0
+        ? Math.round((useCartStore.getState().discountCents / cartSubtotal) * 100)
+        : 0;
+      if (discountPercent > maxDiscountPercent) {
+        setPinAction("discount");
+        setShowPin(true);
+      } else {
+        setShowPayment(true);
+      }
+    },
+    F2: () => {
+      if (items.length === 0 || (!tableId && orderType === "DINE_IN")) return;
+      if (!shiftId) { setShowOpenShift(true); return; }
+      handleHold();
+    },
+    F3: () => {
+      // No line-selection concept exists in OrderPanel today (every line
+      // just has its own inline void button) -- targeting the most
+      // recently added, not-yet-voided line is the closest reasonable
+      // stand-in for "the selected item" a dedicated shortcut implies.
+      const target = [...items].reverse().find((i) => !i.voided);
+      if (target) handleVoidLineClick(target.id);
+    },
+    F4: () => { handleReprintLast(); },
+  });
 
   return (
     // Order panel is the FIRST child so RTL flow pins it to the physical
@@ -786,7 +893,6 @@ export default function POSPage() {
             onAddItem={(item) => {
               addItem({ ...item, modifiers: [] });
             }}
-            showNumpad={showNumpad}
           />
         </div>
 
@@ -934,13 +1040,15 @@ export default function POSPage() {
           key={splitQueue ? splitQueue[splitQueueIndex].orderId : "cart"}
           onClose={() => {
             setShowPayment(false);
-            // Known limitation: closing mid-queue leaves any
-            // not-yet-paid split orders as real, valid PENDING orders in
-            // the DB (never lost), but there is currently no dedicated
-            // "resume paying pending splits" UI to get back to them --
+            // Closing mid-queue leaves any not-yet-paid split orders as
+            // real, valid PENDING orders in the DB (never lost) --
             // re-selecting the table only retrieves DRAFT (held) orders,
-            // not PENDING ones. Clearing the queue here at least makes
-            // that state visible/consistent instead of silently stuck.
+            // not PENDING ones, so they'd otherwise disappear from the UI.
+            // Clearing the queue here makes that state visible/consistent
+            // instead of silently stuck, and `handleTableSelect` /
+            // `resumableSplits` above re-surface them (a "استئناف الدفع"
+            // banner) the next time this table is selected, driving them
+            // back through this exact queue via `handleResumeSplits`.
             if (splitQueue) {
               setSplitQueue(null);
               setSplitQueueIndex(0);
@@ -998,6 +1106,30 @@ export default function POSPage() {
         <OnScreenReceiptModal receiptData={receiptData} onClose={() => setShowOnScreenReceipt(false)} />
       )}
       </Suspense>
+
+      {resumableSplits && resumableSplits.length > 0 && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 flex items-center gap-3 text-white px-5 py-3 rounded-[12px] shadow-sh-3 z-50 text-sm font-medium font-arabic" style={{ backgroundColor: "var(--warn)" }}>
+          <span>
+            {resumableSplits.length > 1
+              ? `يوجد ${resumableSplits.length} فواتير مقسّمة لم يتم دفعها لهذه الطاولة`
+              : "يوجد فاتورة معلّقة لم يتم دفعها لهذه الطاولة"}
+          </span>
+          <button
+            type="button"
+            onClick={handleResumeSplits}
+            className="bg-white/20 hover:bg-white/30 transition-colors rounded-[8px] px-3 py-1 text-xs font-bold"
+          >
+            استئناف الدفع
+          </button>
+          <button
+            type="button"
+            onClick={() => setResumableSplits(null)}
+            className="text-white/70 hover:text-white text-xs"
+          >
+            إغلاق
+          </button>
+        </div>
+      )}
 
       {successMsg && (
         <div className="fixed top-20 left-1/2 -translate-x-1/2 text-white px-6 py-3 rounded-[12px] shadow-sh-3 z-50 text-sm font-medium" style={{ backgroundColor: "var(--ok)" }}>
