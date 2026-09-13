@@ -9,8 +9,36 @@ import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { realErrorText } from "../../lib/errors";
 import { toLocalDateStr, parseLocalDateStr, formatArabicDate } from "../../lib/dateLocal";
 
-type Tab = "revenue" | "costs" | "invoices" | "taxes";
+type Tab = "pnl" | "revenue" | "costs" | "invoices" | "taxes";
 type DateRange = "today" | "week" | "month" | "custom";
+
+// Mirrors dashboard/page.tsx's own shape for `get_dashboard_summary_v3` --
+// this IS that same command (Repo::dashboard_summary), reused rather than
+// reinvented, per-branch revenue/costs/profit already computed for a date
+// range server-side. Only the fields the P&L tab actually renders are
+// declared here.
+interface PnlBranch {
+  branch_id: string;
+  branch_name: string;
+  revenue_cents: number;
+  costs_cents: number;
+  profit_cents: number;
+  order_count: number;
+}
+
+interface PnlSummary {
+  branches: PnlBranch[];
+  total_revenue_cents: number;
+  total_costs_cents: number;
+  total_profit_cents: number;
+}
+
+interface PnlTrendPoint {
+  date: string;
+  revenue: number;
+  costs: number;
+  profit: number;
+}
 
 interface RevenueRow {
   date: string;
@@ -86,10 +114,15 @@ const CATEGORY_OPTIONS = ["إيجار", "رواتب", "كهرباء", "مياه"
 
 export default function FinancePage() {
   const token = useAuthStore((s) => s.token);
-  const [tab, setTab] = useState<Tab>("revenue");
+  const [tab, setTab] = useState<Tab>("pnl");
   const [dateRange, setDateRange] = useState<DateRange>("today");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
+
+  const [pnlSummary, setPnlSummary] = useState<PnlSummary | null>(null);
+  const [pnlTrend, setPnlTrend] = useState<PnlTrendPoint[]>([]);
+  const [pnlLoading, setPnlLoading] = useState(false);
+  const [pnlError, setPnlError] = useState<string | null>(null);
 
   const [revenueData, setRevenueData] = useState<RevenueRow[]>([]);
   const [totalRevenue, setTotalRevenue] = useState(0);
@@ -177,17 +210,96 @@ export default function FinancePage() {
     fetchAll();
   }, [fetchAll]);
 
+  // P&L (net profit) view: revenue - operational costs for the selected
+  // range, reusing `get_dashboard_summary_v3` -- the same command
+  // dashboard/page.tsx already uses for its own net-profit KPI -- instead
+  // of inventing a new backend aggregate. The day-by-day trend below is
+  // built client-side from the SAME existing endpoints the revenue/costs
+  // tabs already call (`get_finance_revenue_v3` per day, `costs` already
+  // loaded by fetchAll), capped at 31 days so a long custom range can't
+  // fire an unbounded number of queries.
+  const fetchPnl = useCallback(async () => {
+    setPnlLoading(true);
+    setPnlError(null);
+    try {
+      const startDate = rangeStart(dateRange, customStart);
+      const endDate = rangeEnd(dateRange, customEnd);
+
+      const summary = await invoke<PnlSummary>("get_dashboard_summary_v3", {
+        sessionToken: token, startIso: startDate.toISOString(), endIso: endDate.toISOString(),
+      });
+      setPnlSummary(summary);
+
+      const msPerDay = 24 * 60 * 60 * 1000;
+      const spanDays = Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / msPerDay) + 1);
+      const dayCount = Math.min(31, spanDays);
+      const days: Date[] = [];
+      for (let i = 0; i < dayCount; i++) {
+        const d = new Date(startDate);
+        d.setDate(d.getDate() + i);
+        if (d > endDate) break;
+        days.push(d);
+      }
+
+      const trend = await Promise.all(days.map(async (day) => {
+        const dayStart = new Date(day);
+        dayStart.setHours(0, 0, 0, 0);
+        const dayEnd = new Date(day);
+        dayEnd.setHours(23, 59, 59, 999);
+        const cappedEnd = dayEnd > endDate ? endDate : dayEnd;
+        const rev = await invoke<{ total: number }>("get_finance_revenue_v3", {
+          sessionToken: token, startIso: dayStart.toISOString(), endIso: cappedEnd.toISOString(),
+        });
+        const dayStr = toLocalDateStr(day);
+        const dayCosts = costs
+          .filter((c) => c.date.slice(0, 10) === dayStr)
+          .reduce((acc, c) => acc + c.amount_cents, 0);
+        return { date: dayStr, revenue: rev.total, costs: dayCosts, profit: rev.total - dayCosts };
+      }));
+      setPnlTrend(trend);
+    } catch (err) {
+      setPnlError(`تعذر تحميل بيانات الأرباح والخسائر: ${realErrorText(err)}`);
+    } finally {
+      setPnlLoading(false);
+    }
+  }, [dateRange, customStart, customEnd, token, costs]);
+
+  useEffect(() => {
+    if (tab === "pnl") fetchPnl();
+    // Deliberately NOT depending on fetchPnl's own dateRange/customStart/
+    // customEnd triggering this effect a second, redundant time -- it's
+    // already in fetchPnl's own deps, so switching TO the tab or changing
+    // the range while already on it both refresh correctly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, fetchPnl]);
+
   const [exportingPdf, setExportingPdf] = useState(false);
 
   const tabTitle = (t: Tab) =>
-    t === "revenue" ? "الإيرادات" : t === "costs" ? "التكاليف" : t === "invoices" ? "الفواتير" : "الضرائب";
+    t === "pnl" ? "الأرباح والخسائر" : t === "revenue" ? "الإيرادات" : t === "costs" ? "التكاليف" : t === "invoices" ? "الفواتير" : "الضرائب";
 
   const exportPdf = async () => {
     if (exportingPdf) return;
     setExportingPdf(true);
     try {
       let tableHtml = "";
-      if (tab === "revenue") {
+      if (tab === "pnl") {
+        tableHtml =
+          pdfTableHtml(
+            "ملخص الأرباح والخسائر",
+            ["البيان", "القيمة"],
+            [
+              ["إجمالي الإيرادات", formatMoney(pnlSummary?.total_revenue_cents ?? 0)],
+              ["إجمالي التكاليف", formatMoney(pnlSummary?.total_costs_cents ?? 0)],
+              ["صافي الربح", formatMoney(pnlSummary?.total_profit_cents ?? 0)],
+            ]
+          ) +
+          pdfTableHtml(
+            "الاتجاه اليومي",
+            ["التاريخ", "الإيرادات", "التكاليف", "الربح"],
+            pnlTrend.map((p) => [p.date, formatMoney(p.revenue), formatMoney(p.costs), formatMoney(p.profit)])
+          );
+      } else if (tab === "revenue") {
         tableHtml = pdfTableHtml(
           "الإيرادات",
           ["التاريخ", "عدد الطلبات", "نقدي", "بطاقة", "محفظة", "إجمالي"],
@@ -313,7 +425,7 @@ export default function FinancePage() {
       </div>
 
       <div className="flex gap-2 border-b border-ink-200 pb-2">
-        {(["revenue", "costs", "invoices", "taxes"] as Tab[]).map((t) => (
+        {(["pnl", "revenue", "costs", "invoices", "taxes"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -323,10 +435,125 @@ export default function FinancePage() {
                 : "text-ink-500 hover:text-saffron-600 hover:bg-white"
             }`}
           >
-            {t === "revenue" ? "الإيرادات" : t === "costs" ? "التكاليف" : t === "invoices" ? "الفواتير" : "الضرائب"}
+            {t === "pnl" ? "الأرباح والخسائر" : t === "revenue" ? "الإيرادات" : t === "costs" ? "التكاليف" : t === "invoices" ? "الفواتير" : "الضرائب"}
           </button>
         ))}
       </div>
+
+      {tab === "pnl" && (
+        <div className="space-y-4">
+          {pnlLoading && (
+            <div className="text-center py-6 text-ink-500 font-arabic">جاري التحميل...</div>
+          )}
+          {pnlError && (
+            <div className="text-center py-3 text-danger font-arabic">{pnlError}</div>
+          )}
+          {!pnlLoading && pnlSummary && (
+            <>
+              <div className="flex gap-2">
+                {(["today", "week", "month", "custom"] as DateRange[]).map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => setDateRange(r)}
+                    className={`px-4 py-2 rounded-lg font-arabic text-sm transition-colors ${
+                      dateRange === r
+                        ? "bg-saffron-600 text-white"
+                        : "bg-white text-ink-500 hover:bg-ink-200"
+                    }`}
+                  >
+                    {r === "today" ? "اليوم" : r === "week" ? "هذا الأسبوع" : r === "month" ? "هذا الشهر" : "مخصص"}
+                  </button>
+                ))}
+              </div>
+              {dateRange === "custom" && (
+                <div className="flex gap-3">
+                  <DatePicker value={customStart} onChange={(v) => setCustomStart(v)} className="h-10 px-4 pl-10 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500" />
+                  <DatePicker value={customEnd} onChange={(v) => setCustomEnd(v)} className="h-10 px-4 pl-10 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500" />
+                </div>
+              )}
+
+              <div className="grid grid-cols-3 gap-4">
+                <div className="bg-white rounded-md p-4 space-y-1 border border-ink-200">
+                  <p className="text-ink-400 text-sm font-arabic">إجمالي الإيرادات</p>
+                  <p className="text-2xl font-bold text-saffron-600 font-mono">{formatMoney(pnlSummary.total_revenue_cents)}</p>
+                </div>
+                <div className="bg-white rounded-md p-4 space-y-1 border border-ink-200">
+                  <p className="text-ink-400 text-sm font-arabic">إجمالي التكاليف</p>
+                  <p className="text-2xl font-bold text-danger-600 font-mono">{formatMoney(pnlSummary.total_costs_cents)}</p>
+                </div>
+                <div className="bg-white rounded-md p-4 space-y-1 border border-ink-200">
+                  <p className="text-ink-400 text-sm font-arabic">صافي الربح</p>
+                  <p className={`text-2xl font-bold font-mono ${pnlSummary.total_profit_cents >= 0 ? "text-ok" : "text-danger"}`}>
+                    {formatMoney(pnlSummary.total_profit_cents)}
+                  </p>
+                </div>
+              </div>
+
+              {pnlSummary.branches.length > 1 && (
+                <div className="zc-card overflow-x-auto">
+                  <div className="p-4 pb-0">
+                    <h2 className="font-bold text-ink-900 font-arabic">حسب الفرع</h2>
+                  </div>
+                  <table className="w-full text-sm mt-2">
+                    <thead>
+                      <tr className="border-b border-ink-200 bg-surface-alt text-ink-400 font-arabic">
+                        <th className="text-right p-3 font-medium">الفرع</th>
+                        <th className="text-center p-3 font-medium">الإيرادات</th>
+                        <th className="text-center p-3 font-medium">التكاليف</th>
+                        <th className="text-center p-3 font-medium">الربح</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...pnlSummary.branches].sort((a, b) => b.profit_cents - a.profit_cents).map((b) => (
+                        <tr key={b.branch_id} className="border-b border-ink-100 hover:bg-saffron-50">
+                          <td className="p-3 font-arabic text-ink-900 font-medium">{b.branch_name}</td>
+                          <td className="p-3 text-center font-mono text-saffron-600">{formatMoney(b.revenue_cents)}</td>
+                          <td className="p-3 text-center font-mono text-danger">{formatMoney(b.costs_cents)}</td>
+                          <td className={`p-3 text-center font-mono font-bold ${b.profit_cents >= 0 ? "text-ok" : "text-danger"}`}>{formatMoney(b.profit_cents)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="zc-card overflow-x-auto">
+                <div className="p-4 pb-0">
+                  <h2 className="font-bold text-ink-900 font-arabic">الاتجاه اليومي</h2>
+                  {pnlTrend.length >= 31 && (
+                    <p className="text-[10px] text-ink-400 font-arabic mt-1">يُعرض حتى 31 يوماً كحد أقصى ضمن الفترة المحددة</p>
+                  )}
+                </div>
+                <table className="w-full text-sm mt-2">
+                  <thead>
+                    <tr className="border-b border-ink-200 bg-surface-alt text-ink-400 font-arabic">
+                      <th className="text-right p-3 font-medium">التاريخ</th>
+                      <th className="text-center p-3 font-medium">الإيرادات</th>
+                      <th className="text-center p-3 font-medium">التكاليف</th>
+                      <th className="text-center p-3 font-medium">الربح</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pnlTrend.map((p) => (
+                      <tr key={p.date} className="border-b border-ink-100 hover:bg-saffron-50">
+                        <td className="p-3 font-arabic text-ink-900">{p.date}</td>
+                        <td className="p-3 text-center font-mono text-saffron-600">{formatMoney(p.revenue)}</td>
+                        <td className="p-3 text-center font-mono text-danger">{formatMoney(p.costs)}</td>
+                        <td className={`p-3 text-center font-mono font-bold ${p.profit >= 0 ? "text-ok" : "text-danger"}`}>{formatMoney(p.profit)}</td>
+                      </tr>
+                    ))}
+                    {pnlTrend.length === 0 && (
+                      <tr>
+                        <td colSpan={4} className="p-6 text-center text-ink-500 font-arabic">لا توجد بيانات</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {tab === "revenue" && (
         <div className="space-y-4">
