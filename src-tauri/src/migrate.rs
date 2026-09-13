@@ -56,7 +56,13 @@ pub(crate) struct Migration {
     expected_checksum: String,
 }
 
-fn sha256_hex(input: &str) -> String {
+/// Not a cryptographic hash -- backed by `DefaultHasher` (SipHash-1-3,
+/// no collision resistance guarantee, no cross-version stability
+/// guarantee), used here purely as a cheap drift-detection fingerprint for
+/// `run_migrations`'s "has an already-applied migration's SQL text changed
+/// since it ran" check. Named `sha256_hex` until 2026-09-13, which implied
+/// a security property this function has never actually had.
+fn schema_fingerprint_hex(input: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
@@ -88,7 +94,7 @@ pub fn embedded_migrations() -> BTreeMap<i64, (String, String, String)> {
     for (version_str, sql) in files {
         let version: i64 = version_str.parse().expect("Invalid migration version");
         let name = format!("{}_init.sql", version_str);
-        let checksum = sha256_hex(sql);
+        let checksum = schema_fingerprint_hex(sql);
         map.insert(version, (name, sql.to_string(), checksum));
     }
     map
@@ -122,7 +128,7 @@ pub(crate) fn discover_migrations(dir: &Path) -> Result<BTreeMap<i64, Migration>
             Err(_) => continue,
         };
         let sql = fs::read_to_string(&path)?;
-        let checksum = sha256_hex(&sql);
+        let checksum = schema_fingerprint_hex(&sql);
         migrations.insert(version, Migration {
             version,
             name: stem,

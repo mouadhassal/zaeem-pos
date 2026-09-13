@@ -90,6 +90,8 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_syp_redenomination_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_payment_reference_code_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_backup_settings_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_debtor_credit_limit_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_menu_item_barcode_tenant_unique_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -600,7 +602,6 @@ pub fn run() {
             commands_v3::activate_delayed_orders_v3,
             commands_v3::get_receipt_config_v3,
             commands_v3::lookup_loyalty_card_v3,
-            commands_v3::earn_loyalty_points_v3,
             commands_v3::finalize_order_with_payment_v3,
             commands_v3::refund_order_v3,
             commands_v3::get_cached_license_status_v3,

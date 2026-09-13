@@ -2287,6 +2287,182 @@ pub fn run_backup_settings_migration(conn: &mut Connection, _db_path: &Path) -> 
     Ok(())
 }
 
+// X and Y -- NOT 26/27: those two version NUMBERS are already claimed by
+// the two migrations directly above (payment_reference_code/
+// backup_settings), and the LETTERS V/W are already used by their
+// constants -- picking up the alphabet at X/Y avoids both collisions.
+// (26/27 are ALSO separately claimed by migrate.rs's own embedded SQL
+// chain -- 0026_stock_counts.sql, 0027_fleet_removal.sql -- a different,
+// pre-existing collision in this same shared `schema_migrations` version
+// space, see that module's own `embedded_migrations` doc comment. Neither
+// collision matters here since this pair starts at 28 regardless.)
+pub const MIGRATION_X_VERSION: i64 = 28;
+
+/// 2026-09-13 audit finding: there was no way to configure a maximum debt
+/// limit per debtor, and nothing anywhere enforced one. Adds a nullable
+/// `debtors.credit_limit_cents` -- NULL (the default, and every existing
+/// row's value after this migration) means unlimited, preserving current
+/// behavior for every debtor that doesn't explicitly get a limit set.
+/// Enforcement lives in repo.rs (`assert_within_credit_limit`, called
+/// from `record_initial_debt`, `take_payment`, and
+/// `finalize_order_with_payment` -- every path that can increase a
+/// debtor's `balance_cents`), not here; this migration is schema-only.
+pub fn run_debtor_credit_limit_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_X_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+
+    if table_exists(&tx, "debtors")? {
+        add_column_if_missing(&tx, "debtors", "credit_limit_cents", "INTEGER")?;
+    }
+
+    println!("v28_debtor_credit_limit: debtors.credit_limit_cents added (nullable, NULL = unlimited)");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_X_VERSION, "0028_debtor_credit_limit", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub const MIGRATION_Y_VERSION: i64 = 29;
+
+/// 2026-09-13 audit finding: `menu_items.barcode UNIQUE`
+/// (0001_init.sql) predates the multi-tenant `tenant_id` column Migration
+/// A (EXPAND) later added -- it's still a BARE, single-column UNIQUE
+/// constraint today, which means two different tenants sharing one
+/// physical SQLite file (the schema's own real, if uncommon, deployment
+/// shape -- see `Scope`/`assert_row_in_scope` throughout repo.rs, which
+/// exist precisely because one file can hold more than one tenant) cannot
+/// both use the same barcode string, even though they are completely
+/// unrelated businesses. Replaces it with a composite
+/// `UNIQUE(tenant_id, barcode)` index instead -- scoped uniqueness, not
+/// global.
+///
+/// SQLite has no `ALTER TABLE ... DROP CONSTRAINT`/`ALTER COLUMN` -- a
+/// column-level `UNIQUE` can only be removed by recreating the table
+/// (same reasoning as `enforce_not_null`'s own doc comment, and the same
+/// canonical SQLite procedure: rebuild with the constraint gone, copy
+/// every row across, drop the old table, rename the new one into place).
+/// Reads the table's REAL, CURRENT `CREATE TABLE` text back out of
+/// `sqlite_master` (not a hand-transcribed column list -- by the time
+/// this migration runs, `menu_items` has picked up a dozen `ALTER TABLE
+/// ADD COLUMN`s from Migration A/S/U onward that a hand-written column
+/// list would have to track exactly, and drift once already, see
+/// `enforce_not_null`'s own doc comment for the concrete case that bit
+/// this codebase) and does a single targeted text replacement of `barcode
+/// TEXT UNIQUE` -> `barcode TEXT`, which is exact and unambiguous (no
+/// other column in `menu_items` is named `barcode`).
+///
+/// Every index that existed on `menu_items` (e.g. `idx_menu_items_
+/// category_id`/`idx_menu_items_tenant`, both added generically by
+/// Migration E's `run_index_migration` long before this runs, and which
+/// would otherwise vanish with the `DROP TABLE`) is captured from
+/// `sqlite_master` BEFORE the drop and re-executed after the rename --
+/// generic, not hardcoded, so it stays correct regardless of exactly
+/// which indexes exist by the time this runs. `PRAGMA foreign_keys=OFF`
+/// wraps the whole operation (toggled outside the transaction, same
+/// reasoning as `run_expand_migration`'s own doc comment: it's a no-op
+/// inside an active transaction, and `recipes`/`order_items`/
+/// `combo_items`/`happy_hour_rules` all hold a live FK reference to
+/// `menu_items.id` that a `DROP TABLE` would otherwise trip over even
+/// though no data is actually left inconsistent at any point).
+pub fn run_menu_item_barcode_tenant_unique_migration(conn: &mut Connection, db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_Y_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    conn.execute_batch("PRAGMA foreign_keys=OFF;").ok();
+    let result = with_snapshot_protection(conn, db_path, "v29_barcode_unique", |tx| {
+        if !table_exists(tx, "menu_items")? {
+            let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+                params![MIGRATION_Y_VERSION, "0029_menu_item_barcode_tenant_unique", applied_at, "n/a-programmatic"],
+            )?;
+            return Ok(());
+        }
+
+        let original_sql: String = tx.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'menu_items'",
+            [],
+            |r| r.get(0),
+        )?;
+
+        // Already fixed (re-run after a prior partial application, or the
+        // bare UNIQUE was never present on this install for some reason) --
+        // nothing to recreate; just (re)create the composite index below
+        // and record the version.
+        if !original_sql.contains("barcode TEXT UNIQUE") {
+            tx.execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_menu_items_tenant_barcode ON menu_items(tenant_id, barcode);"
+            )?;
+            let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+                params![MIGRATION_Y_VERSION, "0029_menu_item_barcode_tenant_unique", applied_at, "n/a-programmatic"],
+            )?;
+            return Ok(());
+        }
+
+        // Capture every existing index on menu_items (auto-indexes backing
+        // column constraints have a NULL `sql` and are recreated
+        // automatically by the new CREATE TABLE if we kept the constraint --
+        // deliberately dropping the bare-UNIQUE one is the whole point of
+        // this migration, so only named, explicit indexes are preserved).
+        let existing_index_sql: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'menu_items' AND sql IS NOT NULL"
+            )?;
+            let rows: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(0))?.filter_map(|r| r.ok()).collect();
+            rows
+        };
+
+        let new_table = "menu_items_v29";
+        let new_sql = strip_create_table_prefix(&original_sql, "menu_items", new_table)
+            .ok_or_else(|| V3Error::Db(rusqlite::Error::InvalidParameterName(
+                format!("unrecognized CREATE TABLE prefix for menu_items: {original_sql}")
+            )))?
+            .replacen("barcode TEXT UNIQUE", "barcode TEXT", 1);
+
+        tx.execute_batch(&new_sql)?;
+        tx.execute_batch(&format!("INSERT INTO {new_table} SELECT * FROM menu_items;"))?;
+        tx.execute_batch(&format!("DROP TABLE menu_items; ALTER TABLE {new_table} RENAME TO menu_items;"))?;
+
+        for idx_sql in &existing_index_sql {
+            tx.execute_batch(idx_sql)?;
+        }
+        tx.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_menu_items_tenant_barcode ON menu_items(tenant_id, barcode);"
+        )?;
+
+        println!(
+            "v29_menu_item_barcode_tenant_unique: dropped menu_items.barcode's bare column-level UNIQUE, \
+             replaced with a composite UNIQUE(tenant_id, barcode) index; {} pre-existing index(es) preserved",
+            existing_index_sql.len()
+        );
+
+        let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+            params![MIGRATION_Y_VERSION, "0029_menu_item_barcode_tenant_unique", applied_at, "n/a-programmatic"],
+        )?;
+        Ok(())
+    });
+    conn.execute_batch("PRAGMA foreign_keys=ON;").ok();
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3153,6 +3329,150 @@ mod tests {
         assert_eq!(total_minor, 100, "orders.total_minor must stay in sync with total_cents");
         assert_eq!(total_base_minor, 100, "orders.total_base_minor must stay in sync with total_cents");
         assert_eq!(total_epoch, 3, "orders.total_denom_epoch must be bumped to mark the redenomination event");
+
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(integrity, "ok");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// V: debtors.credit_limit_cents -- idempotent, nullable, defaults to
+    /// NULL (unlimited) on every existing row so current behavior is
+    /// preserved for anyone who never sets one, and is actually settable
+    /// afterward.
+    #[test]
+    fn test_debtor_credit_limit_migration_is_idempotent_and_nullable() {
+        let db_path = fresh_db_path("debtor_credit_limit_migration");
+        build_base_fixture(&db_path);
+        {
+            let mut conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+            run_expand_migration(&mut conn, &db_path).expect("Migration A failed");
+            run_remap_migration(&mut conn, &db_path).expect("Migration B failed");
+            run_identity_migration(&mut conn, &db_path).expect("Migration C failed");
+            run_drift_fix_migration(&mut conn, &db_path).expect("Migration D failed");
+
+            // A pre-existing debtor, seeded BEFORE the migration runs, to
+            // prove the new column backfills to NULL (unlimited), not 0
+            // (which would silently forbid any debt at all).
+            let (tenant_id, branch_id): (String, String) =
+                conn.query_row("SELECT tenant_id, id FROM branch LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            conn.execute(
+                "INSERT INTO debtors (id, tenant_id, branch_id, name, phone, total_debt_cents, total_paid_cents, balance_cents, is_active) \
+                 VALUES ('debtor-pre', ?1, ?2, 'Pre-existing Debtor', '0000', 0, 0, 0, 1)",
+                params![tenant_id, branch_id],
+            ).unwrap();
+
+            run_debtor_credit_limit_migration(&mut conn, &db_path).expect("Migration V failed (first run)");
+            // Second run must be a clean no-op, not a "duplicate column" error.
+            run_debtor_credit_limit_migration(&mut conn, &db_path).expect("Migration V failed (second run -- must be idempotent)");
+        }
+        let conn = Connection::open(&db_path).unwrap();
+
+        let cols: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(debtors)").unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(1)).unwrap().filter_map(|r| r.ok()).collect()
+        };
+        assert!(cols.contains(&"credit_limit_cents".to_string()), "debtors.credit_limit_cents must exist after Migration V");
+
+        let pre_existing_limit: Option<i64> = conn.query_row(
+            "SELECT credit_limit_cents FROM debtors WHERE id = 'debtor-pre'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(pre_existing_limit, None, "a pre-existing debtor's credit_limit_cents must backfill to NULL (unlimited), not 0");
+
+        // Actually settable afterward.
+        conn.execute("UPDATE debtors SET credit_limit_cents = 50000 WHERE id = 'debtor-pre'", []).unwrap();
+        let set_limit: Option<i64> = conn.query_row(
+            "SELECT credit_limit_cents FROM debtors WHERE id = 'debtor-pre'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(set_limit, Some(50000));
+
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(integrity, "ok");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// W: menu_items.barcode's bare column-level UNIQUE -> composite
+    /// UNIQUE(tenant_id, barcode). Proves: (1) two DIFFERENT tenants CAN
+    /// now share one barcode string (the actual bug -- rejected before
+    /// this migration even though they're unrelated businesses), (2) the
+    /// SAME tenant still cannot use one barcode on two different items
+    /// (the invariant that must survive), (3) idempotent (second run is a
+    /// clean no-op, not an error), (4) all pre-existing menu_items rows
+    /// and a pre-existing, unrelated index survive the table-recreation
+    /// intact.
+    #[test]
+    fn test_menu_item_barcode_tenant_unique_migration() {
+        let db_path = fresh_db_path("menu_item_barcode_tenant_unique_migration");
+        build_base_fixture(&db_path);
+        {
+            let mut conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+            run_expand_migration(&mut conn, &db_path).expect("Migration A failed");
+            run_remap_migration(&mut conn, &db_path).expect("Migration B failed");
+            run_identity_migration(&mut conn, &db_path).expect("Migration C failed");
+            run_drift_fix_migration(&mut conn, &db_path).expect("Migration D failed");
+            run_index_migration(&mut conn, &db_path).expect("Migration E failed"); // seeds idx_menu_items_category_id etc.
+
+            // Confirm the premise BEFORE the fix: the bare UNIQUE really is
+            // there, and really does block the same barcode across two
+            // different tenants.
+            let sql_before: String = conn.query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='menu_items'", [], |r| r.get(0),
+            ).unwrap();
+            assert!(sql_before.contains("barcode TEXT UNIQUE"), "premise violated: menu_items.barcode is no longer a bare column-level UNIQUE -- this test no longer exercises the bug");
+
+            run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).expect("Migration W failed (first run)");
+            run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).expect("Migration W failed (second run -- must be idempotent)");
+        }
+        let conn = Connection::open(&db_path).unwrap();
+
+        let sql_after: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='menu_items'", [], |r| r.get(0),
+        ).unwrap();
+        assert!(!sql_after.contains("barcode TEXT UNIQUE"), "the bare column-level UNIQUE must be gone after Migration W");
+
+        let has_composite_index: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND tbl_name='menu_items' AND sql LIKE '%UNIQUE INDEX%tenant_id, barcode%'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert!(has_composite_index, "a composite UNIQUE(tenant_id, barcode) index must exist after Migration W");
+
+        // Pre-existing indexes on menu_items (from Migration E) must have survived the recreation.
+        let has_category_index: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND tbl_name='menu_items' AND name='idx_menu_items_category_id'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert!(has_category_index, "idx_menu_items_category_id (from Migration E) must survive the table recreation");
+
+        // Existing rows (from the base fixture) survived the copy.
+        let row_count: i64 = conn.query_row("SELECT COUNT(*) FROM menu_items", [], |r| r.get(0)).unwrap();
+        assert!(row_count >= 3, "existing menu_items rows must survive the table recreation, got {row_count}");
+
+        let (tenant_id, branch_id): (String, String) =
+            conn.query_row("SELECT tenant_id, id FROM branch LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let category_id: String = conn.query_row("SELECT id FROM categories LIMIT 1", [], |r| r.get(0)).unwrap();
+        let _ = branch_id;
+
+        // A second tenant, same barcode -- must now succeed (the actual bug).
+        let tenant2 = uuid::Uuid::now_v7().to_string();
+        conn.execute("INSERT INTO tenant (id, name) VALUES (?1, 'Tenant Two')", params![tenant2]).ok();
+        conn.execute(
+            "INSERT INTO menu_items (id, tenant_id, name, price_cents, cost_cents, category_id, barcode) VALUES ('mi-t1', ?1, 'Item Tenant 1', 100, 50, ?2, 'SHARED-BARCODE')",
+            params![tenant_id, category_id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO menu_items (id, tenant_id, name, price_cents, cost_cents, category_id, barcode) VALUES ('mi-t2', ?1, 'Item Tenant 2', 100, 50, ?2, 'SHARED-BARCODE')",
+            params![tenant2, category_id],
+        ).expect("a second tenant using the SAME barcode string as tenant one must now be allowed -- composite UNIQUE(tenant_id, barcode), not a bare global UNIQUE");
+
+        // The SAME tenant reusing that barcode on a different item must still be rejected.
+        let dup_result = conn.execute(
+            "INSERT INTO menu_items (id, tenant_id, name, price_cents, cost_cents, category_id, barcode) VALUES ('mi-t1-dup', ?1, 'Item Tenant 1 Dup', 100, 50, ?2, 'SHARED-BARCODE')",
+            params![tenant_id, category_id],
+        );
+        assert!(dup_result.is_err(), "the SAME tenant must still be blocked from reusing a barcode on a second item");
 
         let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
         assert_eq!(integrity, "ok");
