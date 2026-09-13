@@ -177,6 +177,14 @@ export interface ReceiptData {
   customerName?: string;
   customerPhone?: string;
   deliveryAddress?: string;
+  /**
+   * 2026-09-13 audit fix: the cashier-entered terminal/wallet approval code
+   * for CARD/WALLET payments (required in PaymentModal.tsx before
+   * "Confirm" is enabled -- see that file's own comment). Shown on the
+   * receipt as the one natural, already-payment-time place to surface it;
+   * absent for CASH/CREDIT, which never collect one.
+   */
+  referenceCode?: string;
 }
 
 export interface KitchenTicketData {
@@ -380,6 +388,7 @@ function renderReceiptCanvas(data: ReceiptData, paperWidthMm: number): HTMLCanva
   drawRule(b);
 
   if (data.changeCents > 0) drawTwoCol(b, "الباقي", fmt(data.changeCents));
+  if (data.referenceCode) drawTwoCol(b, "رقم المرجع", data.referenceCode, { size: 20 });
 
   b.y += 10;
   drawLine(b, "شكراً لزيارتكم", { align: "center", size: 26 });
@@ -644,6 +653,7 @@ export function generateOnScreenReceiptHTML(data: ReceiptData): string {
         <tr><td>الضريبة</td><td style="text-align:left">${fmtCent(data.taxCents)}</td></tr>
         ${data.discountCents > 0 ? `<tr><td>الخصم</td><td style="text-align:left;color:red">-${fmtCent(data.discountCents)}</td></tr>` : ""}
         <tr style="font-weight:bold;font-size:18px"><td>الإجمالي</td><td style="text-align:left">${fmtCent(data.totalCents)}</td></tr>
+        ${data.referenceCode ? `<tr style="color:#666;font-size:12px"><td>رقم المرجع</td><td style="text-align:left">${data.referenceCode}</td></tr>` : ""}
       </table>
       <hr/>
       <p style="text-align:center;font-size:16px">شكراً لزيارتكم</p>

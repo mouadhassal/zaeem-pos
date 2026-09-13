@@ -5283,7 +5283,7 @@ impl<'a> Repo<'a> {
     /// successful lookup, so a not-found card here means something is
     /// actually wrong, not a normal "no card" case (that's `None`).
     #[allow(clippy::too_many_arguments)]
-    pub fn finalize_order_with_payment(&self, tenant_id: &str, branch_id: &str, order_id: &str, method: &str, amount_cents: i64, change_cents: i64, debtor_id: Option<&str>, actor_id: &str, card_number: Option<&str>) -> Result<(String, Option<i64>), RepoError> {
+    pub fn finalize_order_with_payment(&self, tenant_id: &str, branch_id: &str, order_id: &str, method: &str, amount_cents: i64, change_cents: i64, debtor_id: Option<&str>, actor_id: &str, card_number: Option<&str>, reference_code: Option<&str>) -> Result<(String, Option<i64>), RepoError> {
         self.assert_scope_populated("payments", true)?;
 
         let (order_tenant, order_branch, order_status, order_total_cents): (String, String, String, i64) = self.conn.query_row(
@@ -5317,11 +5317,11 @@ impl<'a> Repo<'a> {
         self.conn.execute(
             "INSERT INTO payments (id, tenant_id, branch_id, order_id, method, amount_cents, change_cents, created_at, sync_version, last_modified, sync_status, \
              amount_minor, amount_currency, amount_scale, amount_base_minor, amount_fx_rate, amount_fx_source, amount_denom_epoch, \
-             change_minor, change_currency, change_scale, change_base_minor, change_fx_rate, change_fx_source, change_denom_epoch) \
+             change_minor, change_currency, change_scale, change_base_minor, change_fx_rate, change_fx_source, change_denom_epoch, reference_code) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?8, 'pending', \
              ?6, ?9, ?10, ?6, '1', 'NATIVE', 2, \
-             ?7, ?9, ?10, ?7, '1', 'NATIVE', 2)",
-            params![payment_id, tenant_id, branch_id, order_id, method, amount_cents, change_cents, now, currency, scale],
+             ?7, ?9, ?10, ?7, '1', 'NATIVE', 2, ?11)",
+            params![payment_id, tenant_id, branch_id, order_id, method, amount_cents, change_cents, now, currency, scale, reference_code],
         ).map_err(RepoError::from)?;
 
         self.conn.execute(
@@ -5762,7 +5762,7 @@ mod tests {
             delivery_fee_cents: 0, shift_id: None,
             items: vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 3, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
         }).unwrap();
-        repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CASH", 1500, 0, None, &actor_id, None).unwrap();
+        repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CASH", 1500, 0, None, &actor_id, None, None).unwrap();
         conn.execute("UPDATE orders SET closed_at = '2026-01-15T12:00:00Z' WHERE id = ?1", params![order_id]).unwrap();
 
         // Ledger is now 47.0 (50 - 3 sold). A physical count finds 45.0 --

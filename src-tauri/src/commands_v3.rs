@@ -2370,6 +2370,25 @@ pub fn list_backups_v3(state: State<Db>, session_token: String) -> Result<Vec<cr
     crate::backup::list_backups(&conn)
 }
 
+/// 2026-09-13 audit fix: exposes the real background-scheduler config
+/// (frequency, off-machine secondary path, last automatic run) to Settings
+/// -- see `backup.rs`'s module doc for the scheduler itself.
+#[tauri::command]
+pub fn get_backup_settings_v3(state: State<Db>, session_token: String) -> Result<crate::backup::BackupSettings, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageBackups).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::backup::get_backup_settings(&conn)
+}
+
+#[tauri::command]
+pub fn update_backup_settings_v3(state: State<Db>, session_token: String, secondary_path: Option<String>, frequency_hours: i64) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ManageBackups).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::backup::update_backup_settings(&conn, secondary_path, frequency_hours)
+}
+
 /// 2026-08-02: manual, opt-in "send a diagnostic report" -- see
 /// diagnostics.rs's module doc. No extra permission gate beyond being
 /// logged in at all: reporting a bug is something any floor role should
@@ -4297,6 +4316,13 @@ pub struct FinalizePaymentResult {
 /// `Repo::finalize_order_with_payment`'s doc comment). Replaces
 /// `orderService.finalizeOrder` (the DB part). Receipt printing stays on
 /// the frontend.
+///
+/// 2026-09-13 audit fix: `reference_code` is the cashier-entered terminal/
+/// wallet approval code (PaymentModal.tsx now requires it for CARD/WALLET
+/// before "Confirm" is even clickable). Re-checked here, not just trusted
+/// from the frontend gate -- a required-on-the-client field is a UX
+/// nudge, not a guarantee, and this is the one place that actually decides
+/// whether a CARD/WALLET payment gets recorded as PAID.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn finalize_order_with_payment_v3(
@@ -4309,8 +4335,9 @@ pub fn finalize_order_with_payment_v3(
     change_cents: i64,
     debtor_id: Option<String>,
     card_number: Option<String>,
+    reference_code: Option<String>,
 ) -> Result<FinalizePaymentResult, String> {
-    finalize_order_with_payment_v3_impl(&state, &license, session_token, order_id, method, amount_cents, change_cents, debtor_id, card_number)
+    finalize_order_with_payment_v3_impl(&state, &license, session_token, order_id, method, amount_cents, change_cents, debtor_id, card_number, reference_code)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4324,6 +4351,7 @@ fn finalize_order_with_payment_v3_impl(
     change_cents: i64,
     debtor_id: Option<String>,
     card_number: Option<String>,
+    reference_code: Option<String>,
 ) -> Result<FinalizePaymentResult, String> {
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::TakePayment).map_err(|e| e.to_string())?;
@@ -4334,18 +4362,22 @@ fn finalize_order_with_payment_v3_impl(
     if amount_cents < 0 || change_cents < 0 {
         return Err("negative amounts are not valid".to_string());
     }
+    let reference_code = reference_code.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
+    if (method == "CARD" || method == "WALLET") && reference_code.is_none() {
+        return Err("رقم المرجع من جهاز الدفع مطلوب لإتمام هذه العملية".to_string());
+    }
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let (payment_id, points_earned) = Repo::new(&tx).finalize_order_with_payment(
         &tenant_id, &branch_id, &order_id, &method, amount_cents, change_cents,
-        debtor_id.as_deref(), &actor.id, card_number.as_deref(),
+        debtor_id.as_deref(), &actor.id, card_number.as_deref(), reference_code.as_deref(),
     ).map_err(|e| e.to_string())?;
 
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
         audit::Action::PaymentTaken, "order", &order_id,
-        None, Some(&serde_json::json!({ "payment_id": payment_id, "method": method, "amount_cents": amount_cents, "change_cents": change_cents, "debtor_id": debtor_id, "loyalty_points_earned": points_earned })),
+        None, Some(&serde_json::json!({ "payment_id": payment_id, "method": method, "amount_cents": amount_cents, "change_cents": change_cents, "debtor_id": debtor_id, "loyalty_points_earned": points_earned, "reference_code": reference_code })),
     ).map_err(|e| e.to_string())?;
 
     // Sync: the payment is a brand-new fact (rev 1); the order's own row
@@ -5908,7 +5940,7 @@ mod tests {
 
             let result = finalize_order_with_payment_v3_impl(
                 &db, &license,
-                session, order_id.clone(), "CASH".to_string(), 1000, 0, None, None,
+                session, order_id.clone(), "CASH".to_string(), 1000, 0, None, None, None,
             ).expect("finalize_order_with_payment_v3 must succeed through the real wrapper body");
 
             let conn = Connection::open(&db_path).unwrap();
@@ -6026,7 +6058,7 @@ mod tests {
                 items: vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] }],
             }).unwrap();
             let item_row_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_id], |r| r.get(0)).unwrap();
-            repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CASH", 2000, 0, None, &cashier_id, None).unwrap();
+            repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CASH", 2000, 0, None, &cashier_id, None, None).unwrap();
 
             let bun_after_sale: f64 = conn.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![bun_id], |r| r.get(0)).unwrap();
             assert!((bun_after_sale - 48.0).abs() < 0.001, "2 burgers sold must deplete 2 buns (50 -> 48)");
@@ -7206,7 +7238,7 @@ mod tests {
                 &db, &license, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None,
             ).unwrap();
             finalize_order_with_payment_v3_impl(
-                &db, &license, session, order_id.clone(), "CASH".to_string(), 1000, 0, None, None,
+                &db, &license, session, order_id.clone(), "CASH".to_string(), 1000, 0, None, None, None,
             ).unwrap();
             // Old enough to have tripped the staleness check too, if the
             // PAID/CANCELLED/VOIDED exclusion in the query were missing.
@@ -8944,7 +8976,7 @@ mod tests {
             &tenant_id, &branch_id,
             crate::repo::NewOrder { table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".to_string(), subtotal_cents: 4000, tax_cents: 0, total_cents: 4000, discount_cents: 0 },
         ).unwrap();
-        let (_, points1) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &order1, "CASH", 4000, 0, None, &cashier_id, Some("CARD-001")).unwrap();
+        let (_, points1) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &order1, "CASH", 4000, 0, None, &cashier_id, Some("CARD-001"), None).unwrap();
         assert_eq!(points1, Some(40), "BRONZE tier: floor(4000/100) * 1.0 = 40");
 
         let card = repo.lookup_loyalty_card(&tenant_id, "CARD-001").unwrap().unwrap();
@@ -8960,7 +8992,7 @@ mod tests {
             &tenant_id, &branch_id,
             crate::repo::NewOrder { table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".to_string(), subtotal_cents: 4000, tax_cents: 0, total_cents: 4000, discount_cents: 0 },
         ).unwrap();
-        let (_, points2) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &order2, "CASH", 4000, 0, None, &cashier_id, Some("CARD-001")).unwrap();
+        let (_, points2) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &order2, "CASH", 4000, 0, None, &cashier_id, Some("CARD-001"), None).unwrap();
         assert_eq!(points2, Some(48), "SILVER tier: floor(4000/100 * 1.2) = 48");
         let card_after = repo.lookup_loyalty_card(&tenant_id, "CARD-001").unwrap().unwrap();
         assert_eq!(card_after.points, 500 + 48);
@@ -8974,7 +9006,7 @@ mod tests {
             &tenant_id, &branch_id,
             crate::repo::NewOrder { table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".to_string(), subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0 },
         ).unwrap();
-        match repo.finalize_order_with_payment(&tenant_id, &branch_id, &order3, "CASH", 1000, 0, None, &cashier_id, Some("NO-SUCH-CARD")) {
+        match repo.finalize_order_with_payment(&tenant_id, &branch_id, &order3, "CASH", 1000, 0, None, &cashier_id, Some("NO-SUCH-CARD"), None) {
             Err(crate::repo::RepoError::LoyaltyCardNotFound { .. }) => println!("[loyalty] a bad card_number fails loud (LoyaltyCardNotFound), not silently"),
             other => panic!("expected LoyaltyCardNotFound, got {other:?}"),
         }
@@ -8997,7 +9029,7 @@ mod tests {
         {
             let mut conn2 = Connection::open(&db_path).unwrap();
             let tx = conn2.transaction().unwrap();
-            let result = Repo::new(&tx).finalize_order_with_payment(&tenant_id, &branch_id, &order4, "CASH", 1000, 0, None, &cashier_id, Some("NO-SUCH-CARD"));
+            let result = Repo::new(&tx).finalize_order_with_payment(&tenant_id, &branch_id, &order4, "CASH", 1000, 0, None, &cashier_id, Some("NO-SUCH-CARD"), None);
             assert!(result.is_err());
             // tx dropped here WITHOUT commit -- rolls back, simulating the
             // command wrapper's `?`-propagated error before `tx.commit()`.
@@ -9043,7 +9075,7 @@ mod tests {
             delivery_fee_cents: 0, shift_id: None,
             items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 2, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] }],
         }).unwrap();
-        repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CREDIT", 2000, 0, Some(&debtor_id), &manager_id, Some("REFUND-CARD")).unwrap();
+        repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CREDIT", 2000, 0, Some(&debtor_id), &manager_id, Some("REFUND-CARD"), None).unwrap();
 
         let bun_after_sale: f64 = conn.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![bun_id], |r| r.get(0)).unwrap();
         assert!((bun_after_sale - 48.0).abs() < 0.001, "2 burgers sold must deplete 2 buns (50 -> 48), got {bun_after_sale}");
@@ -9235,7 +9267,7 @@ mod tests {
         println!("[pos-flow] transfer_order: split order moved to table_2, table_2 now OCCUPIED");
 
         // finalize_order_with_payment -- the actual payment path.
-        let (payment_id, _points_earned) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &split_ids[0], "CASH", 700, 0, None, &cashier_id, None).unwrap();
+        let (payment_id, _points_earned) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &split_ids[0], "CASH", 700, 0, None, &cashier_id, None, None).unwrap();
         let paid_status: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![split_ids[0]], |r| r.get(0)).unwrap();
         assert_eq!(paid_status, "PAID");
         let payment_amount: i64 = conn.query_row("SELECT amount_cents FROM payments WHERE id = ?1", params![payment_id], |r| r.get(0)).unwrap();
@@ -9974,7 +10006,7 @@ mod tests {
         }).unwrap();
         repo.append_order_status_event(&tenant_id, &branch_a, &order_a_paid_first, "PENDING", &cashier_a, "test-device").unwrap();
         repo.rebuild_order_current(&order_a_paid_first).unwrap();
-        repo.finalize_order_with_payment(&tenant_id, &branch_a, &order_a_paid_first, "CASH", 1000, 0, None, &cashier_a, None).unwrap();
+        repo.finalize_order_with_payment(&tenant_id, &branch_a, &order_a_paid_first, "CASH", 1000, 0, None, &cashier_a, None, None).unwrap();
 
         // Branch A: a fully SERVED (and paid) order -- THIS is the real
         // exclusion criterion the feed must apply, not payment status.
@@ -9989,7 +10021,7 @@ mod tests {
             repo.append_order_status_event(&tenant_id, &branch_a, &order_a_served, status, &cashier_a, "test-device").unwrap();
         }
         repo.rebuild_order_current(&order_a_served).unwrap();
-        repo.finalize_order_with_payment(&tenant_id, &branch_a, &order_a_served, "CASH", 500, 0, None, &cashier_a, None).unwrap();
+        repo.finalize_order_with_payment(&tenant_id, &branch_a, &order_a_served, "CASH", 500, 0, None, &cashier_a, None, None).unwrap();
 
         // Branch B: its own PENDING order.
         repo.create_full_order(&scope_b, &tenant_id, &branch_b, FullOrderInput {

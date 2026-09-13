@@ -6,7 +6,7 @@ import { checkLicense, activateLicense, getDeviceId, backOfficeLocked, type Lice
 import { IconPencil as Pencil, IconTrash as Trash, IconPhotoPlus as ImagePlus, IconX as X } from "@tabler/icons-react";
 import NetworkTab from "./NetworkTab";
 import { checkForUpdatesManually } from "../../lib/autoUpdate";
-import { createBackup, listBackups, type BackupInfo } from "../../lib/backup";
+import { createBackup, listBackups, getBackupSettings, updateBackupSettings, type BackupInfo, type BackupSettings } from "../../lib/backup";
 import { realErrorText } from "../../lib/errors";
 import { CURRENCY_SYMBOL, parseMoneyInput, setCurrency } from "../../lib/money";
 import { formatArabicDate, formatArabicDateTime } from "../../lib/dateLocal";
@@ -165,22 +165,22 @@ export default function SettingsPage() {
 
   const [branchLogo, setBranchLogo] = useState<string | null>(() => localStorage.getItem("zaeem_branch_logo"));
 
-  // The "auto backup" toggle is persisted to localStorage so it survives
-  // an app restart; the actual backup list (lastBackup, size, path) comes
-  // from the real backend (backup_database_v3/list_backups_v3) now, not a
-  // fake localStorage snapshot -- see lib/backup.ts's doc comment.
+  // 2026-09-13 audit fix: the old "auto backup" toggle was a lie -- it just
+  // persisted a flag to localStorage and ran a `setInterval` that only ever
+  // fired while THIS Settings page happened to be mounted (see this file's
+  // git history / the audit finding for the exact old code). The real
+  // scheduler now lives in the Rust process (`backup.rs::run_scheduled_backup_if_due`,
+  // started from `lib.rs::run`'s `setup` closure) and runs unconditionally
+  // on a timer, independent of any frontend page. `backupSettings` here is
+  // just a read/write view onto that scheduler's own config row
+  // (`backup_settings` table) -- nothing in this file drives the schedule.
   const [backups, setBackups] = useState<BackupInfo[]>([]);
-  const [autoBackup, setAutoBackup] = useState(() => localStorage.getItem("zaeem_auto_backup_enabled") === "1");
+  const [backupSettings, setBackupSettingsState] = useState<BackupSettings | null>(null);
+  const [secondaryPathInput, setSecondaryPathInput] = useState("");
+  const [frequencyInput, setFrequencyInput] = useState(24);
+  const [savingBackupSettings, setSavingBackupSettings] = useState(false);
   const [backingUp, setBackingUp] = useState(false);
   const lastBackup = backups[0]?.created_at ?? null;
-
-  const toggleAutoBackup = () => {
-    const next = !autoBackup;
-    setAutoBackup(next);
-    localStorage.setItem("zaeem_auto_backup_enabled", next ? "1" : "0");
-  };
-
-  const AUTO_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -468,41 +468,52 @@ export default function SettingsPage() {
     }
   }, [token]);
 
-  useEffect(() => {
-    if (tab === "backup") refreshBackups();
-  }, [tab, refreshBackups]);
+  const refreshBackupSettings = useCallback(async () => {
+    if (!token) return;
+    try {
+      const settings = await getBackupSettings(token);
+      setBackupSettingsState(settings);
+      setSecondaryPathInput(settings.secondary_path ?? "");
+      setFrequencyInput(settings.frequency_hours);
+    } catch (e) {
+      console.error("Failed to load backup settings:", e);
+    }
+  }, [token]);
 
-  const handleBackup = useCallback(async (silent = false) => {
+  useEffect(() => {
+    if (tab === "backup") {
+      refreshBackups();
+      refreshBackupSettings();
+    }
+  }, [tab, refreshBackups, refreshBackupSettings]);
+
+  const handleBackup = useCallback(async () => {
     if (!token) return;
     setBackingUp(true);
     try {
       await createBackup(token);
       await refreshBackups();
-      if (!silent) showMsg("تم إنشاء النسخة الاحتياطية بنجاح");
+      showMsg("تم إنشاء النسخة الاحتياطية بنجاح");
     } catch (e) {
-      if (!silent) showMsg(`حدث خطأ في إنشاء النسخة الاحتياطية: ${e}`);
+      showMsg(`حدث خطأ في إنشاء النسخة الاحتياطية: ${e}`);
     } finally {
       setBackingUp(false);
     }
   }, [token, refreshBackups]);
 
-  // Real scheduler: checked every 30 minutes while Settings is open, runs a
-  // silent backup once 24h have actually elapsed since the last one. Only
-  // fires while this page is mounted (no true background/OS-level
-  // scheduling exists in this app), but that covers the common case of the
-  // POS terminal staying logged into some screen all day.
-  useEffect(() => {
-    if (!autoBackup) return;
-    const checkAndRun = () => {
-      const dueSince = lastBackup ? Date.now() - new Date(lastBackup).getTime() : Infinity;
-      if (dueSince >= AUTO_BACKUP_INTERVAL_MS) {
-        handleBackup(true);
-      }
-    };
-    checkAndRun();
-    const interval = setInterval(checkAndRun, 30 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [autoBackup, handleBackup, lastBackup, AUTO_BACKUP_INTERVAL_MS]);
+  const handleSaveBackupSettings = useCallback(async () => {
+    if (!token) return;
+    setSavingBackupSettings(true);
+    try {
+      await updateBackupSettings(token, secondaryPathInput.trim() || null, frequencyInput);
+      await refreshBackupSettings();
+      showMsg("تم حفظ إعدادات النسخ الاحتياطي");
+    } catch (e) {
+      showMsg(`حدث خطأ في حفظ الإعدادات: ${e}`);
+    } finally {
+      setSavingBackupSettings(false);
+    }
+  }, [token, secondaryPathInput, frequencyInput, refreshBackupSettings]);
 
   const togglePrinterActive = async (printer: Printer) => {
     try {
@@ -1238,7 +1249,7 @@ export default function SettingsPage() {
             <h2 className="text-lg font-bold text-ink-900 font-arabic">النسخ الاحتياطي</h2>
             <div className="bg-white rounded-md p-5 border border-ink-200 space-y-4">
               <div className="flex justify-between items-center">
-                <span className="text-sm text-ink-400 font-arabic">آخر نسخة احتياطية</span>
+                <span className="text-sm text-ink-400 font-arabic">آخر نسخة احتياطية (يدوية)</span>
                 <span className="text-sm font-mono text-ink-900">
                   {lastBackup
                     ? formatArabicDateTime(new Date(lastBackup))
@@ -1252,24 +1263,62 @@ export default function SettingsPage() {
               >
                 {backingUp ? "جاري..." : "نسخ احتياطي الآن"}
               </button>
-              <div className="flex items-center justify-between pt-2 border-t border-ink-200">
-                <div>
-                  <span className="text-sm font-arabic text-ink-900 block">النسخ الاحتياطي التلقائي</span>
-                  <span className="text-xs font-arabic text-ink-400">نسخة كل 24 ساعة، طالما هذه الصفحة مفتوحة</span>
-                </div>
-                <button
-                  onClick={toggleAutoBackup}
-                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                    autoBackup ? "bg-saffron-600" : "bg-ink-300"
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      autoBackup ? "translate-x-6" : "translate-x-1"
-                    }`}
-                  />
-                </button>
+            </div>
+
+            <div className="bg-white rounded-md p-5 border border-ink-200 space-y-4">
+              <div>
+                <span className="text-sm font-bold font-arabic text-ink-900 block mb-1">الجدولة التلقائية</span>
+                <p className="text-xs font-arabic text-ink-400">
+                  تعمل في الخلفية داخل التطبيق نفسه (وليست مرتبطة بفتح هذه الصفحة) -- تُنشئ نسخة احتياطية تلقائياً كل فترة محددة، طالما التطبيق يعمل.
+                </p>
               </div>
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-ink-400 font-arabic">حالة الجدولة</span>
+                <span className="text-sm font-mono text-accent-text font-bold">مفعّلة</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-ink-400 font-arabic">آخر نسخة تلقائية</span>
+                <span className="text-sm font-mono text-ink-900">
+                  {backupSettings?.last_auto_backup_at
+                    ? formatArabicDateTime(new Date(backupSettings.last_auto_backup_at))
+                    : "لم تُنفَّذ بعد"}
+                </span>
+              </div>
+              <div>
+                <label className="text-sm text-ink-500 font-arabic mb-1.5 block">التكرار (بالساعات)</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={frequencyInput}
+                  onChange={(e) => setFrequencyInput(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                  className="w-full h-11 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-accent"
+                  dir="ltr"
+                />
+                <span className="text-xs font-arabic text-ink-400 mt-1 block">القيمة الافتراضية 24 (مرة يومياً)</span>
+              </div>
+              <div>
+                <label className="text-sm text-ink-500 font-arabic mb-1.5 block">
+                  مسار نسخة احتياطية ثانوية (خارج هذا الجهاز)
+                </label>
+                <input
+                  type="text"
+                  value={secondaryPathInput}
+                  onChange={(e) => setSecondaryPathInput(e.target.value)}
+                  placeholder="مثال: \\\\SERVER\\backups أو D:\\ (قرص خارجي/شبكة)"
+                  className="w-full h-11 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-accent"
+                  dir="ltr"
+                />
+                <span className="text-xs font-arabic text-ink-400 mt-1 block">
+                  اتركه فارغاً للاحتفاظ بالنسخ على هذا الجهاز فقط. أي مسار يمكن للجهاز الكتابة إليه يصلح -- قرص شبكة (network share) أو قرص USB خارجي، فهذا هو الخيار الحقيقي لحماية بياناتك في حال تعطّل هذا الجهاز.
+                </span>
+              </div>
+              <button
+                onClick={handleSaveBackupSettings}
+                disabled={savingBackupSettings}
+                className="w-full h-11 rounded-sm bg-ink-900 text-white font-bold text-sm hover:bg-ink-700 transition-colors disabled:opacity-50"
+              >
+                {savingBackupSettings ? "جاري الحفظ..." : "حفظ إعدادات الجدولة"}
+              </button>
             </div>
 
             {backups.length > 0 && (

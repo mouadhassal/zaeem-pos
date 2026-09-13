@@ -88,6 +88,8 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_item_kind_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_dead_table_cleanup_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_syp_redenomination_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_payment_reference_code_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_backup_settings_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -384,6 +386,36 @@ pub fn run() {
                 lan::start_hub_server(app.handle().clone(), &lan_dir);
             }
 
+            // 2026-09-13 audit fix: a REAL background backup scheduler --
+            // previously the only "automatic" backup was a `setInterval` in
+            // `settings/page.tsx` (see that file's own comment, before this
+            // fix, admitting it "only fires while this page is mounted").
+            // A POS terminal that stays on the sale screen all day, or is
+            // rebooted overnight and never revisits Settings, silently got
+            // zero backups despite the toggle reading "on." This timer
+            // lives in the Tauri process itself, checked every 15 minutes
+            // (cheap -- `run_scheduled_backup_if_due` is a no-op read when
+            // not yet due) so a change to the configured frequency in
+            // Settings takes effect within 15 minutes rather than waiting
+            // for the next natural interval boundary.
+            let backup_timer_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+                    if let Some(db) = backup_timer_handle.try_state::<Db>() {
+                        let result = (|| -> Result<Option<backup::BackupInfo>, String> {
+                            let conn = db.0.lock().map_err(|e| e.to_string())?;
+                            backup::run_scheduled_backup_if_due(&conn)
+                        })();
+                        match result {
+                            Ok(Some(info)) => log::info!("scheduled backup created: {} ({} bytes)", info.path, info.size_bytes),
+                            Ok(None) => {}
+                            Err(e) => log::error!("scheduled backup failed: {e}"),
+                        }
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -512,6 +544,8 @@ pub fn run() {
             commands_v3::forecast_demand_v3,
             commands_v3::backup_database_v3,
             commands_v3::list_backups_v3,
+            commands_v3::get_backup_settings_v3,
+            commands_v3::update_backup_settings_v3,
             commands_v3::send_diagnostics_report_v3,
             commands_v3::reconcile_orders_v3,
             commands_v3::get_chain_config_v3,

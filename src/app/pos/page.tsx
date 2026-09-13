@@ -345,7 +345,7 @@ export default function POSPage() {
     }
   };
 
-  const handlePaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string) => {
+  const handlePaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string, referenceCode?: string) => {
     if (!user) return;
     if (!tableId && orderType === "DINE_IN") return;
     let orderId: string;
@@ -378,10 +378,11 @@ export default function POSPage() {
         savingsCents: state.savings(), totalCents: state.total(), paymentMethod: method, changeCents,
         ...(orderType !== "DINE_IN" && orderType !== "DEBT" && customerName ? { customerName } : {}),
         ...(orderType !== "DINE_IN" && orderType !== "DEBT" && customerPhone ? { customerPhone } : {}),
+        ...(referenceCode ? { referenceCode } : {}),
       };
       let pointsEarned: number | null = null;
       try {
-        pointsEarned = await finalizeOrder(orderId, effectiveMethod, receivedCents, changeCents, receipt, effectiveDebtorId ?? undefined, loyaltyCard?.card_number);
+        pointsEarned = await finalizeOrder(orderId, effectiveMethod, receivedCents, changeCents, receipt, effectiveDebtorId ?? undefined, loyaltyCard?.card_number, referenceCode);
       } catch {
         setReceiptData(receipt);
         setShowOnScreenReceipt(true);
@@ -445,7 +446,7 @@ export default function POSPage() {
   // no `createOrder` call, the order already exists (created by
   // `split_bill_v3`). Advances to the next queued split on success, or
   // closes out the whole split-payment flow once the queue is empty.
-  const handleSplitPaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string) => {
+  const handleSplitPaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string, referenceCode?: string) => {
     if (!splitQueue) return;
     const current = splitQueue[splitQueueIndex];
     try {
@@ -458,8 +459,9 @@ export default function POSPage() {
         subtotalCents: current.amountCents, taxCents: 0, secondaryTaxCents: 0,
         serviceChargeCents: 0, discountCents: 0,
         savingsCents: 0, totalCents: current.amountCents, paymentMethod: method, changeCents,
+        ...(referenceCode ? { referenceCode } : {}),
       };
-      await finalizeOrder(current.orderId, method, receivedCents, changeCents, receipt, debtorId);
+      await finalizeOrder(current.orderId, method, receivedCents, changeCents, receipt, debtorId, undefined, referenceCode);
       const nextIndex = splitQueueIndex + 1;
       if (nextIndex < splitQueue.length) {
         setSplitQueueIndex(nextIndex);

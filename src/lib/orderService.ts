@@ -248,7 +248,8 @@ export async function finalizeOrder(
   changeCents: number,
   receiptData: ReceiptData,
   debtorId?: string,
-  cardNumber?: string
+  cardNumber?: string,
+  referenceCode?: string
 ): Promise<number | null> {
   const result = await invoke<FinalizePaymentResult>("finalize_order_with_payment_v3", {
     sessionToken: token(),
@@ -258,6 +259,7 @@ export async function finalizeOrder(
     changeCents,
     debtorId: debtorId ?? null,
     cardNumber: cardNumber ?? null,
+    referenceCode: referenceCode ?? null,
   });
 
   try {
