@@ -2086,16 +2086,24 @@ pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::cloud::
     Ok(debtor_id)
 }
 
+// `phone` was `String` (required) until this fix -- see `update_debtor`'s
+// (repo.rs) own doc comment: a debtor created phone-less via
+// `create_debtor_v3` (email-only) could never be edited afterward, since
+// the frontend's `phone: null` failed to deserialize at the IPC boundary
+// before this command body ever ran. Now `Option<String>`, matching
+// `create_debtor_v3` exactly.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn update_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>) -> Result<(), String> {
+pub fn update_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String, name: String, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     require_plan_includes_management(&license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
+    let phone = phone.filter(|p| !p.trim().is_empty());
+    let email = email.filter(|e| !e.trim().is_empty());
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_debtor(&actor.scope(), &debtor_id, &name, &phone, email.as_deref(), address.as_deref(), notes.as_deref()).map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_debtor(&actor.scope(), &debtor_id, &name, phone.as_deref(), email.as_deref(), address.as_deref(), notes.as_deref()).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
@@ -8349,8 +8357,22 @@ mod tests {
         assert!(entries.iter().any(|e| e.entry_type == "DEBT" && e.amount_cents == 5000));
         println!("[debt] list_debt_entries shows both facts: DEBT(5000) and PAYMENT(2000)");
 
-        repo.update_debtor(&scope, &debtor_id, "بقالة الحي الجديدة", "0955443322", Some("shop@x.com"), None, None).unwrap();
+        repo.update_debtor(&scope, &debtor_id, "بقالة الحي الجديدة", Some("0955443322"), Some("shop@x.com"), None, None).unwrap();
         assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == debtor_id).unwrap().name, "بقالة الحي الجديدة");
+
+        // 2026-09-13 fix: a debtor created phone-less (email-only, same as
+        // create_debtor_v3's DebtSelectModal path) must remain editable --
+        // update_debtor's `phone` param used to be `&str` (required),
+        // which meant `phone: null` from the frontend failed to
+        // deserialize at the Tauri IPC boundary before this ever ran, so
+        // the debtor was PERMANENTLY stuck un-editable. `Option<&str>` +
+        // `None` here proves the update succeeds and phone stays absent.
+        let phoneless_id = repo.create_debtor(&tenant_id, &branch_id, "عميل بلا هاتف", None, Some("noph@x.com"), None, None).unwrap();
+        repo.update_debtor(&scope, &phoneless_id, "عميل بلا هاتف محدث", None, Some("noph@x.com"), None, None).unwrap();
+        let updated = repo.list_debtors(&scope).unwrap().into_iter().find(|d| d.id == phoneless_id).unwrap();
+        assert_eq!(updated.name, "عميل بلا هاتف محدث");
+        assert_eq!(updated.phone, "", "phone stays absent (COALESCE'd to '') after an update that didn't supply one");
+        println!("[debt] update_debtor no longer requires phone -- a phone-less debtor stays editable");
 
         repo.deactivate_debtor(&scope, &debtor_id).unwrap();
         assert!(!repo.list_debtors(&scope).unwrap().iter().any(|d| d.id == debtor_id), "deactivated debtors must not appear in the active list");
@@ -10059,7 +10081,7 @@ mod tests {
 
         // ---- 3/4/5/6: debtors (update_debtor, deactivate_debtor, list_debt_entries, record_debt_payment) ----
         let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "دائن محلي", Some("0992220000"), None, None, None).unwrap();
-        repo.update_debtor(&scope, &debtor_id, "دائن محلي محدث", "0992220000", None, None, None).unwrap();
+        repo.update_debtor(&scope, &debtor_id, "دائن محلي محدث", Some("0992220000"), None, None, None).unwrap();
         repo.list_debt_entries(&scope, &debtor_id).unwrap();
         // This test is purely about scope isolation, not debt amounts --
         // give the debtor a real balance first so a 100-cent payment isn't
@@ -10069,7 +10091,7 @@ mod tests {
         println!("[t1.9] debtor writes succeed for an in-scope debtor");
         let other_debtor = "other-tenant-debtor";
         conn.execute("INSERT INTO debtors (id, tenant_id, branch_id, name, phone) VALUES (?1, 'other-tenant', 'other-branch', 'X', 'Y')", params![other_debtor]).unwrap();
-        match repo.update_debtor(&scope, other_debtor, "hijacked", "0000", None, None, None) {
+        match repo.update_debtor(&scope, other_debtor, "hijacked", Some("0000"), None, None, None) {
             Err(RepoError::TenantOwnershipViolation { table, .. }) => { assert_eq!(table, "debtors"); println!("[t1.9] update_debtor correctly rejects another tenant's debtor"); }
             other => panic!("expected TenantOwnershipViolation, got {other:?}"),
         }

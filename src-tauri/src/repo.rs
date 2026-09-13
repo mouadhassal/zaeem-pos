@@ -120,6 +120,25 @@ pub enum RepoError {
     /// the whole point) -- only the count value itself being negative is
     /// invalid, not the resulting delta.
     NegativeStockCount { ingredient_id: String, counted_stock: f64 },
+    /// 2026-09-13: `create_purchase_order_with_items` had no server-side
+    /// check at all on a PO line's `quantity_ordered`/`unit_cost_cents` --
+    /// only `inventory/page.tsx` validated `qty > 0`/`unit_cost >= 0`
+    /// before calling `create_purchase_order_with_items_v3`, which is
+    /// bypassable by any caller invoking the command directly.
+    InvalidPurchaseOrderItem { ingredient_id: String, quantity_ordered: f64, unit_cost_cents: i64 },
+    /// 2026-09-13: `receive_purchase_order` applied a client-supplied
+    /// `quantity_received` straight to `ingredients.current_stock` with no
+    /// floor or ceiling -- unlike `adjust_stock`'s explicit
+    /// `StockAdjustmentBelowZero` guard. A negative value would silently
+    /// drain stock; a value larger than what was actually ordered would
+    /// silently inflate it, with `purchase_order_items.quantity_received`
+    /// simply overwritten (this command is only reachable once per PO --
+    /// receiving requires PENDING status, and receiving flips it to
+    /// RECEIVED) rather than accumulated, so "received > ordered for this
+    /// line" is always wrong, never a legitimate multi-shipment total.
+    /// There is no "over-receive allowed" flag anywhere in the PO
+    /// schema/flow to make an above-ordered receipt an intentional case.
+    InvalidReceiveQuantity { item_id: String, quantity_ordered: f64, quantity_received: f64 },
 }
 
 impl fmt::Display for RepoError {
@@ -169,6 +188,12 @@ impl fmt::Display for RepoError {
             ),
             Self::NegativeStockCount { ingredient_id, counted_stock } => write!(
                 f, "ingredient {ingredient_id}: counted stock of {counted_stock} is negative -- not a valid physical count"
+            ),
+            Self::InvalidPurchaseOrderItem { ingredient_id, quantity_ordered, unit_cost_cents } => write!(
+                f, "purchase order line for ingredient {ingredient_id} is invalid: quantity_ordered={quantity_ordered} (must be > 0), unit_cost_cents={unit_cost_cents} (must be >= 0)"
+            ),
+            Self::InvalidReceiveQuantity { item_id, quantity_ordered, quantity_received } => write!(
+                f, "purchase order item {item_id}: quantity_received={quantity_received} is invalid for quantity_ordered={quantity_ordered} -- must be between 0 and the ordered quantity"
             ),
         }
     }
@@ -2042,8 +2067,20 @@ impl<'a> Repo<'a> {
         Ok(id)
     }
 
+    // 2026-09-13: `phone` was `&str` (required) here while `create_debtor`
+    // (just above) has always taken `Option<&str>` -- the schema column is
+    // nullable and `create_debtor_v3` deliberately allows an email-only
+    // debtor (see that function's own doc comment). A debtor created with
+    // no phone could never be edited afterward: the Tauri IPC boundary
+    // would reject `phone: null` before this function's body ever ran,
+    // same class of bug as the one already fixed on `create_debtor`.
+    // Matches `create_debtor`'s shape exactly, including leaving `email`
+    // untouched (an update is not required to (re-)supply the "at least
+    // one of phone/email" invariant `create_debtor_v3` enforces at
+    // creation time -- the row already has whichever one(s) it was
+    // created with).
     #[allow(clippy::too_many_arguments)]
-    pub fn update_debtor(&self, scope: &Scope, debtor_id: &str, name: &str, phone: &str, email: Option<&str>, address: Option<&str>, notes: Option<&str>) -> Result<(), RepoError> {
+    pub fn update_debtor(&self, scope: &Scope, debtor_id: &str, name: &str, phone: Option<&str>, email: Option<&str>, address: Option<&str>, notes: Option<&str>) -> Result<(), RepoError> {
         self.assert_row_in_scope("debtors", debtor_id, scope)?;
         self.conn.execute(
             "UPDATE debtors SET name = ?1, phone = ?2, email = ?3, address = ?4, notes = ?5, last_modified = datetime('now') WHERE id = ?6",
@@ -2814,8 +2851,22 @@ impl<'a> Repo<'a> {
         self.assert_scope_populated("purchase_orders", true)?;
         self.assert_scope_populated("purchase_order_items", true)?;
         self.assert_row_in_scope("suppliers", supplier_id, scope)?;
-        for (ingredient_id, _, _) in items {
+        for (ingredient_id, quantity_ordered, unit_cost_cents) in items {
             self.assert_row_in_scope("ingredients", ingredient_id, scope)?;
+            // 2026-09-13: server-side mirror of inventory/page.tsx's
+            // client-side `qty > 0`/`unit_cost >= 0` check -- that check is
+            // trivially bypassable by any caller invoking
+            // create_purchase_order_with_items_v3 directly, and nothing
+            // here re-verified it. A non-positive quantity or a negative
+            // unit cost would still insert a purchase_order_items row and
+            // (once received) mutate stock/supplier balances from it.
+            if !(*quantity_ordered > 0.0) || !quantity_ordered.is_finite() || *unit_cost_cents < 0 {
+                return Err(RepoError::InvalidPurchaseOrderItem {
+                    ingredient_id: ingredient_id.clone(),
+                    quantity_ordered: *quantity_ordered,
+                    unit_cost_cents: *unit_cost_cents,
+                });
+            }
         }
         let total_cents: i64 = items.iter().map(|(_, qty, unit_cost)| (*qty * *unit_cost as f64).round() as i64).sum();
         let po_id = uuid::Uuid::now_v7().to_string();
@@ -2958,12 +3009,32 @@ impl<'a> Repo<'a> {
             // from the row itself (server-side, authoritative) instead of
             // trusting the client's copy closes that gap; a mismatched
             // client_ingredient_id is simply ignored rather than acted on.
-            let real_ingredient_id: String = self.conn.query_row(
-                "SELECT ingredient_id FROM purchase_order_items WHERE id = ?1 AND purchase_order_id = ?2",
+            let (real_ingredient_id, quantity_ordered): (String, f64) = self.conn.query_row(
+                "SELECT ingredient_id, quantity_ordered FROM purchase_order_items WHERE id = ?1 AND purchase_order_id = ?2",
                 params![item_id, po_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             ).optional()?.ok_or_else(|| RepoError::PurchaseOrderItemOutOfScope { item_id: item_id.to_string() })?;
             let _ = client_ingredient_id; // superseded by real_ingredient_id above, kept only for the tuple's existing shape
+
+            // 2026-09-13: no server-side floor/ceiling on quantity_received
+            // at all -- applied directly to ingredients.current_stock below
+            // with nothing checking it against reality. Unlike adjust_stock
+            // (StockAdjustmentBelowZero), this had NO guard whatsoever: a
+            // negative value would silently drain stock, and a value above
+            // quantity_ordered would silently inflate it. This command is
+            // reachable only once per PO (receiving requires PENDING status
+            // and flips it to RECEIVED), and quantity_received is SET, not
+            // accumulated, so "received > ordered for this line" can never
+            // be a legitimate multi-shipment running total -- there is no
+            // "over-receive allowed" flag anywhere in the PO schema/flow to
+            // make it a deliberate case either. Reject outright.
+            if quantity_received.is_sign_negative() || !quantity_received.is_finite() || *quantity_received > quantity_ordered {
+                return Err(RepoError::InvalidReceiveQuantity {
+                    item_id: item_id.to_string(),
+                    quantity_ordered,
+                    quantity_received: *quantity_received,
+                });
+            }
 
             self.conn.execute(
                 "UPDATE purchase_order_items SET quantity_received = ?1, last_modified = ?2 WHERE id = ?3 AND purchase_order_id = ?4",

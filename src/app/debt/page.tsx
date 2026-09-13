@@ -39,14 +39,28 @@ interface DebtorDetail {
   entries: DebtEntryRow[];
 }
 
-const debtorSchema = z.object({
-  name: z.string().min(1, "الاسم مطلوب").max(100),
-  phone: z.string().min(1, "رقم الهاتف مطلوب"),
-  email: z.string().email("بريد غير صالح").optional().or(z.literal("")),
-  address: z.string().optional().default(""),
-  notes: z.string().optional().default(""),
-  initialDebt: z.string().optional().default(""),
-});
+// phone is optional here to match the backend: create_debtor_v3/
+// update_debtor_v3 both accept phone as optional (the debtors.phone
+// column is nullable, and DebtSelectModal's inline "new debtor" flow
+// already allows an email-only debtor server-side). The `.refine` below
+// still requires at least one of phone/email, mirroring
+// create_debtor_v3's own "either a phone number or an email is required"
+// check -- this form was previously the ONLY thing forcing phone,
+// which also made a phone-less debtor permanently uneditable (the old
+// required-phone update form couldn't even load one without erroring).
+const debtorSchema = z
+  .object({
+    name: z.string().min(1, "الاسم مطلوب").max(100),
+    phone: z.string().optional().default(""),
+    email: z.string().email("بريد غير صالح").optional().or(z.literal("")),
+    address: z.string().optional().default(""),
+    notes: z.string().optional().default(""),
+    initialDebt: z.string().optional().default(""),
+  })
+  .refine((v) => v.phone.trim().length > 0 || (v.email ?? "").trim().length > 0, {
+    message: "رقم الهاتف أو البريد الإلكتروني مطلوب",
+    path: ["phone"],
+  });
 
 type DebtorForm = z.infer<typeof debtorSchema>;
 
@@ -149,7 +163,7 @@ export default function DebtPage() {
     try {
       const args = {
         sessionToken: token,
-        name: parsed.data.name, phone: parsed.data.phone,
+        name: parsed.data.name, phone: parsed.data.phone || null,
         email: parsed.data.email || null, address: parsed.data.address || null, notes: parsed.data.notes || null,
       };
       if (editId) {
@@ -303,7 +317,7 @@ export default function DebtPage() {
               {(["name", "phone", "email", "address", "notes"] as (keyof DebtorForm)[]).map((field) => (
                 <div key={field}>
                   <label className="block text-sm font-arabic text-ink-900 mb-1">
-                    {field === "name" ? "الاسم *" : field === "phone" ? "رقم الهاتف *" : field === "email" ? "البريد الإلكتروني" : field === "address" ? "العنوان" : "ملاحظات"}
+                    {field === "name" ? "الاسم *" : field === "phone" ? "رقم الهاتف (أو البريد الإلكتروني)" : field === "email" ? "البريد الإلكتروني" : field === "address" ? "العنوان" : "ملاحظات"}
                   </label>
                   {field === "notes" ? (
                     <textarea value={form[field]} onChange={(e) => setForm((p) => ({ ...p, [field]: e.target.value }))} rows={3} className="w-full px-4 py-2 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500 resize-none" />
