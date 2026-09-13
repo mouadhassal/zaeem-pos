@@ -588,6 +588,7 @@ pub fn run() {
             commands_v3::create_full_order_v3,
             commands_v3::hold_order_v3,
             commands_v3::retrieve_held_order_v3,
+            commands_v3::list_pending_orders_for_table_v3,
             commands_v3::split_bill_v3,
             commands_v3::merge_tables_v3,
             commands_v3::unmerge_tables_v3,

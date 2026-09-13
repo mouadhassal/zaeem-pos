@@ -349,6 +349,38 @@ export async function retrieveHeldOrder(
   };
 }
 
+interface PendingOrderSummary {
+  id: string;
+  total_cents: number;
+  items: HeldOrderItem[];
+}
+
+// Split-bill payment queue resume (see pos/page.tsx's `PaymentModal
+// onClose` comment): `split_bill` only ever points `tables.current_order_id`
+// at the FIRST split order, so re-selecting a table can never reveal the
+// rest -- this is the one query that can, scanning PENDING orders by
+// `table_id` directly instead of following that pointer.
+export async function listPendingOrdersForTable(tableId: string): Promise<{
+  id: string;
+  totalCents: number;
+  items: { name: string; quantity: number; priceCents: number; modifiers: { name: string; priceCents: number }[] }[];
+}[]> {
+  const rows = await invoke<PendingOrderSummary[]>("list_pending_orders_for_table_v3", {
+    sessionToken: token(),
+    tableId,
+  });
+  return rows.map((o) => ({
+    id: o.id,
+    totalCents: o.total_cents,
+    items: o.items.map((i) => ({
+      name: i.name,
+      quantity: i.quantity,
+      priceCents: i.unit_price_cents,
+      modifiers: i.modifiers.map((m) => ({ name: m.name, priceCents: m.price_cents })),
+    })),
+  }));
+}
+
 export async function splitBill(
   orderId: string,
   splits: { itemIds: string[]; amountCents: number; label: string }[],

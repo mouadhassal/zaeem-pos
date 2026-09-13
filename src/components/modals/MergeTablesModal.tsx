@@ -98,7 +98,18 @@ export default function MergeTablesModal({ tables, selectedTableId, onMerge, onC
             إلغاء
           </button>
           <button
-            onClick={() => targetTable && onMerge(selected, targetTable)}
+            onClick={() => {
+              if (!targetTable) return;
+              // Merging cancels every non-main order and folds it into the
+              // target table's order -- real, non-reversible order state,
+              // same destructive-action class Cancel Order confirms before
+              // (see its `window.confirm` in pos/page.tsx) which this button
+              // previously skipped entirely.
+              const mainName = tables.find((t) => t.id === targetTable)?.name ?? "";
+              if (window.confirm(`هل تريد دمج ${selected.length} طاولات إلى ${mainName}؟ لا يمكن التراجع عن ذلك.`)) {
+                onMerge(selected, targetTable);
+              }
+            }}
             disabled={selected.length < 2}
             className="flex-1 h-12 rounded-xl bg-saffron-600 text-white font-arabic font-bold hover:bg-accent-text disabled:opacity-50"
           >

@@ -3986,6 +3986,18 @@ pub fn retrieve_held_order_v3(state: State<Db>, _session_token: String, order_id
     Repo::new(&conn).retrieve_held_order(&actor.scope(), &order_id).map_err(|e| e.to_string())
 }
 
+/// Lists PENDING orders (split-bill children included) still outstanding
+/// for a table -- lets the frontend surface a "resume unpaid splits"
+/// affordance for orders `retrieve_held_order_v3` can never find (those
+/// are DRAFT-only) and that re-selecting the table alone does not reveal,
+/// since `tables.current_order_id` only ever points at the first split.
+#[tauri::command]
+pub fn list_pending_orders_for_table_v3(state: State<Db>, session_token: String, table_id: String) -> Result<Vec<crate::repo::PendingOrderSummary>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_pending_orders_for_table(&actor.scope(), &table_id).map_err(|e| e.to_string())
+}
+
 /// Split a PENDING order into child orders, moving items.
 #[tauri::command]
 pub fn split_bill_v3(
@@ -11195,6 +11207,7 @@ mod tests {
             "backup_database_v3", "list_backups_v3", "send_diagnostics_report_v3",
             "create_order_v3", "update_order_status_v3", "take_payment_v3",
             "create_full_order_v3", "hold_order_v3", "retrieve_held_order_v3",
+            "list_pending_orders_for_table_v3",
             "split_bill_v3", "merge_tables_v3", "unmerge_tables_v3", "void_order_item_v3",
             "transfer_order_v3", "schedule_delayed_order_v3", "activate_delayed_orders_v3",
             "finalize_order_with_payment_v3", "list_tables_v3",
