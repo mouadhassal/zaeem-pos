@@ -563,7 +563,6 @@ pub fn run() {
             commands_v3::activate_delayed_orders_v3,
             commands_v3::get_receipt_config_v3,
             commands_v3::lookup_loyalty_card_v3,
-            commands_v3::earn_loyalty_points_v3,
             commands_v3::finalize_order_with_payment_v3,
             commands_v3::refund_order_v3,
             commands_v3::get_cached_license_status_v3,

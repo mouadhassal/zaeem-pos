@@ -4259,29 +4259,21 @@ pub fn lookup_loyalty_card_v3(state: State<Db>, _session_token: String, card_num
     Repo::new(&conn).lookup_loyalty_card(&actor.tenant_id, &card_number).map_err(|e| e.to_string())
 }
 
-/// Earn loyalty points after an order.
-#[tauri::command]
-pub fn earn_loyalty_points_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, card_number: String, points: i64, order_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).earn_loyalty_points(&tenant_id, &branch_id, &card_number, points, &order_id).map_err(|e| e.to_string())?;
-
-    audit::append(
-        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
-        audit::Action::LoyaltyCardIssued, "loyalty_card", &card_number,
-        None, Some(&serde_json::json!({ "action": "earn", "points": points, "order_id": order_id })),
-    ).map_err(|e| e.to_string())?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
+// 2026-09-13: `earn_loyalty_points_v3` (the standalone accrual command) was
+// removed here. Its own doc comment already said it was "superseded by
+// finalize_order_with_payment's own atomic, server-computed accrual...
+// and isn't called from any frontend page today" -- confirmed by a
+// whole-tree grep of src/ (*.ts/*.tsx) turning up zero callers. Leaving it
+// registered as a live, license-gated, `ManageLoyalty`-authorized command
+// was a real hazard, not just dead code: it let points be earned with a
+// CLIENT-SUPPLIED `points` value (only floor-checked at > 0, no ceiling,
+// no tie to any real order total) completely outside
+// `finalize_order_with_payment`'s atomic, server-computed accrual path --
+// any caller with `ManageLoyalty` could invoke it directly and create a
+// loyalty balance inconsistent with what the order that `order_id` names
+// actually earned. `Repo::earn_loyalty_points` (repo.rs) is kept, not
+// removed -- it still has direct unit-test coverage there and remains a
+// harmless private building block now that nothing reaches it over IPC.
 
 /// Return shape for `finalize_order_with_payment_v3` -- `points_earned` is
 /// `Some` only when a `card_number` was passed and accrual actually ran, so
@@ -11182,7 +11174,9 @@ mod tests {
             "get_receipt_config_v3", "get_chain_config_v3", "list_active_printers_v3",
             "get_discount_caps_v3", "get_manager_thresholds_v3", "get_business_mode_v3", "list_debtors_v3",
             "verify_manager_override_v3",
-            "lookup_loyalty_card_v3", "earn_loyalty_points_v3", "redeem_loyalty_reward_v3",
+            // earn_loyalty_points_v3 removed 2026-09-13 (dead, superseded
+            // command -- see its removal note above lookup_loyalty_card_v3).
+            "lookup_loyalty_card_v3", "redeem_loyalty_reward_v3",
             "list_kitchen_orders_v3", "register_kds_terminal_v3", "toggle_menu_item_availability_v3",
             "export_pdf_v3",
             "get_active_shift_v3", "open_shift_v3", "close_shift_v3", "get_shift_stats_v3",
