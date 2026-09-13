@@ -543,15 +543,34 @@ export async function printReceipt(data: ReceiptData): Promise<void> {
   }
 }
 
+async function sendKitchenTicketToPrinter(
+  data: KitchenTicketData,
+  p: any,
+  defaultPaperWidthK: number
+): Promise<void> {
+  const buf = buildKitchenTicketJob(data, p.paper_width_mm ?? defaultPaperWidthK);
+  await printToDevice(buf, {
+    id: p.id,
+    name: p.name,
+    printerType: "KITCHEN",
+    interface: p.interface,
+    vendorId: p.vendor_id,
+    ipAddress: p.ip_address,
+    port: p.port,
+    paperWidthMm: p.paper_width_mm,
+    drawerPulseMs: p.drawer_pulse_ms,
+    isPrimary: p.is_primary,
+    isSecondary: p.is_secondary,
+    systemPrinterName: p.system_printer_name ?? undefined,
+  });
+}
+
 export async function printKitchenTicket(data: KitchenTicketData): Promise<void> {
   const allPrinters = await invoke<PrinterRowV3[]>("list_active_printers_v3", { sessionToken: token() });
   const printers = allPrinters.filter((p) => p.printer_type === "KITCHEN");
 
   const chainK = await invoke<ChainConfigV3>("get_chain_config_v3", { sessionToken: token() });
   const defaultPaperWidthK = chainK?.default_paper_width ?? 80;
-
-  let anyPrinted = false;
-  let lastError: string | null = null;
 
   if (printers.length === 0) {
     window.dispatchEvent(
@@ -560,35 +579,54 @@ export async function printKitchenTicket(data: KitchenTicketData): Promise<void>
     throw new Error("طابعة المطبخ غير متصلة");
   }
 
+  // 2026-09-14 audit fix: this used to consider the WHOLE call a success as
+  // soon as ANY kitchen printer succeeded (a single `anyPrinted` flag and a
+  // single `lastError` that the last failure overwrote) -- so a business
+  // with two kitchen stations (grill + bar) where one is offline/jammed got
+  // zero error, zero retry-queue entry, zero toast for that one station; it
+  // just silently never got its ticket. Unlike printReceipt's single-ticket
+  // failover (2 candidates, first success wins), every KITCHEN printer here
+  // is an independent station that needs its own physical copy, so each
+  // printer's outcome is now tracked and surfaced individually.
+  let anyPrinted = false;
+  const failedPrinters: { id: string; name: string; error: string }[] = [];
+
   for (const printerPartial of printers) {
     const p = printerPartial as any;
     try {
-      const buf = buildKitchenTicketJob(data, p.paper_width_mm ?? defaultPaperWidthK);
-      await printToDevice(buf, {
-        id: p.id,
-        name: p.name,
-        printerType: "KITCHEN",
-        interface: p.interface,
-        vendorId: p.vendor_id,
-        ipAddress: p.ip_address,
-        port: p.port,
-        paperWidthMm: p.paper_width_mm,
-        drawerPulseMs: p.drawer_pulse_ms,
-        isPrimary: p.is_primary,
-        isSecondary: p.is_secondary,
-        systemPrinterName: p.system_printer_name ?? undefined,
-      });
+      await sendKitchenTicketToPrinter(data, p, defaultPaperWidthK);
       anyPrinted = true;
     } catch (err) {
-      lastError = err instanceof Error ? err.message : "Kitchen print failed";
+      failedPrinters.push({
+        id: p.id,
+        name: p.name,
+        error: err instanceof Error ? err.message : "Kitchen print failed",
+      });
     }
+  }
+
+  for (const failed of failedPrinters) {
+    // Queue a retry scoped to THIS printer only -- retrying the whole
+    // ticket against every kitchen printer again would re-send a duplicate
+    // copy to the station(s) that already got it fine.
+    queuePrintJob(data, "kitchen", failed.id);
+    window.dispatchEvent(
+      new CustomEvent("kitchen-print-failed", {
+        detail: {
+          tableName: data.tableName,
+          orderNumber: data.orderNumber,
+          printerName: failed.name,
+          error: failed.error,
+        },
+      })
+    );
   }
 
   if (!anyPrinted) {
     window.dispatchEvent(
       new CustomEvent("kitchen-offline", { detail: data })
     );
-    throw new Error(lastError ?? "فشلت طباعة المطبخ");
+    throw new Error(failedPrinters[0]?.error ?? "فشلت طباعة المطبخ");
   }
 }
 
@@ -692,18 +730,41 @@ export async function testPrint(): Promise<void> {
   });
 }
 
-export function queuePrintJob(data: ReceiptData | KitchenTicketData, type: "receipt" | "kitchen"): void {
+// `printerId` (kitchen jobs only) scopes a retry to the ONE printer that
+// actually failed -- see printKitchenTicket's per-printer tracking above.
+// Left undefined for a receipt job, or an older kitchen job queued before
+// this fix that has no specific printer to target.
+export function queuePrintJob(
+  data: ReceiptData | KitchenTicketData,
+  type: "receipt" | "kitchen",
+  printerId?: string
+): void {
   const jobs = JSON.parse(localStorage.getItem("printQueue") ?? "[]");
-  jobs.push({ data, type, timestamp: Date.now() });
+  jobs.push({ data, type, printerId, timestamp: Date.now() });
   localStorage.setItem("printQueue", JSON.stringify(jobs));
 }
 
-export function getPrintQueue(): { data: any; type: string; timestamp: number }[] {
+export function getPrintQueue(): { data: any; type: string; printerId?: string; timestamp: number }[] {
   return JSON.parse(localStorage.getItem("printQueue") ?? "[]");
 }
 
 export function clearPrintQueue(): void {
   localStorage.removeItem("printQueue");
+}
+
+// Retries a kitchen ticket against exactly one printer (by id) instead of
+// every KITCHEN-type printer -- used for a queued job that named the
+// specific station that failed, so a retry doesn't re-send a duplicate
+// copy to stations that already printed it fine the first time.
+async function retryKitchenTicketToPrinter(data: KitchenTicketData, printerId: string): Promise<void> {
+  const allPrinters = await invoke<PrinterRowV3[]>("list_active_printers_v3", { sessionToken: token() });
+  const printer = allPrinters.find((p) => p.id === printerId && p.printer_type === "KITCHEN");
+  if (!printer) throw new Error("طابعة المطبخ غير موجودة");
+
+  const chainK = await invoke<ChainConfigV3>("get_chain_config_v3", { sessionToken: token() });
+  const defaultPaperWidthK = chainK?.default_paper_width ?? 80;
+
+  await sendKitchenTicketToPrinter(data, printer as any, defaultPaperWidthK);
 }
 
 export async function retryPrintQueue(): Promise<void> {
@@ -715,6 +776,8 @@ export async function retryPrintQueue(): Promise<void> {
     try {
       if (job.type === "receipt") {
         await printReceipt(job.data as ReceiptData);
+      } else if (job.printerId) {
+        await retryKitchenTicketToPrinter(job.data as KitchenTicketData, job.printerId);
       } else {
         await printKitchenTicket(job.data as KitchenTicketData);
       }
