@@ -656,29 +656,47 @@ export async function openCashDrawer(pulseMs: number = 200): Promise<void> {
   });
 }
 
+// 2026-09-14 audit fix: every value below used to be interpolated straight
+// into the HTML string with no escaping, and OnScreenReceiptModal.tsx
+// renders the result via dangerouslySetInnerHTML -- so a menu item/modifier
+// name (only length-validated in menu/page.tsx, not character-restricted)
+// containing e.g. `</td><script>...` would inject real markup into this
+// modal's DOM. The app's CSP (script-src 'self', no unsafe-inline) blocks
+// this from executing as script today, but that's a config detail this fix
+// shouldn't depend on staying exactly as-is forever -- escape every
+// interpolated value instead so the HTML itself can't be broken out of.
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export function generateOnScreenReceiptHTML(data: ReceiptData): string {
   const fmtCent = formatMoney;
 
   let itemsHtml = "";
   for (const item of data.items) {
-    itemsHtml += `<tr><td>${item.quantity}× ${item.name}</td><td style="text-align:left">${fmtCent(item.priceCents * item.quantity)}</td></tr>`;
+    itemsHtml += `<tr><td>${item.quantity}× ${escapeHtml(item.name)}</td><td style="text-align:left">${fmtCent(item.priceCents * item.quantity)}</td></tr>`;
     if (item.modifiers) {
       for (const mod of item.modifiers) {
-        itemsHtml += `<tr style="color:#999"><td style="padding-right:16px">+ ${mod.name}</td><td style="text-align:left">${fmtCent(mod.priceCents)}</td></tr>`;
+        itemsHtml += `<tr style="color:#999"><td style="padding-right:16px">+ ${escapeHtml(mod.name)}</td><td style="text-align:left">${fmtCent(mod.priceCents)}</td></tr>`;
       }
     }
   }
 
   return `
     <div dir="rtl" style="font-family:'Arabic Typesetting',Arial,sans-serif;padding:24px;max-width:320px;margin:0 auto;direction:rtl">
-      <h2 style="text-align:center;margin:0">${data.chainName}</h2>
-      <p style="text-align:center;color:#666;margin:4px 0">${data.branchName}</p>
+      <h2 style="text-align:center;margin:0">${escapeHtml(data.chainName)}</h2>
+      <p style="text-align:center;color:#666;margin:4px 0">${escapeHtml(data.branchName)}</p>
       <hr/>
       <table style="width:100%;font-size:14px">
         <tr><td>التاريخ</td><td style="text-align:left">${formatArabicDate(new Date())}</td></tr>
         <tr><td>الوقت</td><td style="text-align:left">${formatArabicTime(new Date())}</td></tr>
-        <tr><td>رقم الطلب</td><td style="text-align:left">${data.orderNumber}</td></tr>
-        ${data.tableName ? `<tr><td>طاولة</td><td style="text-align:left">${data.tableName}</td></tr>` : ""}
+        <tr><td>رقم الطلب</td><td style="text-align:left">${escapeHtml(data.orderNumber)}</td></tr>
+        ${data.tableName ? `<tr><td>طاولة</td><td style="text-align:left">${escapeHtml(data.tableName)}</td></tr>` : ""}
       </table>
       <hr/>
       <table style="width:100%;font-size:14px">
@@ -691,7 +709,7 @@ export function generateOnScreenReceiptHTML(data: ReceiptData): string {
         <tr><td>الضريبة</td><td style="text-align:left">${fmtCent(data.taxCents)}</td></tr>
         ${data.discountCents > 0 ? `<tr><td>الخصم</td><td style="text-align:left;color:red">-${fmtCent(data.discountCents)}</td></tr>` : ""}
         <tr style="font-weight:bold;font-size:18px"><td>الإجمالي</td><td style="text-align:left">${fmtCent(data.totalCents)}</td></tr>
-        ${data.referenceCode ? `<tr style="color:#666;font-size:12px"><td>رقم المرجع</td><td style="text-align:left">${data.referenceCode}</td></tr>` : ""}
+        ${data.referenceCode ? `<tr style="color:#666;font-size:12px"><td>رقم المرجع</td><td style="text-align:left">${escapeHtml(data.referenceCode)}</td></tr>` : ""}
       </table>
       <hr/>
       <p style="text-align:center;font-size:16px">شكراً لزيارتكم</p>
