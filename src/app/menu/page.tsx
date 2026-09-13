@@ -5,7 +5,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { invalidateMenuItemPhotoCache } from "../../hooks/useMenuItemPhoto";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { z } from "zod";
-import { realErrorText } from "../../lib/errors";
+import { realErrorText, friendlyDeleteErrorText } from "../../lib/errors";
 import { IconPencil, IconTrash, IconX } from "@tabler/icons-react";
 import Typeahead from "../../components/ui/Typeahead";
 
@@ -554,7 +554,7 @@ export default function MenuPage() {
       setDeleteItemId(null);
       await fetchAll();
     } catch (err) {
-      setError(`حدث خطأ في الحذف: ${realErrorText(err)}`);
+      setError(friendlyDeleteErrorText(err, "هذا الصنف"));
     } finally {
       setDeletingItem(false);
     }
@@ -680,7 +680,7 @@ export default function MenuPage() {
       setDeleteCategoryId(null);
       await fetchAll();
     } catch (err) {
-      setError(`حدث خطأ في الحذف: ${realErrorText(err)}`);
+      setError(friendlyDeleteErrorText(err, "هذا التصنيف"));
     } finally {
       setDeletingCategory(false);
     }
