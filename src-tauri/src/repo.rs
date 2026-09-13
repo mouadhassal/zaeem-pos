@@ -120,6 +120,14 @@ pub enum RepoError {
     /// the whole point) -- only the count value itself being negative is
     /// invalid, not the resulting delta.
     NegativeStockCount { ingredient_id: String, counted_stock: f64 },
+    /// "Send to kitchen now, pay later" dine-in fix: `add_items_to_order`
+    /// (appending more lines to a running, already-sent-to-the-kitchen tab)
+    /// is only meaningful while the order is still open and unpaid --
+    /// PENDING/PREPARING/READY/SERVED, i.e. every KDS-visible stage before
+    /// payment. Refuses on DRAFT (never sent anywhere yet -- that's the
+    /// hold/retrieve path, not this one), PAID (already settled, nothing
+    /// left to add to), and CANCELLED.
+    OrderNotOpenForAdditions { order_id: String, status: String },
 }
 
 impl fmt::Display for RepoError {
@@ -166,6 +174,9 @@ impl fmt::Display for RepoError {
             Self::OrderItemAlreadyVoided { item_id } => write!(f, "order item {item_id} is already voided"),
             Self::StockAdjustmentBelowZero { ingredient_id, current_stock, change_amount } => write!(
                 f, "ingredient {ingredient_id} has {current_stock} in stock -- a change of {change_amount} would drive it below zero"
+            ),
+            Self::OrderNotOpenForAdditions { order_id, status } => write!(
+                f, "order {order_id} is {status} -- can only add items to an open, unpaid, already-sent-to-kitchen order"
             ),
             Self::NegativeStockCount { ingredient_id, counted_stock } => write!(
                 f, "ingredient {ingredient_id}: counted stock of {counted_stock} is negative -- not a valid physical count"
@@ -342,6 +353,27 @@ pub struct PendingOrderSummary {
     pub id: String,
     pub total_cents: i64,
     pub items: Vec<HeldOrderItem>,
+}
+
+/// "Send to kitchen now, pay later" dine-in fix: the read-back shape for an
+/// OPEN order (PENDING/PREPARING/READY/SERVED -- already sent to the
+/// kitchen, still unpaid), used to reload a table's running tab back into
+/// the POS cart. Distinct from `HeldOrderResult` (DRAFT-only) because the
+/// caller (`pos/page.tsx`) needs the order's REAL, server-computed money
+/// totals here -- not just its items -- so a later `finalize_order_with_payment_v3`
+/// call charges exactly `total_cents`, matching `PaymentAmountMismatch`'s
+/// check, rather than re-deriving a total from the cart's own tax config
+/// (which, for a tab that already had a discount applied, would drift).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OpenOrderResult {
+    pub items: Vec<HeldOrderItem>,
+    pub customer_name: Option<String>,
+    pub customer_phone: Option<String>,
+    pub delivery_address: Option<String>,
+    pub subtotal_cents: i64,
+    pub tax_cents: i64,
+    pub discount_cents: i64,
+    pub total_cents: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -4643,6 +4675,14 @@ impl<'a> Repo<'a> {
             None => return Ok(None),
         };
 
+        let items = self.fetch_order_items_for_retrieval(order_id)?;
+        Ok(Some(HeldOrderResult { items, customer_name, customer_phone, delivery_address }))
+    }
+
+    /// Shared item+modifier fetch used by both `retrieve_held_order` (DRAFT)
+    /// and `retrieve_open_order` (PENDING/PREPARING/READY/SERVED) -- same
+    /// query shape, only the caller's status filter on `orders` differs.
+    fn fetch_order_items_for_retrieval(&self, order_id: &str) -> Result<Vec<HeldOrderItem>, RepoError> {
         let mut items_stmt = self.conn.prepare(
             "SELECT id, menu_item_id, quantity, unit_price_cents, notes FROM order_items WHERE order_id = ?1 AND voided = 0"
         )?;
@@ -4670,8 +4710,133 @@ impl<'a> Repo<'a> {
                 notes: notes.unwrap_or_default(), modifiers,
             });
         }
+        Ok(items)
+    }
 
-        Ok(Some(HeldOrderResult { items, customer_name, customer_phone, delivery_address }))
+    /// "Send to kitchen now, pay later" dine-in fix: read back a table's
+    /// running tab -- an order that's already been sent to the kitchen
+    /// (PENDING/PREPARING/READY/SERVED, i.e. anything KDS-visible and not
+    /// yet PAID/CANCELLED) so the POS cart can reload it, let the cashier
+    /// add more items to it, and eventually pay it via
+    /// `finalize_order_with_payment_v3`. Deliberately a SEPARATE status set
+    /// from `retrieve_held_order`'s DRAFT-only filter -- a DRAFT (held, never
+    /// sent anywhere) and an open unpaid tab (sent, kitchen already working
+    /// it) are two different things and must not be confused with each
+    /// other. Same tenant/branch scope guard as `retrieve_held_order` (same
+    /// UUIDv7-guessing concern -- this also exposes customer name/phone).
+    pub fn retrieve_open_order(&self, scope: &Scope, order_id: &str) -> Result<Option<OpenOrderResult>, RepoError> {
+        let (predicate, mut args) = Self::scope_predicate(scope);
+        args.push(order_id.to_string());
+        let id_placeholder = format!("?{}", args.len());
+        let sql = format!(
+            "SELECT customer_name, customer_phone, delivery_address, subtotal_cents, tax_cents, discount_cents, total_cents \
+             FROM orders WHERE id = {id_placeholder} AND status IN ('PENDING','PREPARING','READY','SERVED') AND {predicate}"
+        );
+        let order: Option<(Option<String>, Option<String>, Option<String>, i64, i64, i64, i64)> = self.conn.query_row(
+            &sql,
+            params_from_iter(args.iter()),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+        ).optional().map_err(RepoError::from)?;
+
+        let (customer_name, customer_phone, delivery_address, subtotal_cents, tax_cents, discount_cents, total_cents) = match order {
+            Some(o) => o,
+            None => return Ok(None),
+        };
+
+        let items = self.fetch_order_items_for_retrieval(order_id)?;
+        Ok(Some(OpenOrderResult {
+            items, customer_name, customer_phone, delivery_address,
+            subtotal_cents, tax_cents, discount_cents, total_cents,
+        }))
+    }
+
+    /// "Send to kitchen now, pay later" dine-in fix: every non-voided item
+    /// currently on `order_id`, shaped as `OrderItemInput` so it can be fed
+    /// straight back into `price_order_authoritatively` alongside newly
+    /// added items -- `add_items_to_order_v3` combines the two lists and
+    /// re-prices the WHOLE order from scratch (not an incremental add) so
+    /// tax/total never drift from a real, authoritative recompute.
+    pub fn list_order_items_as_input(&self, order_id: &str) -> Result<Vec<OrderItemInput>, RepoError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, menu_item_id, quantity, unit_price_cents, notes, combo_id FROM order_items WHERE order_id = ?1 AND voided = 0"
+        )?;
+        let rows: Vec<(String, String, i64, i64, Option<String>, Option<String>)> = stmt.query_map(params![order_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+        })?.filter_map(|r| r.ok()).collect();
+        drop(stmt);
+
+        let mut items = Vec::with_capacity(rows.len());
+        for (item_id, menu_item_id, quantity, unit_price_cents, notes, combo_id) in rows {
+            let mut mod_stmt = self.conn.prepare("SELECT name, price_cents FROM order_modifiers WHERE order_item_id = ?1")?;
+            let modifiers: Vec<OrderModifierInput> = mod_stmt.query_map(params![item_id], |r| {
+                Ok(OrderModifierInput { name: r.get(0)?, price_cents: r.get(1)? })
+            })?.filter_map(|r| r.ok()).collect();
+            drop(mod_stmt);
+            items.push(OrderItemInput { menu_item_id, name: None, quantity, unit_price_cents, notes, combo_id, modifiers });
+        }
+        Ok(items)
+    }
+
+    /// "Send to kitchen now, pay later" dine-in fix: verifies `order_id` is
+    /// in scope and returns just enough of its row (tenant/branch, current
+    /// status, discount/delivery-fee) to re-price it -- shared setup for
+    /// `add_items_to_order_v3`.
+    pub fn get_order_pricing_context(&self, scope: &Scope, order_id: &str) -> Result<(String, String, String, i64, i64), RepoError> {
+        self.assert_order_in_scope(order_id, scope)?;
+        self.conn.query_row(
+            "SELECT tenant_id, branch_id, status, discount_cents, delivery_fee_cents FROM orders WHERE id = ?1",
+            params![order_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        ).map_err(RepoError::from)
+    }
+
+    /// "Send to kitchen now, pay later" dine-in fix: inserts ONLY the newly
+    /// added items (already authoritatively priced by the caller) into an
+    /// existing order -- the already-sent items already on this order are
+    /// left completely untouched, so nothing here re-fires a kitchen ticket
+    /// or re-deducts stock for food already cooking. Mirrors the item-insert
+    /// loop in `create_full_order`/`hold_order` exactly.
+    pub fn append_order_items(&self, tenant_id: &str, branch_id: &str, order_id: &str, new_items: &[OrderItemInput]) -> Result<Vec<String>, RepoError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut inserted_ids = Vec::with_capacity(new_items.len());
+        for item in new_items {
+            let item_id = uuid::Uuid::now_v7().to_string();
+            self.conn.execute(
+                "INSERT INTO order_items (id, tenant_id, branch_id, order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, voided, sync_version, last_modified, sync_status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 1, ?10, 'pending')",
+                params![item_id, tenant_id, branch_id, order_id, item.menu_item_id, item.quantity, item.unit_price_cents, item.notes, item.combo_id, now],
+            ).map_err(RepoError::from)?;
+
+            for modifier in &item.modifiers {
+                self.conn.execute(
+                    "INSERT INTO order_modifiers (id, tenant_id, branch_id, order_item_id, name, price_cents, sync_version, last_modified, sync_status) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 'pending')",
+                    params![uuid::Uuid::now_v7().to_string(), tenant_id, branch_id, item_id, modifier.name, modifier.price_cents, now],
+                ).map_err(RepoError::from)?;
+            }
+            inserted_ids.push(item_id);
+        }
+        Ok(inserted_ids)
+    }
+
+    /// "Send to kitchen now, pay later" dine-in fix: re-stamps an order's
+    /// money columns (both the plain `*_cents` ones and their money-scale
+    /// mirror columns -- same NATIVE-currency convention `create_full_order`
+    /// uses, see its INSERT) after `add_items_to_order_v3` re-prices the
+    /// whole order. `total_cents` here is exactly what
+    /// `finalize_order_with_payment` will later require `amount_cents -
+    /// change_cents` to equal, so this MUST run before that order can be
+    /// paid for a total that includes the newly added items.
+    pub fn update_order_totals(&self, order_id: &str, subtotal_cents: i64, tax_cents: i64, total_cents: i64) -> Result<(), RepoError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE orders SET subtotal_cents = ?1, tax_cents = ?2, total_cents = ?3, \
+             subtotal_minor = ?1, subtotal_base_minor = ?1, tax_minor = ?2, tax_base_minor = ?2, \
+             total_minor = ?3, total_base_minor = ?3, last_modified = ?4, sync_status = 'pending' \
+             WHERE id = ?5",
+            params![subtotal_cents, tax_cents, total_cents, now, order_id],
+        ).map_err(RepoError::from)?;
+        Ok(())
     }
 
     /// Lists PENDING orders for a table -- surfaces split-bill child orders

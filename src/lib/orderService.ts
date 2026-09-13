@@ -381,6 +381,146 @@ export async function listPendingOrdersForTable(tableId: string): Promise<{
   }));
 }
 
+interface OpenOrderApiResult {
+  items: HeldOrderItem[];
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  delivery_address?: string | null;
+  subtotal_cents: number;
+  tax_cents: number;
+  discount_cents: number;
+  total_cents: number;
+}
+
+export interface OpenOrderResult {
+  items: {
+    dbItemId: string;
+    menuItemId: string;
+    name: string;
+    quantity: number;
+    unitPriceCents: number;
+    notes: string;
+    modifiers: { name: string; priceCents: number }[];
+  }[];
+  customerName?: string;
+  customerPhone?: string;
+  deliveryAddress?: string;
+  subtotalCents: number;
+  taxCents: number;
+  discountCents: number;
+  totalCents: number;
+}
+
+/// "Send to kitchen now, pay later" dine-in fix: read back a table's OPEN
+/// (already sent to the kitchen -- PENDING/PREPARING/READY/SERVED -- still
+/// unpaid) order, the running-tab counterpart to `retrieveHeldOrder`'s
+/// DRAFT-only read. Returns the order's REAL server-computed money totals
+/// alongside its items -- `pos/page.tsx` uses `totalCents` as the
+/// `totalOverrideCents` handed to `PaymentModal` (same pattern the
+/// split-bill payment queue already uses) so the eventual
+/// `finalize_order_with_payment_v3` call charges exactly what the order
+/// record says, not a fresh client-side recompute that could drift.
+export async function retrieveOpenOrder(orderId: string): Promise<OpenOrderResult | null> {
+  const result = await invoke<OpenOrderApiResult | null>("retrieve_open_order_v3", {
+    sessionToken: token(),
+    orderId,
+  });
+
+  if (!result) return null;
+
+  return {
+    items: result.items.map((i) => ({
+      dbItemId: i.db_item_id,
+      menuItemId: i.menu_item_id,
+      name: i.name,
+      quantity: i.quantity,
+      unitPriceCents: i.unit_price_cents,
+      notes: i.notes,
+      modifiers: i.modifiers.map((m) => ({ name: m.name, priceCents: m.price_cents })),
+    })),
+    ...(result.customer_name ? { customerName: result.customer_name } : {}),
+    ...(result.customer_phone ? { customerPhone: result.customer_phone } : {}),
+    ...(result.delivery_address ? { deliveryAddress: result.delivery_address } : {}),
+    subtotalCents: result.subtotal_cents,
+    taxCents: result.tax_cents,
+    discountCents: result.discount_cents,
+    totalCents: result.total_cents,
+  };
+}
+
+/// "Send to kitchen now, pay later" dine-in fix: appends more items to an
+/// order that's already been sent to the kitchen and is still unpaid (a
+/// real running tab), then fires a kitchen ticket containing ONLY these new
+/// items -- never re-sends the items already on the order, so nothing the
+/// kitchen is already cooking gets a duplicate ticket. Mirrors
+/// `createOrder`'s own kitchen-ticket section below, minus the order
+/// creation (the order already exists).
+export async function addItemsToOrder(
+  orderId: string,
+  orderType: OrderTypeEnum,
+  items: {
+    menuItemId: string;
+    name?: string;
+    quantity: number;
+    unitPriceCents: number;
+    notes?: string;
+    comboId?: string;
+    modifiers?: { name: string; priceCents: number }[];
+  }[]
+): Promise<void> {
+  if (items.length === 0) return;
+
+  const inputItems: OrderItemInput[] = items.map((i) => ({
+    menu_item_id: i.menuItemId,
+    name: i.name ?? null,
+    quantity: i.quantity,
+    unit_price_cents: i.unitPriceCents,
+    notes: i.notes ?? null,
+    combo_id: i.comboId ?? null,
+    modifiers: (i.modifiers ?? []).map((m) => ({ name: m.name, price_cents: m.priceCents })),
+  }));
+
+  await invoke<void>("add_items_to_order_v3", {
+    sessionToken: token(),
+    orderId,
+    items: inputItems,
+  });
+
+  const { has_kitchen } = await getBusinessMode();
+  if (!has_kitchen) return;
+
+  const kitchenItems = items.map((i) => {
+    const ki: { name: string; quantity: number; notes?: string; modifiers?: string[] } = {
+      name: i.name ?? "", quantity: i.quantity,
+    };
+    if (i.notes) ki.notes = i.notes;
+    if (i.modifiers?.length) ki.modifiers = i.modifiers.map((m) => m.name);
+    return ki;
+  });
+
+  const tables = await listTables();
+  const tableName = tables.find((t) => t.current_order_id === orderId)?.name ?? "";
+  try {
+    await printKitchenTicket({
+      tableName,
+      orderNumber: orderId.slice(0, 8),
+      orderType,
+      items: kitchenItems,
+    });
+  } catch (err) {
+    logger.error("Kitchen print failed (addition to open order), queued for retry", { error: String(err) });
+    queuePrintJob(
+      { tableName, orderNumber: orderId.slice(0, 8), orderType, items: kitchenItems },
+      "kitchen"
+    );
+    window.dispatchEvent(
+      new CustomEvent("kitchen-print-failed", {
+        detail: { tableName, orderNumber: orderId.slice(0, 8), error: err instanceof Error ? err.message : String(err) },
+      })
+    );
+  }
+}
+
 export async function splitBill(
   orderId: string,
   splits: { itemIds: string[]; amountCents: number; label: string }[],

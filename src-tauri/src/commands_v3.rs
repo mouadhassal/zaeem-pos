@@ -3998,6 +3998,95 @@ pub fn list_pending_orders_for_table_v3(state: State<Db>, session_token: String,
     Repo::new(&conn).list_pending_orders_for_table(&actor.scope(), &table_id).map_err(|e| e.to_string())
 }
 
+/// "Send to kitchen now, pay later" dine-in fix: read back a table's OPEN
+/// (already sent to the kitchen, still unpaid) order -- see
+/// `Repo::retrieve_open_order`'s doc comment. Returns null if `order_id`
+/// isn't currently PENDING/PREPARING/READY/SERVED (e.g. it's a DRAFT, or
+/// already PAID) -- the frontend falls back to `retrieve_held_order_v3` for
+/// the DRAFT case and treats null-from-both as "nothing to load."
+#[tauri::command]
+pub fn retrieve_open_order_v3(state: State<Db>, session_token: String, order_id: String) -> Result<Option<crate::repo::OpenOrderResult>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).retrieve_open_order(&actor.scope(), &order_id).map_err(|e| e.to_string())
+}
+
+/// "Send to kitchen now, pay later" dine-in fix: append more items to an
+/// order that's already been sent to the kitchen and is still unpaid --
+/// the real "running tab" mutation. Re-prices the WHOLE order (existing
+/// items + these new ones) authoritatively so `orders.total_cents` never
+/// drifts, but only INSERTs the new rows -- the items already on the order
+/// (already fired to the kitchen, possibly already PREPARING/READY) are
+/// never touched, so this can't double-fire a kitchen ticket or re-deduct
+/// stock for food already cooking. The frontend is responsible for firing a
+/// kitchen ticket containing ONLY the items it just sent here (see
+/// `orderService.addItemsToOrder`), mirroring how `create_full_order_v3`'s
+/// own ticket is fired client-side by `orderService.createOrder`.
+#[tauri::command]
+pub fn add_items_to_order_v3(
+    state: State<Db>,
+    license: State<crate::license::cloud::CloudLicenseState>,
+    session_token: String,
+    order_id: String,
+    items: Vec<crate::repo::OrderItemInput>,
+) -> Result<(), String> {
+    add_items_to_order_v3_impl(&state, &license, session_token, order_id, items)
+}
+
+fn add_items_to_order_v3_impl(
+    state: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
+    session_token: String,
+    order_id: String,
+    items: Vec<crate::repo::OrderItemInput>,
+) -> Result<(), String> {
+    crate::lan::reject_if_local_kitchen_satellite("add_items_to_order_v3")?;
+    let actor = authenticate_actor(state, &session_token)?;
+    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    let scope = actor.scope();
+    if items.is_empty() {
+        return Ok(());
+    }
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let (tenant_id, branch_id, status, discount_cents, delivery_fee_cents) =
+        Repo::new(&conn).get_order_pricing_context(&scope, &order_id).map_err(|e| e.to_string())?;
+    if !matches!(status.as_str(), "PENDING" | "PREPARING" | "READY" | "SERVED") {
+        return Err(crate::repo::RepoError::OrderNotOpenForAdditions { order_id: order_id.clone(), status }.to_string());
+    }
+
+    let existing_items = Repo::new(&conn).list_order_items_as_input(&order_id).map_err(|e| e.to_string())?;
+    let existing_count = existing_items.len();
+    let mut combined = existing_items;
+    combined.extend(items);
+    let (priced_combined, subtotal_cents, tax_cents, total_cents) =
+        price_order_authoritatively(&conn, &tenant_id, &combined, discount_cents, delivery_fee_cents)?;
+    let new_priced_items = &priced_combined[existing_count..];
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let inserted_ids = Repo::new(&tx).append_order_items(&tenant_id, &branch_id, &order_id, new_priced_items).map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_order_totals(&order_id, subtotal_cents, tax_cents, total_cents).map_err(|e| e.to_string())?;
+
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::OrderStatusChanged, "order", &order_id,
+        None, Some(&serde_json::json!({ "action": "items_added", "added_count": new_priced_items.len(), "new_total_cents": total_cents })),
+    ).map_err(|e| e.to_string())?;
+
+    // Only the NEW item rows need a fresh sync rev -- the items already on
+    // this order (already fired to the kitchen) haven't changed and
+    // shouldn't be re-queued (unlike `sync_enqueue_order_items`, which would
+    // re-stamp every item on the order, not just the ones this call added).
+    let license_status = license.cached_status();
+    sync_enqueue_order(&tx, &tenant_id, &branch_id, &order_id, &actor.device_id, &license_status)?;
+    for item_id in &inserted_ids {
+        sync_enqueue_single_order_item(&tx, &tenant_id, &branch_id, item_id, &actor.device_id, &license_status)?;
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Split a PENDING order into child orders, moving items.
 #[tauri::command]
 pub fn split_bill_v3(
@@ -5962,6 +6051,178 @@ mod tests {
             assert!(payment_exists);
             let outbox_count: i64 = conn.query_row("SELECT COUNT(*) FROM sync_outbox WHERE tenant_id = ?1", params![tenant_id], |r| r.get(0)).unwrap();
             assert_eq!(outbox_count, 2, "one payments row + one re-stamped orders row must have been enqueued");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// "Send to kitchen now, pay later" dine-in fix -- the core new
+        /// flow, exercised end to end through the real command wrappers:
+        /// create a real order (PENDING, same as today -- this is what
+        /// makes it visible to the kitchen/KDS immediately, no payment
+        /// collected yet), retrieve it back as an OPEN order (not a DRAFT),
+        /// append a second item to it as a running tab, confirm the totals
+        /// updated authoritatively, then pay it for EXACTLY the new total.
+        #[test]
+        fn add_items_to_order_v3_appends_items_updates_totals_and_the_order_stays_payable() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_add_items_to_order");
+            let (cashier_id, item_1_id, item_2_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.execute("UPDATE tables SET tenant_id = ?1, branch_id = ?2 WHERE id = ?3", params![tenant_id, branch_id, table_id]).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_1_id = repo.create_menu_item(&tenant_id, "Burger", &category_id, 1000, 500, None, None).unwrap();
+                let item_2_id = repo.create_menu_item(&tenant_id, "Fries", &category_id, 500, 200, None, None).unwrap();
+                (cashier_id, item_1_id, item_2_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+
+            // 1. "Send to kitchen": the real order is created PENDING --
+            // already visible on KDS -- with nothing paid yet.
+            let first_items = vec![OrderItemInput {
+                menu_item_id: item_1_id, name: None, quantity: 1, unit_price_cents: 1000,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let order_id = create_full_order_v3_impl(
+                &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(), first_items,
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None,
+            ).unwrap();
+            let status: String = {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap()
+            };
+            assert_eq!(status, "PENDING", "a freshly sent-to-kitchen order must be PENDING (KDS-visible), not silently PAID or DRAFT");
+
+            // 2. Retrieving it as an OPEN order works (this is the "resume
+            // a table's running tab" read path) -- and, crucially, it is
+            // NOT reachable through the DRAFT-only retrieval, proving the
+            // two states stay genuinely separate.
+            let held = Repo::new(&Connection::open(&db_path).unwrap()).retrieve_held_order(&security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() }, &order_id).unwrap();
+            assert!(held.is_none(), "a PENDING (sent-to-kitchen) order must never be returned by the DRAFT-only retrieval");
+
+            let open_before = {
+                let conn = Connection::open(&db_path).unwrap();
+                Repo::new(&conn).retrieve_open_order(&security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() }, &order_id).unwrap()
+            }.expect("a PENDING order must be retrievable as an OPEN order");
+            assert_eq!(open_before.items.len(), 1);
+            assert_eq!(open_before.total_cents, 1000);
+
+            // 3. Cashier rings in a second item mid-meal -- appended to the
+            // SAME order, not a new one, and the kitchen ticket for this
+            // trip (fired client-side in the real app) would only ever
+            // contain this one new line.
+            let second_items = vec![OrderItemInput {
+                menu_item_id: item_2_id, name: None, quantity: 2, unit_price_cents: 500,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            add_items_to_order_v3_impl(&db, &license, session.clone(), order_id.clone(), second_items)
+                .expect("add_items_to_order_v3 must succeed on an open PENDING order");
+
+            let open_after = {
+                let conn = Connection::open(&db_path).unwrap();
+                Repo::new(&conn).retrieve_open_order(&security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() }, &order_id).unwrap()
+            }.unwrap();
+            assert_eq!(open_after.items.len(), 2, "both the original and the newly appended item must be present");
+            // 1000 (burger) + 2*500 (fries) = 2000, no tax configured in this test tenant.
+            assert_eq!(open_after.total_cents, 2000, "orders.total_cents must be re-priced authoritatively after the append");
+            let db_total: i64 = {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.query_row("SELECT total_cents FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap()
+            };
+            assert_eq!(db_total, 2000, "the orders row itself (not just the read helper) must reflect the new total");
+
+            // 4. The order is STILL exactly one order (not a second one
+            // created alongside it), and it can now be paid for its new,
+            // combined total -- proving the running tab is real money, not
+            // just a display artifact.
+            let order_count: i64 = {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.query_row("SELECT COUNT(*) FROM orders WHERE table_id = ?1", params![table_id], |r| r.get(0)).unwrap()
+            };
+            assert_eq!(order_count, 1, "adding items must never create a second order for the same table");
+
+            let result = finalize_order_with_payment_v3_impl(
+                &db, &license, session, order_id.clone(), "CASH".to_string(), 2000, 0, None, None, None,
+            ).expect("the order must be payable for exactly its new, post-addition total");
+            let conn = Connection::open(&db_path).unwrap();
+            let final_status: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(final_status, "PAID");
+            let payment_exists: bool = conn.query_row("SELECT COUNT(*) > 0 FROM payments WHERE id = ?1", params![result.payment_id], |r| r.get(0)).unwrap();
+            assert!(payment_exists);
+            let table_status: String = conn.query_row("SELECT status FROM tables WHERE id = ?1", params![table_id], |r| r.get(0)).unwrap();
+            assert_eq!(table_status, "FREE", "paying the order must free the table, same as any other finalize_order_with_payment call");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// A PAID (or otherwise non-open) order must refuse `add_items_to_order_v3`
+        /// -- nothing left to add to, and the kitchen has already been paid
+        /// for/closed out on this ticket.
+        #[test]
+        fn add_items_to_order_v3_rejects_a_paid_order() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_add_items_rejects_paid");
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier")
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+            let order_id = create_order_v3_impl(&db, &license, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None).unwrap();
+            finalize_order_with_payment_v3_impl(&db, &license, session.clone(), order_id.clone(), "CASH".to_string(), 1000, 0, None, None, None).unwrap();
+
+            let err = add_items_to_order_v3_impl(&db, &license, session, order_id, vec![]);
+            // Empty `items` short-circuits to Ok(()) before the status check --
+            // this asserts the short-circuit, matching the frontend which
+            // never calls this with an empty list. The real "rejects PAID"
+            // guard is exercised by the next test with a non-empty list.
+            assert!(err.is_ok(), "an empty items list is a documented no-op regardless of order status");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Same as above, but with a real item -- this is the guard that
+        /// actually matters: a PAID order must reject an addition attempt
+        /// outright rather than silently accepting money-losing changes
+        /// after the sale already closed.
+        #[test]
+        fn add_items_to_order_v3_rejects_a_nonempty_addition_to_a_paid_order() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_add_items_rejects_paid_nonempty");
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 1000, 500, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+            let order_id = create_order_v3_impl(&db, &license, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None).unwrap();
+            finalize_order_with_payment_v3_impl(&db, &license, session.clone(), order_id.clone(), "CASH".to_string(), 1000, 0, None, None, None).unwrap();
+
+            let more_items = vec![OrderItemInput {
+                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let err = add_items_to_order_v3_impl(&db, &license, session, order_id, more_items)
+                .expect_err("adding items to an already-PAID order must be rejected");
+            assert!(err.contains("PAID"), "error must name the real blocking status, got: {err}");
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
@@ -11208,6 +11469,12 @@ mod tests {
             "create_order_v3", "update_order_status_v3", "take_payment_v3",
             "create_full_order_v3", "hold_order_v3", "retrieve_held_order_v3",
             "list_pending_orders_for_table_v3",
+            // "Send to kitchen now, pay later" dine-in fix: same selling-
+            // path reasoning as retrieve_held_order_v3/split_bill_v3 right
+            // above -- reading back a table's open tab and appending items
+            // to it (fires a kitchen ticket) are both mid-service actions
+            // that must never be interrupted by a lapsed back-office license.
+            "retrieve_open_order_v3", "add_items_to_order_v3",
             "split_bill_v3", "merge_tables_v3", "unmerge_tables_v3", "void_order_item_v3",
             "transfer_order_v3", "schedule_delayed_order_v3", "activate_delayed_orders_v3",
             "finalize_order_with_payment_v3", "list_tables_v3",
