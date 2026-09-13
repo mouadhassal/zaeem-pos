@@ -54,6 +54,17 @@ interface CustomerForm {
   birthday: string;
 }
 
+// Minimal shape of list_loyalty_cards_v3's rows (same command loyalty/
+// page.tsx uses) -- only what's needed here, to check before a delete
+// whether a customer has a loyalty card that would be silently orphaned
+// (delete_customer_v3 -> repo.rs's delete_customer is a hard delete with
+// no FK enforcement against loyalty_cards.customer_id).
+interface LoyaltyCardSummary {
+  id: string;
+  customer_id: string;
+  points: number;
+}
+
 const emptyForm: CustomerForm = {
   name: "",
   phone: "",
@@ -105,6 +116,7 @@ function formatDateTime(dateStr: string | null): string {
 export default function CustomersPage() {
   const token = useAuthStore((s) => s.token);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [loyaltyCards, setLoyaltyCards] = useState<LoyaltyCardSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -131,6 +143,18 @@ export default function CustomersPage() {
     try {
       const rows = await invoke<Customer[]>("list_customers_v3", { sessionToken: token });
       setCustomers(rows);
+      // Same command loyalty/page.tsx uses -- fetched here purely so the
+      // delete-confirmation dialog can warn before a hard delete silently
+      // orphans a customer's loyalty card and points history (see
+      // repo.rs's delete_customer, which has no FK enforcement against
+      // loyalty_cards.customer_id).
+      try {
+        const cards = await invoke<LoyaltyCardSummary[]>("list_loyalty_cards_v3", { sessionToken: token });
+        setLoyaltyCards(cards);
+      } catch {
+        // Non-fatal: the delete dialog just won't show the loyalty warning.
+        setLoyaltyCards([]);
+      }
     } catch (err) {
       setError(`حدث خطأ في تحميل العملاء: ${realErrorText(err)}`);
     } finally {
@@ -187,6 +211,14 @@ export default function CustomersPage() {
       };
       if (editId) {
         await invoke("update_customer_v3", { ...args, customerId: editId });
+        // Keep the open detail panel (if any) in sync -- it shows this same
+        // customer's fields read-only now that the modal is the one editor.
+        if (detailCustomer && detailCustomer.customer.id === editId) {
+          setDetailCustomer({
+            ...detailCustomer,
+            customer: { ...detailCustomer.customer, ...args },
+          });
+        }
       } else {
         await invoke("create_customer_v3", args);
       }
@@ -252,44 +284,19 @@ export default function CustomersPage() {
   const closeDetail = () => {
     setDetailOpen(false);
     setDetailCustomer(null);
-    setDetailDraft({});
-    setDetailSaving(false);
   };
 
-  const [detailDraft, setDetailDraft] = useState<Record<string, string>>({});
-  const [detailSaving, setDetailSaving] = useState(false);
-  const detailDirty = Object.keys(detailDraft).length > 0;
-
-  const updateDetailDraft = (field: string, value: string) => {
-    setDetailDraft((prev) => ({ ...prev, [field]: value }));
-  };
-
-  const saveDetailDraft = async () => {
-    if (!detailCustomer || !detailDirty) return;
-    setDetailSaving(true);
-    try {
-      const updated = { ...detailCustomer.customer, ...detailDraft };
-      await invoke("update_customer_v3", {
-        sessionToken: token,
-        customerId: updated.id,
-        name: updated.name,
-        phone: updated.phone,
-        email: updated.email || null,
-        address: updated.address || null,
-        notes: updated.notes || null,
-        birthday: updated.birthday || null,
-      });
-      setDetailCustomer({ ...detailCustomer, customer: updated });
-      setDetailDraft({});
-    } catch (err) {
-      setError(`حدث خطأ في التحديث: ${realErrorText(err)}`);
-    } finally {
-      setDetailSaving(false);
-    }
-  };
-
-  const cancelDetailDraft = () => {
-    setDetailDraft({});
+  // 2026-09-13 audit fix: this page used to have two separate, unexplained
+  // edit paths -- a modal (full zod-validated form: name/phone/email/
+  // address/notes/birthday) AND a second, independent inline-editable
+  // draft right here in the slide-out detail panel (name/phone/email/
+  // address only, no validation, saved straight to update_customer_v3).
+  // Collapsed to one: the modal is the only editor now (it's a strict
+  // superset -- notes/birthday only existed there, plus real validation),
+  // opened from this button. The detail panel below is read-only display.
+  const editFromDetail = () => {
+    if (!detailCustomer) return;
+    openEdit(detailCustomer.customer);
   };
 
   const [exportingPdf, setExportingPdf] = useState(false);
@@ -563,6 +570,21 @@ export default function CustomersPage() {
               <button onClick={() => setDeleteId(null)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
             </div>
             <p className="text-sm font-arabic text-ink-500">هل أنت متأكد من حذف هذا العميل؟</p>
+            {(() => {
+              // 2026-09-13 audit fix: delete_customer_v3 is a hard delete
+              // with no FK enforcement against loyalty_cards.customer_id
+              // (repo.rs's delete_customer) -- deleting a customer who has
+              // a loyalty card silently orphans that card and its points
+              // history with no way to recover it. Warn before the fact
+              // instead of letting it happen silently.
+              const card = loyaltyCards.find((c) => c.customer_id === deleteId);
+              if (!card) return null;
+              return (
+                <p className="text-sm font-arabic text-danger bg-danger-soft rounded-sm p-3">
+                  هذا العميل لديه بطاقة ولاء برصيد {card.points} نقطة -- حذف العميل سيجعل هذا السجل وتاريخ النقاط غير قابل للوصول نهائياً.
+                </p>
+              );
+            })()}
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setDeleteId(null)}
@@ -600,66 +622,37 @@ export default function CustomersPage() {
                 </button>
               </div>
 
-              {/* Customer Info */}
+              {/* Customer Info -- read-only display; editing goes through the
+                  one edit modal (see editFromDetail's comment above) */}
               <div className="bg-white rounded-md p-4 space-y-3">
-                <h3 className="font-bold font-arabic text-sm text-ink-900">معلومات العميل</h3>
+                <div className="flex items-center justify-between">
+                  <h3 className="font-bold font-arabic text-sm text-ink-900">معلومات العميل</h3>
+                  <button
+                    onClick={editFromDetail}
+                    className="p-1.5 rounded-sm text-xs text-amber-600 hover:bg-amber-50 transition-colors inline-flex items-center gap-1"
+                    title="تعديل"
+                  >
+                    <IconPencil className="w-4 h-4" /> تعديل
+                  </button>
+                </div>
                 <div className="space-y-2">
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-ink-500 font-arabic w-20">الاسم</span>
-                    <input
-                      type="text"
-                      value={detailDraft.name ?? detailCustomer.customer.name}
-                      onChange={(e) => updateDetailDraft("name", e.target.value)}
-                      className="flex-1 h-8 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
-                    />
+                    <span className="flex-1 text-sm text-ink-900 font-arabic">{detailCustomer.customer.name}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-ink-500 font-arabic w-20">الهاتف</span>
-                    <input
-                      type="text"
-                      value={detailDraft.phone ?? detailCustomer.customer.phone}
-                      onChange={(e) => updateDetailDraft("phone", e.target.value)}
-                      className="flex-1 h-8 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
-                      dir="ltr"
-                    />
+                    <span className="flex-1 text-sm text-ink-900 font-mono" dir="ltr">{detailCustomer.customer.phone}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-ink-500 font-arabic w-20">البريد</span>
-                    <input
-                      type="email"
-                      value={detailDraft.email ?? detailCustomer.customer.email ?? ""}
-                      onChange={(e) => updateDetailDraft("email", e.target.value)}
-                      className="flex-1 h-8 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
-                      dir="ltr"
-                    />
+                    <span className="flex-1 text-sm text-ink-900" dir="ltr">{detailCustomer.customer.email ?? "-"}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-ink-500 font-arabic w-20">العنوان</span>
-                    <input
-                      type="text"
-                      value={detailDraft.address ?? detailCustomer.customer.address ?? ""}
-                      onChange={(e) => updateDetailDraft("address", e.target.value)}
-                      className="flex-1 h-8 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
-                    />
+                    <span className="flex-1 text-sm text-ink-900 font-arabic">{detailCustomer.customer.address ?? "-"}</span>
                   </div>
                 </div>
-                {detailDirty && (
-                  <div className="flex gap-2 pt-1">
-                    <button
-                      onClick={saveDetailDraft}
-                      disabled={detailSaving}
-                      className="flex-1 h-8 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
-                    >
-                      {detailSaving ? "جاري الحفظ..." : "حفظ"}
-                    </button>
-                    <button
-                      onClick={cancelDetailDraft}
-                      className="flex-1 h-8 rounded-sm border border-ink-200 text-ink-500 text-sm hover:bg-ink-100 transition-colors"
-                    >
-                      إلغاء
-                    </button>
-                  </div>
-                )}
               </div>
 
               {/* Stats */}
