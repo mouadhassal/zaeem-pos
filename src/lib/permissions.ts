@@ -1,7 +1,5 @@
 import type { UserRole } from "../db/types";
 
-export type OrderType = "dine-in" | "takeaway" | "delivery" | "online";
-
 export interface SidebarNavItem {
   id: string;
   label: string;
