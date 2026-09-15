@@ -501,10 +501,10 @@ async fn rpc_dispatch(
     // plain references `dispatch_lan_rpc` takes -- same values a unit
     // test builds with `real_db()`/`never_checked_license()`, just
     // sourced from Tauri's managed state instead.
-    let result = crate::commands_v3::dispatch_lan_rpc(&db, &license, &command, args);
+    let result = crate::commands::lan_rpc::dispatch_lan_rpc(&db, &license, &command, args);
     match result {
         Ok(value) => {
-            if crate::commands_v3::lan_rpc_mutates_orders(&command) {
+            if crate::commands::lan_rpc::lan_rpc_mutates_orders(&command) {
                 broadcast_change(&state, "orders_changed");
             }
             (StatusCode::OK, Json(serde_json::json!({ "ok": true, "data": value }))).into_response()
@@ -544,7 +544,7 @@ fn db_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 
 #[tauri::command]
 pub fn get_lan_status_v3(app: AppHandle, state: State<Db>, session_token: String) -> Result<LanStatusV3, String> {
-    let actor = crate::commands_v3::authenticate_actor(&state, &session_token)?;
+    let actor = crate::commands::shared::authenticate_actor(&state, &session_token)?;
     crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
     let dir = db_dir(&app)?;
     let config = load_lan_config(&dir);
@@ -561,7 +561,7 @@ pub fn get_lan_status_v3(app: AppHandle, state: State<Db>, session_token: String
 /// server is already running in this process.
 #[tauri::command]
 pub fn enable_hub_mode_v3(app: AppHandle, state: State<Db>, session_token: String) -> Result<(), String> {
-    let actor = crate::commands_v3::authenticate_actor(&state, &session_token)?;
+    let actor = crate::commands::shared::authenticate_actor(&state, &session_token)?;
     crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
     let dir = db_dir(&app)?;
     let mut config = load_lan_config(&dir);
@@ -582,7 +582,7 @@ pub struct PendingPairingV3 {
 
 #[tauri::command]
 pub fn list_pending_pairings_v3(state: State<Db>, session_token: String) -> Result<Vec<PendingPairingV3>, String> {
-    let actor = crate::commands_v3::authenticate_actor(&state, &session_token)?;
+    let actor = crate::commands::shared::authenticate_actor(&state, &session_token)?;
     crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
@@ -608,7 +608,7 @@ pub struct PairedTerminalV3 {
 
 #[tauri::command]
 pub fn list_paired_terminals_v3(state: State<Db>, session_token: String) -> Result<Vec<PairedTerminalV3>, String> {
-    let actor = crate::commands_v3::authenticate_actor(&state, &session_token)?;
+    let actor = crate::commands::shared::authenticate_actor(&state, &session_token)?;
     crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
@@ -624,7 +624,7 @@ pub fn list_paired_terminals_v3(state: State<Db>, session_token: String) -> Resu
 
 #[tauri::command]
 pub fn approve_pairing_v3(state: State<Db>, session_token: String, request_id: String) -> Result<(), String> {
-    let actor = crate::commands_v3::authenticate_actor(&state, &session_token)?;
+    let actor = crate::commands::shared::authenticate_actor(&state, &session_token)?;
     crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().to_rfc3339();
@@ -642,7 +642,7 @@ pub fn approve_pairing_v3(state: State<Db>, session_token: String, request_id: S
 
 #[tauri::command]
 pub fn reject_pairing_v3(state: State<Db>, session_token: String, request_id: String) -> Result<(), String> {
-    let actor = crate::commands_v3::authenticate_actor(&state, &session_token)?;
+    let actor = crate::commands::shared::authenticate_actor(&state, &session_token)?;
     crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().to_rfc3339();
@@ -656,7 +656,7 @@ pub fn reject_pairing_v3(state: State<Db>, session_token: String, request_id: St
 
 #[tauri::command]
 pub fn revoke_terminal_v3(state: State<Db>, session_token: String, terminal_id: String) -> Result<(), String> {
-    let actor = crate::commands_v3::authenticate_actor(&state, &session_token)?;
+    let actor = crate::commands::shared::authenticate_actor(&state, &session_token)?;
     crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     conn.execute(
