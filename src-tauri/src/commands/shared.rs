@@ -1,11 +1,8 @@
-use crate::audit;
-use crate::repo::{NewOrder, OrderRow, Repo, FullOrderInput, SplitBillInput, TableInfo, HeldOrderResult, ReceiptConfig, LoyaltyCardLookup};
-use crate::security::{self, authorize, authorize_scope, Actor, Permission, Role, Scope};
+use crate::repo::Repo;
+use crate::security::{self, Actor, Role, Scope};
 use crate::Db;
-use bcrypt::{hash, verify, DEFAULT_COST};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
-use tauri::{Manager, State};
 /// Takes `&Db` rather than `&State<Db>` so it (and everything built on it)
 /// can be called both from the real `#[tauri::command]` wrapper (where
 /// `&state` deref-coerces from `State<Db>`) and directly from command-wrapper
