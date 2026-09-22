@@ -2030,6 +2030,7 @@ pub fn run_item_kind_migration(conn: &mut Connection, _db_path: &Path) -> Result
 ///   constructed at startup (`lib.rs`'s `UploadQueue::new_queue`), with a
 ///   `CREATE TABLE IF NOT EXISTS upload_queue` that would silently
 ///   resurrect it after any DROP anyway.
+///
 /// `id_remap`/`schema_migrations` are migration-system bookkeeping and were
 /// never in scope.
 pub fn run_dead_table_cleanup_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {

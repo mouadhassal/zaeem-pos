@@ -2949,6 +2949,7 @@ impl<'a> Repo<'a> {
     /// one transaction (the caller wraps this whole call in a `tx`). Total
     /// is computed server-side from the items, never trusted from the
     /// client.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_purchase_order_with_items(&self, scope: &Scope, tenant_id: &str, branch_id: &str, supplier_id: &str, created_by: &str, notes: Option<&str>, items: &[(String, f64, i64)]) -> Result<String, RepoError> {
         self.assert_scope_populated("purchase_orders", true)?;
         self.assert_scope_populated("purchase_order_items", true)?;
@@ -2962,7 +2963,7 @@ impl<'a> Repo<'a> {
             // here re-verified it. A non-positive quantity or a negative
             // unit cost would still insert a purchase_order_items row and
             // (once received) mutate stock/supplier balances from it.
-            if !(*quantity_ordered > 0.0) || !quantity_ordered.is_finite() || *unit_cost_cents < 0 {
+            if !quantity_ordered.is_finite() || *quantity_ordered <= 0.0 || *unit_cost_cents < 0 {
                 return Err(RepoError::InvalidPurchaseOrderItem {
                     ingredient_id: ingredient_id.clone(),
                     quantity_ordered: *quantity_ordered,
@@ -4058,7 +4059,7 @@ impl<'a> Repo<'a> {
         // Worst (most negative-for-the-owner, i.e. largest unexplained
         // cost) first -- same "surface the surprise first" principle as
         // menu_margin_report's ordering.
-        out.sort_by(|a, b| b.variance_cost_cents.abs().cmp(&a.variance_cost_cents.abs()));
+        out.sort_by_key(|r| std::cmp::Reverse(r.variance_cost_cents.abs()));
         Ok(out)
     }
 
@@ -4834,6 +4835,7 @@ impl<'a> Repo<'a> {
         // (pos/page.tsx's handleTableSelect), so it surfaced only as a
         // silent unhandled promise rejection, leaving the cashier looking
         // at an empty cart for a table that had a real held order.
+        #[allow(clippy::type_complexity)]
         let order: Option<(String, Option<String>, Option<String>, Option<String>)> = self.conn.query_row(
             &sql,
             params_from_iter(args.iter()),
@@ -4902,6 +4904,7 @@ impl<'a> Repo<'a> {
             "SELECT customer_name, customer_phone, delivery_address, subtotal_cents, tax_cents, discount_cents, total_cents \
              FROM orders WHERE id = {id_placeholder} AND status IN ('PENDING','PREPARING','READY','SERVED') AND {predicate}"
         );
+        #[allow(clippy::type_complexity)]
         let order: Option<(Option<String>, Option<String>, Option<String>, i64, i64, i64, i64)> = self.conn.query_row(
             &sql,
             params_from_iter(args.iter()),
@@ -4930,6 +4933,7 @@ impl<'a> Repo<'a> {
         let mut stmt = self.conn.prepare(
             "SELECT id, menu_item_id, quantity, unit_price_cents, notes, combo_id FROM order_items WHERE order_id = ?1 AND voided = 0"
         )?;
+        #[allow(clippy::type_complexity)]
         let rows: Vec<(String, String, i64, i64, Option<String>, Option<String>)> = stmt.query_map(params![order_id], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
         })?.filter_map(|r| r.ok()).collect();

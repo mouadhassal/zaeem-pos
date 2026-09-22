@@ -18,6 +18,10 @@
 //! `repo::Repo`, not through the command wrapper functions -- stayed here
 //! unsplit (see its own doc comment for why).
 
+#[cfg(test)]
+use crate::commands::orders::{verify_manager_override_impl, enforce_discount_cap, MANAGER_OVERRIDE_MAX_ATTEMPTS};
+#[cfg(test)]
+use crate::commands::shared::{resolve_branch_for_actor, resolve_operating_branch, require_license_not_locked_or_initial_setup, INITIAL_SETUP_IN_PROGRESS_KEY, INITIAL_SETUP_WINDOW_MS};
 
 #[cfg(test)]
 mod tests {

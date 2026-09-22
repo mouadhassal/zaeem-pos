@@ -213,7 +213,7 @@ fn simulate_payment_flow(
     let mut crashed_in_finalize = false;
     let mut finalize_committed = false;
     let mut payment_id: Option<String> = None;
-    if !(should_crash && crash_after == "order") && !(should_crash && crash_after == "items") {
+    if !(should_crash && (crash_after == "order" || crash_after == "items")) {
         let tx = conn.transaction().expect("begin finalize tx");
         tx.execute(
             "UPDATE orders SET status = 'PAID', closed_at = ?1, last_modified = ?1, sync_status = 'pending' WHERE id = ?2",
