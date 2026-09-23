@@ -8,7 +8,7 @@ import { IconPencil, IconTrash, IconClipboardList, IconEye, IconPackageImport, I
 import EmptyState from "../../components/ui/EmptyState";
 import DatePicker from "../../components/ui/DatePicker";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
-import { openMarketplace, MARKETPLACE_ENABLED } from "../../lib/marketplace";
+import { openMarketplace, openMarketplaceReorder, MARKETPLACE_ENABLED } from "../../lib/marketplace";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { formatArabicDateTime, formatArabicDate } from "../../lib/dateLocal";
 import { useToast } from "../../hooks/useToast";
@@ -229,6 +229,13 @@ export default function InventoryPage() {
   const [showAddIngredient, setShowAddIngredient] = useState(false);
   const [showReceiveStock, setShowReceiveStock] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const token = useAuthStore((s) => s.token);
+  const [marketplaceCtx, setMarketplaceCtx] = useState<{ branch_id: string | null; receipts_enabled: boolean } | null>(null);
+  useEffect(() => {
+    invoke<{ branch_id: string | null; receipts_enabled: boolean }>("get_marketplace_context_v3", { sessionToken: token })
+      .then(setMarketplaceCtx)
+      .catch(() => setMarketplaceCtx(null));
+  }, [token]);
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: "stock", label: "المخزون" },
@@ -251,6 +258,14 @@ export default function InventoryPage() {
               user naturally looks for "I just got a delivery, log it."
               This button is that missing front door: one click, straight
               into the same proven CreatePOModal/ReceivePOModal flow. */}
+          <button
+            onClick={() => openMarketplaceReorder(marketplaceCtx?.branch_id).catch(() => {})}
+            className="h-10 px-5 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm font-bold hover:border-saffron-600 hover:text-saffron-600 transition-all duration-150 flex items-center gap-1.5"
+            title="فتح صفحة إعادة الطلب في سوق WENZDES"
+          >
+            <ShoppingCart className="w-4 h-4" />
+            إعادة الطلب
+          </button>
           <button onClick={() => setShowReceiveStock(true)} className="h-10 px-5 rounded-sm bg-white border-2 border-saffron-600 text-saffron-600 text-sm font-bold hover:bg-saffron-50 active:scale-[0.98] transition-all duration-150 flex items-center gap-1.5">
             <IconTruckDelivery className="w-4 h-4" />
             استلام بضاعة
