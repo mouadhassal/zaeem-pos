@@ -2294,7 +2294,7 @@ impl<'a> Repo<'a> {
         let (pred2, args2) = Self::scope_predicate(scope);
         let pred2 = pred2.replace("tenant_id", "orders.tenant_id").replace("branch_id", "orders.branch_id");
         let sql2 = format!(
-            "SELECT payments.method, COALESCE(SUM(payments.amount_cents), 0) FROM payments \
+            "SELECT payments.method, COALESCE(SUM(payments.amount_cents - COALESCE(payments.change_cents, 0)), 0) FROM payments \
              INNER JOIN orders ON orders.id = payments.order_id \
              WHERE {pred2} AND orders.status = 'PAID' AND payments.created_at >= ?{a} AND payments.created_at <= ?{b} \
              GROUP BY payments.method",
@@ -2667,6 +2667,15 @@ impl<'a> Repo<'a> {
             let modifiers_total: i64 = item.modifiers.iter().map(|m| m.price_cents).sum();
             (item.unit_price_cents + modifiers_total) * item.quantity
         }).sum()
+    }
+
+    /// The business name printed at the top of every receipt. Until
+    /// 2026-09-23 nothing could set it, so every shop's receipts said
+    /// "Zaeem POS" (the column default).
+    pub fn update_chain_name(&self, tenant_id: &str, chain_name: &str) -> Result<(), RepoError> {
+        self.ensure_chain_config_row(tenant_id)?;
+        self.conn.execute("UPDATE chain_config SET chain_name = ?1, last_modified = datetime('now') WHERE tenant_id = ?2", params![chain_name, tenant_id])?;
+        Ok(())
     }
 
     pub fn update_chain_currency(&self, tenant_id: &str, currency: &str) -> Result<(), RepoError> {
@@ -4233,7 +4242,7 @@ impl<'a> Repo<'a> {
         let mut cash_args = qargs.clone();
         cash_args.push(shift_id.to_string());
         let cash_sql = format!(
-            "SELECT COALESCE(SUM(payments.amount_cents), 0) FROM payments INNER JOIN orders ON orders.id = payments.order_id \
+            "SELECT COALESCE(SUM(payments.amount_cents - COALESCE(payments.change_cents, 0)), 0) FROM payments INNER JOIN orders ON orders.id = payments.order_id \
              WHERE payments.method = 'CASH' AND orders.status = 'PAID' AND {qualified_predicate} AND orders.shift_id = {id_placeholder2}"
         );
         let cash_total: i64 = self.conn.query_row(&cash_sql, params_from_iter(cash_args.iter()), |r| r.get(0))?;
@@ -4241,7 +4250,7 @@ impl<'a> Repo<'a> {
         let mut card_args = qargs.clone();
         card_args.push(shift_id.to_string());
         let card_sql = format!(
-            "SELECT COALESCE(SUM(payments.amount_cents), 0) FROM payments INNER JOIN orders ON orders.id = payments.order_id \
+            "SELECT COALESCE(SUM(payments.amount_cents - COALESCE(payments.change_cents, 0)), 0) FROM payments INNER JOIN orders ON orders.id = payments.order_id \
              WHERE payments.method = 'CARD' AND orders.status = 'PAID' AND {qualified_predicate} AND orders.shift_id = {id_placeholder2}"
         );
         let card_total: i64 = self.conn.query_row(&card_sql, params_from_iter(card_args.iter()), |r| r.get(0))?;

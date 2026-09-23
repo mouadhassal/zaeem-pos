@@ -1134,6 +1134,54 @@ mod tests {
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
+        /// 2026-09-23 acceptance-run finding: voiding a line on an open
+        /// tab left `orders.total_cents` at the pre-void amount, and
+        /// finalize insists on paying exactly that -- so the table could
+        /// only be charged for the voided food too. The void must re-price.
+        #[test]
+        fn void_on_an_open_tab_reprices_the_order_and_it_pays_for_the_new_total() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_void_reprices");
+            let (cashier_id, burger_id, fries_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.execute("UPDATE tables SET tenant_id = ?1, branch_id = ?2 WHERE id = ?3", params![tenant_id, branch_id, table_id]).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let burger_id = repo.create_menu_item(&tenant_id, "Burger", &category_id, 1000, 500, None, None).unwrap();
+                let fries_id = repo.create_menu_item(&tenant_id, "Fries", &category_id, 500, 200, None, None).unwrap();
+                (cashier_id, burger_id, fries_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                // Keep this test about pricing, not the manager-PIN gate.
+                Repo::new(&conn).update_manager_thresholds(&tenant_id, 100_000_000, 100_000_000).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+
+            let items = vec![
+                OrderItemInput { menu_item_id: burger_id, name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] },
+                OrderItemInput { menu_item_id: fries_id.clone(), name: None, quantity: 2, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] },
+            ];
+            let order_id = create_full_order_v3_impl(
+                &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(), items,
+                2000, 0, 2000, 0, None, None, None, None, 0, None, None,
+            ).unwrap();
+            let fries_line: String = Connection::open(&db_path).unwrap()
+                .query_row("SELECT id FROM order_items WHERE order_id = ?1 AND menu_item_id = ?2", params![order_id, fries_id], |r| r.get(0)).unwrap();
+
+            void_order_item_v3_impl(&db, &license, session.clone(), fries_line, "wrong order".to_string(), None).unwrap();
+
+            let total: i64 = Connection::open(&db_path).unwrap()
+                .query_row("SELECT total_cents FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(total, 1000, "voiding the 2x fries line must take 1000 off the open tab");
+            finalize_order_with_payment_v3_impl(&db, &license, session, order_id, "CASH".to_string(), 1000, 0, None, None, None)
+                .expect("the tab must be payable for its post-void total");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
         /// A PAID (or otherwise non-open) order must refuse `add_items_to_order_v3`
         /// -- nothing left to add to, and the kitchen has already been paid
         /// for/closed out on this ticket.
@@ -3514,15 +3562,19 @@ mod tests {
         assert_eq!(active.starting_cash_cents, 10000);
         println!("[shifts] shift opened with starting_cash_cents=10000, get_active_shift confirms it");
 
-        // Two orders paid against this shift, one CASH one CARD.
-        for (method, amount) in [("CASH", 2000i64), ("CARD", 3500i64)] {
+        // Two orders paid against this shift, one CASH one CARD. The cash
+        // customer hands over 5000 for a 2000 bill and gets 3000 back --
+        // the drawer only keeps 2000 (2026-09-23: stats used to sum the
+        // tendered amount, so every shift that gave change "expected"
+        // more cash than the drawer could hold and closed short).
+        for (method, amount, tendered, change) in [("CASH", 2000i64, 5000i64, 3000i64), ("CARD", 3500i64, 3500i64, 0i64)] {
             let order_id = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
                 table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".into(),
                 subtotal_cents: amount, tax_cents: 0, total_cents: amount, discount_cents: 0,
             }).unwrap();
             conn.execute("UPDATE orders SET shift_id = ?1 WHERE id = ?2", params![shift_id, order_id]).unwrap();
             repo.take_payment(&tenant_id, &branch_id, crate::repo::PaymentInput {
-                order_id, method: method.to_string(), amount_cents: amount, change_cents: 0, debtor_id: None, actor_id: cashier_id.clone(),
+                order_id, method: method.to_string(), amount_cents: tendered, change_cents: change, debtor_id: None, actor_id: cashier_id.clone(),
             }).unwrap();
         }
 
@@ -6843,7 +6895,7 @@ mod tests {
             "list_debt_entries_v3", "record_debt_payment_v3",
             "get_finance_revenue_v3", "get_dashboard_summary_v3", "get_tax_collected_v3", "list_operational_costs_v3",
             "create_operational_cost_v3", "list_invoices_v3", "create_invoice_v3", "mark_invoice_paid_v3",
-            "update_chain_currency_v3", "update_chain_tax_v3", "update_discount_caps_v3", "update_manager_thresholds_v3",
+            "update_chain_currency_v3", "update_chain_name_v3", "update_chain_tax_v3", "update_discount_caps_v3", "update_manager_thresholds_v3",
             "update_business_mode_v3",
             "get_legacy_branch_v3", "save_legacy_branch_v3", "set_printer_active_v3",
             "update_printer_paper_width_v3", "update_printer_system_name_v3", "create_printer_v3", "list_printers_v3",

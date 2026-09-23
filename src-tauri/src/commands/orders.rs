@@ -521,7 +521,12 @@ pub(crate) fn list_tables_v3_impl(state: &Db, session_token: String) -> Result<V
 #[tauri::command]
 pub fn create_table_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, branch_id: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    // Setup-window exemption: the first-run wizard seeds the starter
+    // tables before any license can have been activated.
+    {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        require_license_not_locked_or_initial_setup(&license, &conn)?;
+    }
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     if name.trim().is_empty() {
         return Err("اسم الطاولة مطلوب".to_string());
@@ -1126,6 +1131,21 @@ pub(crate) fn void_order_item_v3_impl(state: &Db, license: &crate::license::clou
     ).map_err(|e| e.to_string())?;
     if order_status == "PAID" {
         sync_enqueue_recipe_ingredients_for_menu_item(&tx, &item_tenant_id, &item_branch_id, &menu_item_id, &actor.device_id, &license_status)?;
+    }
+
+    // 2026-09-23: voiding a line on an OPEN tab used to leave the order's
+    // stored totals untouched -- and finalize_order_with_payment insists
+    // the payment equals that stored total, so the table could only be
+    // charged the full pre-void amount (voided food included). Re-price
+    // from the remaining (non-voided) lines, exactly like adding items does.
+    if matches!(order_status.as_str(), "PENDING" | "PREPARING" | "READY" | "SERVED") {
+        let (tenant_id, _branch_id, _status, discount_cents, delivery_fee_cents) =
+            Repo::new(&tx).get_order_pricing_context(&scope, &order_id).map_err(|e| e.to_string())?;
+        let remaining = Repo::new(&tx).list_order_items_as_input(&order_id).map_err(|e| e.to_string())?;
+        let (_, subtotal_cents, tax_cents, total_cents) =
+            price_order_authoritatively(&tx, &tenant_id, &remaining, discount_cents, delivery_fee_cents)?;
+        Repo::new(&tx).update_order_totals(&order_id, subtotal_cents, tax_cents, total_cents).map_err(|e| e.to_string())?;
+        sync_enqueue_order(&tx, &item_tenant_id, &item_branch_id, &order_id, &actor.device_id, &license_status)?;
     }
 
     tx.commit().map_err(|e| e.to_string())?;

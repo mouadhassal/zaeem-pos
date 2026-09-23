@@ -43,6 +43,7 @@ import { enableBarcodeScanner, disableBarcodeScanner } from "../../lib/barcodeSc
 import { retryPrintQueue, printReceipt } from "../../lib/printer";
 import type { ReceiptData } from "../../lib/printer";
 import type { SplitItem, CartItem } from "../../stores/cartStore";
+import { orderNo } from "../../lib/orderNumber";
 
 /**
  * "Send to kitchen now, pay later" dine-in fix: `cartStore.addItem` merges
@@ -518,7 +519,7 @@ export default function POSPage() {
       const cfg = await getReceiptConfig();
       const receipt: ReceiptData = {
         chainName: cfg.chain_name, branchName: cfg.branch_name,
-        currency: cfg.currency, orderNumber: orderId.slice(0, 8),
+        currency: cfg.currency, orderNumber: orderNo(orderId),
         tableName: tableName ?? "", orderType: orderType === "DEBT" ? "DINE_IN" : orderType,
         items: items.filter((i) => !i.voided).map((i) => ({ name: i.name, quantity: i.quantity, priceCents: i.unitPriceCents, modifiers: i.modifiers, ...(i.comboId ? { comboId: i.comboId } : {}) })),
         subtotalCents: state.subtotal(), taxCents: t.taxCents, secondaryTaxCents: t.secondaryTaxCents,
@@ -640,7 +641,7 @@ export default function POSPage() {
       const cfg = await getReceiptConfig();
       const receipt: ReceiptData = {
         chainName: cfg.chain_name, branchName: cfg.branch_name,
-        currency: cfg.currency, orderNumber: openOrderId.slice(0, 8),
+        currency: cfg.currency, orderNumber: orderNo(openOrderId),
         tableName: tableName ?? "", orderType: "DINE_IN",
         items: items.filter((i) => !i.voided).map((i) => ({ name: i.name, quantity: i.quantity, priceCents: i.unitPriceCents, modifiers: i.modifiers, ...(i.comboId ? { comboId: i.comboId } : {}) })),
         subtotalCents: openOrderTotals?.subtotalCents ?? 0,
@@ -729,7 +730,7 @@ export default function POSPage() {
       const cfg = await getReceiptConfig();
       const receipt: ReceiptData = {
         chainName: cfg.chain_name, branchName: cfg.branch_name,
-        currency: cfg.currency, orderNumber: current.orderId.slice(0, 8),
+        currency: cfg.currency, orderNumber: orderNo(current.orderId),
         tableName: tableName ?? "", orderType: "DINE_IN",
         items: current.items,
         subtotalCents: current.amountCents, taxCents: 0, secondaryTaxCents: 0,
@@ -780,6 +781,18 @@ export default function POSPage() {
       if (target.dbItemId) {
         try {
           await voidOrderItem(target.dbItemId, reason, managerOverridePin);
+          // The void re-prices the open tab in Rust -- show that total,
+          // not the stale pre-void one (which is what the table was
+          // being asked to pay).
+          if (openOrderId) {
+            const open = await retrieveOpenOrder(openOrderId);
+            if (open) {
+              setOpenOrderTotals({
+                subtotalCents: open.subtotalCents, taxCents: open.taxCents,
+                discountCents: open.discountCents, totalCents: open.totalCents,
+              });
+            }
+          }
         } catch (err) {
           setSuccessMsg(`تعذر حفظ الإلغاء: ${realErrorText(err)}`);
           setTimeout(() => setSuccessMsg(null), 4000);
@@ -835,8 +848,12 @@ export default function POSPage() {
   const totalCents = openOrderId ? (openOrderTotals?.totalCents ?? cartTotalCents) : cartTotalCents;
   const subtotalCents = openOrderId ? (openOrderTotals?.subtotalCents ?? cartSubtotalCents) : cartSubtotalCents;
   const discountCents = openOrderId ? (openOrderTotals?.discountCents ?? 0) : cartDiscountCents;
-  const orderNumber = useMemo(() => tableId?.slice(0, 8) || "0000", [tableId]);
   const currentOrderId = tables.find((t) => t.id === tableId)?.current_order_id;
+  // Was `tableId.slice(0, 8)` -- a TABLE id shown as "#order", identical for
+  // every takeaway (they all share the implicit counter table).
+  const liveOrderId = openOrderId ?? currentOrderId ?? null;
+  const orderNumber = liveOrderId ? orderNo(liveOrderId) : "";
+  const orderTag = orderNumber ? `#${orderNumber}` : "طلب جديد";
   // "Send to kitchen now, pay later" dine-in fix: quantity in the cart that
   // hasn't actually made it to a real order yet -- either a whole new line,
   // or extra quantity bumped onto an already-sent line (see
@@ -855,12 +872,12 @@ export default function POSPage() {
   // implicit counter table -- showing "طاولة المنضدة" ("Table Counter")
   // would be a confusing label for something the cashier never picked.
   const tableLabel = !hasTables
-    ? `#${orderNumber}`
+    ? orderTag
     : tableId
-    ? `طاولة ${tableName} / #${orderNumber}`
+    ? `طاولة ${tableName} / ${orderTag}`
     : orderType === "DINE_IN"
     ? "اختر طاولة"
-    : `#${orderNumber}`;
+    : orderTag;
 
   const handleIncrementLine = (id: string) => updateQuantity(id, 1);
   const handleDecrementLine = (id: string) => updateQuantity(id, -1);
