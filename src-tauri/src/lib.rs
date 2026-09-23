@@ -1,4 +1,6 @@
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
+#[cfg(debug_assertions)]
+use rusqlite::params;
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
@@ -28,6 +30,8 @@ mod reconcile;
 mod assistant;
 mod goods_receipt;
 
+// Only the debug-build staff seeding (seed_default_staff) hashes PINs here.
+#[cfg(debug_assertions)]
 use bcrypt::{hash, DEFAULT_COST};
 
 struct Db(Mutex<Connection>);
@@ -394,6 +398,7 @@ pub fn run() {
             // comment) find this device's own lan_config.json from deep
             // inside a plain `fn` with no `AppHandle` in scope.
             lan::set_db_dir(lan_dir.clone());
+            lan::migrate_legacy_lan_config(&lan_dir);
             if lan::load_lan_config(&lan_dir).mode == "hub" {
                 lan::start_hub_server(app.handle().clone(), &lan_dir);
             }
@@ -562,6 +567,7 @@ pub fn run() {
             commands::reports::reconcile_orders_v3,
             commands::settings::get_chain_config_v3,
             commands::settings::update_chain_currency_v3,
+            commands::settings::update_chain_name_v3,
             commands::settings::update_chain_tax_v3,
             commands::settings::get_discount_caps_v3,
             commands::settings::update_discount_caps_v3,
@@ -645,6 +651,7 @@ pub fn run() {
             lan::lan_relay_v3,
             print::list_system_printers_v3,
             print::print_raw_bytes_v3,
+            print::print_network_raw_v3,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

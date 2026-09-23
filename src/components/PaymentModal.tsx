@@ -192,7 +192,9 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
           <div className="font-arabic text-xs text-ink-500">
             {subtitleOverride ?? (
               <>
-                {useCartStore.getState().tableName
+                {/* The implicit counter table (takeaway / shops with no
+                    tables) is not a table the customer sat at. */}
+                {useCartStore.getState().tableName && useCartStore.getState().tableName !== "المنضدة"
                   ? `طاولة ${useCartStore.getState().tableName} · `
                   : ""}
                 {useCartStore.getState().items.length} أصناف

@@ -101,8 +101,27 @@ pub struct LanConfig {
     pub device_name: String,
 }
 
-fn lan_config_path(db_path: &std::path::Path) -> std::path::PathBuf {
-    db_path.parent().unwrap_or(db_path).join("lan_config.json")
+/// `dir` is this install's own data folder (every caller passes the folder,
+/// never the .db file). This used to take `dir.parent()` -- i.e. the shared
+/// %APPDATA% root -- so every install on the PC read and wrote ONE
+/// lan_config.json: a second WENZDES install (or a test build) switching
+/// to hub/satellite switched all of them.
+fn lan_config_path(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join("lan_config.json")
+}
+
+/// One-time move for installs that saved under the old shared location
+/// (see `lan_config_path`): copies it in if this install has none yet.
+pub fn migrate_legacy_lan_config(dir: &std::path::Path) {
+    let new = lan_config_path(dir);
+    if new.exists() {
+        return;
+    }
+    if let Some(legacy) = dir.parent().map(|p| p.join("lan_config.json")) {
+        if legacy.exists() {
+            let _ = std::fs::copy(&legacy, &new);
+        }
+    }
 }
 
 /// Set once, early in `setup()`, so `resolve_actor_via_hub` -- called from
@@ -713,9 +732,14 @@ fn random_trust_token() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The Hub's `/pair/request` reply (`PairRequestResponse`, snake_case).
+/// This used to be `rename_all = "camelCase"` -- expecting `requestId`
+/// against a Hub that sends `request_id` -- so every pairing attempt failed
+/// to parse AFTER the Hub had recorded it, the satellite never saved its
+/// pairing, and a second register could never join. Accepts both.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct PairRequestReply {
+    #[serde(alias = "requestId")]
     request_id: String,
 }
 
@@ -1118,5 +1142,38 @@ mod tests {
         ] {
             assert!(!kitchen_role_may_call(forbidden), "{forbidden} must be forbidden for a free kitchen-role satellite -- it's a cash-register-shaped command");
         }
+    }
+
+    #[test]
+    fn lan_config_lives_in_this_installs_own_folder() {
+        let root = std::env::temp_dir().join(format!("lan-cfg-{}", uuid::Uuid::now_v7()));
+        let a = root.join("com.wenzdes.pos.a");
+        let b = root.join("com.wenzdes.pos.b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let mut cfg = load_lan_config(&a);
+        cfg.mode = "hub".to_string();
+        save_lan_config(&a, &cfg).unwrap();
+        assert!(a.join("lan_config.json").exists());
+        assert_eq!(load_lan_config(&b).mode, "standalone", "another install on the same PC must not become a hub too");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn legacy_shared_lan_config_is_copied_in_once() {
+        let root = std::env::temp_dir().join(format!("lan-legacy-{}", uuid::Uuid::now_v7()));
+        let a = root.join("com.wenzdes.pos");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::write(root.join("lan_config.json"), r#"{"mode":"hub","deviceName":"X"}"#).unwrap();
+        migrate_legacy_lan_config(&a);
+        assert_eq!(load_lan_config(&a).mode, "hub");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_satellite_understands_the_hubs_pairing_reply() {
+        let wire = serde_json::to_string(&PairRequestResponse { request_id: "req-1".into() }).unwrap();
+        let reply: PairRequestReply = serde_json::from_str(&wire).expect("the satellite must parse exactly what the hub sends");
+        assert_eq!(reply.request_id, "req-1");
     }
 }

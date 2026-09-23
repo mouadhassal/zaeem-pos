@@ -455,19 +455,13 @@ export async function printToDevice(data: Uint8Array, printer: PrinterConfig): P
     return;
   }
 
+  // 2026-09-23 fix: this used to `fetch` an HTTP POST to IP:port. LAN
+  // thermal printers speak raw TCP (port 9100), not HTTP -- the POST's
+  // CORS preflight was never answered, so kitchen tickets never arrived.
+  // Raw socket write now happens in Rust (print.rs).
   if (printer.interface === "NETWORK" && printer.ipAddress) {
-    try {
-      const resp = await fetch(`http://${printer.ipAddress}:${printer.port}`, {
-        method: "POST",
-        body: data.buffer as ArrayBuffer,
-        headers: { "Content-Type": "application/octet-stream" },
-      });
-      if (!resp.ok) throw new Error(`Network printer returned ${resp.status}`);
-      return;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Network printer error";
-      throw new Error(msg);
-    }
+    await invoke("print_network_raw_v3", { ipAddress: printer.ipAddress, port: printer.port || 9100, data: Array.from(data) });
+    return;
   }
 
   const blob = new Blob([data.buffer as ArrayBuffer], { type: "application/octet-stream" });
