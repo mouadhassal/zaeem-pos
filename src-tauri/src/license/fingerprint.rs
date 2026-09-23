@@ -13,6 +13,7 @@
 
 pub use license_core::fingerprint::MachineFingerprint;
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::process::Command;
 use std::sync::OnceLock;
 
