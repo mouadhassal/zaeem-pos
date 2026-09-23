@@ -7291,7 +7291,7 @@ mod tests {
         println!("B failed iters ({}): {:?}", b_errors.len(), b_errors);
         println!("A last 10 iters (0..120) succeeded or failed: {:?}", (110..120).map(|i| !a_errors.contains(&i)).collect::<Vec<_>>());
         println!("B last 10 iters (0..120) succeeded or failed: {:?}", (110..120).map(|i| !b_errors.contains(&i)).collect::<Vec<_>>());
-        println!("first 5 B error messages: {:?}", &all_errors.iter().filter(|e| e.starts_with('B')).take(5).collect::<Vec<_>>());
+        println!("first 5 B error messages: {:?}", all_errors.iter().filter(|e| e.starts_with('B')).take(5).collect::<Vec<_>>());
 
         assert!(
             all_errors.len() < 60,

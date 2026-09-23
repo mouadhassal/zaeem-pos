@@ -476,7 +476,7 @@ async fn send_batch(
     let resp = client
         .post(&url)
         .header("apikey", &anon)
-        .header("Authorization", format!("Bearer {}", &anon))
+        .header("Authorization", format!("Bearer {}", anon))
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
