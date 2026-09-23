@@ -17,7 +17,7 @@ export default function TotalBlock({ totalCents, currencySymbol }: Props) {
         style={{
           fontSize: 44,
           letterSpacing: "-0.02em",
-          fontFamily: "'JetBrains Mono', monospace",
+          fontFamily: "'IBM Plex Mono', monospace",
         }}
       >
         {currencySymbol}{fmt(totalCents)}
