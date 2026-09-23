@@ -9,6 +9,8 @@ import { checkForUpdatesManually } from "../../lib/autoUpdate";
 import { createBackup, listBackups, getBackupSettings, updateBackupSettings, type BackupInfo, type BackupSettings } from "../../lib/backup";
 import { realErrorText } from "../../lib/errors";
 import { CURRENCY_SYMBOL, parseMoneyInput, setCurrency, minorToInputValue } from "../../lib/money";
+import PresetPicker from "../../components/ui/PresetPicker";
+import { presetToMode } from "../../lib/businessPreset";
 import { formatArabicDate, formatArabicDateTime } from "../../lib/dateLocal";
 
 type SettingsTab = "general" | "printer" | "tax" | "branch" | "license" | "network" | "backup" | "about";
@@ -633,8 +635,13 @@ export default function SettingsPage() {
 
             <h2 className="text-lg font-bold text-ink-900 font-arabic">نوع النشاط</h2>
             <div className="bg-white rounded-md p-5 border border-ink-200 space-y-4">
+              <PresetPicker
+                mode={{ has_tables: hasTables, has_kitchen: hasKitchen }}
+                disabled={saving}
+                onPick={(p) => { const m = presetToMode(p); saveBusinessMode(m.has_tables, m.has_kitchen); }}
+              />
               <p className="text-xs text-ink-400 font-arabic">
-                يناسب هذا مطعم كامل الخدمة افتراضياً. عطّل ما لا ينطبق على نشاطك -- مقهى بدون طاولات، متجر بدون مطبخ، أو الاثنين معاً
+                اختر نوع نشاطك أو عدّل الخيارات أدناه يدوياً -- مقهى بدون طاولات، متجر بدون مطبخ، أو الاثنين معاً
               </p>
               <div className="flex items-center justify-between">
                 <div>

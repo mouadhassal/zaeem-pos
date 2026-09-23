@@ -3,6 +3,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useShiftStore } from "../../stores/shiftStore";
 import { usePermissions } from "../../hooks/usePermissions";
 import { getBusinessMode } from "../../lib/orderService";
+import { navForMode } from "../../lib/businessPreset";
 import { openMarketplace } from "../../lib/marketplace";
 import { getCachedLicenseStatus, isPosLite } from "../../lib/license";
 import {
@@ -70,24 +71,11 @@ export default function Sidebar({ active, onNavigate }: Props) {
     getCachedLicenseStatus().then((s) => setPosLite(isPosLite(s))).catch(() => {});
   }, []);
   const CRM_ERP_NAV_IDS = new Set(["reports", "loyalty", "debt", "schedule"]);
-  const items = navItems
-    .filter((n) => n.allowed && (hasKitchen || n.id !== "kds"))
-    .filter((n) => !posLite || !CRM_ERP_NAV_IDS.has(n.id))
-    // MANAGER_NAV/OWNER_NAV (lib/permissions.ts) hardcode "القائمة" (Menu)
-    // -- food-service copy that made no sense once has_tables/has_kitchen
-    // existed to say "this isn't necessarily a restaurant." A non-food
-    // business (pharmacy, retail) still uses this screen for its
-    // products/stock, just never sees the Menu framing. Same
-    // hasKitchen state this component already fetches for the KDS filter
-    // above, just also driving a label swap here instead of a second
-    // fetch.
-    .map((n) => (n.id === "menu" && !hasKitchen ? { ...n, label: "المنتجات" } : n))
-    // 2026-08-13: same gap as "menu" above -- "إعداد القائمة AI" (AI Menu
-    // Setup) kept its food-service label regardless of hasKitchen, so a
-    // retail/service tenant's first click during onboarding opened a
-    // screen literally titled "smart MENU setup" and inviting them to
-    // "drag menu photos here."
-    .map((n) => (n.id === "ai-onboarding" && !hasKitchen ? { ...n, label: "إعداد المنتجات AI" } : n));
+  // Business preset (restaurant/retail) decides KDS visibility and labels.
+  const items = navForMode(
+    navItems.filter((n) => n.allowed).filter((n) => !posLite || !CRM_ERP_NAV_IDS.has(n.id)),
+    { has_tables: true, has_kitchen: hasKitchen },
+  );
 
   return (
     // Narrow icon-rail, colored with the brand's brown secondary accent --

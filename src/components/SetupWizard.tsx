@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useAuthStore } from "../stores/authStore";
 import { invoke } from "../lib/invoke";
 import { realErrorText } from "../lib/errors";
+import PresetPicker from "./ui/PresetPicker";
+import { presetToMode } from "../lib/businessPreset";
 import { IconToolsKitchen2 as UtensilsCrossed, IconAlertCircle as AlertCircle, IconEye as Eye, IconEyeOff as EyeOff, IconPhotoPlus as ImagePlus, IconX as X } from "@tabler/icons-react";
 
 const CURRENCIES = [
@@ -230,8 +232,12 @@ export default function SetupWizard() {
               )}
 
               <div className="space-y-5">
+                <PresetPicker
+                  mode={{ has_tables: hasTables, has_kitchen: hasKitchen }}
+                  onPick={(p) => { const m = presetToMode(p); setHasTables(m.has_tables); setHasKitchen(m.has_kitchen); }}
+                />
                 <p className="text-xs text-ink-400 font-arabic">
-                  يناسب هذا مطعم كامل الخدمة افتراضياً. عطّل ما لا ينطبق على نشاطك -- مقهى بدون طاولات، متجر بدون مطبخ، أو الاثنين معاً. يمكنك تغيير هذا لاحقاً من الإعدادات.
+                  اختر نوع نشاطك أو عدّل الخيارات أدناه يدوياً. يمكنك تغيير هذا لاحقاً من الإعدادات.
                 </p>
 
                 <div className="flex items-center justify-between">
