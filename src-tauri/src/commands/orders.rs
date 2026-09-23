@@ -1075,8 +1075,8 @@ pub(crate) fn void_order_item_v3_impl(state: &Db, license: &crate::license::clou
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let line_total_cents = Repo::new(&conn).order_item_line_total_cents(&scope, &item_id).map_err(|e| e.to_string())?;
-    let threshold_cents = Repo::new(&conn).get_manager_thresholds(&actor.tenant_id).map_err(|e| e.to_string())?.void_threshold_cents;
-    let override_used = if line_total_cents >= threshold_cents {
+    let thresholds = Repo::new(&conn).get_manager_thresholds(&actor.tenant_id).map_err(|e| e.to_string())?;
+    let override_used = if thresholds.void_requires_manager(line_total_cents) {
         let Some(pin) = manager_override_pin.as_deref() else {
             return Err("voiding an item over the manager-override threshold requires a manager PIN".to_string());
         };

@@ -83,6 +83,13 @@ export function formatAmount(amountCents: number, currency: string = currentCurr
   });
 }
 
+// Minor units -> plain major-unit string for an <input> (no grouping, so
+// parseMoneyInput round-trips it).
+export function minorToInputValue(amountCents: number, currency: string = currentCurrency): string {
+  const scale = scaleFor(currency);
+  return (amountCents / 10 ** scale).toFixed(scale);
+}
+
 export function parseMoneyInput(value: string, currency: string = currentCurrency): number {
   const scale = scaleFor(currency);
   const parsed = parseFloat(value) || 0;

@@ -8,7 +8,7 @@ import NetworkTab from "./NetworkTab";
 import { checkForUpdatesManually } from "../../lib/autoUpdate";
 import { createBackup, listBackups, getBackupSettings, updateBackupSettings, type BackupInfo, type BackupSettings } from "../../lib/backup";
 import { realErrorText } from "../../lib/errors";
-import { CURRENCY_SYMBOL, parseMoneyInput, setCurrency } from "../../lib/money";
+import { CURRENCY_SYMBOL, parseMoneyInput, setCurrency, minorToInputValue } from "../../lib/money";
 import { formatArabicDate, formatArabicDateTime } from "../../lib/dateLocal";
 
 type SettingsTab = "general" | "printer" | "tax" | "branch" | "license" | "network" | "backup" | "about";
@@ -145,8 +145,8 @@ export default function SettingsPage() {
   // currency whose real menu prices run in the thousands. SYP has no minor
   // unit (see src/lib/money.ts), so these are plain whole-SYP amounts --
   // no ×100/÷100 conversion at the invoke boundary.
-  const [voidThreshold, setVoidThreshold] = useState("200");
-  const [shiftDiffThreshold, setShiftDiffThreshold] = useState("500");
+  const [voidThreshold, setVoidThreshold] = useState("500");
+  const [shiftDiffThreshold, setShiftDiffThreshold] = useState("1000");
 
   const [branch, setBranch] = useState<Branch | null>(null);
   const [branchName, setBranchName] = useState("");
@@ -300,8 +300,8 @@ export default function SettingsPage() {
       setCurrency(cfg.currency);
 
       const thresholds = await invoke<{ void_threshold_cents: number; shift_diff_threshold_cents: number }>("get_manager_thresholds_v3", { sessionToken: token });
-      setVoidThreshold(String(thresholds.void_threshold_cents));
-      setShiftDiffThreshold(String(thresholds.shift_diff_threshold_cents));
+      setVoidThreshold(minorToInputValue(thresholds.void_threshold_cents));
+      setShiftDiffThreshold(minorToInputValue(thresholds.shift_diff_threshold_cents));
 
       const mode = await invoke<{ has_tables: boolean; has_kitchen: boolean }>("get_business_mode_v3", { sessionToken: token });
       setHasTables(mode.has_tables);

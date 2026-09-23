@@ -89,8 +89,8 @@ pub(crate) fn close_shift_v3_impl(state: &Db, session_token: String, shift_id: S
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ManageShift).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let threshold_cents = Repo::new(&conn).get_manager_thresholds(&actor.tenant_id).map_err(|e| e.to_string())?.shift_diff_threshold_cents;
-    if difference_cents.abs() >= threshold_cents {
+    let thresholds = Repo::new(&conn).get_manager_thresholds(&actor.tenant_id).map_err(|e| e.to_string())?;
+    if thresholds.shift_diff_requires_manager(difference_cents) {
         let Some(pin) = manager_override_pin.as_deref() else {
             return Err("closing a shift with a discrepancy over the manager-override threshold requires a manager PIN".to_string());
         };

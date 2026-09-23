@@ -2553,18 +2553,15 @@ impl<'a> Repo<'a> {
             "SELECT COUNT(*) > 0 FROM chain_config WHERE tenant_id = ?1", params![tenant_id], |r| r.get(0),
         )?;
         if !exists {
-            // void/shift_diff_manager_threshold_cents explicitly set here
-            // rather than left to the schema DEFAULT (20000/50000, i.e.
-            // 200/500 currency units) -- see
-            // migrate_v3::run_manager_threshold_syp_rescale_migration's doc
-            // comment for why that default is unusable for SYP (real menu
-            // prices run in the thousands, so nearly every void/shift-close
-            // trips it) and why SQLite's lack of `ALTER COLUMN SET DEFAULT`
-            // means this insert-time override is how a brand-new tenant
-            // gets the realistic value instead of a second migration.
+            // Thresholds set explicitly (schema DEFAULTs are stale legacy
+            // values), scaled to the row's currency.
+            let id = uuid::Uuid::now_v7().to_string();
+            self.conn.execute("INSERT INTO chain_config (id, tenant_id) VALUES (?1, ?2)", params![id, tenant_id])?;
+            let currency: String = self.conn.query_row("SELECT currency FROM chain_config WHERE id = ?1", params![id], |r| r.get(0))?;
+            let d = crate::pricing::ManagerThresholds::default_for(&currency);
             self.conn.execute(
-                "INSERT INTO chain_config (id, tenant_id, void_manager_threshold_cents, shift_diff_manager_threshold_cents) VALUES (?1, ?2, 5000000, 10000000)",
-                params![uuid::Uuid::now_v7().to_string(), tenant_id],
+                "UPDATE chain_config SET void_manager_threshold_cents = ?1, shift_diff_manager_threshold_cents = ?2 WHERE id = ?3",
+                params![d.void_threshold_cents, d.shift_diff_threshold_cents, id],
             )?;
         }
         Ok(())
@@ -2656,7 +2653,18 @@ impl<'a> Repo<'a> {
 
     pub fn update_chain_currency(&self, tenant_id: &str, currency: &str) -> Result<(), RepoError> {
         self.ensure_chain_config_row(tenant_id)?;
+        let old_currency: String = self.conn.query_row("SELECT currency FROM chain_config WHERE tenant_id = ?1", params![tenant_id], |r| r.get(0))?;
+        let current = self.get_manager_thresholds(tenant_id)?;
         self.conn.execute("UPDATE chain_config SET currency = ?1, last_modified = datetime('now') WHERE tenant_id = ?2", params![currency, tenant_id])?;
+        // Untouched defaults follow the new currency's scale; custom values stay.
+        let old_default = crate::pricing::ManagerThresholds::default_for(&old_currency);
+        let new_default = crate::pricing::ManagerThresholds::default_for(currency);
+        if current.void_threshold_cents == old_default.void_threshold_cents {
+            self.conn.execute("UPDATE chain_config SET void_manager_threshold_cents = ?1 WHERE tenant_id = ?2", params![new_default.void_threshold_cents, tenant_id])?;
+        }
+        if current.shift_diff_threshold_cents == old_default.shift_diff_threshold_cents {
+            self.conn.execute("UPDATE chain_config SET shift_diff_manager_threshold_cents = ?1 WHERE tenant_id = ?2", params![new_default.shift_diff_threshold_cents, tenant_id])?;
+        }
         Ok(())
     }
 

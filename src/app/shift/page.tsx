@@ -13,13 +13,9 @@ import { formatMoney, parseMoneyInput } from "../../lib/money";
 // thousands. Now fetched from the tenant's real, Owner-configurable
 // threshold (see pricing.rs's ManagerThresholds); this constant is only
 // the fail-safe used for the brief moment before that fetch resolves.
-// 2026-08-30 SYP redenomination: was 50000 (old-scale, itself already stale
-// relative to the real chain_config default). Real live value confirmed
-// directly: chain_config.shift_diff_manager_threshold_cents = 10,000,000
-// (old-scale) -> 100,000 after the redenomination migration divides every
-// real chain_config threshold by 100. This is only the brief initial React
-// state before the real config value loads, but should still be accurate.
-const FALLBACK_DIFF_THRESHOLD_CENTS = 100000;
+// Matches the backend default (pricing.rs DEFAULT_SHIFT_DIFF_THRESHOLD_MAJOR,
+// 1,000 new SYP); only used until the real value loads.
+const FALLBACK_DIFF_THRESHOLD_CENTS = 1000;
 
 interface ActiveShift {
   id: string;

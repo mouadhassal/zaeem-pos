@@ -2346,6 +2346,52 @@ pub fn run_debtor_credit_limit_migration(conn: &mut Connection, _db_path: &Path)
 
 pub const MIGRATION_Y_VERSION: i64 = 29;
 
+pub const MIGRATION_Z_VERSION: i64 = 32;
+
+/// Legacy untouched threshold values from v17 (20000/50000), v21
+/// (5,000,000/10,000,000) and v21+v25 (50,000/100,000). All are far off
+/// for new SYP, so rows still at one of them get `ManagerThresholds::
+/// default_for(currency)`; owner-customized values are left alone.
+const LEGACY_VOID_THRESHOLDS: [i64; 3] = [20_000, 50_000, 5_000_000];
+const LEGACY_SHIFT_DIFF_THRESHOLDS: [i64; 3] = [50_000, 100_000, 10_000_000];
+
+pub fn run_manager_threshold_new_syp_defaults_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_Z_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    if table_exists(&tx, "chain_config")? {
+        let rows: Vec<(String, String, i64, i64)> = {
+            let mut stmt = tx.prepare(
+                "SELECT id, currency, void_manager_threshold_cents, shift_diff_manager_threshold_cents FROM chain_config",
+            )?;
+            let mapped = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+            mapped.collect::<Result<Vec<_>, _>>()?
+        };
+        for (id, currency, void_t, shift_t) in rows {
+            let d = crate::pricing::ManagerThresholds::default_for(&currency);
+            if LEGACY_VOID_THRESHOLDS.contains(&void_t) {
+                tx.execute("UPDATE chain_config SET void_manager_threshold_cents = ?1 WHERE id = ?2", params![d.void_threshold_cents, id])?;
+            }
+            if LEGACY_SHIFT_DIFF_THRESHOLDS.contains(&shift_t) {
+                tx.execute("UPDATE chain_config SET shift_diff_manager_threshold_cents = ?1 WHERE id = ?2", params![d.shift_diff_threshold_cents, id])?;
+            }
+        }
+    }
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_Z_VERSION, "0032_manager_threshold_new_syp_defaults", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// 2026-09-13 audit finding: `menu_items.barcode UNIQUE`
 /// (0001_init.sql) predates the multi-tenant `tenant_id` column Migration
 /// A (EXPAND) later added -- it's still a BARE, single-column UNIQUE
@@ -3231,6 +3277,57 @@ mod tests {
         assert_eq!(integrity, "ok");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Z: legacy untouched thresholds become 500 / 1,000 new SYP;
+    /// customized values survive; second run is a no-op.
+    #[test]
+    fn test_manager_threshold_new_syp_defaults_migration() {
+        let db_path = fresh_db_path("threshold_new_syp_defaults");
+        build_base_fixture(&db_path);
+        let mut conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        run_expand_migration(&mut conn, &db_path).expect("A");
+        run_remap_migration(&mut conn, &db_path).expect("B");
+        run_identity_migration(&mut conn, &db_path).expect("C");
+        run_drift_fix_migration(&mut conn, &db_path).expect("D");
+        run_index_migration(&mut conn, &db_path).expect("E");
+        run_discount_cap_migration(&mut conn, &db_path).expect("F");
+        run_sync_outbox_migration(&mut conn, &db_path).expect("G");
+        run_supplier_ledger_migration(&mut conn, &db_path).expect("H");
+        run_loyalty_migration(&mut conn, &db_path).expect("I");
+        run_staff_sync_migration(&mut conn, &db_path).expect("J");
+        run_lan_pairing_migration(&mut conn, &db_path).expect("K");
+        run_printer_system_name_migration(&mut conn, &db_path).expect("L");
+        run_manager_threshold_migration(&mut conn, &db_path).expect("M");
+        run_business_mode_migration(&mut conn, &db_path).expect("N");
+        run_roster_entry_migration(&mut conn, &db_path).expect("O");
+        run_refund_migration(&mut conn, &db_path).expect("P");
+        run_manager_threshold_syp_rescale_migration(&mut conn, &db_path).expect("Q");
+        run_ingredient_sync_migration(&mut conn, &db_path).expect("R");
+        run_item_kind_migration(&mut conn, &db_path).expect("S");
+        run_dead_table_cleanup_migration(&mut conn, &db_path).expect("T");
+        run_syp_redenomination_migration(&mut conn, &db_path).expect("U");
+
+        let read = |conn: &Connection| -> (i64, i64) {
+            conn.query_row(
+                "SELECT void_manager_threshold_cents, shift_diff_manager_threshold_cents FROM chain_config WHERE id = 'default'",
+                [], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).unwrap()
+        };
+        assert_eq!(read(&conn), (50_000, 100_000), "precondition: post-redenomination legacy defaults");
+
+        // Owner customized the shift threshold; void is still a legacy default.
+        conn.execute("UPDATE chain_config SET shift_diff_manager_threshold_cents = 3333 WHERE id = 'default'", []).unwrap();
+        run_manager_threshold_new_syp_defaults_migration(&mut conn, &db_path).expect("Z first run");
+        assert_eq!(read(&conn), (500, 3333));
+
+        // Second run is a no-op.
+        conn.execute("UPDATE chain_config SET void_manager_threshold_cents = 50000 WHERE id = 'default'", []).unwrap();
+        run_manager_threshold_new_syp_defaults_migration(&mut conn, &db_path).expect("Z second run");
+        assert_eq!(read(&conn), (50_000, 3333));
+        drop(conn);
+        let _ = std::fs::remove_dir_all(db_path.parent().unwrap());
     }
 
     /// U1: the SYP redenomination migration -- idempotent, divides every

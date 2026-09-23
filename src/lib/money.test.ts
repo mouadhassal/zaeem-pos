@@ -1,5 +1,15 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { formatMoney, parseMoneyInput, scaleFor, setCurrency, getCurrency, CURRENCY_SYMBOL } from "./money";
+import { formatMoney, parseMoneyInput, scaleFor, setCurrency, getCurrency, CURRENCY_SYMBOL, minorToInputValue } from "./money";
+
+describe("minorToInputValue", () => {
+  it("round-trips through parseMoneyInput for every scale", () => {
+    expect(minorToInputValue(500, "SYP")).toBe("500");
+    expect(parseMoneyInput(minorToInputValue(1000, "SYP"), "SYP")).toBe(1000);
+    expect(minorToInputValue(50000, "USD")).toBe("500.00");
+    expect(parseMoneyInput(minorToInputValue(50000, "USD"), "USD")).toBe(50000);
+    expect(parseMoneyInput(minorToInputValue(500000, "KWD"), "KWD")).toBe(500000);
+  });
+});
 
 describe("scaleFor", () => {
   it("matches src-tauri/src/money.rs::MoneyPolicy::scale_for exactly", () => {

@@ -33,7 +33,8 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
     const token = useAuthStore.getState().token;
     invoke<{ void_threshold_cents: number }>("get_manager_thresholds_v3", { sessionToken: token })
       .then((r) => setThresholdCents(r.void_threshold_cents))
-      .catch(() => { setThresholdCents(20000); setThresholdLoadFailed(true); });
+      // Fail safe: leave threshold unknown so a manager is always required.
+      .catch(() => setThresholdLoadFailed(true));
   }, []);
 
   // While the real threshold is still loading, default to requiring a

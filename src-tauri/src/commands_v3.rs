@@ -104,6 +104,7 @@ mod tests {
         migrate_v3::run_backup_settings_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_manager_threshold_new_syp_defaults_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -1440,7 +1441,7 @@ mod tests {
                 let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
                 let repo = Repo::new(&conn);
                 let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
-                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 1000, 500, None, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 400, 200, None, None).unwrap();
                 (cashier_id, item_id)
             };
             let session = {
@@ -1452,13 +1453,13 @@ mod tests {
             let license = never_checked_license(&db_path);
             open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let items = vec![OrderItemInput {
-                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
+                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 400,
                 notes: None, combo_id: None, modifiers: vec![],
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license,
                 session.clone(), table_id, "DINE_IN".to_string(), items,
-                1000, 0, 1000, 0, None, None, None, None, 0, None, None,
+                400, 0, 400, 0, None, None, None, None, 0, None, None,
             ).unwrap();
             let item_db_id: String = {
                 let conn = Connection::open(&db_path).unwrap();
@@ -1496,8 +1497,7 @@ mod tests {
                 let repo = Repo::new(&conn);
                 let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
                 // Line total 6,000,000 -- well over the default
-                // void_manager_threshold_cents (5,000,000, per the 2026-08-14
-                // SYP rescale) chain_config seeds.
+                // void threshold (500, new SYP).
                 let item_id = repo.create_menu_item(&tenant_id, "Expensive Item", &category_id, 6000000, 3000000, None, None).unwrap();
                 (cashier_id, item_id)
             };
@@ -1561,10 +1561,9 @@ mod tests {
             let repo = Repo::new(&conn);
 
             let defaults = repo.get_manager_thresholds(&tenant_id).unwrap();
-            // 2026-08-14 SYP rescale (migrate_v3::run_manager_threshold_syp_rescale_migration):
-            // was 20000/50000, bumped to realistic SYP-scale defaults.
-            assert_eq!(defaults.void_threshold_cents, 5000000, "migration default must be seeded, not zero");
-            assert_eq!(defaults.shift_diff_threshold_cents, 10000000);
+            // v32: untouched legacy defaults become 500 / 1,000 new SYP.
+            assert_eq!(defaults.void_threshold_cents, 500, "migration default must be seeded, not zero");
+            assert_eq!(defaults.shift_diff_threshold_cents, 1_000);
 
             repo.update_manager_thresholds(&tenant_id, 75000, 150000).unwrap();
             let updated = repo.get_manager_thresholds(&tenant_id).unwrap();
@@ -1918,8 +1917,7 @@ mod tests {
             let license = never_checked_license(&db_path);
             let shift_id = open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
 
-            // -12,000,000 is well past the default 10,000,000-cent
-            // shift_diff threshold (per the 2026-08-14 SYP rescale).
+            // -12,000,000 is well past the default 1,000 shift_diff threshold.
             let no_pin = close_shift_v3_impl(&db, session.clone(), shift_id.clone(), 40000, -12000000, None);
             assert!(no_pin.is_err(), "closing with a discrepancy at/above the manager threshold with no PIN must be rejected");
 
@@ -1937,6 +1935,51 @@ mod tests {
             let conn = Connection::open(&db_path).unwrap();
             let closed_at: Option<String> = conn.query_row("SELECT closed_at FROM shifts WHERE id = ?1", params![shift_id], |r| r.get(0)).unwrap();
             assert!(closed_at.is_some());
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// New-SYP defaults: ordinary till drift closes without a PIN; a
+        /// difference at the 1,000 threshold needs one.
+        #[test]
+        fn close_shift_v3_new_syp_default_threshold_boundary() {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("wrapper_shift_diff_new_syp");
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier")
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+
+            let small = open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+            close_shift_v3_impl(&db, session.clone(), small, 9001, -999, None)
+                .expect("a 999 difference is under the default threshold and must not need a PIN");
+
+            let big = open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+            let err = close_shift_v3_impl(&db, session, big, 9000, -1000, None).unwrap_err();
+            assert!(err.contains("manager PIN"), "unexpected error: {err}");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Default thresholds follow a currency-scale change; custom ones stay.
+        #[test]
+        fn currency_change_rescales_only_default_thresholds() {
+            let (db_path, tenant_id, _branch_id, _table_id) = seeded_db("threshold_currency_rescale");
+            let conn = Connection::open(&db_path).unwrap();
+            let repo = Repo::new(&conn);
+            assert_eq!(repo.get_manager_thresholds(&tenant_id).unwrap(), crate::pricing::ManagerThresholds::default_for("SYP"));
+
+            repo.update_chain_currency(&tenant_id, "USD").unwrap();
+            assert_eq!(repo.get_manager_thresholds(&tenant_id).unwrap(), crate::pricing::ManagerThresholds::default_for("USD"));
+
+            repo.update_manager_thresholds(&tenant_id, 12_345, 100_000).unwrap();
+            repo.update_chain_currency(&tenant_id, "SYP").unwrap();
+            let t = repo.get_manager_thresholds(&tenant_id).unwrap();
+            assert_eq!(t.void_threshold_cents, 12_345, "custom value must be kept");
+            assert_eq!(t.shift_diff_threshold_cents, 1_000, "USD default must rescale back to SYP default");
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
@@ -2105,7 +2148,7 @@ mod tests {
                 let high_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "High Void Cashier");
                 let repo = Repo::new(&conn);
                 let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
-                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 500, 250, None, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 400, 200, None, None).unwrap();
                 (avg_id, high_id, item_id)
             };
             let db = real_db(&db_path);
@@ -2114,7 +2157,7 @@ mod tests {
             let items_of = |n: usize| -> Vec<OrderItemInput> {
                 (0..n)
                     .map(|_| OrderItemInput {
-                        menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 500,
+                        menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 400,
                         notes: None, combo_id: None, modifiers: vec![],
                     })
                     .collect()
@@ -2149,7 +2192,7 @@ mod tests {
             };
             for id in high_item_ids.into_iter().take(10) {
                 void_order_item_v3_impl(&db, &license, high_session.clone(), id, "تالف".to_string(), None)
-                    .expect("voiding a 500-cent line needs no manager PIN");
+                    .expect("voiding a 400 line needs no manager PIN");
             }
 
             let conn = Connection::open(&db_path).unwrap();
@@ -2178,15 +2221,15 @@ mod tests {
             let db = real_db(&db_path);
             let license = never_checked_license(&db_path);
 
-            // Three shifts, every one short by 1000 cents -- consistent,
-            // not a single bad night.
+            // Three shifts, every one short by 900 (under the 1,000 PIN
+            // threshold) -- consistent, not a single bad night.
             let short_session = {
                 let conn = Connection::open(&db_path).unwrap();
                 security::create_session(&conn, &short_cashier_id, "device-1").unwrap()
             };
             for _ in 0..3 {
                 let shift_id = open_shift_v3_impl(&db, &license, short_session.clone(), 10000, None).unwrap();
-                close_shift_v3_impl(&db, short_session.clone(), shift_id, 9000, -1000, None).unwrap();
+                close_shift_v3_impl(&db, short_session.clone(), shift_id, 9100, -900, None).unwrap();
             }
 
             // Three shifts, every one balanced -- must never be flagged.
@@ -2221,7 +2264,7 @@ mod tests {
                 let scammer_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Scammer");
                 let repo = Repo::new(&conn);
                 let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
-                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 500, 250, None, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 400, 200, None, None).unwrap();
                 (scammer_id, item_id)
             };
             let db = real_db(&db_path);
@@ -2238,8 +2281,8 @@ mod tests {
             for _ in 0..2 {
                 let voided_order_id = create_full_order_v3_impl(
                     &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
-                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
-                    500, 0, 500, 0, None, None, None, None, 0, None, None,
+                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 400, notes: None, combo_id: None, modifiers: vec![] }],
+                    400, 0, 400, 0, None, None, None, None, 0, None, None,
                 ).unwrap();
                 let voided_item_db_id: String = {
                     let conn = Connection::open(&db_path).unwrap();
@@ -2249,10 +2292,10 @@ mod tests {
 
                 let resale_order_id = create_full_order_v3_impl(
                     &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
-                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
-                    500, 0, 500, 0, None, None, None, None, 0, None, None,
+                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 400, notes: None, combo_id: None, modifiers: vec![] }],
+                    400, 0, 400, 0, None, None, None, None, 0, None, None,
                 ).unwrap();
-                take_payment_v3_impl(&db, &license, session.clone(), resale_order_id, "CASH".to_string(), 500, 0, None).unwrap();
+                take_payment_v3_impl(&db, &license, session.clone(), resale_order_id, "CASH".to_string(), 400, 0, None).unwrap();
             }
 
             let conn = Connection::open(&db_path).unwrap();
