@@ -1938,6 +1938,49 @@ mod tests {
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
+        /// A sale can't be completed (paid) once the cashier's shift is closed.
+        #[test]
+        fn finalize_and_take_payment_require_an_open_shift() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("payment_requires_shift");
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 300, 100, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            let shift_id = open_shift_v3_impl(&db, &license, session.clone(), 0, None).unwrap();
+            let mk_items = || vec![OrderItemInput {
+                menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 300,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let order_a = create_full_order_v3_impl(&db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(), mk_items(), 300, 0, 300, 0, None, None, None, None, 0, None, None).unwrap();
+            let order_b = create_full_order_v3_impl(&db, &license, session.clone(), table_id, "DINE_IN".to_string(), mk_items(), 300, 0, 300, 0, None, None, None, None, 0, None, None).unwrap();
+            close_shift_v3_impl(&db, session.clone(), shift_id, 0, 0, None).unwrap();
+
+            let err = finalize_order_with_payment_v3_impl(&db, &license, session.clone(), order_a.clone(), "CASH".to_string(), 300, 0, None, None, None).unwrap_err();
+            assert_eq!(err, crate::commands::orders::NO_OPEN_SHIFT_ERR);
+            let err = take_payment_v3_impl(&db, &license, session.clone(), order_b.clone(), "CASH".to_string(), 300, 0, None).unwrap_err();
+            assert_eq!(err, crate::commands::orders::NO_OPEN_SHIFT_ERR);
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                let paid: i64 = conn.query_row("SELECT COUNT(*) FROM payments WHERE order_id IN (?1, ?2)", params![order_a, order_b], |r| r.get(0)).unwrap();
+                assert_eq!(paid, 0, "no payment row may be written without an open shift");
+            }
+
+            open_shift_v3_impl(&db, &license, session.clone(), 0, None).unwrap();
+            finalize_order_with_payment_v3_impl(&db, &license, session, order_a, "CASH".to_string(), 300, 0, None, None, None)
+                .expect("payment must succeed once a shift is open");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
         /// New-SYP defaults: ordinary till drift closes without a PIN; a
         /// difference at the 1,000 threshold needs one.
         #[test]

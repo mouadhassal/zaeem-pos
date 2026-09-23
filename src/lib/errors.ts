@@ -14,6 +14,11 @@ export function realErrorText(err: unknown): string {
   return String(err);
 }
 
+/** Backend NO_OPEN_SHIFT_ERR (commands/orders.rs) -- a sale needs an open shift. */
+export function isNoOpenShiftError(err: unknown): boolean {
+  return realErrorText(err).includes("لا توجد وردية مفتوحة");
+}
+
 /**
  * 2026-09-13 audit fix: delete_menu_item_v3/delete_category_v3/
  * delete_supplier_v3 (and friends) don't catch SQLite's FOREIGN KEY

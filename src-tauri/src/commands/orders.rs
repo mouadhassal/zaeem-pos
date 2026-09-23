@@ -128,10 +128,7 @@ pub(crate) fn create_order_v3_impl(
     // (superseded by create_full_order_v3 for the real POS UI, but still
     // a registered, directly-invokable Tauri command) had never received
     // the same fix, a real gap a devtools/console caller could still hit.
-    Repo::new(&conn)
-        .get_active_shift(&actor.id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "لا توجد وردية مفتوحة -- يجب فتح وردية أولاً قبل البيع".to_string())?;
+    require_open_shift(&conn, &actor.id)?;
     let override_used = enforce_discount_cap(&mut conn, &actor, &tenant_id, subtotal_cents, discount_cents, manager_override_pin.as_deref())?;
 
     let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
@@ -258,6 +255,7 @@ pub(crate) fn take_payment_v3_impl(
     }
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    require_open_shift(&conn, &actor.id)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let payment_id = Repo::new(&tx)
         .take_payment(&tenant_id, &branch_id, crate::repo::PaymentInput {
@@ -280,6 +278,18 @@ pub(crate) fn take_payment_v3_impl(
 
     tx.commit().map_err(|e| e.to_string())?;
     Ok(payment_id)
+}
+
+/// Shown verbatim in the POS (Arabic); the frontend matches on it to open the shift prompt.
+pub(crate) const NO_OPEN_SHIFT_ERR: &str = "لا توجد وردية مفتوحة -- يجب فتح وردية أولاً قبل البيع";
+
+/// Every sale-completing command requires the acting staff member's own open shift.
+pub(crate) fn require_open_shift(conn: &rusqlite::Connection, actor_id: &str) -> Result<String, String> {
+    Repo::new(conn)
+        .get_active_shift(actor_id)
+        .map_err(|e| e.to_string())?
+        .map(|s| s.id)
+        .ok_or_else(|| NO_OPEN_SHIFT_ERR.to_string())
 }
 
 pub(crate) const MANAGER_OVERRIDE_MAX_ATTEMPTS: i64 = 5;
@@ -637,13 +647,7 @@ pub(crate) fn create_full_order_v3_impl(
     // caller's claim (R1) -- always resolve the actor's own real,
     // currently-open shift server-side instead of using whatever
     // `shift_id` this call happened to pass in.
-    let shift_id = Some(
-        Repo::new(&conn)
-            .get_active_shift(&actor.id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "لا توجد وردية مفتوحة -- يجب فتح وردية أولاً قبل البيع".to_string())?
-            .id,
-    );
+    let shift_id = Some(require_open_shift(&conn, &actor.id)?);
     let (items, subtotal_cents, tax_cents, total_cents) =
         price_order_authoritatively(&conn, &tenant_id, &items, discount_cents, delivery_fee_cents)?;
     let override_used = enforce_discount_cap(&mut conn, &actor, &tenant_id, subtotal_cents, discount_cents, manager_override_pin.as_deref())?;
@@ -1327,6 +1331,7 @@ pub(crate) fn finalize_order_with_payment_v3_impl(
     }
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    require_open_shift(&conn, &actor.id)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let (payment_id, points_earned) = Repo::new(&tx).finalize_order_with_payment(
         &tenant_id, &branch_id, &order_id, &method, amount_cents, change_cents,

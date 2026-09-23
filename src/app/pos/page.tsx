@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, lazy, Suspense } from "react";
 import { invoke } from "../../lib/invoke";
-import { realErrorText } from "../../lib/errors";
+import { realErrorText, isNoOpenShiftError } from "../../lib/errors";
 import TableBar from "../../components/layout/TableBar";
 // Perf fix (post-login load lag): these 8 components are only ever needed
 // once the cashier actually opens them (payment, split, merge, void,
@@ -554,6 +554,7 @@ export default function POSPage() {
       fetchTables();
     } catch (err) {
       setShowPayment(false);
+      if (isNoOpenShiftError(err)) setShowOpenShift(true);
       setSuccessMsg(`تعذر إنشاء الطلبية: ${realErrorText(err)}`);
       setTimeout(() => setSuccessMsg(null), 4000);
     }
@@ -678,6 +679,7 @@ export default function POSPage() {
       fetchTables();
     } catch (err) {
       setShowPayment(false);
+      if (isNoOpenShiftError(err)) setShowOpenShift(true);
       setSuccessMsg(`تعذر إتمام الدفع: ${realErrorText(err)}`);
       setTimeout(() => setSuccessMsg(null), 4000);
     }
