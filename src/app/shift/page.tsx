@@ -7,6 +7,7 @@ import {
 import { useAuthStore } from "../../stores/authStore";
 import { useShiftStore } from "../../stores/shiftStore";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
+import { realErrorText } from "../../lib/errors";
 
 // 2026-08-02: was a hardcoded 5000 assuming small everyday prices -- wrong
 // by orders of magnitude for a currency whose real menu prices run in the
@@ -50,9 +51,8 @@ function formatElapsed(start: string): string {
  * this used to be thrown away by a bare `catch {}` everywhere on this page,
  * which is exactly why "start shift" looked like it silently did nothing. */
 function errText(err: unknown, fallback: string): string {
-  if (typeof err === "string") return err;
-  if (err instanceof Error) return err.message;
-  return fallback;
+  const text = realErrorText(err);
+  return text ? `${fallback}: ${text}` : fallback;
 }
 
 export default function ShiftPage() {
@@ -187,17 +187,16 @@ export default function ShiftPage() {
 
       if (needsAuth) {
         try {
-          await invoke<boolean>("verify_manager_override_v3", {
+          const ok = await invoke<boolean>("verify_manager_override_v3", {
             sessionToken: token,
             passwordOrPin: managerPassword,
           });
-        } catch (err) {
-          const msg = typeof err === "string" ? err : (err as Error)?.message ?? "";
-          if (msg.includes("ECONNREFUSED") || msg.includes("network") || msg.includes("fetch")) {
-            showMsg("خطأ في الاتصال بالخادم", true);
-          } else {
-            showMsg("كلمة المرور غير صحيحة", true);
+          if (!ok) {
+            showMsg("رمز المدير غير صحيح، أو تم قفل الإدخال مؤقتاً بسبب كثرة المحاولات الخاطئة", true);
+            return;
           }
+        } catch (err) {
+          showMsg(realErrorText(err), true);
           setClosing(false);
           return;
         }

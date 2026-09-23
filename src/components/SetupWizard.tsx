@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useAuthStore } from "../stores/authStore";
 import { invoke } from "../lib/invoke";
+import { realErrorText } from "../lib/errors";
 import { IconToolsKitchen2 as UtensilsCrossed, IconAlertCircle as AlertCircle, IconEye as Eye, IconEyeOff as EyeOff, IconPhotoPlus as ImagePlus, IconX as X } from "@tabler/icons-react";
 
 const CURRENCIES = [
@@ -68,8 +69,8 @@ export default function SetupWizard() {
       }
       setStep("business");
       setLoading(false);
-    } catch {
-      setError("حدث خطأ في حفظ بيانات الفرع");
+    } catch (err) {
+      setError(`حدث خطأ في حفظ بيانات الفرع: ${realErrorText(err)}`);
       setLoading(false);
     }
   }
@@ -81,8 +82,8 @@ export default function SetupWizard() {
       await invoke("update_business_mode_v3", { sessionToken: useAuthStore.getState().token, hasTables, hasKitchen });
       localStorage.setItem("zaeem_setup_complete", "1");
       window.location.reload();
-    } catch {
-      setError("حدث خطأ في حفظ نوع النشاط");
+    } catch (err) {
+      setError(`حدث خطأ في حفظ نوع النشاط: ${realErrorText(err)}`);
       setLoading(false);
     }
   }

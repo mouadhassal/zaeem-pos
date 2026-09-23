@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "../../lib/invoke";
+import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 import { useCurrency } from "../../hooks/useCurrency";
 import { IconX } from "@tabler/icons-react";
@@ -59,14 +60,13 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
         // Scoped to the requesting actor's own tenant/branch and audited on
         // grant (verify_manager_override_v3).
         const token = useAuthStore.getState().token;
-        await invoke<boolean>("verify_manager_override_v3", { sessionToken: token, passwordOrPin: pin });
-      } catch (err) {
-        const msg = typeof err === "string" ? err : (err as Error)?.message ?? "";
-        if (msg.includes("ECONNREFUSED") || msg.includes("network") || msg.includes("fetch")) {
-          setPinError("خطأ في الاتصال بالخادم");
-        } else {
-          setPinError("كلمة المرور غير صحيحة");
+        const ok = await invoke<boolean>("verify_manager_override_v3", { sessionToken: token, passwordOrPin: pin });
+        if (!ok) {
+          setPinError("رمز المدير غير صحيح، أو تم قفل الإدخال مؤقتاً بسبب كثرة المحاولات الخاطئة");
+          return;
         }
+      } catch (err) {
+        setPinError(realErrorText(err));
         return;
       } finally {
         setVerifying(false);
