@@ -580,6 +580,7 @@ pub fn run() {
             commands::suppliers::list_supplier_payments_v3,
             commands::suppliers::list_inventory_logs_v3,
             commands::suppliers::list_low_stock_ingredients_v3,
+            commands::suppliers::list_reorder_suggestions_v3,
             commands::suppliers::create_printer_v3,
             commands::suppliers::list_printers_v3,
             commands::suppliers::list_active_printers_v3,

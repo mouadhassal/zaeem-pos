@@ -12,6 +12,7 @@ import { openMarketplace, MARKETPLACE_ENABLED } from "../../lib/marketplace";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { formatArabicDateTime, formatArabicDate } from "../../lib/dateLocal";
 import { useToast } from "../../hooks/useToast";
+import { reorderQuantity } from "../../lib/inventoryReorder";
 
 const editSchema = z.object({
   name: z.string().min(1, "الاسم مطلوب"),
@@ -1202,6 +1203,7 @@ function SuppliersTab() {
       {showOrder && (
         <CreatePOModal
           initialSupplierId={showOrder.id}
+          prefill="supplier"
           onClose={() => setShowOrder(null)}
           onSaved={() => { setShowOrder(null); fetch(); }}
         />
@@ -1634,7 +1636,14 @@ function PurchasesTab() {
 }
 
 /* Create PO Modal */
-function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () => void; onSaved: () => void; initialSupplierId?: string }) {
+interface ReorderSuggestion {
+  ingredient_id: string;
+  quantity: number;
+  unit_cost_cents: number;
+}
+
+// prefill: "supplier" = that supplier's low-stock items; "all" = every low-stock item.
+function CreatePOModal({ onClose, onSaved, initialSupplierId, prefill }: { onClose: () => void; onSaved: () => void; initialSupplierId?: string; prefill?: "supplier" | "all" }) {
   const toast = useToast();
   const token = useAuthStore((s) => s.token);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -1644,15 +1653,35 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [prefillEmpty, setPrefillEmpty] = useState(false);
+
+  const loadSuggestions = useCallback(async (supplierId: string | null) => {
+    try {
+      const rows = await invoke<ReorderSuggestion[]>("list_reorder_suggestions_v3", { sessionToken: token, supplierId });
+      setItems(rows.map((r) => ({ ingredient_id: r.ingredient_id, quantity_ordered: r.quantity, unit_cost_cents: r.unit_cost_cents })));
+      setPrefillEmpty(rows.length === 0);
+    } catch (err) {
+      setError(`تعذر تحميل المواد المنخفضة: ${realErrorText(err)}`);
+    }
+  }, [token]);
 
   useEffect(() => {
     (async () => {
-      const s = await invoke<Supplier[]>("list_suppliers_v3", { sessionToken: token });
-      setSuppliers(s);
-      const i = await invoke<Ingredient[]>("list_ingredients_v3", { sessionToken: token });
-      setIngredients(i);
+      try {
+        const s = await invoke<Supplier[]>("list_suppliers_v3", { sessionToken: token });
+        setSuppliers(s);
+        const i = await invoke<Ingredient[]>("list_ingredients_v3", { sessionToken: token });
+        setIngredients(i);
+      } catch (err) {
+        setError(`تعذر تحميل البيانات: ${realErrorText(err)}`);
+      }
     })();
   }, [token]);
+
+  useEffect(() => {
+    if (prefill === "supplier" && initialSupplierId) loadSuggestions(initialSupplierId);
+    else if (prefill === "all") loadSuggestions(null);
+  }, [prefill, initialSupplierId, loadSuggestions]);
 
   const addItem = () => {
     setItems((prev) => [...prev, { ingredient_id: "", quantity_ordered: 0, unit_cost_cents: 0 }]);
@@ -1702,6 +1731,14 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
           <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
         </div>
         {error && <p className="text-sm text-danger font-arabic">{error}</p>}
+        {prefillEmpty && (
+          <div className="flex items-center justify-between gap-2 bg-warn-soft rounded-sm p-3 text-sm text-warn font-arabic">
+            <span>{prefill === "supplier" ? "لا توجد مواد منخفضة سبق طلبها من هذا المورد." : "لا توجد مواد منخفضة المخزون حالياً."}</span>
+            {prefill === "supplier" && (
+              <button onClick={() => loadSuggestions(null)} className="px-3 py-1.5 rounded-sm bg-white text-xs font-bold text-ink-900 hover:bg-ink-100">+ كل المواد المنخفضة</button>
+            )}
+          </div>
+        )}
         <div className="space-y-3">
           <div>
             <label className="block text-sm font-arabic text-ink-900 mb-1">المورد</label>
@@ -2169,6 +2206,7 @@ function AlertsTab() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [orderError, setOrderError] = useState<string | null>(null);
   const [creating, setCreating] = useState<string | null>(null);
+  const [showOrderAll, setShowOrderAll] = useState(false);
   // 2026-08-02: the previous version of this button always picked
   // suppliers[0] blindly, with no way for the owner to pick a supplier
   // who actually stocks the ingredient in question. A single "order from"
@@ -2206,7 +2244,7 @@ function AlertsTab() {
     if (!selectedSupplierId) return;
     setCreating(ingredient.id);
     try {
-      const quantityOrdered = Math.max(ingredient.min_stock - ingredient.current_stock, ingredient.min_stock, 1);
+      const quantityOrdered = reorderQuantity(ingredient.current_stock, ingredient.min_stock);
       await invoke("create_purchase_order_with_items_v3", {
         sessionToken: token,
         supplierId: selectedSupplierId,
@@ -2253,7 +2291,23 @@ function AlertsTab() {
           >
             {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
+          <button
+            onClick={() => setShowOrderAll(true)}
+            disabled={!selectedSupplierId}
+            className="h-9 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
+          >
+            طلبية لكل المواد المنخفضة ({lowStock.length})
+          </button>
         </div>
+      )}
+
+      {showOrderAll && (
+        <CreatePOModal
+          initialSupplierId={selectedSupplierId}
+          prefill="all"
+          onClose={() => setShowOrderAll(false)}
+          onSaved={() => { setShowOrderAll(false); fetch(); }}
+        />
       )}
 
       {lowStock.length === 0 && (

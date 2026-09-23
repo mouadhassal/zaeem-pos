@@ -1981,6 +1981,47 @@ mod tests {
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
+        /// Supplier "new order" / inventory auto-order prefill: only low-stock
+        /// items, supplier view limited to that supplier's items at its last cost.
+        #[test]
+        fn reorder_suggestions_prefill_low_stock_lines() {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("reorder_suggestions");
+            let conn = Connection::open(&db_path).unwrap();
+            let repo = Repo::new(&conn);
+            let staff = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Manager");
+            let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+            let flour = repo.create_ingredient(&tenant_id, &branch_id, "Flour", "kg", 30, 10.0).unwrap();
+            let sugar = repo.create_ingredient(&tenant_id, &branch_id, "Sugar", "kg", 20, 5.0).unwrap();
+            let salt = repo.create_ingredient(&tenant_id, &branch_id, "Salt", "kg", 5, 2.0).unwrap();
+            conn.execute("UPDATE ingredients SET current_stock = 4.0 WHERE id = ?1", params![flour]).unwrap();
+            conn.execute("UPDATE ingredients SET current_stock = 1.0 WHERE id = ?1", params![sugar]).unwrap();
+            conn.execute("UPDATE ingredients SET current_stock = 9.0 WHERE id = ?1", params![salt]).unwrap();
+            let supplier = repo.create_supplier(&tenant_id, &branch_id, "Mill", None, None).unwrap();
+            repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier, &staff, None, &[(flour.clone(), 5.0, 27)]).unwrap();
+
+            let all = repo.list_reorder_suggestions(&scope, None).unwrap();
+            let ids: Vec<&str> = all.iter().map(|r| r.ingredient_id.as_str()).collect();
+            assert_eq!(ids, vec![sugar.as_str(), flour.as_str()], "only low-stock items, lowest stock first");
+            assert_eq!(all[0].quantity, 9.0, "sugar: target 10 - 1 in stock");
+            assert_eq!(all[0].unit_cost_cents, 20);
+
+            let mill = repo.list_reorder_suggestions(&scope, Some(&supplier)).unwrap();
+            assert_eq!(mill.len(), 1, "only items previously bought from this supplier");
+            assert_eq!(mill[0].ingredient_id, flour);
+            assert_eq!(mill[0].quantity, 16.0, "flour: target 20 - 4 in stock");
+            assert_eq!(mill[0].unit_cost_cents, 27, "supplier's last unit cost wins over the ingredient default");
+            drop(conn);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn reorder_quantity_restocks_to_twice_the_minimum() {
+            assert_eq!(crate::repo::reorder_quantity(4.0, 10.0), 16.0);
+            assert_eq!(crate::repo::reorder_quantity(0.0, 0.5), 2.0);
+            assert_eq!(crate::repo::reorder_quantity(-3.0, 1.0), 2.0);
+            assert_eq!(crate::repo::reorder_quantity(1.5, 2.0), 3.0);
+        }
+
         /// New-SYP defaults: ordinary till drift closes without a PIN; a
         /// difference at the 1,000 threshold needs one.
         #[test]
@@ -6733,7 +6774,7 @@ mod tests {
             "list_ingredients_v3", "create_ingredient_v3", "update_ingredient_v3", "adjust_stock_v3",
             "record_stock_count_v3", "list_stock_counts_v3",
             "get_cogs_variance_report_v3", "get_menu_margin_report_v3",
-            "list_inventory_logs_v3", "list_low_stock_ingredients_v3",
+            "list_inventory_logs_v3", "list_low_stock_ingredients_v3", "list_reorder_suggestions_v3",
             "list_recipe_ingredients_v3", "add_recipe_ingredient_v3", "update_recipe_ingredient_v3", "delete_recipe_ingredient_v3",
             "create_debtor_v3", "update_debtor_v3", "deactivate_debtor_v3",
             "list_debt_entries_v3", "record_debt_payment_v3",

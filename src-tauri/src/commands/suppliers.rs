@@ -330,6 +330,15 @@ pub fn list_inventory_logs_v3(state: State<Db>, license: State<crate::license::c
 }
 
 #[tauri::command]
+pub fn list_reorder_suggestions_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: Option<String>) -> Result<Vec<crate::repo::ReorderSuggestionRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_reorder_suggestions(&actor.scope(), supplier_id.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn list_low_stock_ingredients_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::IngredientRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;

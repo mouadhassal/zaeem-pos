@@ -504,6 +504,24 @@ pub struct RosterEntryRow {
     pub notes: Option<String>,
 }
 
+/// One prefilled purchase-order line for a low-stock ingredient.
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct ReorderSuggestionRow {
+    pub ingredient_id: String,
+    pub name: String,
+    pub unit: String,
+    pub current_stock: f64,
+    pub min_stock: f64,
+    pub quantity: f64,
+    pub unit_cost_cents: i64,
+}
+
+/// Restock target = max(2 x min, min + 1); order the gap (at least 1).
+pub fn reorder_quantity(current_stock: f64, min_stock: f64) -> f64 {
+    let target = (2.0 * min_stock).max(min_stock + 1.0);
+    (target - current_stock.max(0.0)).max(1.0).ceil()
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct IngredientRow {
     pub id: String,
@@ -3354,6 +3372,38 @@ impl<'a> Repo<'a> {
         let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(params_refs.as_slice(), |r| {
             Ok(IngredientRow { id: r.get(0)?, name: r.get(1)?, unit: r.get(2)?, cost_cents_per_unit: r.get(3)?, current_stock: r.get(4)?, min_stock: r.get(5)?, is_active: r.get(6)?, last_modified: r.get(7)? })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
+    }
+
+    /// Low-stock ingredients as prefilled PO lines. With `supplier_id`, only
+    /// items previously ordered from that supplier, at its last unit cost.
+    pub fn list_reorder_suggestions(&self, scope: &Scope, supplier_id: Option<&str>) -> Result<Vec<ReorderSuggestionRow>, RepoError> {
+        self.assert_scope_populated("ingredients", true)?;
+        if let Some(s) = supplier_id {
+            self.assert_row_in_scope("suppliers", s, scope)?;
+        }
+        let (predicate, args) = Self::scope_predicate(scope);
+        let predicate = predicate.replace("tenant_id", "i.tenant_id").replace("branch_id", "i.branch_id");
+        let sp = format!("?{}", args.len() + 1);
+        let last_cost = format!(
+            "(SELECT poi.unit_cost_cents FROM purchase_order_items poi JOIN purchase_orders po ON po.id = poi.purchase_order_id               WHERE poi.ingredient_id = i.id AND po.supplier_id = {sp} ORDER BY po.created_at DESC LIMIT 1)"
+        );
+        let supplier_filter = if supplier_id.is_some() { format!(" AND {last_cost} IS NOT NULL") } else { String::new() };
+        let sql = format!(
+            "SELECT i.id, i.name, i.unit, i.current_stock, i.min_stock, COALESCE({last_cost}, i.cost_cents_per_unit)              FROM ingredients i WHERE {predicate} AND i.is_active = 1 AND i.current_stock < i.min_stock{supplier_filter}              ORDER BY i.current_stock ASC, i.name ASC"
+        );
+        let mut all_args = args;
+        all_args.push(supplier_id.unwrap_or("").to_string());
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = all_args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+            let current_stock: f64 = r.get(3)?;
+            let min_stock: f64 = r.get(4)?;
+            Ok(ReorderSuggestionRow {
+                ingredient_id: r.get(0)?, name: r.get(1)?, unit: r.get(2)?, current_stock, min_stock,
+                quantity: reorder_quantity(current_stock, min_stock), unit_cost_cents: r.get(5)?,
+            })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
