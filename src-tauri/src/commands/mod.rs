@@ -22,3 +22,4 @@ pub mod loyalty;
 pub mod suppliers;
 pub mod license;
 pub mod lan_rpc;
+pub mod marketplace;

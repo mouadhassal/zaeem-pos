@@ -26,6 +26,7 @@ mod backup;
 mod diagnostics;
 mod reconcile;
 mod assistant;
+mod goods_receipt;
 
 use bcrypt::{hash, DEFAULT_COST};
 
@@ -93,6 +94,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_debtor_credit_limit_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_menu_item_barcode_tenant_unique_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_manager_threshold_new_syp_defaults_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_marketplace_receipt_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -369,6 +371,13 @@ pub fn run() {
                     if let Some(db) = sync_timer_handle.try_state::<Db>() {
                         let result = sync::run_tick(&db.0, 500, &sync_config_dir).await;
                         obslog::log_sync_tick_result(&result);
+                        // Marketplace goods-received acks (cloud terminals only).
+                        let token = sync_timer_handle.try_state::<crate::license::cloud::CloudLicenseState>().and_then(|l| l.device_token());
+                        if let Some(token) = token {
+                            if let Err(e) = goods_receipt::run_receipt_tick(&db.0, &token).await {
+                                log::warn!("marketplace receipt tick failed: {e}");
+                            }
+                        }
                     }
                 }
             });
@@ -581,6 +590,9 @@ pub fn run() {
             commands::suppliers::list_inventory_logs_v3,
             commands::suppliers::list_low_stock_ingredients_v3,
             commands::suppliers::list_reorder_suggestions_v3,
+            commands::marketplace::get_marketplace_context_v3,
+            commands::marketplace::list_marketplace_receipts_v3,
+            commands::marketplace::receive_marketplace_order_v3,
             commands::suppliers::create_printer_v3,
             commands::suppliers::list_printers_v3,
             commands::suppliers::list_active_printers_v3,

@@ -2347,6 +2347,44 @@ pub fn run_debtor_credit_limit_migration(conn: &mut Connection, _db_path: &Path)
 pub const MIGRATION_Y_VERSION: i64 = 29;
 
 pub const MIGRATION_Z_VERSION: i64 = 32;
+pub const MIGRATION_AA_VERSION: i64 = 33;
+
+/// Marketplace goods received (ECOSYSTEM_CONTRACTS.md §6): one row per
+/// received marketplace order. Doubles as the retry queue for the cloud ack
+/// (`cloud_status` PENDING -> SENT | REJECTED); the PK makes a receipt
+/// idempotent per order on this terminal.
+pub fn run_marketplace_receipt_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AA_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS marketplace_receipt_local (
+            order_id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            branch_id TEXT NOT NULL,
+            received_by TEXT NOT NULL,
+            lines_json TEXT NOT NULL,
+            note TEXT,
+            received_at TEXT NOT NULL,
+            cloud_status TEXT NOT NULL DEFAULT 'PENDING' CHECK (cloud_status IN ('PENDING','SENT','REJECTED')),
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT,
+            last_error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_marketplace_receipt_local_status ON marketplace_receipt_local (cloud_status, next_attempt_at);",
+    )?;
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AA_VERSION, "0033_marketplace_receipt_local", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
 
 /// Legacy untouched threshold values from v17 (20000/50000), v21
 /// (5,000,000/10,000,000) and v21+v25 (50,000/100,000). All are far off

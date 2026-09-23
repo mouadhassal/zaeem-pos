@@ -196,6 +196,11 @@ impl CloudLicenseState {
         self.offline.licensed_branch()
     }
 
+    /// The cloud device token, if this terminal was cloud-activated.
+    pub fn device_token(&self) -> Option<String> {
+        self.config.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|c| c.device_token.clone())
+    }
+
     /// `check_license_v3`'s "check now" passthrough -- re-evaluates the
     /// offline blob, then returns the combined (cloud-aware) status, so a
     /// manual check reflects the same precedence `cached_status()` always

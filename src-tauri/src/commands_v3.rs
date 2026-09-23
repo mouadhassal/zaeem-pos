@@ -69,6 +69,7 @@ mod tests {
             include_str!("commands/suppliers.rs"),
             include_str!("commands/license.rs"),
             include_str!("commands/lan_rpc.rs"),
+            include_str!("commands/marketplace.rs"),
         ].join("\n")
     }
 
@@ -105,6 +106,7 @@ mod tests {
         migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_manager_threshold_new_syp_defaults_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_marketplace_receipt_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -2020,6 +2022,66 @@ mod tests {
             assert_eq!(crate::repo::reorder_quantity(0.0, 0.5), 2.0);
             assert_eq!(crate::repo::reorder_quantity(-3.0, 1.0), 2.0);
             assert_eq!(crate::repo::reorder_quantity(1.5, 2.0), 3.0);
+        }
+
+        /// Goods received: stock is added once, a repeat receipt of the same
+        /// marketplace order is a no-op, and the cloud ack is queued.
+        #[test]
+        fn marketplace_receipt_is_applied_once_and_queued() {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("marketplace_receipt");
+            let mut conn = Connection::open(&db_path).unwrap();
+            let staff = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Manager");
+            let flour = Repo::new(&conn).create_ingredient(&tenant_id, &branch_id, "طحين", "kg", 30, 10.0).unwrap();
+            let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+            let lines = vec![
+                crate::goods_receipt::ReceiptLine { order_item_id: "i1".into(), received_qty: 3.0, local_ingredient_id: Some(flour.clone()), stock_added: Some(30.0) },
+                crate::goods_receipt::ReceiptLine { order_item_id: "i2".into(), received_qty: 1.0, local_ingredient_id: None, stock_added: None },
+            ];
+            let stock = |c: &Connection| -> f64 { c.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![flour], |r| r.get(0)).unwrap() };
+            let before = stock(&conn);
+
+            let tx = conn.transaction().unwrap();
+            let first = crate::goods_receipt::apply_receipt(&tx, &scope, &tenant_id, &branch_id, &staff, "mkt-order-1", &lines, None).unwrap();
+            tx.commit().unwrap();
+            assert_eq!(first, crate::goods_receipt::ApplyOutcome::Applied(vec![flour.clone()]));
+            assert_eq!(stock(&conn), before + 30.0);
+
+            let tx = conn.transaction().unwrap();
+            let second = crate::goods_receipt::apply_receipt(&tx, &scope, &tenant_id, &branch_id, &staff, "mkt-order-1", &lines, None).unwrap();
+            tx.commit().unwrap();
+            assert_eq!(second, crate::goods_receipt::ApplyOutcome::AlreadyReceived);
+            assert_eq!(stock(&conn), before + 30.0, "a repeat receipt must not add stock twice");
+
+            let due = crate::goods_receipt::due_receipts(&conn, 10).unwrap();
+            assert_eq!(due.len(), 1);
+            let queued: Vec<crate::goods_receipt::ReceiptLine> = serde_json::from_str(&due[0].lines_json).unwrap();
+            assert_eq!(queued, lines, "p_lines must be queued exactly as confirmed");
+
+            crate::goods_receipt::record_mark_outcome(&conn, "mkt-order-1", 1, &crate::goods_receipt::MarkOutcome::Retry).unwrap();
+            assert!(crate::goods_receipt::due_receipts(&conn, 10).unwrap().is_empty(), "retry waits for backoff");
+            crate::goods_receipt::record_mark_outcome(&conn, "mkt-order-1", 2, &crate::goods_receipt::MarkOutcome::Sent).unwrap();
+            let status: String = conn.query_row("SELECT cloud_status FROM marketplace_receipt_local WHERE order_id = 'mkt-order-1'", [], |r| r.get(0)).unwrap();
+            assert_eq!(status, "SENT");
+
+            // Already-received orders are filtered out of the pending list.
+            let pending = crate::goods_receipt::PendingReceipts {
+                tenant_id: None, branch_id: None,
+                orders: ["mkt-order-1", "mkt-order-2"].iter().map(|id| crate::goods_receipt::PendingOrder {
+                    order_id: id.to_string(), supplier_id: None, supplier_name: None, delivered_at: None, total_cents: 0, note: None,
+                    items: vec![crate::goods_receipt::PendingItem {
+                        order_item_id: "x".into(), supplier_product_id: None, product_name: "طحين".into(), unit: None,
+                        unit_size: Some(10.0), unit_measure: Some("kg".into()), qty: 2.0, unit_price_cents: 0, line_total_cents: 0,
+                        suggested_local_ingredient_id: Some(flour.clone()), suggested_ingredient_name: None, suggested_ingredient_unit: None,
+                        suggested_match_score: Some(0.8), suggested_stock_added: None,
+                    }],
+                }).collect(),
+            };
+            let prepared = crate::goods_receipt::prepare_pending(&conn, pending).unwrap();
+            assert_eq!(prepared.orders.len(), 1);
+            assert_eq!(prepared.orders[0].order_id, "mkt-order-2");
+            assert_eq!(prepared.orders[0].items[0].suggested_stock_added, Some(20.0), "2 x 10kg bags into a kg ingredient");
+            drop(conn);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
         /// New-SYP defaults: ordinary till drift closes without a PIN; a
@@ -6775,6 +6837,7 @@ mod tests {
             "record_stock_count_v3", "list_stock_counts_v3",
             "get_cogs_variance_report_v3", "get_menu_margin_report_v3",
             "list_inventory_logs_v3", "list_low_stock_ingredients_v3", "list_reorder_suggestions_v3",
+            "get_marketplace_context_v3", "receive_marketplace_order_v3",
             "list_recipe_ingredients_v3", "add_recipe_ingredient_v3", "update_recipe_ingredient_v3", "delete_recipe_ingredient_v3",
             "create_debtor_v3", "update_debtor_v3", "deactivate_debtor_v3",
             "list_debt_entries_v3", "record_debt_payment_v3",
