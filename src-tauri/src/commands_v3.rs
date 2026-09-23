@@ -5256,6 +5256,16 @@ mod tests {
         assert_eq!(shifts_a[0].ending_cash_cents, Some(0));
         assert_eq!(shifts_a[0].difference_cents, Some(0));
         println!("[staff] force_close_shift closed Branch A's own shift with zeroed ending cash/difference");
+
+        // Owner (tenant scope, no branch) and Platform can force-close any
+        // branch's stuck shift; Cashier can't.
+        let owner = Actor { id: "owner-x".into(), tenant_id: tenant_id.clone(), branch_id: None, role: Role::Owner, device_id: "dev".into() };
+        let platform = Actor { id: "plat-x".into(), tenant_id: tenant_id.clone(), branch_id: None, role: Role::Platform, device_id: "dev".into() };
+        let cashier = Actor { id: cashier_a.clone(), tenant_id: tenant_id.clone(), branch_id: Some(branch_a.clone()), role: Role::Cashier, device_id: "dev".into() };
+        authorize(&owner, Permission::UpdateStaff).expect("owner may force-close");
+        authorize(&platform, Permission::UpdateStaff).expect("platform may force-close");
+        assert!(authorize(&cashier, Permission::UpdateStaff).is_err());
+        repo.force_close_shift(&owner.scope(), &shift_b).expect("owner closes another branch's stuck shift");
         let _ = table_id;
 
         // Attendance: clock in must reject a staff member from another branch.

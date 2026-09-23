@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
+import { canForceCloseShift } from "../../lib/permissions";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import type { UserRole } from "../../db/types";
@@ -682,7 +683,7 @@ export default function StaffPage() {
                         </span>
                       </td>
                       <td className="p-3 text-center">
-                        {isOpen && (user?.role === "MANAGER" || user?.role === "OWNER") && (
+                        {isOpen && canForceCloseShift(user?.role) && (
                           <button
                             onClick={() => setForceCloseShiftId(shift.id)}
                             className="px-3 py-1 rounded-sm text-xs font-arabic text-amber-600 hover:bg-amber-50 transition-colors"
