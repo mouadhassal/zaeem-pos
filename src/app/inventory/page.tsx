@@ -13,6 +13,7 @@ import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { formatArabicDateTime, formatArabicDate } from "../../lib/dateLocal";
 import { useToast } from "../../hooks/useToast";
 import { reorderQuantity } from "../../lib/inventoryReorder";
+import { buildReceiptLines, initialEdit, type LineEdit, type PendingOrder, type PendingReceipts } from "../../lib/marketplaceReceipt";
 
 const editSchema = z.object({
   name: z.string().min(1, "الاسم مطلوب"),
@@ -222,7 +223,7 @@ interface PurchaseOrderItem {
   ingredient_name: string;
 }
 
-type TabKey = "stock" | "suppliers" | "movements" | "alerts" | "purchases";
+type TabKey = "stock" | "suppliers" | "movements" | "alerts" | "purchases" | "marketplace";
 
 export default function InventoryPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("stock");
@@ -243,6 +244,8 @@ export default function InventoryPage() {
     { key: "movements", label: "حركات المخزون" },
     { key: "alerts", label: "تنبيهات" },
     { key: "purchases", label: "طلبيات الشراء" },
+    // Cloud-activated terminals only (needs a device token).
+    ...(marketplaceCtx?.receipts_enabled ? [{ key: "marketplace" as TabKey, label: "طلبيات السوق" }] : []),
   ];
 
   return (
@@ -288,6 +291,9 @@ export default function InventoryPage() {
       {activeTab === "alerts" && <AlertsTab />}
       {activeTab === "movements" && <MovementsTab />}
       {activeTab === "purchases" && <PurchasesTab />}
+      {activeTab === "marketplace" && marketplaceCtx?.receipts_enabled && (
+        <MarketplaceReceiptsTab onReceived={() => setRefreshKey((k) => k + 1)} />
+      )}
 
       {showReceiveStock && (
         <ReceiveStockEntryModal
@@ -2212,6 +2218,112 @@ function MovementsTab() {
 }
 
 /* ============= TAB 4: تنبيهات ============= */
+
+/* Marketplace deliveries: confirm what arrived, map to local stock items. */
+function MarketplaceReceiptsTab({ onReceived }: { onReceived: () => void }) {
+  const toast = useToast();
+  const token = useAuthStore((s) => s.token);
+  const [orders, setOrders] = useState<PendingOrder[]>([]);
+  const [ingredients, setIngredients] = useState<Ingredient[]>([]);
+  const [edits, setEdits] = useState<Record<string, LineEdit>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [resp, ings] = await Promise.all([
+        invoke<PendingReceipts>("list_marketplace_receipts_v3", { sessionToken: token }),
+        invoke<Ingredient[]>("list_ingredients_v3", { sessionToken: token }),
+      ]);
+      setOrders(resp.orders);
+      setIngredients(ings);
+      const next: Record<string, LineEdit> = {};
+      for (const o of resp.orders) for (const it of o.items) next[it.order_item_id] = initialEdit(it);
+      setEdits(next);
+    } catch (err) {
+      setError(`تعذر تحميل طلبيات السوق: ${realErrorText(err)}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const setEdit = (id: string, patch: Partial<LineEdit>) =>
+    setEdits((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+
+  const confirm = async (order: PendingOrder) => {
+    const lines = buildReceiptLines(order.items, edits);
+    if (!lines) {
+      setError("تأكد أن الكميات أرقام غير سالبة");
+      return;
+    }
+    setSaving(order.order_id);
+    setError(null);
+    try {
+      const applied = await invoke<boolean>("receive_marketplace_order_v3", { sessionToken: token, orderId: order.order_id, lines, note: null });
+      toast.success(applied ? "تم استلام الطلبية وتحديث المخزون ✓" : "هذه الطلبية مستلمة مسبقاً على هذا الجهاز");
+      onReceived();
+      await load();
+    } catch (err) {
+      setError(`تعذر تسجيل الاستلام: ${realErrorText(err)}`);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  if (loading) return <div className="py-10 text-center text-ink-500 text-sm">جاري التحميل...</div>;
+
+  return (
+    <div className="space-y-4">
+      {error && <div className="bg-danger-soft rounded-sm p-3 text-sm text-danger font-arabic">{error}</div>}
+      {orders.length === 0 && !error && (
+        <div className="bg-ok-soft rounded-sm p-4 text-sm text-ok font-arabic">لا توجد طلبيات سوق بانتظار الاستلام.</div>
+      )}
+      {orders.map((order) => (
+        <div key={order.order_id} className="zc-card p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-bold text-ink-900">{order.supplier_name ?? "مورد السوق"}</h3>
+              <p className="text-xs text-ink-400 font-mono">#{order.order_id.slice(0, 8)} · {order.delivered_at?.slice(0, 10) ?? ""}</p>
+            </div>
+            <span className="font-mono font-bold text-saffron-600">{formatCurrency(order.total_cents)}</span>
+          </div>
+          {order.items.map((it) => {
+            const e = edits[it.order_item_id] ?? initialEdit(it);
+            const ing = ingredients.find((i) => i.id === e.ingredientId);
+            return (
+              <div key={it.order_item_id} className="flex flex-wrap items-center gap-2 text-sm">
+                <span className="flex-1 min-w-[140px] font-arabic text-ink-900">{it.product_name} <span className="text-ink-400">× {it.qty} {it.unit ?? ""}</span></span>
+                <input type="number" min="0" value={e.receivedQty} onChange={(ev) => setEdit(it.order_item_id, { receivedQty: ev.target.value })} title="الكمية المستلمة (عبوات)" className="w-20 h-9 px-2 rounded-sm border-2 border-ink-200" />
+                <select value={e.ingredientId} onChange={(ev) => setEdit(it.order_item_id, { ingredientId: ev.target.value })} className="w-40 h-9 px-2 rounded-sm border-2 border-ink-200">
+                  <option value="">بدون ربط بالمخزون</option>
+                  {ingredients.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
+                </select>
+                {e.ingredientId && (
+                  <span className="flex items-center gap-1">
+                    <input type="number" min="0" value={e.stockAdded} onChange={(ev) => setEdit(it.order_item_id, { stockAdded: ev.target.value })} title="الكمية المضافة للمخزون" className="w-24 h-9 px-2 rounded-sm border-2 border-ink-200" />
+                    <span className="text-xs text-ink-400">{ing?.unit ?? ""}</span>
+                  </span>
+                )}
+              </div>
+            );
+          })}
+          <button
+            onClick={() => confirm(order)}
+            disabled={saving === order.order_id}
+            className="h-10 px-5 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
+          >
+            {saving === order.order_id ? "جاري التسجيل..." : "تأكيد الاستلام"}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function AlertsTab() {
   const token = useAuthStore((s) => s.token);
