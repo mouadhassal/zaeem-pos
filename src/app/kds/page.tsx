@@ -6,6 +6,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { connectLanChangeSocket } from "../../lib/lan";
 import { OutOfStockPanel } from "./OutOfStockPanel";
 import { formatArabicTime } from "../../lib/dateLocal";
+import { orderNo } from "../../lib/orderNumber";
 
 interface KDSItem {
   name: string;
@@ -209,7 +210,7 @@ export default function KDSPage() {
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <span className="text-lg font-bold text-ink-900 font-arabic">
-                        {order.table_name || `#${order.id.slice(0, 6)}`}
+                        {order.table_name || `#${orderNo(order.id)}`}
                       </span>
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-arabic bg-surface text-ink-500">
                         {ORDER_TYPE_LABELS[order.order_type] || order.order_type}

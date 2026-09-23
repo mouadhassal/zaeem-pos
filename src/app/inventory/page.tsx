@@ -14,6 +14,7 @@ import { formatArabicDateTime, formatArabicDate } from "../../lib/dateLocal";
 import { useToast } from "../../hooks/useToast";
 import { reorderQuantity } from "../../lib/inventoryReorder";
 import { buildReceiptLines, initialEdit, type LineEdit, type PendingOrder, type PendingReceipts } from "../../lib/marketplaceReceipt";
+import { orderNo } from "../../lib/orderNumber";
 
 const editSchema = z.object({
   name: z.string().min(1, "الاسم مطلوب"),
@@ -2288,7 +2289,7 @@ function MarketplaceReceiptsTab({ onReceived }: { onReceived: () => void }) {
           <div className="flex items-center justify-between">
             <div>
               <h3 className="font-bold text-ink-900">{order.supplier_name ?? "مورد السوق"}</h3>
-              <p className="text-xs text-ink-400 font-mono">#{order.order_id.slice(0, 8)} · {order.delivered_at?.slice(0, 10) ?? ""}</p>
+              <p className="text-xs text-ink-400 font-mono">#{orderNo(order.order_id)} · {order.delivered_at?.slice(0, 10) ?? ""}</p>
             </div>
             <span className="font-mono font-bold text-saffron-600">{formatCurrency(order.total_cents)}</span>
           </div>

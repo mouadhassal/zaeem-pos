@@ -8,6 +8,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useShiftStore } from "../../stores/shiftStore";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { realErrorText } from "../../lib/errors";
+import { orderNo } from "../../lib/orderNumber";
 
 // 2026-08-02: was a hardcoded 5000 assuming small everyday prices -- wrong
 // by orders of magnitude for a currency whose real menu prices run in the
@@ -395,7 +396,7 @@ export default function ShiftPage() {
             {recentOrders.map((o) => (
               <div key={o.id} className="flex items-center justify-between py-2 border-b border-line-2 last:border-0">
                 <div className="flex items-center gap-3">
-                  <span className="font-mono text-xs text-text-muted">{o.id.slice(0, 6)}</span>
+                  <span className="font-mono text-xs text-text-muted">{orderNo(o.id)}</span>
                   <span className="text-sm text-text">
                     {o.status === "PAID" ? "مدفوع" : o.status === "CANCELLED" ? "ملغي" : o.status}
                   </span>

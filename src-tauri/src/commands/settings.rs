@@ -19,6 +19,23 @@ pub fn get_chain_config_v3(state: State<Db>, session_token: String) -> Result<cr
 }
 
 #[tauri::command]
+pub fn update_chain_name_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, chain_name: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let chain_name = chain_name.trim().to_string();
+    if chain_name.is_empty() || chain_name.chars().count() > 60 {
+        return Err("اسم النشاط مطلوب (حتى 60 حرفاً)".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    require_license_not_locked_or_initial_setup(&license, &conn)?;
+    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_chain_name(&actor.tenant_id, &chain_name).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "chain_config", "default", None, Some(&serde_json::json!({ "chain_name": chain_name }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn update_chain_currency_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, currency: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;

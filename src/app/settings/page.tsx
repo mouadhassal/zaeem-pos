@@ -44,6 +44,12 @@ interface Branch {
 
 const PAPER_WIDTHS = [58, 80];
 
+// The license payload's plan ids (billing_tiers.sql), shown to the owner.
+const PLAN_LABELS: Record<string, string> = {
+  full: "الكاملة (نقطة بيع + إدارة وتقارير)",
+  pos_lite: "نقطة البيع فقط",
+};
+
 // Was hardcoded to "الليرة السورية" (Syrian Lira) regardless of the
 // tenant's actual configured currency -- contradicted branches/page.tsx's
 // own 11-currency picker (its CURRENCIES list), which lets any branch be
@@ -151,6 +157,7 @@ export default function SettingsPage() {
   const [shiftDiffThreshold, setShiftDiffThreshold] = useState("1000");
 
   const [branch, setBranch] = useState<Branch | null>(null);
+  const [chainName, setChainName] = useState("");
   const [branchName, setBranchName] = useState("");
   const [branchAddress, setBranchAddress] = useState("");
   const [branchPhone, setBranchPhone] = useState("");
@@ -297,6 +304,7 @@ export default function SettingsPage() {
     try {
       const cfg = await invoke<{ chain_name: string; currency: string; tax_mode: TaxMode; tax_rate_cents: number }>("get_chain_config_v3", { sessionToken: token });
       setConfig(cfg);
+      setChainName(cfg.chain_name);
       setTaxMode(cfg.tax_mode);
       setTaxRate(String(cfg.tax_rate_cents / 100));
       setCurrency(cfg.currency);
@@ -436,6 +444,17 @@ export default function SettingsPage() {
     }
   };
 
+  const saveChainName = async () => {
+    if (!chainName.trim() || chainName.trim() === config?.chain_name) return;
+    try {
+      await invoke("update_chain_name_v3", { sessionToken: token, chainName: chainName.trim() });
+      showMsg("تم حفظ اسم النشاط");
+      fetchData();
+    } catch (err) {
+      showMsg(typeof err === "string" ? err : "حدث خطأ في حفظ اسم النشاط");
+    }
+  };
+
   const saveBranch = async () => {
     setSaving(true);
     try {
@@ -563,7 +582,7 @@ export default function SettingsPage() {
     }
     setAddingPrinter(true);
     try {
-      await invoke<string>("create_printer_v3", {
+      const printerId = await invoke<string>("create_printer_v3", {
         sessionToken: token,
         name: newPrinterName.trim(),
         printerType: newPrinterType,
@@ -576,6 +595,11 @@ export default function SettingsPage() {
         ipAddress: newPrinterInterface === "NETWORK" ? newPrinterIp.trim() || null : null,
         port: newPrinterInterface === "NETWORK" ? (parseInt(newPrinterPort, 10) || 9100) : null,
       });
+      // New printers default to 80mm; a 58mm model (XP-58, POS-58...) would
+      // then print with the right third of every receipt cut off.
+      if (/58/.test(`${newPrinterSystemName} ${newPrinterName}`)) {
+        await invoke("update_printer_paper_width_v3", { sessionToken: token, printerId, paperWidthMm: 58 });
+      }
       setShowAddPrinter(false);
       setNewPrinterName("");
       setNewPrinterSystemName("");
@@ -622,6 +646,27 @@ export default function SettingsPage() {
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-bold text-ink-900 font-arabic">الإعدادات العامة</h2>
             <div className="bg-white rounded-md p-5 border border-ink-200 space-y-4">
+              <div>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">اسم المطعم أو المتجر</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={chainName}
+                    maxLength={60}
+                    onChange={(e) => setChainName(e.target.value)}
+                    className="flex-1 h-10 px-4 rounded-sm border-2 border-ink-200 text-ink-900 font-arabic text-sm text-right outline-none focus:border-saffron-500"
+                    dir="rtl"
+                  />
+                  <button
+                    onClick={saveChainName}
+                    disabled={!chainName.trim() || chainName.trim() === config?.chain_name}
+                    className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-arabic disabled:bg-ink-300 disabled:text-ink-500"
+                  >
+                    حفظ
+                  </button>
+                </div>
+                <p className="text-[10px] text-ink-500 mt-1 font-arabic">يُطبع أعلى كل إيصال</p>
+              </div>
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">العملة</label>
                 <p className="h-10 flex items-center px-4 rounded-sm bg-ink-50 border-2 border-ink-200 text-ink-900 font-arabic text-sm">
@@ -1157,7 +1202,7 @@ export default function SettingsPage() {
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="font-arabic text-ink-400">الباقة</span>
-                    <span className="font-mono text-ink-900">{licenseStatus.plan}</span>
+                    <span className="font-arabic text-ink-900">{PLAN_LABELS[licenseStatus.plan] ?? licenseStatus.plan}</span>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="font-arabic text-ink-400">تاريخ الانتهاء</span>
@@ -1177,7 +1222,7 @@ export default function SettingsPage() {
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="font-arabic text-ink-400">الباقة</span>
-                    <span className="font-mono text-ink-900">{licenseStatus.plan}</span>
+                    <span className="font-arabic text-ink-900">{PLAN_LABELS[licenseStatus.plan] ?? licenseStatus.plan}</span>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="font-arabic text-ink-400">انتهى في</span>
@@ -1196,7 +1241,7 @@ export default function SettingsPage() {
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="font-arabic text-ink-400">الباقة السابقة</span>
-                    <span className="font-mono text-ink-900">{licenseStatus.plan}</span>
+                    <span className="font-arabic text-ink-900">{PLAN_LABELS[licenseStatus.plan] ?? licenseStatus.plan}</span>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="font-arabic text-ink-400">انتهى في</span>

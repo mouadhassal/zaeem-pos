@@ -4,6 +4,7 @@ import { printReceipt, printKitchenTicket, queuePrintJob } from "./printer";
 import { logger } from "./logger";
 import type { ReceiptData } from "./printer";
 import type { OrderType as OrderTypeEnum } from "../stores/orderTypeStore";
+import { orderNo } from "./orderNumber";
 
 function token(): string {
   return useAuthStore.getState().token ?? "";
@@ -201,7 +202,7 @@ export async function createOrder(
   try {
     await printKitchenTicket({
       tableName,
-      orderNumber: orderId.slice(0, 8),
+      orderNumber: orderNo(orderId),
       orderType,
       items: kitchenItems,
     });
@@ -217,12 +218,12 @@ export async function createOrder(
     // when a table asks where their food is.
     logger.error("Kitchen print failed, queued for retry", { error: String(err) });
     queuePrintJob(
-      { tableName, orderNumber: orderId.slice(0, 8), orderType, items: kitchenItems },
+      { tableName, orderNumber: orderNo(orderId), orderType, items: kitchenItems },
       "kitchen"
     );
     window.dispatchEvent(
       new CustomEvent("kitchen-print-failed", {
-        detail: { tableName, orderNumber: orderId.slice(0, 8), error: err instanceof Error ? err.message : String(err) },
+        detail: { tableName, orderNumber: orderNo(orderId), error: err instanceof Error ? err.message : String(err) },
       })
     );
   }
@@ -503,19 +504,19 @@ export async function addItemsToOrder(
   try {
     await printKitchenTicket({
       tableName,
-      orderNumber: orderId.slice(0, 8),
+      orderNumber: orderNo(orderId),
       orderType,
       items: kitchenItems,
     });
   } catch (err) {
     logger.error("Kitchen print failed (addition to open order), queued for retry", { error: String(err) });
     queuePrintJob(
-      { tableName, orderNumber: orderId.slice(0, 8), orderType, items: kitchenItems },
+      { tableName, orderNumber: orderNo(orderId), orderType, items: kitchenItems },
       "kitchen"
     );
     window.dispatchEvent(
       new CustomEvent("kitchen-print-failed", {
-        detail: { tableName, orderNumber: orderId.slice(0, 8), error: err instanceof Error ? err.message : String(err) },
+        detail: { tableName, orderNumber: orderNo(orderId), error: err instanceof Error ? err.message : String(err) },
       })
     );
   }
@@ -644,7 +645,7 @@ export async function activateDelayedOrders(): Promise<void> {
         const tableName = orderTableId ? (tables.find((t) => t.id === orderTableId)?.name ?? "") : "";
         await printKitchenTicket({
           tableName,
-          orderNumber: orderId.slice(0, 8),
+          orderNumber: orderNo(orderId),
           orderType: "DINE_IN",
           items: held.items.map((i) => ({ name: i.name, quantity: i.quantity, ...(i.notes ? { notes: i.notes } : {}) })),
         });
@@ -656,7 +657,7 @@ export async function activateDelayedOrders(): Promise<void> {
         logger.error("Delayed order kitchen print failed", { error: String(err), orderId });
         window.dispatchEvent(
           new CustomEvent("kitchen-print-failed", {
-            detail: { orderNumber: orderId.slice(0, 8), error: err instanceof Error ? err.message : String(err) },
+            detail: { orderNumber: orderNo(orderId), error: err instanceof Error ? err.message : String(err) },
           })
         );
       }

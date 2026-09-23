@@ -25,6 +25,7 @@ export default function SetupWizard() {
   const [error, setError] = useState("");
   const setupOwner = useAuthStore((s) => s.setupOwner);
 
+  const [chainName, setChainName] = useState("");
   const [branchName, setBranchName] = useState("");
   const [currency, setCurrency] = useState("SYP");
   const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
@@ -52,10 +53,13 @@ export default function SetupWizard() {
   }
 
   async function handleBranchSubmit() {
+    if (!chainName.trim()) { setError("اسم المطعم أو المتجر مطلوب"); return; }
     if (!branchName.trim()) { setError("اسم الفرع مطلوب"); return; }
     setError("");
     setLoading(true);
     try {
+      // Printed at the top of every receipt (was stuck on "Zaeem POS").
+      await invoke("update_chain_name_v3", { sessionToken: useAuthStore.getState().token, chainName: chainName.trim() });
       await invoke("update_chain_currency_v3", { sessionToken: useAuthStore.getState().token, currency });
       await invoke("save_legacy_branch_v3", {
         sessionToken: useAuthStore.getState().token,
@@ -81,6 +85,18 @@ export default function SetupWizard() {
     setError("");
     setLoading(true);
     try {
+      // A new restaurant used to open the POS with only the implicit
+      // counter table -- nothing to seat a customer at until the owner
+      // found Settings > Branch. Seed 8 numbered tables (renamable there).
+      // Must run BEFORE update_business_mode_v3, which ends the setup
+      // window that lets these back-office writes run pre-activation.
+      if (hasTables) {
+        const sessionToken = useAuthStore.getState().token;
+        const existing = await invoke<{ name: string }[]>("list_tables_v3", { sessionToken });
+        if (existing.length <= 1) {
+          for (let n = 1; n <= 8; n++) await invoke("create_table_v3", { sessionToken, name: String(n), branchId: null });
+        }
+      }
       await invoke("update_business_mode_v3", { sessionToken: useAuthStore.getState().token, hasTables, hasKitchen });
       localStorage.setItem("zaeem_setup_complete", "1");
       window.location.reload();
@@ -125,6 +141,20 @@ export default function SetupWizard() {
               )}
 
               <div className="space-y-5">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-ink-700">اسم المطعم أو المتجر</label>
+                  <input
+                    type="text"
+                    value={chainName}
+                    onChange={(e) => setChainName(e.target.value)}
+                    placeholder="يُطبع أعلى كل إيصال -- مثال: مطعم الشام"
+                    maxLength={60}
+                    className="w-full h-11 px-4 rounded-sm border border-ink-300 text-ink-800 placeholder:text-ink-400 text-right outline-none focus:border-saffron-500 focus:ring-1 focus:ring-saffron-500/20 transition-colors"
+                    dir="rtl"
+                    required
+                  />
+                </div>
+
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-ink-700">اسم الفرع</label>
                   <input
@@ -177,9 +207,9 @@ export default function SetupWizard() {
 
                 <button
                   onClick={handleBranchSubmit}
-                  disabled={loading || !branchName.trim()}
+                  disabled={loading || !branchName.trim() || !chainName.trim()}
                   className={`w-full h-11 rounded-sm font-bold text-white text-base transition-colors flex items-center justify-center gap-2 ${
-                    loading || !branchName.trim()
+                    loading || !branchName.trim() || !chainName.trim()
                       ? "bg-ink-300 cursor-not-allowed text-ink-500"
                       : "bg-saffron-600 hover:bg-saffron-700 active:bg-saffron-800"
                   }`}
