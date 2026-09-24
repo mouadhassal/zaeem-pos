@@ -43,7 +43,7 @@ export function pdfTableHtml(title: string, headers: string[], rows: string[][])
  * as disconnected mojibake, not text. Fixed by calling html2canvas
  * manually and embedding the RESULT AS AN IMAGE via doc.addImage() -- this
  * guarantees jsPDF never touches the Arabic text itself; it's a picture of
- * what the browser's own text engine drew (the same Tajawal rendering
+ * what the browser's own text engine drew (the same Cairo rendering
  * already correct everywhere else in this app).
  *
  * Getting the finished PDF to disk does NOT use jsPDF's own `doc.save()`.
@@ -57,7 +57,7 @@ export function pdfTableHtml(title: string, headers: string[], rows: string[][])
  * "did it actually work" question has an answer.
  */
 export async function exportHtmlToPdf(filename: string, bodyHtml: string, sessionToken: string): Promise<void> {
-  await document.fonts.ready; // Tajawal must be loaded before html2canvas captures it
+  await document.fonts.ready; // Cairo must be loaded before html2canvas captures it
 
   // Positioned in-flow (not off-screen with a huge negative offset) --
   // html2canvas reliably captures blank/wrong-region content for
@@ -65,7 +65,7 @@ export async function exportHtmlToPdf(filename: string, bodyHtml: string, sessio
   // disrupting the page during the brief moment it's attached.
   const container = document.createElement("div");
   container.dir = "rtl";
-  container.style.cssText = "position:absolute;top:0;left:0;width:700px;padding:24px;background:#fff;font-family:Tajawal,sans-serif;color:#101828;z-index:9999;";
+  container.style.cssText = "position:absolute;top:0;left:0;width:700px;padding:24px;background:#fff;font-family:Cairo,sans-serif;color:#101828;z-index:9999;";
   container.innerHTML = bodyHtml;
   document.body.appendChild(container);
   const canvas = await html2canvas(container, { scale: 2, backgroundColor: "#ffffff" });
@@ -103,7 +103,7 @@ function showSavedToast(path: string): void {
   const toast = document.createElement("div");
   toast.dir = "rtl";
   toast.style.cssText =
-    "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#101828;color:#fff;padding:10px 18px;border-radius:12px;font-family:Tajawal,sans-serif;font-size:13px;z-index:99999;box-shadow:0 4px 12px rgba(0,0,0,.2);max-width:90vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#101828;color:#fff;padding:10px 18px;border-radius:12px;font-family:Cairo,sans-serif;font-size:13px;z-index:99999;box-shadow:0 4px 12px rgba(0,0,0,.2);max-width:90vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
   toast.textContent = `تم الحفظ في: ${path}`;
   document.body.appendChild(toast);
   setTimeout(() => toast.remove(), 4000);

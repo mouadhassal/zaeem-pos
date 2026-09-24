@@ -5,6 +5,7 @@ import { useCurrency } from "../../hooks/useCurrency";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 import DatePicker from "../../components/ui/DatePicker";
 import { toLocalDateStr, parseLocalDateStr, formatArabicDate, formatArabicDateTime } from "../../lib/dateLocal";
+import { orderNo } from "../../lib/orderNumber";
 
 interface SalesSummary {
   totalSales: number;
@@ -812,7 +813,7 @@ export default function ReportsPage() {
             <h3 className="text-sm font-bold text-danger font-arabic">طلبات مدفوعة بدون دفعة مسجلة</h3>
             {reconciliation.paid_orders_missing_payment.map((o) => (
               <div key={o.order_id} className="flex items-center justify-between text-sm border border-danger-soft bg-danger-soft rounded-sm p-2">
-                <span className="text-ink-900 font-arabic">{o.table_name || `#${o.order_id.slice(0, 6)}`}</span>
+                <span className="text-ink-900 font-arabic">{o.table_name || `#${orderNo(o.order_id)}`}</span>
                 <span className="text-ink-400 font-mono">{fmt(o.total_cents)}</span>
               </div>
             ))}
@@ -825,7 +826,7 @@ export default function ReportsPage() {
             {reconciliation.stale_open_orders.map((o) => (
               <div key={o.order_id} className="flex items-center justify-between text-sm border border-warn-soft bg-warn-soft rounded-sm p-2">
                 <div>
-                  <span className="text-ink-900 font-arabic">{o.table_name || `#${o.order_id.slice(0, 6)}`}</span>
+                  <span className="text-ink-900 font-arabic">{o.table_name || `#${orderNo(o.order_id)}`}</span>
                   <span className="text-ink-400 text-xs font-arabic mr-2">({o.status})</span>
                 </div>
                 <span className="text-ink-400 font-mono">{fmt(o.total_cents)}</span>

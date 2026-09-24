@@ -1,6 +1,12 @@
 import { create } from "zustand";
 
-export type OrderType = "DINE_IN" | "TAKEAWAY" | "ONLINE" | "DEBT";
+// ONLINE deliberately excluded here: this store models the order types the
+// POS *cashier screen* can create (top bar in pos/page.tsx), and there is
+// no "online order" entry point on this screen -- ONLINE orders arrive
+// through a separate integration and are only ever displayed (KDS,
+// reports, printer), never created here. `db/types.ts`'s OrderType is the
+// broader read-side type and still includes it.
+export type OrderType = "DINE_IN" | "TAKEAWAY" | "DEBT";
 
 interface OrderTypeState {
   orderType: OrderType;

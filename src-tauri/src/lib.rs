@@ -1,4 +1,6 @@
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
+#[cfg(debug_assertions)]
+use rusqlite::params;
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
@@ -11,6 +13,7 @@ mod security;
 mod repo;
 mod audit;
 mod commands_v3;
+mod commands;
 mod ai;
 mod photos;
 pub mod license;
@@ -25,13 +28,15 @@ mod backup;
 mod diagnostics;
 mod reconcile;
 mod assistant;
+mod goods_receipt;
 
+// Only the debug-build staff seeding (seed_default_staff) hashes PINs here.
+#[cfg(debug_assertions)]
 use bcrypt::{hash, DEFAULT_COST};
 
 struct Db(Mutex<Connection>);
 
 use ai::commands::AppState;
-use ai::commands;
 use ai::MockAiProvider;
 use ai::UploadQueue;
 
@@ -88,6 +93,12 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_item_kind_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_dead_table_cleanup_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_syp_redenomination_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_payment_reference_code_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_backup_settings_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_debtor_credit_limit_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_menu_item_barcode_tenant_unique_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_manager_threshold_new_syp_defaults_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_marketplace_receipt_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -134,7 +145,7 @@ fn seed_default_staff(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 // `needs_setup`/`setup_owner` (old, `users`-backed) are superseded by
-// `commands_v3::needs_setup_v3`/`setup_owner_v3`, which target `staff`.
+// `commands::auth::needs_setup_v3`/`setup_owner_v3`, which target `staff`.
 //
 // T1.9 finding (2026-07-17): 12 more pre-v3 commands were still registered
 // here -- `get_debtors`, `get_debtor_detail`, `create_debtor`, `update_debtor`,
@@ -197,7 +208,7 @@ fn log_update_event(message: String) {
 }
 
 // `verify_manager_override` (unscoped, unaudited, arbitrary-LIMIT-1-row)
-// removed -- replaced by `commands_v3::verify_manager_override_v3`
+// removed -- replaced by `commands::orders::verify_manager_override_v3`
 // (Batch 3b, Slice B verification), which is session-scoped to the
 // requesting actor's own tenant/branch, tries every manager-rank candidate
 // in that scope, and writes an audit entry on a successful grant. See that
@@ -364,6 +375,13 @@ pub fn run() {
                     if let Some(db) = sync_timer_handle.try_state::<Db>() {
                         let result = sync::run_tick(&db.0, 500, &sync_config_dir).await;
                         obslog::log_sync_tick_result(&result);
+                        // Marketplace goods-received acks (cloud terminals only).
+                        let token = sync_timer_handle.try_state::<crate::license::cloud::CloudLicenseState>().and_then(|l| l.device_token());
+                        if let Some(token) = token {
+                            if let Err(e) = goods_receipt::run_receipt_tick(&db.0, &token).await {
+                                log::warn!("marketplace receipt tick failed: {e}");
+                            }
+                        }
                     }
                 }
             });
@@ -380,9 +398,40 @@ pub fn run() {
             // comment) find this device's own lan_config.json from deep
             // inside a plain `fn` with no `AppHandle` in scope.
             lan::set_db_dir(lan_dir.clone());
+            lan::migrate_legacy_lan_config(&lan_dir);
             if lan::load_lan_config(&lan_dir).mode == "hub" {
                 lan::start_hub_server(app.handle().clone(), &lan_dir);
             }
+
+            // 2026-09-13 audit fix: a REAL background backup scheduler --
+            // previously the only "automatic" backup was a `setInterval` in
+            // `settings/page.tsx` (see that file's own comment, before this
+            // fix, admitting it "only fires while this page is mounted").
+            // A POS terminal that stays on the sale screen all day, or is
+            // rebooted overnight and never revisits Settings, silently got
+            // zero backups despite the toggle reading "on." This timer
+            // lives in the Tauri process itself, checked every 15 minutes
+            // (cheap -- `run_scheduled_backup_if_due` is a no-op read when
+            // not yet due) so a change to the configured frequency in
+            // Settings takes effect within 15 minutes rather than waiting
+            // for the next natural interval boundary.
+            let backup_timer_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+                    if let Some(db) = backup_timer_handle.try_state::<Db>() {
+                        let result = (|| -> Result<Option<backup::BackupInfo>, String> {
+                            let conn = db.0.lock().map_err(|e| e.to_string())?;
+                            backup::run_scheduled_backup_if_due(&conn)
+                        })();
+                        match result {
+                            Ok(Some(info)) => log::info!("scheduled backup created: {} ({} bytes)", info.path, info.size_bytes),
+                            Ok(None) => {}
+                            Err(e) => log::error!("scheduled backup failed: {e}"),
+                        }
+                    }
+                }
+            });
 
             Ok(())
         })
@@ -390,194 +439,203 @@ pub fn run() {
             diagnose_db,
             log_frontend_command_error,
             log_update_event,
-            commands_v3::verify_manager_override_v3,
-            commands_v3::login_v3,
-            commands_v3::login_pin_v3,
-            commands_v3::setup_owner_v3,
-            commands_v3::needs_setup_v3,
-            commands_v3::logout_v3,
-            commands_v3::create_branch_v3,
-            commands_v3::create_staff_v3,
-            commands_v3::update_staff_v3,
-            commands_v3::list_branches_v3,
-            commands_v3::list_staff_v3,
-            commands_v3::update_staff_profile_v3,
-            commands_v3::set_staff_active_v3,
-            commands_v3::list_orders_v3,
-            commands_v3::list_recent_paid_orders_v3,
-            commands_v3::list_kitchen_orders_v3,
-            commands_v3::register_kds_terminal_v3,
-            commands_v3::create_order_v3,
-            commands_v3::update_order_status_v3,
-            commands_v3::take_payment_v3,
-            commands_v3::list_categories_v3,
-            commands_v3::create_category_v3,
-            commands_v3::update_category_v3,
-            commands_v3::delete_category_v3,
-            commands_v3::list_menu_items_v3,
-            commands_v3::toggle_menu_item_availability_v3,
-            commands_v3::list_combo_components_v3,
-            commands_v3::list_combo_meals_v3,
-            commands_v3::list_combo_meal_items_v3,
-            commands_v3::create_combo_meal_v3,
-            commands_v3::update_combo_meal_v3,
-            commands_v3::delete_combo_meal_v3,
-            commands_v3::list_happy_hour_rules_v3,
-            commands_v3::create_happy_hour_rule_v3,
-            commands_v3::update_happy_hour_rule_v3,
-            commands_v3::delete_happy_hour_rule_v3,
-            commands_v3::set_happy_hour_rule_active_v3,
-            commands_v3::list_branches_full_v3,
-            commands_v3::create_branch_full_v3,
-            commands_v3::update_branch_full_v3,
-            commands_v3::set_branch_full_active_v3,
-            commands_v3::update_branch_detail_field_v3,
-            commands_v3::list_terminals_v3,
-            commands_v3::get_tenant_today_stats_v3,
-            commands_v3::get_branch_today_stats_v3,
-            commands_v3::get_staff_counts_by_branch_v3,
-            commands_v3::get_terminal_counts_by_branch_v3,
-            commands_v3::create_menu_item_v3,
-            commands_v3::update_menu_item_v3,
-            commands_v3::delete_menu_item_v3,
-            commands_v3::set_menu_item_active_v3,
-            commands_v3::upload_menu_item_photo_v3,
-            commands_v3::delete_menu_item_photo_v3,
-            commands_v3::get_menu_item_photo_v3,
-            commands_v3::upload_category_photo_v3,
-            commands_v3::delete_category_photo_v3,
-            commands_v3::get_category_photo_v3,
-            commands_v3::export_pdf_v3,
-            commands_v3::list_ingredients_v3,
-            commands_v3::create_ingredient_v3,
-            commands_v3::update_ingredient_v3,
-            commands_v3::adjust_stock_v3,
-            commands_v3::record_stock_count_v3,
-            commands_v3::list_stock_counts_v3,
-            commands_v3::get_cogs_variance_report_v3,
-            commands_v3::get_menu_margin_report_v3,
-            commands_v3::list_recipe_ingredients_v3,
-            commands_v3::add_recipe_ingredient_v3,
-            commands_v3::update_recipe_ingredient_v3,
-            commands_v3::delete_recipe_ingredient_v3,
-            commands_v3::get_active_shift_v3,
-            commands_v3::get_shift_stats_v3,
-            commands_v3::list_shift_orders_v3,
-            commands_v3::open_shift_v3,
-            commands_v3::close_shift_v3,
-            commands_v3::list_shifts_v3,
-            commands_v3::force_close_shift_v3,
-            commands_v3::list_attendance_v3,
-            commands_v3::clock_in_v3,
-            commands_v3::clock_out_v3,
-            commands_v3::list_roster_entries_v3,
-            commands_v3::create_roster_entry_v3,
-            commands_v3::update_roster_entry_v3,
-            commands_v3::delete_roster_entry_v3,
-            commands_v3::resolve_menu_price_v3,
-            commands_v3::create_customer_v3,
-            commands_v3::list_customers_v3,
-            commands_v3::update_customer_v3,
-            commands_v3::delete_customer_v3,
-            commands_v3::get_customer_detail_v3,
-            commands_v3::list_loyalty_cards_v3,
-            commands_v3::issue_loyalty_card_v3,
-            commands_v3::list_loyalty_transactions_v3,
-            commands_v3::list_loyalty_tiers_v3,
-            commands_v3::create_loyalty_tier_v3,
-            commands_v3::update_loyalty_tier_v3,
-            commands_v3::delete_loyalty_tier_v3,
-            commands_v3::list_loyalty_rewards_v3,
-            commands_v3::create_loyalty_reward_v3,
-            commands_v3::set_loyalty_reward_active_v3,
-            commands_v3::delete_loyalty_reward_v3,
-            commands_v3::redeem_loyalty_reward_v3,
-            commands_v3::list_debtors_v3,
-            commands_v3::create_debtor_v3,
-            commands_v3::update_debtor_v3,
-            commands_v3::deactivate_debtor_v3,
-            commands_v3::list_debt_entries_v3,
-            commands_v3::record_debt_payment_v3,
-            commands_v3::get_finance_revenue_v3,
-            commands_v3::get_dashboard_summary_v3,
-            commands_v3::get_tax_collected_v3,
-            commands_v3::list_operational_costs_v3,
-            commands_v3::create_operational_cost_v3,
-            commands_v3::list_invoices_v3,
-            commands_v3::create_invoice_v3,
-            commands_v3::mark_invoice_paid_v3,
-            commands_v3::get_sales_report_v3,
-            commands_v3::ask_assistant_v3,
-            commands_v3::detect_anomalies_v3,
-            commands_v3::forecast_demand_v3,
-            commands_v3::backup_database_v3,
-            commands_v3::list_backups_v3,
-            commands_v3::send_diagnostics_report_v3,
-            commands_v3::reconcile_orders_v3,
-            commands_v3::get_chain_config_v3,
-            commands_v3::update_chain_currency_v3,
-            commands_v3::update_chain_tax_v3,
-            commands_v3::get_discount_caps_v3,
-            commands_v3::update_discount_caps_v3,
-            commands_v3::get_manager_thresholds_v3,
-            commands_v3::update_manager_thresholds_v3,
-            commands_v3::get_business_mode_v3,
-            commands_v3::update_business_mode_v3,
-            commands_v3::get_legacy_branch_v3,
-            commands_v3::save_legacy_branch_v3,
-            commands_v3::set_printer_active_v3,
-            commands_v3::update_printer_paper_width_v3,
-            commands_v3::update_printer_system_name_v3,
-            commands_v3::create_purchase_order_v3,
-            commands_v3::create_purchase_order_and_bump_supplier_v3,
-            commands_v3::create_purchase_order_with_items_v3,
-            commands_v3::list_purchase_orders_v3,
-            commands_v3::cancel_purchase_order_v3,
-            commands_v3::list_purchase_order_items_v3,
-            commands_v3::receive_purchase_order_v3,
-            commands_v3::list_suppliers_v3,
-            commands_v3::create_supplier_v3,
-            commands_v3::update_supplier_v3,
-            commands_v3::delete_supplier_v3,
-            commands_v3::record_supplier_payment_v3,
-            commands_v3::list_supplier_payments_v3,
-            commands_v3::list_inventory_logs_v3,
-            commands_v3::list_low_stock_ingredients_v3,
-            commands_v3::create_printer_v3,
-            commands_v3::list_printers_v3,
-            commands_v3::list_active_printers_v3,
-            commands_v3::change_own_password_v3,
-            commands_v3::list_tables_v3,
-            commands_v3::create_table_v3,
-            commands_v3::rename_table_v3,
-            commands_v3::delete_table_v3,
-            commands_v3::create_full_order_v3,
-            commands_v3::hold_order_v3,
-            commands_v3::retrieve_held_order_v3,
-            commands_v3::split_bill_v3,
-            commands_v3::merge_tables_v3,
-            commands_v3::unmerge_tables_v3,
-            commands_v3::void_order_item_v3,
-            commands_v3::transfer_order_v3,
-            commands_v3::schedule_delayed_order_v3,
-            commands_v3::activate_delayed_orders_v3,
-            commands_v3::get_receipt_config_v3,
-            commands_v3::lookup_loyalty_card_v3,
-            commands_v3::earn_loyalty_points_v3,
-            commands_v3::finalize_order_with_payment_v3,
-            commands_v3::refund_order_v3,
-            commands_v3::get_cached_license_status_v3,
-            commands_v3::check_license_v3,
-            commands_v3::renew_license_v3,
-            commands_v3::activate_license_v3,
-            commands_v3::get_device_id_v3,
-            commands::queue_media,
-            commands::list_uploads,
-            commands::process_queue,
-            commands::reset_failed_uploads,
-            commands::clear_uploads,
-            commands::delete_upload,
-            commands::apply_draft,
+            commands::orders::verify_manager_override_v3,
+            commands::auth::login_v3,
+            commands::auth::login_pin_v3,
+            commands::auth::setup_owner_v3,
+            commands::auth::needs_setup_v3,
+            commands::auth::logout_v3,
+            commands::auth::create_branch_v3,
+            commands::auth::create_staff_v3,
+            commands::auth::update_staff_v3,
+            commands::auth::list_branches_v3,
+            commands::auth::list_staff_v3,
+            commands::auth::update_staff_profile_v3,
+            commands::auth::set_staff_active_v3,
+            commands::orders::list_orders_v3,
+            commands::orders::list_recent_paid_orders_v3,
+            commands::orders::list_kitchen_orders_v3,
+            commands::orders::register_kds_terminal_v3,
+            commands::orders::create_order_v3,
+            commands::orders::update_order_status_v3,
+            commands::orders::take_payment_v3,
+            commands::menu::list_categories_v3,
+            commands::menu::create_category_v3,
+            commands::menu::update_category_v3,
+            commands::menu::delete_category_v3,
+            commands::menu::list_menu_items_v3,
+            commands::menu::toggle_menu_item_availability_v3,
+            commands::menu::list_combo_components_v3,
+            commands::menu::list_combo_meals_v3,
+            commands::menu::list_combo_meal_items_v3,
+            commands::menu::create_combo_meal_v3,
+            commands::menu::update_combo_meal_v3,
+            commands::menu::delete_combo_meal_v3,
+            commands::menu::list_happy_hour_rules_v3,
+            commands::menu::create_happy_hour_rule_v3,
+            commands::menu::update_happy_hour_rule_v3,
+            commands::menu::delete_happy_hour_rule_v3,
+            commands::menu::set_happy_hour_rule_active_v3,
+            commands::branches::list_branches_full_v3,
+            commands::branches::create_branch_full_v3,
+            commands::branches::update_branch_full_v3,
+            commands::branches::set_branch_full_active_v3,
+            commands::branches::update_branch_detail_field_v3,
+            commands::branches::list_terminals_v3,
+            commands::branches::get_tenant_today_stats_v3,
+            commands::branches::get_branch_today_stats_v3,
+            commands::branches::get_staff_counts_by_branch_v3,
+            commands::branches::get_terminal_counts_by_branch_v3,
+            commands::menu::create_menu_item_v3,
+            commands::menu::update_menu_item_v3,
+            commands::menu::delete_menu_item_v3,
+            commands::menu::set_menu_item_active_v3,
+            commands::menu::upload_menu_item_photo_v3,
+            commands::menu::delete_menu_item_photo_v3,
+            commands::menu::get_menu_item_photo_v3,
+            commands::menu::upload_category_photo_v3,
+            commands::menu::delete_category_photo_v3,
+            commands::menu::get_category_photo_v3,
+            commands::menu::export_pdf_v3,
+            commands::inventory::list_ingredients_v3,
+            commands::inventory::create_ingredient_v3,
+            commands::inventory::update_ingredient_v3,
+            commands::inventory::adjust_stock_v3,
+            commands::inventory::record_stock_count_v3,
+            commands::inventory::list_stock_counts_v3,
+            commands::inventory::get_cogs_variance_report_v3,
+            commands::inventory::get_menu_margin_report_v3,
+            commands::inventory::list_recipe_ingredients_v3,
+            commands::inventory::add_recipe_ingredient_v3,
+            commands::inventory::update_recipe_ingredient_v3,
+            commands::inventory::delete_recipe_ingredient_v3,
+            commands::shifts::get_active_shift_v3,
+            commands::shifts::get_shift_stats_v3,
+            commands::shifts::list_shift_orders_v3,
+            commands::shifts::open_shift_v3,
+            commands::shifts::close_shift_v3,
+            commands::shifts::list_shifts_v3,
+            commands::shifts::force_close_shift_v3,
+            commands::shifts::list_attendance_v3,
+            commands::shifts::clock_in_v3,
+            commands::shifts::clock_out_v3,
+            commands::staff::list_roster_entries_v3,
+            commands::staff::create_roster_entry_v3,
+            commands::staff::update_roster_entry_v3,
+            commands::staff::delete_roster_entry_v3,
+            commands::settings::resolve_menu_price_v3,
+            commands::customers::create_customer_v3,
+            commands::customers::list_customers_v3,
+            commands::customers::update_customer_v3,
+            commands::customers::delete_customer_v3,
+            commands::customers::get_customer_detail_v3,
+            commands::loyalty::list_loyalty_cards_v3,
+            commands::loyalty::issue_loyalty_card_v3,
+            commands::loyalty::list_loyalty_transactions_v3,
+            commands::loyalty::list_loyalty_tiers_v3,
+            commands::loyalty::create_loyalty_tier_v3,
+            commands::loyalty::update_loyalty_tier_v3,
+            commands::loyalty::delete_loyalty_tier_v3,
+            commands::loyalty::list_loyalty_rewards_v3,
+            commands::loyalty::create_loyalty_reward_v3,
+            commands::loyalty::set_loyalty_reward_active_v3,
+            commands::loyalty::delete_loyalty_reward_v3,
+            commands::loyalty::redeem_loyalty_reward_v3,
+            commands::debt::list_debtors_v3,
+            commands::debt::create_debtor_v3,
+            commands::debt::update_debtor_v3,
+            commands::debt::deactivate_debtor_v3,
+            commands::debt::list_debt_entries_v3,
+            commands::debt::record_debt_payment_v3,
+            commands::reports::get_finance_revenue_v3,
+            commands::reports::get_dashboard_summary_v3,
+            commands::reports::get_tax_collected_v3,
+            commands::reports::list_operational_costs_v3,
+            commands::reports::create_operational_cost_v3,
+            commands::reports::list_invoices_v3,
+            commands::reports::create_invoice_v3,
+            commands::reports::mark_invoice_paid_v3,
+            commands::reports::get_sales_report_v3,
+            commands::reports::ask_assistant_v3,
+            commands::reports::detect_anomalies_v3,
+            commands::reports::forecast_demand_v3,
+            commands::reports::backup_database_v3,
+            commands::reports::list_backups_v3,
+            commands::reports::get_backup_settings_v3,
+            commands::reports::update_backup_settings_v3,
+            commands::reports::send_diagnostics_report_v3,
+            commands::reports::reconcile_orders_v3,
+            commands::settings::get_chain_config_v3,
+            commands::settings::update_chain_currency_v3,
+            commands::settings::update_chain_name_v3,
+            commands::settings::update_chain_tax_v3,
+            commands::settings::get_discount_caps_v3,
+            commands::settings::update_discount_caps_v3,
+            commands::settings::get_manager_thresholds_v3,
+            commands::settings::update_manager_thresholds_v3,
+            commands::settings::get_business_mode_v3,
+            commands::settings::update_business_mode_v3,
+            commands::settings::get_legacy_branch_v3,
+            commands::settings::save_legacy_branch_v3,
+            commands::settings::set_printer_active_v3,
+            commands::settings::update_printer_paper_width_v3,
+            commands::settings::update_printer_system_name_v3,
+            commands::suppliers::create_purchase_order_v3,
+            commands::suppliers::create_purchase_order_and_bump_supplier_v3,
+            commands::suppliers::create_purchase_order_with_items_v3,
+            commands::suppliers::list_purchase_orders_v3,
+            commands::suppliers::cancel_purchase_order_v3,
+            commands::suppliers::list_purchase_order_items_v3,
+            commands::suppliers::receive_purchase_order_v3,
+            commands::suppliers::list_suppliers_v3,
+            commands::suppliers::create_supplier_v3,
+            commands::suppliers::update_supplier_v3,
+            commands::suppliers::delete_supplier_v3,
+            commands::suppliers::record_supplier_payment_v3,
+            commands::suppliers::list_supplier_payments_v3,
+            commands::suppliers::list_inventory_logs_v3,
+            commands::suppliers::list_low_stock_ingredients_v3,
+            commands::suppliers::list_reorder_suggestions_v3,
+            commands::marketplace::get_marketplace_context_v3,
+            commands::marketplace::list_marketplace_receipts_v3,
+            commands::marketplace::receive_marketplace_order_v3,
+            commands::suppliers::create_printer_v3,
+            commands::suppliers::list_printers_v3,
+            commands::suppliers::list_active_printers_v3,
+            commands::auth::change_own_password_v3,
+            commands::orders::list_tables_v3,
+            commands::orders::create_table_v3,
+            commands::orders::rename_table_v3,
+            commands::orders::delete_table_v3,
+            commands::orders::create_full_order_v3,
+            commands::orders::hold_order_v3,
+            commands::orders::retrieve_held_order_v3,
+            commands::orders::list_pending_orders_for_table_v3,
+            commands::orders::retrieve_open_order_v3,
+            commands::orders::add_items_to_order_v3,
+            commands::orders::split_bill_v3,
+            commands::orders::merge_tables_v3,
+            commands::orders::unmerge_tables_v3,
+            commands::orders::void_order_item_v3,
+            commands::orders::transfer_order_v3,
+            commands::orders::schedule_delayed_order_v3,
+            commands::orders::activate_delayed_orders_v3,
+            commands::orders::get_receipt_config_v3,
+            commands::orders::lookup_loyalty_card_v3,
+            commands::orders::finalize_order_with_payment_v3,
+            commands::orders::refund_order_v3,
+            commands::license::get_cached_license_status_v3,
+            commands::license::check_license_v3,
+            commands::license::renew_license_v3,
+            commands::license::activate_license_v3,
+            commands::license::get_device_id_v3,
+            ai::commands::queue_media,
+            ai::commands::list_uploads,
+            ai::commands::process_queue,
+            ai::commands::reset_failed_uploads,
+            ai::commands::clear_uploads,
+            ai::commands::delete_upload,
+            ai::commands::apply_draft,
             lan::get_lan_status_v3,
             lan::enable_hub_mode_v3,
             lan::list_pending_pairings_v3,
@@ -593,6 +651,7 @@ pub fn run() {
             lan::lan_relay_v3,
             print::list_system_printers_v3,
             print::print_raw_bytes_v3,
+            print::print_network_raw_v3,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

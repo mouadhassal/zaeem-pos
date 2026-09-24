@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, lazy, Suspense } from "react";
 import { invoke } from "../../lib/invoke";
-import { realErrorText } from "../../lib/errors";
+import { realErrorText, isNoOpenShiftError } from "../../lib/errors";
 import TableBar from "../../components/layout/TableBar";
 // Perf fix (post-login load lag): these 8 components are only ever needed
 // once the cashier actually opens them (payment, split, merge, void,
@@ -26,7 +26,7 @@ import {
   IconAward as Award,
   IconArrowsSplit2 as Split, IconArrowsLeftRight as ArrowLeftRight,
   IconPrinter as Printer, IconTrash as Trash2,
-  IconToolsKitchen2, IconShoppingBag, IconWorld, IconWallet, IconX,
+  IconToolsKitchen2, IconShoppingBag, IconWallet, IconX,
 } from "@tabler/icons-react";
 import { useCartStore } from "../../stores/cartStore";
 import { useAuthStore } from "../../stores/authStore";
@@ -36,12 +36,40 @@ import { useMenuStore } from "../../stores/menuStore";
 import { CURRENCY_SYMBOLS } from "../../hooks/useCurrency";
 import { setCurrency, parseMoneyInput } from "../../lib/money";
 import { useDiscountCap } from "../../hooks/useDiscountCap";
-import { createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, lookupLoyaltyCard, listActiveLoyaltyRewards, redeemLoyaltyReward, getBusinessMode } from "../../lib/orderService";
+import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
+import { createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, retrieveOpenOrder, addItemsToOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, lookupLoyaltyCard, listActiveLoyaltyRewards, redeemLoyaltyReward, getBusinessMode, listPendingOrdersForTable } from "../../lib/orderService";
 import type { LoyaltyRewardOption } from "../../lib/orderService";
 import { enableBarcodeScanner, disableBarcodeScanner } from "../../lib/barcodeScanner";
 import { retryPrintQueue, printReceipt } from "../../lib/printer";
 import type { ReceiptData } from "../../lib/printer";
-import type { SplitItem } from "../../stores/cartStore";
+import type { SplitItem, CartItem } from "../../stores/cartStore";
+import { orderNo } from "../../lib/orderNumber";
+
+/**
+ * "Send to kitchen now, pay later" dine-in fix: `cartStore.addItem` merges
+ * a new line into an EXISTING cart entry with the same `menuItemId` by
+ * bumping ITS quantity (see its own implementation) -- it does not
+ * distinguish "already sent to the kitchen" (dbItemId set, from
+ * `retrieveOpenOrder`) from "brand new, never sent" lines. Without this,
+ * ringing up a second "Fries" from the grid while a "Fries" line already
+ * sent to the kitchen sits in the cart would silently bump THAT line's
+ * quantity -- still carrying its old dbItemId, so `add_items_to_order_v3`
+ * would never see the extra quantity: never cooked, never charged. This
+ * walks every cart line and returns only the quantity ABOVE what
+ * `sentQuantities` (a dbItemId -> already-sent-quantity snapshot, captured
+ * right after each successful send) says is already on the real order --
+ * a line with no dbItemId at all is entirely new, its full quantity counts.
+ */
+function unsentCartLines(items: CartItem[], sentQuantities: Record<string, number>): CartItem[] {
+  const result: CartItem[] = [];
+  for (const item of items) {
+    if (item.voided) continue;
+    const alreadySent = item.dbItemId ? (sentQuantities[item.dbItemId] ?? 0) : 0;
+    const extraQuantity = item.quantity - alreadySent;
+    if (extraQuantity > 0) result.push({ ...item, quantity: extraQuantity });
+  }
+  return result;
+}
 
 interface TableData {
   id: string;
@@ -80,11 +108,49 @@ export default function POSPage() {
     items: { name: string; quantity: number; priceCents: number; modifiers: { name: string; priceCents: number }[] }[];
   }[] | null>(null);
   const [splitQueueIndex, setSplitQueueIndex] = useState(0);
+  // Resume-unpaid-splits affordance (see PaymentModal's `onClose` comment
+  // below): populated whenever the selected table has PENDING orders --
+  // `split_bill` only points `tables.current_order_id` at the FIRST split,
+  // so these are otherwise invisible after the payment modal is closed
+  // mid-queue. `null` means "not checked / none found".
+  const [resumableSplits, setResumableSplits] = useState<{
+    orderId: string;
+    label: string;
+    amountCents: number;
+    items: { name: string; quantity: number; priceCents: number; modifiers: { name: string; priceCents: number }[] }[];
+  }[] | null>(null);
+  // "Send to kitchen now, pay later" dine-in fix: `openOrderId` is set
+  // whenever the cart is showing a table's real, already-sent-to-the-
+  // kitchen, still-unpaid order (status PENDING/PREPARING/READY/SERVED --
+  // see `retrieve_open_order_v3`). Distinct from a DRAFT/held order (those
+  // never set this -- see `handleTableSelect`): a DRAFT was never sent
+  // anywhere, this WAS. While set, Pay charges this exact order via
+  // `finalize_order_with_payment_v3` instead of creating a new one, and
+  // Hold is disabled (holding an order the kitchen is already cooking has
+  // no sane meaning). `openOrderTotals` carries the order's own
+  // server-computed money so Pay charges exactly `total_cents`, not a
+  // fresh client-side recompute that could drift from a discount already
+  // baked into the order.
+  const [openOrderId, setOpenOrderId] = useState<string | null>(null);
+  const [openOrderTotals, setOpenOrderTotals] = useState<{
+    subtotalCents: number; taxCents: number; discountCents: number; totalCents: number;
+  } | null>(null);
+  // dbItemId -> quantity already confirmed sent to the kitchen, snapshotted
+  // right after every successful retrieval/send -- see `unsentCartLines`'s
+  // doc comment for why this (not just "does this line have a dbItemId")
+  // is the real test for "has this quantity been sent yet".
+  const [sentQuantities, setSentQuantities] = useState<Record<string, number>>({});
   const [loyaltyCard, setLoyaltyCard] = useState<{ card_number: string; customer_name: string; points: number; tier: string } | null>(null);
   const [loyaltyRewards, setLoyaltyRewards] = useState<LoyaltyRewardOption[]>([]);
   const [redeemingReward, setRedeemingReward] = useState(false);
   const [redeemError, setRedeemError] = useState<string | null>(null);
   const [receiptData, setReceiptData] = useState<ReceiptData | null>(null);
+  // F-key "Print" shortcut target (see useKeyboardShortcuts wiring below):
+  // the most recently printed/finalized receipt, so a cashier can reprint
+  // it without re-opening the on-screen receipt flow. Not the same as
+  // `receiptData`, which is scoped to the on-screen-receipt fallback modal
+  // and gets cleared/reused for that separate purpose.
+  const [lastReceipt, setLastReceipt] = useState<ReceiptData | null>(null);
   const [pinAction, setPinAction] = useState<string>("");
   const [discountOverridePin, setDiscountOverridePin] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -92,7 +158,6 @@ export default function POSPage() {
   const [voidTargetName, setVoidTargetName] = useState("");
   const [voidTargetPrice, setVoidTargetPrice] = useState(0);
   const [currencySymbol, setCurrencySymbol] = useState("ل.س");
-  const [showNumpad] = useState(false);
   // 2026-08-03 "next phase" (see nextphase.md §2) -- default true matches
   // the backend default, so the table bar/DINE_IN option never flash-hide
   // before the real value loads.
@@ -257,6 +322,16 @@ export default function POSPage() {
   const handleHold = async () => {
     if (!user) return;
     if (!tableId && orderType === "DINE_IN") return;
+    // An order already sent to the kitchen (openOrderId set) is a real,
+    // in-progress ticket -- there's no sane "hold" for that (it can't be
+    // un-sent). The Hold button is hidden whenever openOrderId is set (see
+    // PayKey usage below); this is a defensive backstop for the
+    // `hold-order` window event, which any code path could still fire.
+    if (openOrderId) {
+      setSuccessMsg("لا يمكن تعليق طلبية أُرسلت للمطبخ بالفعل");
+      setTimeout(() => setSuccessMsg(null), 3000);
+      return;
+    }
     try {
       await holdOrder(
         tableId ?? "", user.id, orderType,
@@ -322,7 +397,23 @@ export default function POSPage() {
     // instead of guessing which items belong to which bill.
     const current = useCartStore.getState();
     if (current.items.length > 0 && current.tableId !== table.id) {
-      if (current.tableId) {
+      if (openOrderId) {
+        // Currently viewing a table's real, already-sent-to-the-kitchen
+        // running tab. Any quantity already confirmed sent (per
+        // `sentQuantities`) is safely parked in the DB order regardless of
+        // what the cart shows -- but anything beyond that (a whole new
+        // line, or extra quantity bumped onto an already-sent line) was
+        // never sent anywhere; switching tables now would silently lose it
+        // (never cooked, never charged). Block instead of guessing.
+        const hasUnsent = unsentCartLines(current.items, sentQuantities).length > 0;
+        if (hasUnsent) {
+          setSuccessMsg("أرسل الأصناف الجديدة للمطبخ أو ألغِها قبل تبديل الطاولة");
+          setTimeout(() => setSuccessMsg(null), 4000);
+          return;
+        }
+        // Everything currently in the cart is already confirmed sent --
+        // just navigating away from a fully-sent tab, nothing to hold.
+      } else if (current.tableId) {
         await handleHold();
       } else if (table.status === "OCCUPIED" && table.current_order_id) {
         setSuccessMsg("لا يمكن تبديل الطاولة الآن -- أفرغ السلة الحالية أولاً أو علّقها");
@@ -330,7 +421,11 @@ export default function POSPage() {
         return;
       }
     }
+    setOpenOrderId(null);
+    setOpenOrderTotals(null);
+    setSentQuantities({});
     setTable(table.id, table.name);
+    setResumableSplits(null);
     if (table.status === "OCCUPIED" && table.current_order_id) {
       const held = await retrieveHeldOrder(table.current_order_id);
       if (held) {
@@ -341,11 +436,65 @@ export default function POSPage() {
           useOrderTypeStore.getState().setCustomerName(held.customerName);
           if (held.customerPhone) useOrderTypeStore.getState().setCustomerPhone(held.customerPhone);
         }
+      } else {
+        // Not a DRAFT -- check whether it's a real, already-sent-to-kitchen
+        // running tab (PENDING/PREPARING/READY/SERVED) instead. This is the
+        // "resume paying an open tab" retrieval the PaymentModal onClose
+        // comment (below) used to flag as a known gap for split orders --
+        // the same fallback closes it for open dine-in tabs.
+        const open = await retrieveOpenOrder(table.current_order_id);
+        if (open) {
+          for (const item of open.items) {
+            addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
+          }
+          if (open.customerName) {
+            useOrderTypeStore.getState().setCustomerName(open.customerName);
+            if (open.customerPhone) useOrderTypeStore.getState().setCustomerPhone(open.customerPhone);
+          }
+          setOpenOrderId(table.current_order_id);
+          setOpenOrderTotals({
+            subtotalCents: open.subtotalCents, taxCents: open.taxCents,
+            discountCents: open.discountCents, totalCents: open.totalCents,
+          });
+          setSentQuantities(Object.fromEntries(open.items.map((i) => [i.dbItemId, i.quantity])));
+        }
+      }
+    }
+    if (table.status === "OCCUPIED") {
+      try {
+        const pending = await listPendingOrdersForTable(table.id);
+        if (pending.length > 0) {
+          setResumableSplits(
+            pending.map((o, i) => ({
+              orderId: o.id,
+              label: pending.length > 1 ? `قسم ${i + 1}` : "الفاتورة المعلّقة",
+              amountCents: o.totalCents,
+              items: o.items,
+            }))
+          );
+        }
+      } catch {
+        // Best-effort discoverability only -- selecting the table itself
+        // (above) already succeeded, never block on this.
       }
     }
   };
 
-  const handlePaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string) => {
+  // Re-enters the split-payment queue for orders `split_bill` created that
+  // never got paid (see `resumableSplits`'s doc comment above and
+  // PaymentModal's `onClose` comment below). Reuses the exact same queue
+  // mechanism `handleSplitConfirm` sets up right after a fresh split, so
+  // `handleSplitPaymentSuccess` (order-id-driven, already resilient to
+  // being called for any PENDING order id) needs no changes at all.
+  const handleResumeSplits = () => {
+    if (!resumableSplits) return;
+    setSplitQueue(resumableSplits);
+    setSplitQueueIndex(0);
+    setResumableSplits(null);
+    setShowPayment(true);
+  };
+
+  const handlePaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string, referenceCode?: string) => {
     if (!user) return;
     if (!tableId && orderType === "DINE_IN") return;
     let orderId: string;
@@ -370,7 +519,7 @@ export default function POSPage() {
       const cfg = await getReceiptConfig();
       const receipt: ReceiptData = {
         chainName: cfg.chain_name, branchName: cfg.branch_name,
-        currency: cfg.currency, orderNumber: orderId.slice(0, 8),
+        currency: cfg.currency, orderNumber: orderNo(orderId),
         tableName: tableName ?? "", orderType: orderType === "DEBT" ? "DINE_IN" : orderType,
         items: items.filter((i) => !i.voided).map((i) => ({ name: i.name, quantity: i.quantity, priceCents: i.unitPriceCents, modifiers: i.modifiers, ...(i.comboId ? { comboId: i.comboId } : {}) })),
         subtotalCents: state.subtotal(), taxCents: t.taxCents, secondaryTaxCents: t.secondaryTaxCents,
@@ -378,12 +527,14 @@ export default function POSPage() {
         savingsCents: state.savings(), totalCents: state.total(), paymentMethod: method, changeCents,
         ...(orderType !== "DINE_IN" && orderType !== "DEBT" && customerName ? { customerName } : {}),
         ...(orderType !== "DINE_IN" && orderType !== "DEBT" && customerPhone ? { customerPhone } : {}),
+        ...(referenceCode ? { referenceCode } : {}),
       };
       let pointsEarned: number | null = null;
       try {
-        pointsEarned = await finalizeOrder(orderId, effectiveMethod, receivedCents, changeCents, receipt, effectiveDebtorId ?? undefined, loyaltyCard?.card_number);
+        pointsEarned = await finalizeOrder(orderId, effectiveMethod, receivedCents, changeCents, receipt, effectiveDebtorId ?? undefined, loyaltyCard?.card_number, referenceCode);
       } catch {
         setReceiptData(receipt);
+        setLastReceipt(receipt);
         setShowOnScreenReceipt(true);
         setShowPayment(false);
         setSuccessMsg("فشلت الطباعة، تم عرض الإيصال على الشاشة");
@@ -394,6 +545,7 @@ export default function POSPage() {
         fetchTables();
         return;
       }
+      setLastReceipt(receipt);
       setShowPayment(false);
       setSuccessMsg(pointsEarned ? `تم الدفع ✓ (+${pointsEarned} نقطة ولاء)` : "تم الدفع ✓");
       setTimeout(() => setSuccessMsg(null), 3000);
@@ -403,7 +555,133 @@ export default function POSPage() {
       fetchTables();
     } catch (err) {
       setShowPayment(false);
+      if (isNoOpenShiftError(err)) setShowOpenShift(true);
       setSuccessMsg(`تعذر إنشاء الطلبية: ${realErrorText(err)}`);
+      setTimeout(() => setSuccessMsg(null), 4000);
+    }
+  };
+
+  // "Send to kitchen now, pay later" dine-in fix: fires a kitchen ticket
+  // WITHOUT collecting payment -- the real gap the prior audit flagged
+  // (today, every order type only reaches the kitchen at the exact moment
+  // it's paid). First press for a table creates the real order (status
+  // PENDING, appears on KDS, table becomes OCCUPIED) via the same
+  // `createOrder` the fast-pay flow already uses -- just without the
+  // `finalizeOrder` call that used to immediately follow it. A later press
+  // (cashier added more items to a table that already has an open tab)
+  // appends ONLY the not-yet-sent lines via `addItemsToOrder`, so a second
+  // trip to the kitchen never re-fires a ticket for food already cooking.
+  // Either way, re-reads the order back from the server afterward
+  // (`retrieveOpenOrder`) and replaces the cart with that authoritative
+  // list -- avoids hand-patching dbItemId/ids locally and guarantees the
+  // cart matches exactly what's now in the DB.
+  const handleSendToKitchen = async () => {
+    if (!user || !tableId || orderType !== "DINE_IN" || items.length === 0) return;
+    if (!shiftId) { setShowOpenShift(true); return; }
+    try {
+      let orderId = openOrderId;
+      if (!orderId) {
+        const state = useCartStore.getState();
+        const t = state.tax();
+        orderId = await createOrder(
+          tableId, user.id, "DINE_IN",
+          items.map((i) => ({ menuItemId: i.menuItemId, name: i.name, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers })),
+          state.subtotal(), t.taxCents, t.secondaryTaxCents, t.serviceChargeCents,
+          state.total(), state.discountCents, state.discountReason,
+          undefined, undefined, undefined,
+          state.savings(), shiftId ?? undefined, discountOverridePin ?? undefined,
+        );
+        setDiscountOverridePin(null);
+      } else {
+        // Only the quantity ABOVE what's already confirmed sent (per
+        // `sentQuantities`) -- not just lines with no dbItemId at all, see
+        // `unsentCartLines`'s doc comment for why that distinction matters.
+        const newItems = unsentCartLines(items, sentQuantities);
+        if (newItems.length === 0) return;
+        await addItemsToOrder(
+          orderId, "DINE_IN",
+          newItems.map((i) => ({ menuItemId: i.menuItemId, name: i.name, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers })),
+        );
+      }
+
+      const open = await retrieveOpenOrder(orderId);
+      clearCart();
+      if (open) {
+        setTable(tableId, tableName ?? "");
+        for (const item of open.items) {
+          addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
+        }
+        if (open.customerName) useOrderTypeStore.getState().setCustomerName(open.customerName);
+        setOpenOrderId(orderId);
+        setOpenOrderTotals({
+          subtotalCents: open.subtotalCents, taxCents: open.taxCents,
+          discountCents: open.discountCents, totalCents: open.totalCents,
+        });
+        setSentQuantities(Object.fromEntries(open.items.map((i) => [i.dbItemId, i.quantity])));
+      }
+      setSuccessMsg("تم الإرسال للمطبخ ✓");
+      setTimeout(() => setSuccessMsg(null), 2500);
+      fetchTables();
+    } catch (err) {
+      setSuccessMsg(`تعذر الإرسال للمطبخ: ${realErrorText(err)}`);
+      setTimeout(() => setSuccessMsg(null), 4000);
+    }
+  };
+
+  // "Send to kitchen now, pay later" dine-in fix: pays an order that's
+  // already real and already sent to the kitchen -- same order-id-driven
+  // `finalizeOrder` call the split-bill payment queue uses (no `createOrder`
+  // here, the order already exists), charging exactly `openOrderTotals.totalCents`
+  // (the order's own server-computed total, handed to PaymentModal as
+  // `totalOverrideCents` below) so it matches what `finalize_order_with_payment_v3`
+  // requires.
+  const handleOpenOrderPaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string) => {
+    if (!openOrderId) return;
+    try {
+      const cfg = await getReceiptConfig();
+      const receipt: ReceiptData = {
+        chainName: cfg.chain_name, branchName: cfg.branch_name,
+        currency: cfg.currency, orderNumber: orderNo(openOrderId),
+        tableName: tableName ?? "", orderType: "DINE_IN",
+        items: items.filter((i) => !i.voided).map((i) => ({ name: i.name, quantity: i.quantity, priceCents: i.unitPriceCents, modifiers: i.modifiers, ...(i.comboId ? { comboId: i.comboId } : {}) })),
+        subtotalCents: openOrderTotals?.subtotalCents ?? 0,
+        taxCents: openOrderTotals?.taxCents ?? 0, secondaryTaxCents: 0, serviceChargeCents: 0,
+        discountCents: openOrderTotals?.discountCents ?? 0,
+        savingsCents: 0, totalCents: openOrderTotals?.totalCents ?? 0,
+        paymentMethod: method, changeCents,
+      };
+      let pointsEarned: number | null = null;
+      try {
+        pointsEarned = await finalizeOrder(openOrderId, method, receivedCents, changeCents, receipt, debtorId, loyaltyCard?.card_number);
+      } catch {
+        setReceiptData(receipt);
+        setShowOnScreenReceipt(true);
+        setShowPayment(false);
+        setSuccessMsg("فشلت الطباعة، تم عرض الإيصال على الشاشة");
+        setTimeout(() => setSuccessMsg(null), 5000);
+        clearCart();
+        resetOrderInfo();
+        setLoyaltyCard(null);
+        setOpenOrderId(null);
+        setOpenOrderTotals(null);
+        setSentQuantities({});
+        fetchTables();
+        return;
+      }
+      setShowPayment(false);
+      setSuccessMsg(pointsEarned ? `تم الدفع ✓ (+${pointsEarned} نقطة ولاء)` : "تم الدفع ✓");
+      setTimeout(() => setSuccessMsg(null), 3000);
+      clearCart();
+      resetOrderInfo();
+      setLoyaltyCard(null);
+      setOpenOrderId(null);
+      setOpenOrderTotals(null);
+      setSentQuantities({});
+      fetchTables();
+    } catch (err) {
+      setShowPayment(false);
+      if (isNoOpenShiftError(err)) setShowOpenShift(true);
+      setSuccessMsg(`تعذر إتمام الدفع: ${realErrorText(err)}`);
       setTimeout(() => setSuccessMsg(null), 4000);
     }
   };
@@ -445,21 +723,23 @@ export default function POSPage() {
   // no `createOrder` call, the order already exists (created by
   // `split_bill_v3`). Advances to the next queued split on success, or
   // closes out the whole split-payment flow once the queue is empty.
-  const handleSplitPaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string) => {
+  const handleSplitPaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string, referenceCode?: string) => {
     if (!splitQueue) return;
     const current = splitQueue[splitQueueIndex];
     try {
       const cfg = await getReceiptConfig();
       const receipt: ReceiptData = {
         chainName: cfg.chain_name, branchName: cfg.branch_name,
-        currency: cfg.currency, orderNumber: current.orderId.slice(0, 8),
+        currency: cfg.currency, orderNumber: orderNo(current.orderId),
         tableName: tableName ?? "", orderType: "DINE_IN",
         items: current.items,
         subtotalCents: current.amountCents, taxCents: 0, secondaryTaxCents: 0,
         serviceChargeCents: 0, discountCents: 0,
         savingsCents: 0, totalCents: current.amountCents, paymentMethod: method, changeCents,
+        ...(referenceCode ? { referenceCode } : {}),
       };
-      await finalizeOrder(current.orderId, method, receivedCents, changeCents, receipt, debtorId);
+      await finalizeOrder(current.orderId, method, receivedCents, changeCents, receipt, debtorId, undefined, referenceCode);
+      setLastReceipt(receipt);
       const nextIndex = splitQueueIndex + 1;
       if (nextIndex < splitQueue.length) {
         setSplitQueueIndex(nextIndex);
@@ -501,6 +781,18 @@ export default function POSPage() {
       if (target.dbItemId) {
         try {
           await voidOrderItem(target.dbItemId, reason, managerOverridePin);
+          // The void re-prices the open tab in Rust -- show that total,
+          // not the stale pre-void one (which is what the table was
+          // being asked to pay).
+          if (openOrderId) {
+            const open = await retrieveOpenOrder(openOrderId);
+            if (open) {
+              setOpenOrderTotals({
+                subtotalCents: open.subtotalCents, taxCents: open.taxCents,
+                discountCents: open.discountCents, totalCents: open.totalCents,
+              });
+            }
+          }
         } catch (err) {
           setSuccessMsg(`تعذر حفظ الإلغاء: ${realErrorText(err)}`);
           setTimeout(() => setSuccessMsg(null), 4000);
@@ -546,29 +838,46 @@ export default function POSPage() {
   [items, menuItemsById]);
 
   const cartTotalCents = useCartStore((s) => s.total());
-  const totalCents = cartTotalCents;
-  const subtotalCents = useCartStore((s) => s.subtotal());
-  const discountCents = useCartStore((s) => s.discountCents);
-  const orderNumber = useMemo(() => tableId?.slice(0, 8) || "0000", [tableId]);
+  const cartSubtotalCents = useCartStore((s) => s.subtotal());
+  const cartDiscountCents = useCartStore((s) => s.discountCents);
+  // Once a table's real open tab is loaded (openOrderId set), show the
+  // ORDER's own server-computed totals, not a fresh client-side recompute
+  // -- the order may carry a discount the cart never restores on retrieval
+  // (same limitation `retrieveHeldOrder`'s DRAFT path already has), so the
+  // two can legitimately differ. This is what's actually charged on Pay.
+  const totalCents = openOrderId ? (openOrderTotals?.totalCents ?? cartTotalCents) : cartTotalCents;
+  const subtotalCents = openOrderId ? (openOrderTotals?.subtotalCents ?? cartSubtotalCents) : cartSubtotalCents;
+  const discountCents = openOrderId ? (openOrderTotals?.discountCents ?? 0) : cartDiscountCents;
   const currentOrderId = tables.find((t) => t.id === tableId)?.current_order_id;
+  // Was `tableId.slice(0, 8)` -- a TABLE id shown as "#order", identical for
+  // every takeaway (they all share the implicit counter table).
+  const liveOrderId = openOrderId ?? currentOrderId ?? null;
+  const orderNumber = liveOrderId ? orderNo(liveOrderId) : "";
+  const orderTag = orderNumber ? `#${orderNumber}` : "طلب جديد";
+  // "Send to kitchen now, pay later" dine-in fix: quantity in the cart that
+  // hasn't actually made it to a real order yet -- either a whole new line,
+  // or extra quantity bumped onto an already-sent line (see
+  // `unsentCartLines`'s doc comment). Only meaningful once an open tab
+  // exists (openOrderId set); empty otherwise.
+  const unsentLines = openOrderId ? unsentCartLines(items, sentQuantities) : [];
 
   const ORDER_TYPE_LABELS: Record<string, string> = {
-    DINE_IN: "صالة", TAKEAWAY: "سفري", ONLINE: "أونلاين", DEBT: "دين",
+    DINE_IN: "صالة", TAKEAWAY: "سفري", DEBT: "دين",
   };
   const ORDER_TYPE_ICONS: Record<string, typeof IconToolsKitchen2> = {
-    DINE_IN: IconToolsKitchen2, TAKEAWAY: IconShoppingBag, ONLINE: IconWorld, DEBT: IconWallet,
+    DINE_IN: IconToolsKitchen2, TAKEAWAY: IconShoppingBag, DEBT: IconWallet,
   };
   const OrderTypeIconComponent = ORDER_TYPE_ICONS[orderType] || IconToolsKitchen2;
   // 2026-08-03 "next phase": with tables off, `tableId` is always the
   // implicit counter table -- showing "طاولة المنضدة" ("Table Counter")
   // would be a confusing label for something the cashier never picked.
   const tableLabel = !hasTables
-    ? `#${orderNumber}`
+    ? orderTag
     : tableId
-    ? `طاولة ${tableName} / #${orderNumber}`
+    ? `طاولة ${tableName} / ${orderTag}`
     : orderType === "DINE_IN"
     ? "اختر طاولة"
-    : `#${orderNumber}`;
+    : orderTag;
 
   const handleIncrementLine = (id: string) => updateQuantity(id, 1);
   const handleDecrementLine = (id: string) => updateQuantity(id, -1);
@@ -605,6 +914,60 @@ export default function POSPage() {
       setShowOnScreenReceipt(true);
     }
   };
+
+  // F4 "Print" shortcut: reprints the last completed sale (`lastReceipt`),
+  // not the in-progress cart draft the toolbar's own print button
+  // (`handlePrintDraft`) targets -- falls back to the draft print only if
+  // nothing has actually been sold yet this session, so the shortcut is
+  // never a silent no-op.
+  const handleReprintLast = async () => {
+    if (!lastReceipt) {
+      await handlePrintDraft();
+      return;
+    }
+    try {
+      await printReceipt(lastReceipt);
+    } catch {
+      setReceiptData(lastReceipt);
+      setShowOnScreenReceipt(true);
+    }
+  };
+
+  // F-key shortcuts for the core sales flow -- Pay/Hold/Void/Print, the
+  // same actions their equivalent on-screen buttons trigger (PayKey's
+  // onClick, handleHold, handleVoidLineClick, handleReprintLast). The hook
+  // maps digit-row keys 1-4 to "F1"-"F4" (see useKeyboardShortcuts.ts);
+  // typing in a real input is already guarded there.
+  useKeyboardShortcuts({
+    F1: () => {
+      if (items.length === 0 || (!tableId && orderType === "DINE_IN")) return;
+      if (!shiftId) { setShowOpenShift(true); return; }
+      const cartSubtotal = useCartStore.getState().subtotal();
+      const discountPercent = cartSubtotal > 0
+        ? Math.round((useCartStore.getState().discountCents / cartSubtotal) * 100)
+        : 0;
+      if (discountPercent > maxDiscountPercent) {
+        setPinAction("discount");
+        setShowPin(true);
+      } else {
+        setShowPayment(true);
+      }
+    },
+    F2: () => {
+      if (items.length === 0 || (!tableId && orderType === "DINE_IN")) return;
+      if (!shiftId) { setShowOpenShift(true); return; }
+      handleHold();
+    },
+    F3: () => {
+      // No line-selection concept exists in OrderPanel today (every line
+      // just has its own inline void button) -- targeting the most
+      // recently added, not-yet-voided line is the closest reasonable
+      // stand-in for "the selected item" a dedicated shortcut implies.
+      const target = [...items].reverse().find((i) => !i.voided);
+      if (target) handleVoidLineClick(target.id);
+    },
+    F4: () => { handleReprintLast(); },
+  });
 
   return (
     // Order panel is the FIRST child so RTL flow pins it to the physical
@@ -666,7 +1029,16 @@ export default function POSPage() {
                   // with no undo. Every other destructive action in this
                   // app (void item, cancel PO, suspend staff, force-close
                   // shift) already confirms first; this one didn't.
-                  if (window.confirm("هل تريد إلغاء الطلبية الحالية بالكامل؟ لا يمكن التراجع عن ذلك.")) clearCart();
+                  if (window.confirm("هل تريد إلغاء الطلبية الحالية بالكامل؟ لا يمكن التراجع عن ذلك.")) {
+                    // Only clears the LOCAL cart view -- if openOrderId is
+                    // set, the real order already sent to the kitchen is
+                    // untouched in the DB (kitchen keeps cooking what it
+                    // already has; nothing here cancels that order itself).
+                    clearCart();
+                    setOpenOrderId(null);
+                    setOpenOrderTotals(null);
+                    setSentQuantities({});
+                  }
                 }}
                 disabled={items.length === 0}
                 title="إلغاء الطلبية"
@@ -682,9 +1054,26 @@ export default function POSPage() {
             // button with no explanation is exactly the confusing dead-end this
             // fix exists to remove. Pay/Hold both stay clickable with no shift
             // open and take the cashier straight to opening one instead.
-            disabled={items.length === 0 || (!tableId && orderType === "DINE_IN")}
+            // Once a table's tab is open (openOrderId set), Pay is also
+            // blocked while any cart quantity hasn't been sent to the
+            // kitchen yet (unsentLines) -- paying now would charge only
+            // what's already on the order and silently drop that quantity
+            // (never cooked, never charged) once the cart clears after
+            // payment. "إرسال للمطبخ" below clears that block.
+            disabled={
+              items.length === 0 ||
+              (!tableId && orderType === "DINE_IN") ||
+              (!!openOrderId && unsentLines.length > 0)
+            }
             onClick={() => {
               if (!shiftId) { setShowOpenShift(true); return; }
+              if (openOrderId) {
+                // Discount cap was already enforced at order-creation time
+                // (server-side, via enforce_discount_cap) -- nothing new is
+                // being discounted here, just paying the existing order.
+                setShowPayment(true);
+                return;
+              }
               const cartSubtotal = useCartStore.getState().subtotal();
               const discountPercent = cartSubtotal > 0
                 ? Math.round((useCartStore.getState().discountCents / cartSubtotal) * 100)
@@ -696,8 +1085,19 @@ export default function POSPage() {
                 setShowPayment(true);
               }
             }}
-            {...(items.length > 0 ? { onHold: shiftId ? handleHold as () => void : () => setShowOpenShift(true) } : {})}
+            {...(items.length > 0 && !openOrderId ? { onHold: shiftId ? handleHold as () => void : () => setShowOpenShift(true) } : {})}
             holdDisabled={!tableId && orderType === "DINE_IN"}
+            // "Send to kitchen now, pay later" dine-in fix: only offered for
+            // DINE_IN with a table picked -- TAKEAWAY (and DINE_IN quick
+            // service, if the cashier just hits Pay directly) keeps the
+            // exact fast pay-first flow unchanged, this is purely additive.
+            {...(orderType === "DINE_IN" && tableId
+              ? {
+                  onSendToKitchen: shiftId ? handleSendToKitchen : () => setShowOpenShift(true),
+                  sendToKitchenDisabled: items.length === 0 || (!!openOrderId && unsentLines.length === 0),
+                  sendToKitchenLabel: openOrderId ? "إرسال الإضافة للمطبخ" : "إرسال للمطبخ",
+                }
+              : {})}
           />
         </OrderPanel>
       </div>
@@ -786,7 +1186,6 @@ export default function POSPage() {
             onAddItem={(item) => {
               addItem({ ...item, modifiers: [] });
             }}
-            showNumpad={showNumpad}
           />
         </div>
 
@@ -928,30 +1327,41 @@ export default function POSPage() {
       {showPayment && (
         <PaymentModal
           // Keyed by the order actually being paid so each split's turn
-          // gets fresh internal state (received amount, debtor phone, etc)
-          // instead of carrying over whatever was typed for the previous
-          // split.
-          key={splitQueue ? splitQueue[splitQueueIndex].orderId : "cart"}
+          // (or a resumed open tab) gets fresh internal state (received
+          // amount, debtor phone, etc) instead of carrying over whatever
+          // was typed for the previous split/order.
+          key={splitQueue ? splitQueue[splitQueueIndex].orderId : openOrderId ?? "cart"}
           onClose={() => {
             setShowPayment(false);
-            // Known limitation: closing mid-queue leaves any
-            // not-yet-paid split orders as real, valid PENDING orders in
-            // the DB (never lost), but there is currently no dedicated
-            // "resume paying pending splits" UI to get back to them --
+            // Closing mid-queue leaves any not-yet-paid split orders as
+            // real, valid PENDING orders in the DB (never lost) --
             // re-selecting the table only retrieves DRAFT (held) orders,
-            // not PENDING ones. Clearing the queue here at least makes
-            // that state visible/consistent instead of silently stuck.
+            // not PENDING ones, so they'd otherwise disappear from the UI.
+            // Clearing the queue here makes that state visible/consistent
+            // instead of silently stuck, and `handleTableSelect` /
+            // `resumableSplits` above re-surface them (a "استئناف الدفع"
+            // banner) the next time this table is selected, driving them
+            // back through this exact queue via `handleResumeSplits`.
+            // (Dine-in OPEN TABS -- not split-bill children -- are a
+            // separate, already-solved case: re-selecting the table
+            // retrieves the open order back via `retrieveOpenOrder`, same
+            // as a DRAFT.)
             if (splitQueue) {
               setSplitQueue(null);
               setSplitQueueIndex(0);
               fetchTables();
             }
           }}
-          onSuccess={splitQueue ? handleSplitPaymentSuccess : handlePaymentSuccess}
+          onSuccess={splitQueue ? handleSplitPaymentSuccess : openOrderId ? handleOpenOrderPaymentSuccess : handlePaymentSuccess}
           {...(splitQueue
             ? {
                 totalOverrideCents: splitQueue[splitQueueIndex].amountCents,
                 subtitleOverride: `${splitQueue[splitQueueIndex].label} · ${splitQueueIndex + 1}/${splitQueue.length}`,
+              }
+            : openOrderId
+            ? {
+                totalOverrideCents: openOrderTotals?.totalCents ?? 0,
+                subtitleOverride: `طاولة ${tableName ?? ""} · فاتورة مفتوحة`,
               }
             : orderType === "DEBT" && debtorId && debtorName
             ? { initialMethod: "CREDIT" as const, initialDebtorId: debtorId, initialDebtorName: debtorName }
@@ -998,6 +1408,30 @@ export default function POSPage() {
         <OnScreenReceiptModal receiptData={receiptData} onClose={() => setShowOnScreenReceipt(false)} />
       )}
       </Suspense>
+
+      {resumableSplits && resumableSplits.length > 0 && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 flex items-center gap-3 text-white px-5 py-3 rounded-[12px] shadow-sh-3 z-50 text-sm font-medium font-arabic" style={{ backgroundColor: "var(--warn)" }}>
+          <span>
+            {resumableSplits.length > 1
+              ? `يوجد ${resumableSplits.length} فواتير مقسّمة لم يتم دفعها لهذه الطاولة`
+              : "يوجد فاتورة معلّقة لم يتم دفعها لهذه الطاولة"}
+          </span>
+          <button
+            type="button"
+            onClick={handleResumeSplits}
+            className="bg-white/20 hover:bg-white/30 transition-colors rounded-[8px] px-3 py-1 text-xs font-bold"
+          >
+            استئناف الدفع
+          </button>
+          <button
+            type="button"
+            onClick={() => setResumableSplits(null)}
+            className="text-white/70 hover:text-white text-xs"
+          >
+            إغلاق
+          </button>
+        </div>
+      )}
 
       {successMsg && (
         <div className="fixed top-20 left-1/2 -translate-x-1/2 text-white px-6 py-3 rounded-[12px] shadow-sh-3 z-50 text-sm font-medium" style={{ backgroundColor: "var(--ok)" }}>

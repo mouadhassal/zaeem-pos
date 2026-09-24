@@ -1,7 +1,5 @@
 import type { UserRole } from "../db/types";
 
-export type OrderType = "dine-in" | "takeaway" | "delivery" | "online";
-
 export interface SidebarNavItem {
   id: string;
   label: string;
@@ -139,6 +137,8 @@ export function canManageMenu(role: UserRole | undefined): boolean {
   return role === "MANAGER" || role === "ADMIN" || role === "OWNER";
 }
 
-export function canForceCloseShift(role: UserRole | undefined): boolean {
-  return role === "MANAGER" || role === "ADMIN" || role === "OWNER";
+// Mirrors force_close_shift_v3's Manager+ rank check (security.rs):
+// MANAGER, OWNER and the top PLATFORM role.
+export function canForceCloseShift(role: UserRole | "PLATFORM" | string | undefined): boolean {
+  return role === "MANAGER" || role === "ADMIN" || role === "OWNER" || role === "PLATFORM";
 }

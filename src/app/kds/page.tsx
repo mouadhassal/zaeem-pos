@@ -6,6 +6,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { connectLanChangeSocket } from "../../lib/lan";
 import { OutOfStockPanel } from "./OutOfStockPanel";
 import { formatArabicTime } from "../../lib/dateLocal";
+import { orderNo } from "../../lib/orderNumber";
 
 interface KDSItem {
   name: string;
@@ -22,12 +23,6 @@ interface KDSOrder {
   created_at: string;
   notes: string | null;
 }
-
-const STATUS_FLOW: Record<string, string> = {
-  PENDING: "PREPARING",
-  PREPARING: "READY",
-  READY: "SERVED",
-};
 
 const STATUS_LABELS: Record<string, string> = {
   PENDING: "قيد الانتظار",
@@ -89,9 +84,16 @@ export default function KDSPage() {
       const kdsOrders = await invoke<KDSOrder[]>("list_kitchen_orders_v3", { sessionToken: token });
 
       setOrders((prev) => {
-        const currCount = kdsOrders.filter((o) => o.status === "PENDING").length;
-        const prevCountVal = prev.filter((o) => o.status === "PENDING").length;
-        if (currCount > prevCountVal) playAlert();
+        // Was a net-count comparison (curr PENDING count > prev PENDING
+        // count) -- missed a brand-new PENDING order landing in the same
+        // poll window as another PENDING order advancing to PREPARING,
+        // since the counts could stay equal (or even drop) with zero
+        // sound despite a real new order arriving. Set-difference on IDs
+        // instead: alert on any order ID that's PENDING now and either
+        // wasn't present last poll, or was present but not yet PENDING.
+        const prevPendingIds = new Set(prev.filter((o) => o.status === "PENDING").map((o) => o.id));
+        const hasNewPending = kdsOrders.some((o) => o.status === "PENDING" && !prevPendingIds.has(o.id));
+        if (hasNewPending) playAlert();
         return kdsOrders;
       });
     } catch (err) {
@@ -130,11 +132,9 @@ export default function KDSPage() {
     };
   }, []);
 
-  const handleStatusChange = async (orderId: string, currentStatus: string) => {
-    const nextStatus = STATUS_FLOW[currentStatus] as "PREPARING" | "READY" | "SERVED" | undefined;
-    if (!nextStatus) return;
+  const handleStatusChange = async (orderId: string, newStatus: "PREPARING" | "READY" | "SERVED") => {
     try {
-      await invoke("update_order_status_v3", { sessionToken: token, orderId, newStatus: nextStatus });
+      await invoke("update_order_status_v3", { sessionToken: token, orderId, newStatus });
       await fetchOrders();
     } catch (err) {
       setError(`حدث خطأ في تحديث الحالة: ${realErrorText(err)}`);
@@ -210,7 +210,7 @@ export default function KDSPage() {
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <span className="text-lg font-bold text-ink-900 font-arabic">
-                        {order.table_name || `#${order.id.slice(0, 6)}`}
+                        {order.table_name || `#${orderNo(order.id)}`}
                       </span>
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-arabic bg-surface text-ink-500">
                         {ORDER_TYPE_LABELS[order.order_type] || order.order_type}
@@ -262,18 +262,18 @@ export default function KDSPage() {
 
                 <div className="p-3 border-t border-ink-200">
                   {order.status === "PENDING" && (
-                    <button onClick={() => handleStatusChange(order.id, order.status)} className="w-full h-12 rounded-xl bg-ink-800 text-white text-sm font-bold hover:bg-ink-900 transition-[background-color,transform] active:scale-[0.98]">
+                    <button onClick={() => handleStatusChange(order.id, "PREPARING")} className="w-full h-12 rounded-xl bg-ink-800 text-white text-sm font-bold hover:bg-ink-900 transition-[background-color,transform] active:scale-[0.98]">
                       بدء التحضير
                     </button>
                   )}
                   {order.status === "PREPARING" && (
-                    <button onClick={() => handleStatusChange(order.id, order.status)} className="w-full h-12 rounded-xl bg-ok text-white text-sm font-bold hover:bg-ok transition-[background-color,transform] active:scale-[0.98]">
+                    <button onClick={() => handleStatusChange(order.id, "READY")} className="w-full h-12 rounded-xl bg-ok text-white text-sm font-bold hover:bg-ok transition-[background-color,transform] active:scale-[0.98]">
                       تم التجهيز
                     </button>
                   )}
                   {order.status === "READY" && (
                     <div className="flex gap-2">
-                      <button onClick={() => handleStatusChange(order.id, order.status)} className="flex-1 h-12 rounded-xl bg-ink-200 text-ink-500 text-sm font-bold hover:bg-ink-300 transition-[background-color,transform] active:scale-[0.98]">
+                      <button onClick={() => handleStatusChange(order.id, "SERVED")} className="flex-1 h-12 rounded-xl bg-ink-200 text-ink-500 text-sm font-bold hover:bg-ink-300 transition-[background-color,transform] active:scale-[0.98]">
                         تم التقديم
                       </button>
                       <button onClick={() => handleStatusChange(order.id, "PREPARING")} className="px-4 h-12 rounded-xl bg-surface-alt text-warn text-sm font-bold hover:bg-ink-200 transition-[background-color,transform] active:scale-[0.98]">

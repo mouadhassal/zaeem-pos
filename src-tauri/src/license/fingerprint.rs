@@ -13,6 +13,7 @@
 
 pub use license_core::fingerprint::MachineFingerprint;
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -27,6 +28,7 @@ use std::sync::OnceLock;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+#[cfg(target_os = "windows")]
 fn run_powershell(script: &str) -> Option<String> {
     let mut cmd = Command::new("powershell");
     cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);

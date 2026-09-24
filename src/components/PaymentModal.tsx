@@ -35,7 +35,7 @@ const QUICK_AMOUNTS = [50, 100, 200, 500, 1000, 1500, 2000];
 
 interface Props {
   onClose: () => void;
-  onSuccess: (method: string, receivedCents: number, changeCents: number, debtorId?: string) => void | Promise<void>;
+  onSuccess: (method: string, receivedCents: number, changeCents: number, debtorId?: string, referenceCode?: string) => void | Promise<void>;
   initialMethod?: PaymentMethod | undefined;
   initialDebtorId?: string | undefined;
   initialDebtorName?: string | undefined;
@@ -65,9 +65,22 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
   const [debtorId, setDebtorId] = useState<string | null>(initialDebtorId ?? null);
   const [showNewDebtorForm, setShowNewDebtorForm] = useState(false);
   const [newDebtorName, setNewDebtorName] = useState("");
+  // 2026-09-13 audit fix: CARD/WALLET used to be "sufficient" unconditionally
+  // -- the cashier's tap of "Confirm" was the ENTIRE evidence a real payment
+  // happened, with no device/gateway callback of any kind (this app has no
+  // real payment gateway integration to call). Requiring the terminal's own
+  // approval/reference code here turns that blind tap into a deliberate,
+  // evidenced action tied to a real receipt -- honest about what this app
+  // can actually verify (nothing, on its own) instead of pretending
+  // automatic confirmation happened.
+  const [referenceCode, setReferenceCode] = useState("");
   const receivedCents = parseMoneyInput(receivedStr);
   const changeCents = Math.max(0, receivedCents - totalCents);
-  const sufficient = method === "CARD" || method === "WALLET" || (method === "CREDIT" && !!debtorId) || receivedCents >= totalCents;
+  const referenceCodeProvided = referenceCode.trim().length > 0;
+  const sufficient =
+    ((method === "CARD" || method === "WALLET") && referenceCodeProvided) ||
+    (method === "CREDIT" && !!debtorId) ||
+    (method === "CASH" && receivedCents >= totalCents);
 
   // 2026-08-18 numpad double-digit fix: this used to also handle digit and
   // backspace keys, which duplicated the controlled `<input onChange>`
@@ -103,11 +116,14 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
     if (method !== "CREDIT") {
       setDebtorName(null); setDebtorId(null); setError(null);
     }
+    if (method !== "CARD" && method !== "WALLET") {
+      setReferenceCode("");
+    }
   }, [method]);
 
   const handleConfirm = async () => {
     if (!sufficient) {
-      setError("المبلغ غير كافٍ");
+      setError(method === "CARD" || method === "WALLET" ? "يرجى إدخال رقم المرجع من جهاز الدفع" : "المبلغ غير كافٍ");
       return;
     }
     // 2026-08-09 audit fix: onSuccess (handlePaymentSuccess in pos/page.tsx)
@@ -141,7 +157,13 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
           // drawer may not be connected
         }
       }
-      await onSuccess(method, method === "CASH" ? receivedCents : totalCents, method === "CASH" ? changeCents : 0);
+      await onSuccess(
+        method,
+        method === "CASH" ? receivedCents : totalCents,
+        method === "CASH" ? changeCents : 0,
+        undefined,
+        method === "CARD" || method === "WALLET" ? referenceCode.trim() : undefined
+      );
     } finally {
       setProcessing(false);
     }
@@ -170,7 +192,9 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
           <div className="font-arabic text-xs text-ink-500">
             {subtitleOverride ?? (
               <>
-                {useCartStore.getState().tableName
+                {/* The implicit counter table (takeaway / shops with no
+                    tables) is not a table the customer sat at. */}
+                {useCartStore.getState().tableName && useCartStore.getState().tableName !== "المنضدة"
                   ? `طاولة ${useCartStore.getState().tableName} · `
                   : ""}
                 {useCartStore.getState().items.length} أصناف
@@ -371,17 +395,41 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
           </div>
         )}
 
-        {method !== "CASH" && method !== "CREDIT" && (
-          <div className="px-6 py-12 text-center">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-accent-soft flex items-center justify-center">
-              <IconCircleCheck className="w-8 h-8 text-accent-text" stroke={1.75} />
+        {/* 2026-09-13 audit fix: this used to be a static "please swipe/wait"
+            screen with no device or gateway callback of any kind -- the
+            cashier's tap of "Confirm" alone marked the order PAID, with zero
+            verification a real payment ever happened. This app has no real
+            payment terminal/gateway integration to call (that needs a real
+            provider account/SDK this task doesn't have), so instead of
+            pretending automatic confirmation is happening, the cashier must
+            type in the approval/reference number their card terminal or
+            wallet app actually displayed after a successful charge --
+            turning "Confirm" into a deliberate, evidenced action with a real
+            audit trail (stored on the payment row), not a blind tap. */}
+        {(method === "CARD" || method === "WALLET") && (
+          <div className="px-6 py-6">
+            <div className="w-14 h-14 mx-auto mb-3 rounded-full bg-accent-soft flex items-center justify-center">
+              <IconCircleCheck className="w-7 h-7 text-accent-text" stroke={1.75} />
             </div>
-            <p className="font-arabic text-ink-900 font-medium mb-2">
-              {method === "CARD" ? "استخدام جهاز البطاقة" : "الدفع بالمحفظة"}
+            <p className="font-arabic text-ink-900 font-medium mb-1 text-center">
+              {method === "CARD" ? "الدفع بالبطاقة" : "الدفع بالمحفظة"}
             </p>
-            <p className="font-arabic text-sm text-ink-500">
-              {method === "CARD" ? "يرجى تمرير البطاقة على الجهاز" : "سيتم خصم المبلغ من المحفظة"}
+            <p className="font-arabic text-sm text-ink-500 mb-4 text-center">
+              أتمم العملية على {method === "CARD" ? "جهاز البطاقة" : "تطبيق المحفظة"}، ثم أدخل رقم المرجع الذي يظهر بعد نجاح العملية
             </p>
+            <label className="font-arabic text-sm text-ink-500 mb-1.5 block">
+              رقم المرجع من جهاز الدفع
+            </label>
+            <input
+              type="text"
+              inputMode="text"
+              value={referenceCode}
+              onChange={(e) => { setReferenceCode(e.target.value); setError(null); }}
+              className="w-full h-12 text-center font-mono text-lg font-bold text-ink-900 bg-white border-2 border-ink-200 rounded-sm px-4 focus:border-accent outline-none transition-[border-color]"
+              placeholder="مثال: 123456"
+              autoFocus
+              dir="ltr"
+            />
           </div>
         )}
 

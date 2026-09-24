@@ -66,7 +66,17 @@ pub enum AnomalySeverity {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Answer {
     pub text: String,
-    pub confidence: f64,
+    /// `None` when the provider has no real confidence signal for this
+    /// answer -- `RemoteAiProvider::answer` (the only provider real
+    /// installs use) always returns `None` here: the `ai-assistant` edge
+    /// function's response shape is just `{ answer: string }`, no
+    /// confidence score, so there is nothing honest to report. Do NOT
+    /// hardcode a number here to make the type "always populated" -- a
+    /// fake 1.0 (100%) regardless of the real LLM response is exactly the
+    /// bug this field's shape now prevents. `MockAiProvider` (dev/test
+    /// only) still returns `Some(_)` since its "confidence" is just a
+    /// fixture value, not a claim about a real model's certainty.
+    pub confidence: Option<f64>,
 }
 
 /// 2026-08-04: `AssistantSnapshot` (crate::assistant) replaced this --

@@ -52,7 +52,15 @@ export default function TransferOrderModal({ currentTable, tables, onTransfer, o
               {freeTables.map((table) => (
                 <button
                   key={table.id}
-                  onClick={() => onTransfer(table.id)}
+                  onClick={() => {
+                    // Transferring moves a real order between tables with a
+                    // single tap -- same destructive-action gap Cancel Order
+                    // had (see its `window.confirm` in pos/page.tsx) until
+                    // it got a confirm step too.
+                    if (window.confirm(`هل تريد نقل الطلبية إلى طاولة ${table.name}؟`)) {
+                      onTransfer(table.id);
+                    }
+                  }}
                   className="h-16 rounded-xl bg-surface-alt border-2 border-line text-ink-700 font-arabic font-bold hover:border-ink-400 transition-colors"
                 >
                   {table.name}

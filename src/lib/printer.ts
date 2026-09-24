@@ -177,6 +177,14 @@ export interface ReceiptData {
   customerName?: string;
   customerPhone?: string;
   deliveryAddress?: string;
+  /**
+   * 2026-09-13 audit fix: the cashier-entered terminal/wallet approval code
+   * for CARD/WALLET payments (required in PaymentModal.tsx before
+   * "Confirm" is enabled -- see that file's own comment). Shown on the
+   * receipt as the one natural, already-payment-time place to surface it;
+   * absent for CASH/CREDIT, which never collect one.
+   */
+  referenceCode?: string;
 }
 
 export interface KitchenTicketData {
@@ -380,6 +388,7 @@ function renderReceiptCanvas(data: ReceiptData, paperWidthMm: number): HTMLCanva
   drawRule(b);
 
   if (data.changeCents > 0) drawTwoCol(b, "الباقي", fmt(data.changeCents));
+  if (data.referenceCode) drawTwoCol(b, "رقم المرجع", data.referenceCode, { size: 20 });
 
   b.y += 10;
   drawLine(b, "شكراً لزيارتكم", { align: "center", size: 26 });
@@ -446,19 +455,13 @@ export async function printToDevice(data: Uint8Array, printer: PrinterConfig): P
     return;
   }
 
+  // 2026-09-23 fix: this used to `fetch` an HTTP POST to IP:port. LAN
+  // thermal printers speak raw TCP (port 9100), not HTTP -- the POST's
+  // CORS preflight was never answered, so kitchen tickets never arrived.
+  // Raw socket write now happens in Rust (print.rs).
   if (printer.interface === "NETWORK" && printer.ipAddress) {
-    try {
-      const resp = await fetch(`http://${printer.ipAddress}:${printer.port}`, {
-        method: "POST",
-        body: data.buffer as ArrayBuffer,
-        headers: { "Content-Type": "application/octet-stream" },
-      });
-      if (!resp.ok) throw new Error(`Network printer returned ${resp.status}`);
-      return;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Network printer error";
-      throw new Error(msg);
-    }
+    await invoke("print_network_raw_v3", { ipAddress: printer.ipAddress, port: printer.port || 9100, data: Array.from(data) });
+    return;
   }
 
   const blob = new Blob([data.buffer as ArrayBuffer], { type: "application/octet-stream" });
@@ -534,15 +537,34 @@ export async function printReceipt(data: ReceiptData): Promise<void> {
   }
 }
 
+async function sendKitchenTicketToPrinter(
+  data: KitchenTicketData,
+  p: any,
+  defaultPaperWidthK: number
+): Promise<void> {
+  const buf = buildKitchenTicketJob(data, p.paper_width_mm ?? defaultPaperWidthK);
+  await printToDevice(buf, {
+    id: p.id,
+    name: p.name,
+    printerType: "KITCHEN",
+    interface: p.interface,
+    vendorId: p.vendor_id,
+    ipAddress: p.ip_address,
+    port: p.port,
+    paperWidthMm: p.paper_width_mm,
+    drawerPulseMs: p.drawer_pulse_ms,
+    isPrimary: p.is_primary,
+    isSecondary: p.is_secondary,
+    systemPrinterName: p.system_printer_name ?? undefined,
+  });
+}
+
 export async function printKitchenTicket(data: KitchenTicketData): Promise<void> {
   const allPrinters = await invoke<PrinterRowV3[]>("list_active_printers_v3", { sessionToken: token() });
   const printers = allPrinters.filter((p) => p.printer_type === "KITCHEN");
 
   const chainK = await invoke<ChainConfigV3>("get_chain_config_v3", { sessionToken: token() });
   const defaultPaperWidthK = chainK?.default_paper_width ?? 80;
-
-  let anyPrinted = false;
-  let lastError: string | null = null;
 
   if (printers.length === 0) {
     window.dispatchEvent(
@@ -551,35 +573,54 @@ export async function printKitchenTicket(data: KitchenTicketData): Promise<void>
     throw new Error("طابعة المطبخ غير متصلة");
   }
 
+  // 2026-09-14 audit fix: this used to consider the WHOLE call a success as
+  // soon as ANY kitchen printer succeeded (a single `anyPrinted` flag and a
+  // single `lastError` that the last failure overwrote) -- so a business
+  // with two kitchen stations (grill + bar) where one is offline/jammed got
+  // zero error, zero retry-queue entry, zero toast for that one station; it
+  // just silently never got its ticket. Unlike printReceipt's single-ticket
+  // failover (2 candidates, first success wins), every KITCHEN printer here
+  // is an independent station that needs its own physical copy, so each
+  // printer's outcome is now tracked and surfaced individually.
+  let anyPrinted = false;
+  const failedPrinters: { id: string; name: string; error: string }[] = [];
+
   for (const printerPartial of printers) {
     const p = printerPartial as any;
     try {
-      const buf = buildKitchenTicketJob(data, p.paper_width_mm ?? defaultPaperWidthK);
-      await printToDevice(buf, {
-        id: p.id,
-        name: p.name,
-        printerType: "KITCHEN",
-        interface: p.interface,
-        vendorId: p.vendor_id,
-        ipAddress: p.ip_address,
-        port: p.port,
-        paperWidthMm: p.paper_width_mm,
-        drawerPulseMs: p.drawer_pulse_ms,
-        isPrimary: p.is_primary,
-        isSecondary: p.is_secondary,
-        systemPrinterName: p.system_printer_name ?? undefined,
-      });
+      await sendKitchenTicketToPrinter(data, p, defaultPaperWidthK);
       anyPrinted = true;
     } catch (err) {
-      lastError = err instanceof Error ? err.message : "Kitchen print failed";
+      failedPrinters.push({
+        id: p.id,
+        name: p.name,
+        error: err instanceof Error ? err.message : "Kitchen print failed",
+      });
     }
+  }
+
+  for (const failed of failedPrinters) {
+    // Queue a retry scoped to THIS printer only -- retrying the whole
+    // ticket against every kitchen printer again would re-send a duplicate
+    // copy to the station(s) that already got it fine.
+    queuePrintJob(data, "kitchen", failed.id);
+    window.dispatchEvent(
+      new CustomEvent("kitchen-print-failed", {
+        detail: {
+          tableName: data.tableName,
+          orderNumber: data.orderNumber,
+          printerName: failed.name,
+          error: failed.error,
+        },
+      })
+    );
   }
 
   if (!anyPrinted) {
     window.dispatchEvent(
       new CustomEvent("kitchen-offline", { detail: data })
     );
-    throw new Error(lastError ?? "فشلت طباعة المطبخ");
+    throw new Error(failedPrinters[0]?.error ?? "فشلت طباعة المطبخ");
   }
 }
 
@@ -609,29 +650,47 @@ export async function openCashDrawer(pulseMs: number = 200): Promise<void> {
   });
 }
 
+// 2026-09-14 audit fix: every value below used to be interpolated straight
+// into the HTML string with no escaping, and OnScreenReceiptModal.tsx
+// renders the result via dangerouslySetInnerHTML -- so a menu item/modifier
+// name (only length-validated in menu/page.tsx, not character-restricted)
+// containing e.g. `</td><script>...` would inject real markup into this
+// modal's DOM. The app's CSP (script-src 'self', no unsafe-inline) blocks
+// this from executing as script today, but that's a config detail this fix
+// shouldn't depend on staying exactly as-is forever -- escape every
+// interpolated value instead so the HTML itself can't be broken out of.
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export function generateOnScreenReceiptHTML(data: ReceiptData): string {
   const fmtCent = formatMoney;
 
   let itemsHtml = "";
   for (const item of data.items) {
-    itemsHtml += `<tr><td>${item.quantity}× ${item.name}</td><td style="text-align:left">${fmtCent(item.priceCents * item.quantity)}</td></tr>`;
+    itemsHtml += `<tr><td>${item.quantity}× ${escapeHtml(item.name)}</td><td style="text-align:left">${fmtCent(item.priceCents * item.quantity)}</td></tr>`;
     if (item.modifiers) {
       for (const mod of item.modifiers) {
-        itemsHtml += `<tr style="color:#999"><td style="padding-right:16px">+ ${mod.name}</td><td style="text-align:left">${fmtCent(mod.priceCents)}</td></tr>`;
+        itemsHtml += `<tr style="color:#999"><td style="padding-right:16px">+ ${escapeHtml(mod.name)}</td><td style="text-align:left">${fmtCent(mod.priceCents)}</td></tr>`;
       }
     }
   }
 
   return `
     <div dir="rtl" style="font-family:'Arabic Typesetting',Arial,sans-serif;padding:24px;max-width:320px;margin:0 auto;direction:rtl">
-      <h2 style="text-align:center;margin:0">${data.chainName}</h2>
-      <p style="text-align:center;color:#666;margin:4px 0">${data.branchName}</p>
+      <h2 style="text-align:center;margin:0">${escapeHtml(data.chainName)}</h2>
+      <p style="text-align:center;color:#666;margin:4px 0">${escapeHtml(data.branchName)}</p>
       <hr/>
       <table style="width:100%;font-size:14px">
         <tr><td>التاريخ</td><td style="text-align:left">${formatArabicDate(new Date())}</td></tr>
         <tr><td>الوقت</td><td style="text-align:left">${formatArabicTime(new Date())}</td></tr>
-        <tr><td>رقم الطلب</td><td style="text-align:left">${data.orderNumber}</td></tr>
-        ${data.tableName ? `<tr><td>طاولة</td><td style="text-align:left">${data.tableName}</td></tr>` : ""}
+        <tr><td>رقم الطلب</td><td style="text-align:left">${escapeHtml(data.orderNumber)}</td></tr>
+        ${data.tableName ? `<tr><td>طاولة</td><td style="text-align:left">${escapeHtml(data.tableName)}</td></tr>` : ""}
       </table>
       <hr/>
       <table style="width:100%;font-size:14px">
@@ -644,6 +703,7 @@ export function generateOnScreenReceiptHTML(data: ReceiptData): string {
         <tr><td>الضريبة</td><td style="text-align:left">${fmtCent(data.taxCents)}</td></tr>
         ${data.discountCents > 0 ? `<tr><td>الخصم</td><td style="text-align:left;color:red">-${fmtCent(data.discountCents)}</td></tr>` : ""}
         <tr style="font-weight:bold;font-size:18px"><td>الإجمالي</td><td style="text-align:left">${fmtCent(data.totalCents)}</td></tr>
+        ${data.referenceCode ? `<tr style="color:#666;font-size:12px"><td>رقم المرجع</td><td style="text-align:left">${escapeHtml(data.referenceCode)}</td></tr>` : ""}
       </table>
       <hr/>
       <p style="text-align:center;font-size:16px">شكراً لزيارتكم</p>
@@ -682,18 +742,41 @@ export async function testPrint(): Promise<void> {
   });
 }
 
-export function queuePrintJob(data: ReceiptData | KitchenTicketData, type: "receipt" | "kitchen"): void {
+// `printerId` (kitchen jobs only) scopes a retry to the ONE printer that
+// actually failed -- see printKitchenTicket's per-printer tracking above.
+// Left undefined for a receipt job, or an older kitchen job queued before
+// this fix that has no specific printer to target.
+export function queuePrintJob(
+  data: ReceiptData | KitchenTicketData,
+  type: "receipt" | "kitchen",
+  printerId?: string
+): void {
   const jobs = JSON.parse(localStorage.getItem("printQueue") ?? "[]");
-  jobs.push({ data, type, timestamp: Date.now() });
+  jobs.push({ data, type, printerId, timestamp: Date.now() });
   localStorage.setItem("printQueue", JSON.stringify(jobs));
 }
 
-export function getPrintQueue(): { data: any; type: string; timestamp: number }[] {
+export function getPrintQueue(): { data: any; type: string; printerId?: string; timestamp: number }[] {
   return JSON.parse(localStorage.getItem("printQueue") ?? "[]");
 }
 
 export function clearPrintQueue(): void {
   localStorage.removeItem("printQueue");
+}
+
+// Retries a kitchen ticket against exactly one printer (by id) instead of
+// every KITCHEN-type printer -- used for a queued job that named the
+// specific station that failed, so a retry doesn't re-send a duplicate
+// copy to stations that already printed it fine the first time.
+async function retryKitchenTicketToPrinter(data: KitchenTicketData, printerId: string): Promise<void> {
+  const allPrinters = await invoke<PrinterRowV3[]>("list_active_printers_v3", { sessionToken: token() });
+  const printer = allPrinters.find((p) => p.id === printerId && p.printer_type === "KITCHEN");
+  if (!printer) throw new Error("طابعة المطبخ غير موجودة");
+
+  const chainK = await invoke<ChainConfigV3>("get_chain_config_v3", { sessionToken: token() });
+  const defaultPaperWidthK = chainK?.default_paper_width ?? 80;
+
+  await sendKitchenTicketToPrinter(data, printer as any, defaultPaperWidthK);
 }
 
 export async function retryPrintQueue(): Promise<void> {
@@ -705,6 +788,8 @@ export async function retryPrintQueue(): Promise<void> {
     try {
       if (job.type === "receipt") {
         await printReceipt(job.data as ReceiptData);
+      } else if (job.printerId) {
+        await retryKitchenTicketToPrinter(job.data as KitchenTicketData, job.printerId);
       } else {
         await printKitchenTicket(job.data as KitchenTicketData);
       }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { checkLicense, startLicensePolling, type LicenseStatus } from "../lib/license";
+import { checkLicense, startLicensePolling, LICENSE_CHANGED_EVENT, type LicenseStatus } from "../lib/license";
 import { IconAlertTriangle as AlertTriangle, IconClock as Clock, IconLock as Lock, IconX as X } from "@tabler/icons-react";
 
 interface Props {
@@ -23,6 +23,10 @@ function chipFor(status: LicenseStatus): ChipInfo | null {
     case "LockedBackOffice":
       return { icon: Lock, text: "الترخيص منتهي — الإدارة والتقارير مقفلة. نقطة البيع تعمل بشكل طبيعي.", color: "red" };
     case "Invalid":
+      // The cloud check reports an admin pause as "revoked by cloud: suspended".
+      if (/suspended/.test(status.reason)) {
+        return { icon: Lock, text: "الحساب موقوف مؤقتاً — الإدارة والتقارير مقفلة. نقطة البيع تعمل بشكل طبيعي. تواصل مع WENZDES.", color: "red" };
+      }
       return { icon: Lock, text: "لا يوجد ترخيص صالح — الإدارة والتقارير مقفلة. نقطة البيع تعمل بشكل طبيعي.", color: "red" };
   }
 }
@@ -44,8 +48,15 @@ export default function LicenseBanner({ onStatusChange }: Props) {
       onStatusChange?.(result);
     }).catch(() => {});
 
+    const onChanged = (e: Event) => {
+      const next = (e as CustomEvent<LicenseStatus>).detail;
+      setStatus(next);
+      setDismissed(false);
+      onStatusChange?.(next);
+    };
+    window.addEventListener(LICENSE_CHANGED_EVENT, onChanged);
     const stopPolling = startLicensePolling();
-    return () => { cancelled = true; stopPolling(); };
+    return () => { cancelled = true; stopPolling(); window.removeEventListener(LICENSE_CHANGED_EVENT, onChanged); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

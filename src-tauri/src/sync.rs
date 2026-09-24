@@ -72,13 +72,17 @@ pub struct OutboxRow {
 }
 
 /// Rows eligible for a send attempt right now: `QUEUED`, or `FAILED` whose
-/// backoff has elapsed. Ordered by `hlc` so a batch replays in creation
+/// backoff has elapsed. `next_attempt_at` is RFC 3339 ("...T21:52:29+00:00")
+/// and must go through `datetime()` -- compared as plain text against
+/// `datetime('now')` ("... 21:55:21") the 'T' sorts after the space, so a
+/// failed row was never due again until the DATE changed: a sale made while
+/// the internet was down didn't reach the cloud until the next day. Ordered by `hlc` so a batch replays in creation
 /// order (cosmetic today -- matters once the dashboard displays a feed).
 pub fn due_batch(conn: &Connection, limit: i64) -> Result<Vec<OutboxRow>, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT id, table_name, row_id, tenant_id, branch_id, payload_json, rev, hlc, device_id, license_status_at_enqueue, attempt_count \
          FROM sync_outbox \
-         WHERE status = 'QUEUED' OR (status = 'FAILED' AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))) \
+         WHERE status = 'QUEUED' OR (status = 'FAILED' AND (next_attempt_at IS NULL OR datetime(next_attempt_at) <= datetime('now'))) \
          ORDER BY hlc ASC LIMIT ?1",
     )?;
     let rows = stmt.query_map(params![limit], |r| {
@@ -134,17 +138,20 @@ pub fn mark_failed(conn: &Connection, id: &str, attempt_count: i64) -> Result<()
 }
 
 /// `orders.status` -> `pos_order.status`. Lossy: the Edge Function's
-/// `pos_order` table only recognizes `PENDING/COOKING/READY/SERVED/CANCELLED`
+/// `pos_order` table only recognizes `PENDING/COOKING/READY/SERVED/PAID/CANCELLED`
 /// (see `supabase/schema.sql`'s check constraint), narrower than the local
 /// POS vocabulary. `DRAFT`/`SCHEDULED` collapse to `PENDING` (nothing to show
-/// on a dashboard yet), `PAID` collapses to `SERVED` (money already settled,
-/// dashboard doesn't distinguish "served" from "served and paid"), `VOIDED`
+/// on a dashboard yet), `PAID` stays `PAID` (the only status the dashboard
+/// counts as revenue -- it used to collapse to `SERVED`), `VOIDED`
 /// collapses to `CANCELLED`.
 fn map_status_to_pos_order(status: &str) -> &'static str {
     match status {
         "PREPARING" => "COOKING",
         "READY" => "READY",
-        "SERVED" | "PAID" => "SERVED",
+        "SERVED" => "SERVED",
+        // Its own status since pos_order_paid_status.sql: only PAID counts
+        // as revenue on the owner dashboard.
+        "PAID" => "PAID",
         "CANCELLED" | "VOIDED" => "CANCELLED",
         _ => "PENDING", // DRAFT, PENDING, SCHEDULED, anything unrecognized
     }
@@ -462,7 +469,7 @@ async fn send_batch(
         "supplier_payments": supplier_payments,
         "staff": staff,
         "ingredients": ingredients,
-        "device_name": "Zaeem POS",
+        "device_name": "WENZDES POS",
         "version": env!("CARGO_PKG_VERSION"),
     });
 
@@ -476,7 +483,7 @@ async fn send_batch(
     let resp = client
         .post(&url)
         .header("apikey", &anon)
-        .header("Authorization", format!("Bearer {}", &anon))
+        .header("Authorization", format!("Bearer {}", anon))
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
@@ -598,6 +605,20 @@ mod tests {
         assert_eq!(row.device_id, "device-1");
         assert_eq!(row.license_status_at_enqueue, "active");
         assert_eq!(row.payload_json, payload.to_string());
+    }
+
+    #[test]
+    fn a_failed_row_is_due_again_once_its_backoff_has_passed_the_same_day() {
+        let conn = setup_conn();
+        enqueue(&conn, "orders", "order-1", "tenant-1", "branch-1", &serde_json::json!({}), 1, "device-1", &active_status()).unwrap();
+        let id = due_batch(&conn, 10).unwrap()[0].id.clone();
+        // Exactly what mark_failed stores, but already elapsed.
+        let past = (chrono::Utc::now() - chrono::Duration::seconds(30)).to_rfc3339();
+        conn.execute("UPDATE sync_outbox SET status = 'FAILED', attempt_count = 1, next_attempt_at = ?1 WHERE id = ?2", params![past, id]).unwrap();
+        assert_eq!(due_batch(&conn, 10).unwrap().len(), 1, "an offline sale must be retried once its backoff elapses, not the next day");
+
+        mark_failed(&conn, &id, 2).unwrap();
+        assert!(due_batch(&conn, 10).unwrap().is_empty(), "still backing off right after a failure");
     }
 
     #[tokio::test]

@@ -7,6 +7,7 @@ import { parseMoneyInput } from "../../lib/money";
 import { formatArabicDateTime } from "../../lib/dateLocal";
 import { IconCreditCard as CreditCard, IconPlus as Plus, IconSearch as Search } from "@tabler/icons-react";
 import { IconGift, IconTag, IconPencil, IconTrash, IconX } from "@tabler/icons-react";
+import { useToast } from "../../hooks/useToast";
 
 interface Customer { id: string; name: string; phone: string; loyalty_points: number; total_orders: number; total_spent_cents: number; }
 interface LoyaltyCard { id: string; customer_id: string; card_number: string; points: number; tier: string; issued_at: string; last_used_at: string | null; customer_name: string; customer_phone: string | null; }
@@ -70,6 +71,7 @@ const emptyRewardForm = () => ({
 const emptyTierForm = () => ({ name: "", minPoints: "", multiplier: "1", sortOrder: "0" });
 
 export default function LoyaltyPage() {
+  const toast = useToast();
   const token = useAuthStore((s) => s.token);
   const { fmt } = useCurrency();
   const [tab, setTab] = useState<"cards" | "transactions" | "rewards" | "tiers">("cards");
@@ -192,6 +194,7 @@ export default function LoyaltyPage() {
       setShowIssue(false);
       setSelectedCustomer("");
       setCardUid("");
+      toast.success("تم إصدار البطاقة ✓");
       await fetchCards();
     } catch (err) {
       setIssueError(typeof err === "string" && err.includes("UNIQUE") ? "رقم البطاقة (UID) مستخدم مسبقاً" : "حدث خطأ في إصدار البطاقة");
@@ -254,6 +257,7 @@ export default function LoyaltyPage() {
       });
       await fetchRewards();
       setShowRewardModal(false);
+      toast.success("تمت إضافة المكافأة ✓");
     } catch (err) {
       setRewardFormError(realErrorText(err));
     } finally {
@@ -265,6 +269,7 @@ export default function LoyaltyPage() {
     if (!window.confirm("هل أنت متأكد من حذف هذه المكافأة؟")) return;
     try {
       await invoke("delete_loyalty_reward_v3", { sessionToken: token, rewardId: id });
+      toast.success("تم حذف المكافأة ✓");
       await fetchRewards();
     } catch (err) {
       setLoadError(`حدث خطأ في حذف المكافأة: ${realErrorText(err)}`);
@@ -312,6 +317,7 @@ export default function LoyaltyPage() {
       }
       await fetchTiers();
       setShowTierModal(false);
+      toast.success(editingTier ? "تم تحديث الدرجة ✓" : "تمت إضافة الدرجة ✓");
     } catch (err) {
       setTierFormError(realErrorText(err));
     } finally {
@@ -323,6 +329,7 @@ export default function LoyaltyPage() {
     if (!window.confirm("هل أنت متأكد من حذف هذه الدرجة؟")) return;
     try {
       await invoke("delete_loyalty_tier_v3", { sessionToken: token, tierId: id });
+      toast.success("تم حذف الدرجة ✓");
       await fetchTiers();
     } catch (err) {
       setLoadError(`حدث خطأ في حذف الدرجة: ${realErrorText(err)}`);

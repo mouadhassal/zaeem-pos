@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { IconChevronDown } from "@tabler/icons-react";
 import OrderLine from "./OrderLine";
+import { formatAmount } from "../../lib/money";
 
 interface LineItem {
   id: string;
@@ -41,8 +42,9 @@ export default function OrderPanel({
   totalCents, currencySymbol, onEditOrder, orderTypeIcon, orderTypeLabel, children, toolbar,
   onIncrementLine, onDecrementLine, onVoidLine, emptyMessage,
 }: Props) {
-  const fmt = (c: number) =>
-    c.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  // Currency-scale-aware -- was raw cents.toLocaleString(), which silently
+  // assumed scale 0 (see lib/money.ts's formatAmount doc comment).
+  const fmt = formatAmount;
 
   return (
     // Full-height pinned column -- no floating margin, no card radius/shadow.

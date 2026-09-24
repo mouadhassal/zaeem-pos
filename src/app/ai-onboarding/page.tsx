@@ -317,12 +317,20 @@ export default function AiOnboardingPage() {
             <Camera className="w-4 h-4" />
             إضافة صور
           </button>
+          {/* Backend (src-tauri/src/ai/remote.rs) explicitly rejects
+              MediaKind::Audio -- Claude's Messages API has no audio input,
+              so this always failed after a real upload. Disabled with a
+              clear "coming soon" treatment instead of a live-looking
+              button that wastes the user's time. */}
           <button
-            onClick={() => audioInputRef.current?.click()}
-            className="h-9 px-4 rounded-lg border border-ink-300 text-ink-700 text-sm flex items-center gap-2 hover:bg-ink-100 transition-colors"
+            type="button"
+            disabled
+            title="استخراج القائمة من التسجيل الصوتي غير مدعوم حالياً"
+            className="h-9 px-4 rounded-lg border border-ink-200 text-ink-300 text-sm flex items-center gap-2 cursor-not-allowed"
           >
             <Mic className="w-4 h-4" />
             تسجيل صوتي
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-ink-100 text-ink-400 font-arabic">قريباً</span>
           </button>
           <div className="mr-auto flex items-center gap-3">
             {uploads.length > 0 && !editing && (
@@ -660,11 +668,14 @@ export default function AiOnboardingPage() {
                     اختيار الصور
                   </button>
                   <button
-                    onClick={() => audioInputRef.current?.click()}
-                    className="h-10 px-6 rounded-lg border border-ink-300 text-ink-700 text-sm flex items-center gap-2 hover:bg-ink-100 transition-colors"
+                    type="button"
+                    disabled
+                    title="استخراج القائمة من التسجيل الصوتي غير مدعوم حالياً"
+                    className="h-10 px-6 rounded-lg border border-ink-200 text-ink-300 text-sm flex items-center gap-2 cursor-not-allowed"
                   >
                     <Mic className="w-4 h-4" />
                     تسجيل صوتي
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-ink-100 text-ink-400 font-arabic">قريباً</span>
                   </button>
                 </div>
               </div>

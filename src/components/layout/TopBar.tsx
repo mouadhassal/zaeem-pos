@@ -25,7 +25,7 @@ export default function TopBar() {
             W
           </div>
         )}
-        <h1 className="text-base font-bold text-text" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>WENZDES</h1>
+        <h1 className="text-base font-bold text-text" style={{ fontFamily: "'Poppins', sans-serif" }}>WENZDES</h1>
       </div>
       <div className="flex items-center gap-3">
         <button className="w-9 h-9 rounded-[10px] flex items-center justify-center text-text-muted hover:bg-surface-alt transition-colors">

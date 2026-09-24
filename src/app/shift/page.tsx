@@ -7,19 +7,17 @@ import {
 import { useAuthStore } from "../../stores/authStore";
 import { useShiftStore } from "../../stores/shiftStore";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
+import { realErrorText } from "../../lib/errors";
+import { orderNo } from "../../lib/orderNumber";
 
 // 2026-08-02: was a hardcoded 5000 assuming small everyday prices -- wrong
 // by orders of magnitude for a currency whose real menu prices run in the
 // thousands. Now fetched from the tenant's real, Owner-configurable
 // threshold (see pricing.rs's ManagerThresholds); this constant is only
 // the fail-safe used for the brief moment before that fetch resolves.
-// 2026-08-30 SYP redenomination: was 50000 (old-scale, itself already stale
-// relative to the real chain_config default). Real live value confirmed
-// directly: chain_config.shift_diff_manager_threshold_cents = 10,000,000
-// (old-scale) -> 100,000 after the redenomination migration divides every
-// real chain_config threshold by 100. This is only the brief initial React
-// state before the real config value loads, but should still be accurate.
-const FALLBACK_DIFF_THRESHOLD_CENTS = 100000;
+// Matches the backend default (pricing.rs DEFAULT_SHIFT_DIFF_THRESHOLD_MAJOR,
+// 1,000 new SYP); only used until the real value loads.
+const FALLBACK_DIFF_THRESHOLD_CENTS = 1000;
 
 interface ActiveShift {
   id: string;
@@ -54,9 +52,8 @@ function formatElapsed(start: string): string {
  * this used to be thrown away by a bare `catch {}` everywhere on this page,
  * which is exactly why "start shift" looked like it silently did nothing. */
 function errText(err: unknown, fallback: string): string {
-  if (typeof err === "string") return err;
-  if (err instanceof Error) return err.message;
-  return fallback;
+  const text = realErrorText(err);
+  return text ? `${fallback}: ${text}` : fallback;
 }
 
 export default function ShiftPage() {
@@ -191,17 +188,16 @@ export default function ShiftPage() {
 
       if (needsAuth) {
         try {
-          await invoke<boolean>("verify_manager_override_v3", {
+          const ok = await invoke<boolean>("verify_manager_override_v3", {
             sessionToken: token,
             passwordOrPin: managerPassword,
           });
-        } catch (err) {
-          const msg = typeof err === "string" ? err : (err as Error)?.message ?? "";
-          if (msg.includes("ECONNREFUSED") || msg.includes("network") || msg.includes("fetch")) {
-            showMsg("خطأ في الاتصال بالخادم", true);
-          } else {
-            showMsg("كلمة المرور غير صحيحة", true);
+          if (!ok) {
+            showMsg("رمز المدير غير صحيح، أو تم قفل الإدخال مؤقتاً بسبب كثرة المحاولات الخاطئة", true);
+            return;
           }
+        } catch (err) {
+          showMsg(realErrorText(err), true);
           setClosing(false);
           return;
         }
@@ -400,7 +396,7 @@ export default function ShiftPage() {
             {recentOrders.map((o) => (
               <div key={o.id} className="flex items-center justify-between py-2 border-b border-line-2 last:border-0">
                 <div className="flex items-center gap-3">
-                  <span className="font-mono text-xs text-text-muted">{o.id.slice(0, 6)}</span>
+                  <span className="font-mono text-xs text-text-muted">{orderNo(o.id)}</span>
                   <span className="text-sm text-text">
                     {o.status === "PAID" ? "مدفوع" : o.status === "CANCELLED" ? "ملغي" : o.status}
                   </span>

@@ -2030,6 +2030,7 @@ pub fn run_item_kind_migration(conn: &mut Connection, _db_path: &Path) -> Result
 ///   constructed at startup (`lib.rs`'s `UploadQueue::new_queue`), with a
 ///   `CREATE TABLE IF NOT EXISTS upload_queue` that would silently
 ///   resurrect it after any DROP anyway.
+///
 /// `id_remap`/`schema_migrations` are migration-system bookkeeping and were
 /// never in scope.
 pub fn run_dead_table_cleanup_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
@@ -2204,6 +2205,358 @@ pub fn run_syp_redenomination_migration(conn: &mut Connection, _db_path: &Path) 
     )?;
     tx.commit()?;
     Ok(())
+}
+
+// 30, not 26: originally landed at 26, which collided with migrate.rs's
+// OWN embedded SQL chain (0026_stock_counts.sql) sharing this exact same
+// `schema_migrations` version space (see that module's own comment on
+// its 0026/0027 files for the first time this exact collision shape bit
+// this codebase). That collision was real and caught by re-running the
+// full merged test suite: this migration's own "already applied" guard
+// saw version 26 already marked applied by the OTHER chain and silently
+// no-op'd, so `payments.reference_code` was never actually added.
+// 30/31 are clear of every existing claim in this shared version space
+// (migrate.rs's legacy chain: up to 27; migrate_v3's A-U chain: up to 25;
+// this module's own X/Y pair, added the same day: 28/29).
+pub const MIGRATION_V_VERSION: i64 = 30;
+
+/// 2026-09-13 audit fix (honest CARD/WALLET confirmation): `payments` had no
+/// column to hold anything from the payment terminal/wallet app -- the
+/// cashier's "Confirm" tap was the ENTIRE evidence a CARD/WALLET payment
+/// ever happened (see PaymentModal.tsx before this fix: `sufficient` was
+/// hardcoded `true` for both methods). This adds `reference_code`
+/// (nullable -- CASH/CREDIT payments never populate it, and old rows have
+/// none) so the cashier's now-mandatory terminal approval-code entry has
+/// somewhere real to land, giving a genuine audit trail tying a POS payment
+/// row to a specific terminal receipt.
+pub fn run_payment_reference_code_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_V_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    if table_exists(&tx, "payments")? {
+        add_column_if_missing(&tx, "payments", "reference_code", "TEXT")?;
+    }
+    println!("v30_payment_reference_code: payments.reference_code added (terminal/wallet approval code, cashier-entered for CARD/WALLET)");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_V_VERSION, "0030_payment_reference_code", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub const MIGRATION_W_VERSION: i64 = 31;
+
+/// 2026-09-13 audit fix (real disaster-recovery backups): backups (see
+/// backup.rs) used to be manual-only and same-disk -- a dead machine lost
+/// them along with the live DB. This adds the one settings row a real
+/// background scheduler (wired up in `lib.rs::run`, independent of whether
+/// Settings is even open) and an optional off-machine secondary destination
+/// (any filesystem path -- a mapped network share or a USB drive covers the
+/// "off this machine" requirement without needing real cloud credentials
+/// this task doesn't have) both read from. `frequency_hours` defaults to 24
+/// (once a day); `secondary_path` NULL means "local-only," the exact
+/// pre-existing behavior, so an install that never touches the new Settings
+/// field keeps working unchanged.
+pub fn run_backup_settings_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_W_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS backup_settings (
+            id TEXT PRIMARY KEY,
+            secondary_path TEXT,
+            frequency_hours INTEGER NOT NULL DEFAULT 24,
+            last_auto_backup_at TEXT
+        );",
+    )?;
+    tx.execute(
+        "INSERT INTO backup_settings (id, secondary_path, frequency_hours, last_auto_backup_at) \
+         VALUES ('default', NULL, 24, NULL) \
+         ON CONFLICT(id) DO NOTHING",
+        [],
+    )?;
+    println!("v31_backup_settings: backup_settings table created (default row: no secondary path, 24h frequency), backing a real background scheduler");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_W_VERSION, "0031_backup_settings", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+// X and Y -- NOT 26/27: those two version NUMBERS are already claimed by
+// the two migrations directly above (payment_reference_code/
+// backup_settings), and the LETTERS V/W are already used by their
+// constants -- picking up the alphabet at X/Y avoids both collisions.
+// (26/27 are ALSO separately claimed by migrate.rs's own embedded SQL
+// chain -- 0026_stock_counts.sql, 0027_fleet_removal.sql -- a different,
+// pre-existing collision in this same shared `schema_migrations` version
+// space, see that module's own `embedded_migrations` doc comment. Neither
+// collision matters here since this pair starts at 28 regardless.)
+pub const MIGRATION_X_VERSION: i64 = 28;
+
+/// 2026-09-13 audit finding: there was no way to configure a maximum debt
+/// limit per debtor, and nothing anywhere enforced one. Adds a nullable
+/// `debtors.credit_limit_cents` -- NULL (the default, and every existing
+/// row's value after this migration) means unlimited, preserving current
+/// behavior for every debtor that doesn't explicitly get a limit set.
+/// Enforcement lives in repo.rs (`assert_within_credit_limit`, called
+/// from `record_initial_debt`, `take_payment`, and
+/// `finalize_order_with_payment` -- every path that can increase a
+/// debtor's `balance_cents`), not here; this migration is schema-only.
+pub fn run_debtor_credit_limit_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_X_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+
+    if table_exists(&tx, "debtors")? {
+        add_column_if_missing(&tx, "debtors", "credit_limit_cents", "INTEGER")?;
+    }
+
+    println!("v28_debtor_credit_limit: debtors.credit_limit_cents added (nullable, NULL = unlimited)");
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_X_VERSION, "0028_debtor_credit_limit", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub const MIGRATION_Y_VERSION: i64 = 29;
+
+pub const MIGRATION_Z_VERSION: i64 = 32;
+pub const MIGRATION_AA_VERSION: i64 = 33;
+
+/// Marketplace goods received (ECOSYSTEM_CONTRACTS.md §6): one row per
+/// received marketplace order. Doubles as the retry queue for the cloud ack
+/// (`cloud_status` PENDING -> SENT | REJECTED); the PK makes a receipt
+/// idempotent per order on this terminal.
+pub fn run_marketplace_receipt_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AA_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS marketplace_receipt_local (
+            order_id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            branch_id TEXT NOT NULL,
+            received_by TEXT NOT NULL,
+            lines_json TEXT NOT NULL,
+            note TEXT,
+            received_at TEXT NOT NULL,
+            cloud_status TEXT NOT NULL DEFAULT 'PENDING' CHECK (cloud_status IN ('PENDING','SENT','REJECTED')),
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT,
+            last_error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_marketplace_receipt_local_status ON marketplace_receipt_local (cloud_status, next_attempt_at);",
+    )?;
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AA_VERSION, "0033_marketplace_receipt_local", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Legacy untouched threshold values from v17 (20000/50000), v21
+/// (5,000,000/10,000,000) and v21+v25 (50,000/100,000). All are far off
+/// for new SYP, so rows still at one of them get `ManagerThresholds::
+/// default_for(currency)`; owner-customized values are left alone.
+const LEGACY_VOID_THRESHOLDS: [i64; 3] = [20_000, 50_000, 5_000_000];
+const LEGACY_SHIFT_DIFF_THRESHOLDS: [i64; 3] = [50_000, 100_000, 10_000_000];
+
+pub fn run_manager_threshold_new_syp_defaults_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_Z_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    if table_exists(&tx, "chain_config")? {
+        let rows: Vec<(String, String, i64, i64)> = {
+            let mut stmt = tx.prepare(
+                "SELECT id, currency, void_manager_threshold_cents, shift_diff_manager_threshold_cents FROM chain_config",
+            )?;
+            let mapped = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+            mapped.collect::<Result<Vec<_>, _>>()?
+        };
+        for (id, currency, void_t, shift_t) in rows {
+            let d = crate::pricing::ManagerThresholds::default_for(&currency);
+            if LEGACY_VOID_THRESHOLDS.contains(&void_t) {
+                tx.execute("UPDATE chain_config SET void_manager_threshold_cents = ?1 WHERE id = ?2", params![d.void_threshold_cents, id])?;
+            }
+            if LEGACY_SHIFT_DIFF_THRESHOLDS.contains(&shift_t) {
+                tx.execute("UPDATE chain_config SET shift_diff_manager_threshold_cents = ?1 WHERE id = ?2", params![d.shift_diff_threshold_cents, id])?;
+            }
+        }
+    }
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_Z_VERSION, "0032_manager_threshold_new_syp_defaults", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// 2026-09-13 audit finding: `menu_items.barcode UNIQUE`
+/// (0001_init.sql) predates the multi-tenant `tenant_id` column Migration
+/// A (EXPAND) later added -- it's still a BARE, single-column UNIQUE
+/// constraint today, which means two different tenants sharing one
+/// physical SQLite file (the schema's own real, if uncommon, deployment
+/// shape -- see `Scope`/`assert_row_in_scope` throughout repo.rs, which
+/// exist precisely because one file can hold more than one tenant) cannot
+/// both use the same barcode string, even though they are completely
+/// unrelated businesses. Replaces it with a composite
+/// `UNIQUE(tenant_id, barcode)` index instead -- scoped uniqueness, not
+/// global.
+///
+/// SQLite has no `ALTER TABLE ... DROP CONSTRAINT`/`ALTER COLUMN` -- a
+/// column-level `UNIQUE` can only be removed by recreating the table
+/// (same reasoning as `enforce_not_null`'s own doc comment, and the same
+/// canonical SQLite procedure: rebuild with the constraint gone, copy
+/// every row across, drop the old table, rename the new one into place).
+/// Reads the table's REAL, CURRENT `CREATE TABLE` text back out of
+/// `sqlite_master` (not a hand-transcribed column list -- by the time
+/// this migration runs, `menu_items` has picked up a dozen `ALTER TABLE
+/// ADD COLUMN`s from Migration A/S/U onward that a hand-written column
+/// list would have to track exactly, and drift once already, see
+/// `enforce_not_null`'s own doc comment for the concrete case that bit
+/// this codebase) and does a single targeted text replacement of `barcode
+/// TEXT UNIQUE` -> `barcode TEXT`, which is exact and unambiguous (no
+/// other column in `menu_items` is named `barcode`).
+///
+/// Every index that existed on `menu_items` (e.g. `idx_menu_items_
+/// category_id`/`idx_menu_items_tenant`, both added generically by
+/// Migration E's `run_index_migration` long before this runs, and which
+/// would otherwise vanish with the `DROP TABLE`) is captured from
+/// `sqlite_master` BEFORE the drop and re-executed after the rename --
+/// generic, not hardcoded, so it stays correct regardless of exactly
+/// which indexes exist by the time this runs. `PRAGMA foreign_keys=OFF`
+/// wraps the whole operation (toggled outside the transaction, same
+/// reasoning as `run_expand_migration`'s own doc comment: it's a no-op
+/// inside an active transaction, and `recipes`/`order_items`/
+/// `combo_items`/`happy_hour_rules` all hold a live FK reference to
+/// `menu_items.id` that a `DROP TABLE` would otherwise trip over even
+/// though no data is actually left inconsistent at any point).
+pub fn run_menu_item_barcode_tenant_unique_migration(conn: &mut Connection, db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_Y_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    conn.execute_batch("PRAGMA foreign_keys=OFF;").ok();
+    let result = with_snapshot_protection(conn, db_path, "v29_barcode_unique", |tx| {
+        if !table_exists(tx, "menu_items")? {
+            let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+                params![MIGRATION_Y_VERSION, "0029_menu_item_barcode_tenant_unique", applied_at, "n/a-programmatic"],
+            )?;
+            return Ok(());
+        }
+
+        let original_sql: String = tx.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'menu_items'",
+            [],
+            |r| r.get(0),
+        )?;
+
+        // Already fixed (re-run after a prior partial application, or the
+        // bare UNIQUE was never present on this install for some reason) --
+        // nothing to recreate; just (re)create the composite index below
+        // and record the version.
+        if !original_sql.contains("barcode TEXT UNIQUE") {
+            tx.execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_menu_items_tenant_barcode ON menu_items(tenant_id, barcode);"
+            )?;
+            let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+                params![MIGRATION_Y_VERSION, "0029_menu_item_barcode_tenant_unique", applied_at, "n/a-programmatic"],
+            )?;
+            return Ok(());
+        }
+
+        // Capture every existing index on menu_items (auto-indexes backing
+        // column constraints have a NULL `sql` and are recreated
+        // automatically by the new CREATE TABLE if we kept the constraint --
+        // deliberately dropping the bare-UNIQUE one is the whole point of
+        // this migration, so only named, explicit indexes are preserved).
+        let existing_index_sql: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'menu_items' AND sql IS NOT NULL"
+            )?;
+            let rows: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(0))?.filter_map(|r| r.ok()).collect();
+            rows
+        };
+
+        let new_table = "menu_items_v29";
+        let new_sql = strip_create_table_prefix(&original_sql, "menu_items", new_table)
+            .ok_or_else(|| V3Error::Db(rusqlite::Error::InvalidParameterName(
+                format!("unrecognized CREATE TABLE prefix for menu_items: {original_sql}")
+            )))?
+            .replacen("barcode TEXT UNIQUE", "barcode TEXT", 1);
+
+        tx.execute_batch(&new_sql)?;
+        tx.execute_batch(&format!("INSERT INTO {new_table} SELECT * FROM menu_items;"))?;
+        tx.execute_batch(&format!("DROP TABLE menu_items; ALTER TABLE {new_table} RENAME TO menu_items;"))?;
+
+        for idx_sql in &existing_index_sql {
+            tx.execute_batch(idx_sql)?;
+        }
+        tx.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_menu_items_tenant_barcode ON menu_items(tenant_id, barcode);"
+        )?;
+
+        println!(
+            "v29_menu_item_barcode_tenant_unique: dropped menu_items.barcode's bare column-level UNIQUE, \
+             replaced with a composite UNIQUE(tenant_id, barcode) index; {} pre-existing index(es) preserved",
+            existing_index_sql.len()
+        );
+
+        let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+            params![MIGRATION_Y_VERSION, "0029_menu_item_barcode_tenant_unique", applied_at, "n/a-programmatic"],
+        )?;
+        Ok(())
+    });
+    conn.execute_batch("PRAGMA foreign_keys=ON;").ok();
+    result
 }
 
 #[cfg(test)]
@@ -2964,6 +3317,57 @@ mod tests {
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
+    /// Z: legacy untouched thresholds become 500 / 1,000 new SYP;
+    /// customized values survive; second run is a no-op.
+    #[test]
+    fn test_manager_threshold_new_syp_defaults_migration() {
+        let db_path = fresh_db_path("threshold_new_syp_defaults");
+        build_base_fixture(&db_path);
+        let mut conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        run_expand_migration(&mut conn, &db_path).expect("A");
+        run_remap_migration(&mut conn, &db_path).expect("B");
+        run_identity_migration(&mut conn, &db_path).expect("C");
+        run_drift_fix_migration(&mut conn, &db_path).expect("D");
+        run_index_migration(&mut conn, &db_path).expect("E");
+        run_discount_cap_migration(&mut conn, &db_path).expect("F");
+        run_sync_outbox_migration(&mut conn, &db_path).expect("G");
+        run_supplier_ledger_migration(&mut conn, &db_path).expect("H");
+        run_loyalty_migration(&mut conn, &db_path).expect("I");
+        run_staff_sync_migration(&mut conn, &db_path).expect("J");
+        run_lan_pairing_migration(&mut conn, &db_path).expect("K");
+        run_printer_system_name_migration(&mut conn, &db_path).expect("L");
+        run_manager_threshold_migration(&mut conn, &db_path).expect("M");
+        run_business_mode_migration(&mut conn, &db_path).expect("N");
+        run_roster_entry_migration(&mut conn, &db_path).expect("O");
+        run_refund_migration(&mut conn, &db_path).expect("P");
+        run_manager_threshold_syp_rescale_migration(&mut conn, &db_path).expect("Q");
+        run_ingredient_sync_migration(&mut conn, &db_path).expect("R");
+        run_item_kind_migration(&mut conn, &db_path).expect("S");
+        run_dead_table_cleanup_migration(&mut conn, &db_path).expect("T");
+        run_syp_redenomination_migration(&mut conn, &db_path).expect("U");
+
+        let read = |conn: &Connection| -> (i64, i64) {
+            conn.query_row(
+                "SELECT void_manager_threshold_cents, shift_diff_manager_threshold_cents FROM chain_config WHERE id = 'default'",
+                [], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).unwrap()
+        };
+        assert_eq!(read(&conn), (50_000, 100_000), "precondition: post-redenomination legacy defaults");
+
+        // Owner customized the shift threshold; void is still a legacy default.
+        conn.execute("UPDATE chain_config SET shift_diff_manager_threshold_cents = 3333 WHERE id = 'default'", []).unwrap();
+        run_manager_threshold_new_syp_defaults_migration(&mut conn, &db_path).expect("Z first run");
+        assert_eq!(read(&conn), (500, 3333));
+
+        // Second run is a no-op.
+        conn.execute("UPDATE chain_config SET void_manager_threshold_cents = 50000 WHERE id = 'default'", []).unwrap();
+        run_manager_threshold_new_syp_defaults_migration(&mut conn, &db_path).expect("Z second run");
+        assert_eq!(read(&conn), (50_000, 3333));
+        drop(conn);
+        let _ = std::fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
     /// U1: the SYP redenomination migration -- idempotent, divides every
     /// real currency amount by 100, leaves rate/percentage columns
     /// (`chain_config.tax_rate_cents`) completely untouched, and a real
@@ -3072,6 +3476,150 @@ mod tests {
         assert_eq!(total_minor, 100, "orders.total_minor must stay in sync with total_cents");
         assert_eq!(total_base_minor, 100, "orders.total_base_minor must stay in sync with total_cents");
         assert_eq!(total_epoch, 3, "orders.total_denom_epoch must be bumped to mark the redenomination event");
+
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(integrity, "ok");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// V: debtors.credit_limit_cents -- idempotent, nullable, defaults to
+    /// NULL (unlimited) on every existing row so current behavior is
+    /// preserved for anyone who never sets one, and is actually settable
+    /// afterward.
+    #[test]
+    fn test_debtor_credit_limit_migration_is_idempotent_and_nullable() {
+        let db_path = fresh_db_path("debtor_credit_limit_migration");
+        build_base_fixture(&db_path);
+        {
+            let mut conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+            run_expand_migration(&mut conn, &db_path).expect("Migration A failed");
+            run_remap_migration(&mut conn, &db_path).expect("Migration B failed");
+            run_identity_migration(&mut conn, &db_path).expect("Migration C failed");
+            run_drift_fix_migration(&mut conn, &db_path).expect("Migration D failed");
+
+            // A pre-existing debtor, seeded BEFORE the migration runs, to
+            // prove the new column backfills to NULL (unlimited), not 0
+            // (which would silently forbid any debt at all).
+            let (tenant_id, branch_id): (String, String) =
+                conn.query_row("SELECT tenant_id, id FROM branch LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            conn.execute(
+                "INSERT INTO debtors (id, tenant_id, branch_id, name, phone, total_debt_cents, total_paid_cents, balance_cents, is_active) \
+                 VALUES ('debtor-pre', ?1, ?2, 'Pre-existing Debtor', '0000', 0, 0, 0, 1)",
+                params![tenant_id, branch_id],
+            ).unwrap();
+
+            run_debtor_credit_limit_migration(&mut conn, &db_path).expect("Migration V failed (first run)");
+            // Second run must be a clean no-op, not a "duplicate column" error.
+            run_debtor_credit_limit_migration(&mut conn, &db_path).expect("Migration V failed (second run -- must be idempotent)");
+        }
+        let conn = Connection::open(&db_path).unwrap();
+
+        let cols: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(debtors)").unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(1)).unwrap().filter_map(|r| r.ok()).collect()
+        };
+        assert!(cols.contains(&"credit_limit_cents".to_string()), "debtors.credit_limit_cents must exist after Migration V");
+
+        let pre_existing_limit: Option<i64> = conn.query_row(
+            "SELECT credit_limit_cents FROM debtors WHERE id = 'debtor-pre'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(pre_existing_limit, None, "a pre-existing debtor's credit_limit_cents must backfill to NULL (unlimited), not 0");
+
+        // Actually settable afterward.
+        conn.execute("UPDATE debtors SET credit_limit_cents = 50000 WHERE id = 'debtor-pre'", []).unwrap();
+        let set_limit: Option<i64> = conn.query_row(
+            "SELECT credit_limit_cents FROM debtors WHERE id = 'debtor-pre'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(set_limit, Some(50000));
+
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(integrity, "ok");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// W: menu_items.barcode's bare column-level UNIQUE -> composite
+    /// UNIQUE(tenant_id, barcode). Proves: (1) two DIFFERENT tenants CAN
+    /// now share one barcode string (the actual bug -- rejected before
+    /// this migration even though they're unrelated businesses), (2) the
+    /// SAME tenant still cannot use one barcode on two different items
+    /// (the invariant that must survive), (3) idempotent (second run is a
+    /// clean no-op, not an error), (4) all pre-existing menu_items rows
+    /// and a pre-existing, unrelated index survive the table-recreation
+    /// intact.
+    #[test]
+    fn test_menu_item_barcode_tenant_unique_migration() {
+        let db_path = fresh_db_path("menu_item_barcode_tenant_unique_migration");
+        build_base_fixture(&db_path);
+        {
+            let mut conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+            run_expand_migration(&mut conn, &db_path).expect("Migration A failed");
+            run_remap_migration(&mut conn, &db_path).expect("Migration B failed");
+            run_identity_migration(&mut conn, &db_path).expect("Migration C failed");
+            run_drift_fix_migration(&mut conn, &db_path).expect("Migration D failed");
+            run_index_migration(&mut conn, &db_path).expect("Migration E failed"); // seeds idx_menu_items_category_id etc.
+
+            // Confirm the premise BEFORE the fix: the bare UNIQUE really is
+            // there, and really does block the same barcode across two
+            // different tenants.
+            let sql_before: String = conn.query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='menu_items'", [], |r| r.get(0),
+            ).unwrap();
+            assert!(sql_before.contains("barcode TEXT UNIQUE"), "premise violated: menu_items.barcode is no longer a bare column-level UNIQUE -- this test no longer exercises the bug");
+
+            run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).expect("Migration W failed (first run)");
+            run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).expect("Migration W failed (second run -- must be idempotent)");
+        }
+        let conn = Connection::open(&db_path).unwrap();
+
+        let sql_after: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='menu_items'", [], |r| r.get(0),
+        ).unwrap();
+        assert!(!sql_after.contains("barcode TEXT UNIQUE"), "the bare column-level UNIQUE must be gone after Migration W");
+
+        let has_composite_index: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND tbl_name='menu_items' AND sql LIKE '%UNIQUE INDEX%tenant_id, barcode%'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert!(has_composite_index, "a composite UNIQUE(tenant_id, barcode) index must exist after Migration W");
+
+        // Pre-existing indexes on menu_items (from Migration E) must have survived the recreation.
+        let has_category_index: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND tbl_name='menu_items' AND name='idx_menu_items_category_id'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert!(has_category_index, "idx_menu_items_category_id (from Migration E) must survive the table recreation");
+
+        // Existing rows (from the base fixture) survived the copy.
+        let row_count: i64 = conn.query_row("SELECT COUNT(*) FROM menu_items", [], |r| r.get(0)).unwrap();
+        assert!(row_count >= 3, "existing menu_items rows must survive the table recreation, got {row_count}");
+
+        let (tenant_id, branch_id): (String, String) =
+            conn.query_row("SELECT tenant_id, id FROM branch LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let category_id: String = conn.query_row("SELECT id FROM categories LIMIT 1", [], |r| r.get(0)).unwrap();
+        let _ = branch_id;
+
+        // A second tenant, same barcode -- must now succeed (the actual bug).
+        let tenant2 = uuid::Uuid::now_v7().to_string();
+        conn.execute("INSERT INTO tenant (id, name) VALUES (?1, 'Tenant Two')", params![tenant2]).ok();
+        conn.execute(
+            "INSERT INTO menu_items (id, tenant_id, name, price_cents, cost_cents, category_id, barcode) VALUES ('mi-t1', ?1, 'Item Tenant 1', 100, 50, ?2, 'SHARED-BARCODE')",
+            params![tenant_id, category_id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO menu_items (id, tenant_id, name, price_cents, cost_cents, category_id, barcode) VALUES ('mi-t2', ?1, 'Item Tenant 2', 100, 50, ?2, 'SHARED-BARCODE')",
+            params![tenant2, category_id],
+        ).expect("a second tenant using the SAME barcode string as tenant one must now be allowed -- composite UNIQUE(tenant_id, barcode), not a bare global UNIQUE");
+
+        // The SAME tenant reusing that barcode on a different item must still be rejected.
+        let dup_result = conn.execute(
+            "INSERT INTO menu_items (id, tenant_id, name, price_cents, cost_cents, category_id, barcode) VALUES ('mi-t1-dup', ?1, 'Item Tenant 1 Dup', 100, 50, ?2, 'SHARED-BARCODE')",
+            params![tenant_id, category_id],
+        );
+        assert!(dup_result.is_err(), "the SAME tenant must still be blocked from reusing a barcode on a second item");
 
         let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
         assert_eq!(integrity, "ok");

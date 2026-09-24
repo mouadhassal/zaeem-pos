@@ -42,7 +42,18 @@ export async function checkLicense(): Promise<LicenseStatus> {
  * still just a local Tauri command, no network call anywhere in the path.
  */
 export async function renewLicense(sessionToken: string, blobJson: string): Promise<LicenseStatus> {
-  return invoke<LicenseStatus>("renew_license_v3", { sessionToken, blobJson });
+  return announce(await invoke<LicenseStatus>("renew_license_v3", { sessionToken, blobJson }));
+}
+
+/** Fired on window whenever the license status may have changed, so the
+ * banner and the back-office lock (App.tsx) update without a restart --
+ * they used to read the status once at boot, leaving a freshly activated
+ * register locked with "no valid license" until it was closed and reopened. */
+export const LICENSE_CHANGED_EVENT = "license-changed";
+
+function announce(status: LicenseStatus): LicenseStatus {
+  window.dispatchEvent(new CustomEvent<LicenseStatus>(LICENSE_CHANGED_EVENT, { detail: status }));
+  return status;
 }
 
 /**
@@ -54,7 +65,7 @@ export async function renewLicense(sessionToken: string, blobJson: string): Prom
  * starts working for this device.
  */
 export async function activateLicense(sessionToken: string, activationKey: string): Promise<LicenseStatus> {
-  return invoke<LicenseStatus>("activate_license_v3", { sessionToken, activationKey });
+  return announce(await invoke<LicenseStatus>("activate_license_v3", { sessionToken, activationKey }));
 }
 
 /**
@@ -68,11 +79,25 @@ export async function getDeviceId(): Promise<string> {
 }
 
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+const ONE_MINUTE_MS = 60 * 1000;
 
-/** Starts the periodic 6h recheck. Call once at app boot. Returns a cleanup function. */
+/** Starts the periodic 6h recheck plus a cheap 1-minute read of the cached
+ * status (which the Rust cloud check keeps current -- e.g. an admin pausing
+ * or resuming the shop), announcing any change. Call once at app boot.
+ * Returns a cleanup function. */
 export function startLicensePolling(): () => void {
-  const interval = setInterval(() => {
-    checkLicense().catch(() => {});
+  let last = "";
+  const key = (s: LicenseStatus) => `${s.kind}:${"plan" in s ? s.plan : ""}`;
+  const onChange = (s: LicenseStatus) => {
+    if (last && key(s) !== last) announce(s);
+    last = key(s);
+  };
+  getCachedLicenseStatus().then((s) => { last = key(s); }).catch(() => {});
+  const full = setInterval(() => {
+    checkLicense().then(onChange).catch(() => {});
   }, SIX_HOURS_MS);
-  return () => clearInterval(interval);
+  const cached = setInterval(() => {
+    getCachedLicenseStatus().then(onChange).catch(() => {});
+  }, ONE_MINUTE_MS);
+  return () => { clearInterval(full); clearInterval(cached); };
 }

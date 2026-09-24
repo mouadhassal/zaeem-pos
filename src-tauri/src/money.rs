@@ -18,9 +18,21 @@ pub fn scale_for(currency: &str) -> u8 {
     }
 }
 
+/// Converts a whole major-unit amount into `currency`'s minor units.
+pub fn major_to_minor(major: i64, currency: &str) -> i64 {
+    major.saturating_mul(10_i64.pow(scale_for(currency) as u32))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn major_to_minor_follows_scale() {
+        assert_eq!(major_to_minor(500, "SYP"), 500);
+        assert_eq!(major_to_minor(500, "USD"), 50_000);
+        assert_eq!(major_to_minor(500, "KWD"), 500_000);
+    }
 
     #[test]
     fn syp_and_iqd_are_zero_scale() {

@@ -1,11 +1,14 @@
+import { formatAmount } from "../../lib/money";
+
 interface Props {
   totalCents: number;
   currencySymbol: string;
 }
 
 export default function TotalBlock({ totalCents, currencySymbol }: Props) {
-  const fmt = (c: number) =>
-    c.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  // Currency-scale-aware -- was raw cents.toLocaleString(), which silently
+  // assumed scale 0 (see lib/money.ts's formatAmount doc comment).
+  const fmt = formatAmount;
 
   return (
     <div className="text-center">
@@ -14,7 +17,7 @@ export default function TotalBlock({ totalCents, currencySymbol }: Props) {
         style={{
           fontSize: 44,
           letterSpacing: "-0.02em",
-          fontFamily: "'JetBrains Mono', monospace",
+          fontFamily: "'IBM Plex Mono', monospace",
         }}
       >
         {currencySymbol}{fmt(totalCents)}

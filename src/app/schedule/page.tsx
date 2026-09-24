@@ -6,6 +6,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { IconChevronRight, IconChevronLeft, IconPlus, IconX, IconTrash } from "@tabler/icons-react";
 import DatePicker from "../../components/ui/DatePicker";
 import { toLocalDateStr, formatArabicDate } from "../../lib/dateLocal";
+import { useToast } from "../../hooks/useToast";
 
 // HR_AND_GENERALIZATION_PLAN.md Part A -- a manager's calendar of who's
 // scheduled to work when. Deliberately named "roster" everywhere (matches
@@ -33,6 +34,27 @@ interface RosterEntry {
 }
 
 const DAY_NAMES = ["السبت", "الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"];
+
+// 2026-09-13 audit fix: a separate backend pass is adding real overlap
+// detection to create_roster_entry_v3/update_roster_entry_v3 (a staff
+// member scheduled twice in the same window). Until/unless that lands in
+// this worktree, `realErrorText` alone would show whatever raw string the
+// backend throws verbatim -- fine for most errors (already Arabic per this
+// codebase's convention of translating command-side errors), but if the
+// overlap check ships as an English/untranslated variant or a raw SQLite
+// constraint message, it needs to render as one clear, specific sentence
+// here instead of a generic "the save failed" toast. This maps every
+// overlap-shaped signal (English or Arabic) to one friendly message and
+// otherwise falls back to the real error text, never silently swallowing
+// unknown failures.
+function friendlyRosterError(err: unknown): string {
+  const raw = realErrorText(err);
+  const lower = raw.toLowerCase();
+  if (lower.includes("overlap") || raw.includes("تعارض") || raw.includes("متداخل") || raw.includes("تداخل")) {
+    return "هذا الموظف لديه دوام آخر يتعارض مع هذا التوقيت -- عدّل الوقت أو احذف الدوام المتعارض أولاً.";
+  }
+  return raw;
+}
 
 const entrySchema = z.object({
   staffId: z.string().min(1, "اختر الموظف"),
@@ -63,6 +85,7 @@ function startOfWeek(from: Date): Date {
 }
 
 export default function SchedulePage() {
+  const toast = useToast();
   const token = useAuthStore((s) => s.token);
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [staff, setStaff] = useState<StaffOption[]>([]);
@@ -130,11 +153,15 @@ export default function SchedulePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, weekStart]);
 
-  useEffect(() => {
+  const fetchAll = useCallback(() => {
     setLoading(true);
     setError(null);
-    Promise.all([fetchStaff(), fetchEntries(), fetchBranches()]).finally(() => setLoading(false));
+    return Promise.all([fetchStaff(), fetchEntries(), fetchBranches()]).finally(() => setLoading(false));
   }, [fetchStaff, fetchEntries, fetchBranches]);
+
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
 
   function openAdd(staffId: string, workDate: string) {
     setEditId(null);
@@ -176,9 +203,10 @@ export default function SchedulePage() {
         });
       }
       setModalOpen(false);
+      toast.success(editId ? "تم تحديث الوردية ✓" : "تمت إضافة الوردية ✓");
       await fetchEntries();
     } catch (err) {
-      setFormErrors({ _form: realErrorText(err) });
+      setFormErrors({ _form: friendlyRosterError(err) });
     } finally {
       setSaving(false);
     }
@@ -190,6 +218,7 @@ export default function SchedulePage() {
     try {
       await invoke("delete_roster_entry_v3", { sessionToken: token, id: editId });
       setModalOpen(false);
+      toast.success("تم حذف الوردية ✓");
       await fetchEntries();
     } catch (err) {
       setFormErrors({ _form: realErrorText(err) });
@@ -204,10 +233,6 @@ export default function SchedulePage() {
 
   if (loading) {
     return <div className="flex items-center justify-center h-full text-ink-500 font-arabic">جاري التحميل...</div>;
-  }
-
-  if (error && staff.length === 0) {
-    return <div className="flex items-center justify-center h-full text-danger font-arabic">{error}</div>;
   }
 
   return (
@@ -241,7 +266,21 @@ export default function SchedulePage() {
         </div>
       </div>
 
-      {error && <div className="text-sm text-danger font-arabic">{error}</div>}
+      {/* Used to be an `if (error && staff.length === 0) return <bare error
+          text>` that replaced this whole page (title/week-nav included)
+          with no way back except a full remount. Now the chrome always
+          renders and a retry button re-runs the fetch that failed. */}
+      {error && (
+        <div className="flex items-center justify-between gap-3 rounded-sm bg-danger/10 border border-danger/30 px-4 py-3 text-danger font-arabic text-sm">
+          <span>{error}</span>
+          <button
+            onClick={fetchAll}
+            className="shrink-0 h-8 px-3 rounded-sm bg-danger text-white text-xs font-bold hover:opacity-90 transition-opacity"
+          >
+            إعادة المحاولة
+          </button>
+        </div>
+      )}
 
       {staff.length === 0 ? (
         <div className="zc-card p-8 text-center text-ink-500 font-arabic">لا يوجد موظفون نشطون لعرض جدولهم</div>

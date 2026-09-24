@@ -9,3 +9,4 @@ target/
 docs/supabase.txt
 
 .next/
+.claude/worktrees/

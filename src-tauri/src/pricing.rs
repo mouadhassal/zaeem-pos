@@ -53,6 +53,31 @@ pub struct ManagerThresholds {
     pub shift_diff_threshold_cents: i64,
 }
 
+/// Default void threshold, whole major units (500 new SYP).
+pub const DEFAULT_VOID_THRESHOLD_MAJOR: i64 = 500;
+/// Default shift-close difference threshold, whole major units (1,000 new SYP).
+pub const DEFAULT_SHIFT_DIFF_THRESHOLD_MAJOR: i64 = 1_000;
+
+impl ManagerThresholds {
+    /// Defaults expressed in `currency`'s minor units (see money.rs).
+    pub fn default_for(currency: &str) -> Self {
+        Self {
+            void_threshold_cents: crate::money::major_to_minor(DEFAULT_VOID_THRESHOLD_MAJOR, currency),
+            shift_diff_threshold_cents: crate::money::major_to_minor(DEFAULT_SHIFT_DIFF_THRESHOLD_MAJOR, currency),
+        }
+    }
+
+    /// A void of `line_total_cents` needs a manager PIN.
+    pub fn void_requires_manager(&self, line_total_cents: i64) -> bool {
+        line_total_cents >= self.void_threshold_cents
+    }
+
+    /// A shift close with this cash difference needs a manager PIN.
+    pub fn shift_diff_requires_manager(&self, difference_cents: i64) -> bool {
+        difference_cents.saturating_abs() >= self.shift_diff_threshold_cents
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct DiscountOverCap {
     /// Ceiling percent, rounded up to a whole percent, so the error reads
@@ -220,6 +245,27 @@ pub fn calculate_tax(item_total_cents: i64, discount_cents: i64, config: &TaxCon
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manager_threshold_defaults_are_new_syp_realistic() {
+        let t = ManagerThresholds::default_for("SYP");
+        assert_eq!(t.void_threshold_cents, 500);
+        assert_eq!(t.shift_diff_threshold_cents, 1_000);
+        // A typical 45 ل.س coffee void never trips the gate; a 600 ل.س line does.
+        assert!(!t.void_requires_manager(45));
+        assert!(t.void_requires_manager(600));
+        // Small till drift passes; a 1,000+ difference either way needs a PIN.
+        assert!(!t.shift_diff_requires_manager(-150));
+        assert!(t.shift_diff_requires_manager(-1_000));
+        assert!(t.shift_diff_requires_manager(2_500));
+    }
+
+    #[test]
+    fn manager_threshold_defaults_scale_with_currency() {
+        let usd = ManagerThresholds::default_for("USD");
+        assert_eq!(usd.void_threshold_cents, 50_000);
+        assert_eq!(usd.shift_diff_threshold_cents, 100_000);
+    }
 
     fn caps() -> DiscountCaps {
         DiscountCaps { cashier_percent: 10, manager_percent: 50, owner_percent: 100 }

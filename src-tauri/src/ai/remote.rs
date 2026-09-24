@@ -144,6 +144,13 @@ impl AiProvider for RemoteAiProvider {
             .json()
             .map_err(|e| AiError::ExtractionFailed(format!("invalid AI response shape: {e}")))?;
 
-        Ok(Answer { text: parsed.answer, confidence: 1.0 })
+        // Was hardcoded `confidence: 1.0` -- claimed 100% certainty on
+        // every answer regardless of what the LLM actually said. The
+        // `ai-assistant` edge function's response has no confidence
+        // field to parse (unlike `menu_from_media`'s per-item confidence,
+        // which the extraction function DOES compute and return), and
+        // that function is out-of-repo (Supabase-side); rather than keep
+        // shipping a number that lies, this honestly reports "no signal".
+        Ok(Answer { text: parsed.answer, confidence: None })
     }
 }

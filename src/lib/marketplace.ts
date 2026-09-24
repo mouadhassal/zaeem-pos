@@ -17,8 +17,30 @@ import { open } from "@tauri-apps/plugin-shell";
 // /buyer (apps/marketplace/src/app/restaurant -> .../buyer) -- this was
 // the one cross-app link that rename never checked, so this button has
 // been silently opening a broken page ever since.
-const MARKETPLACE_URL = "https://market.wenzdes.com";
+// Build-time override: VITE_MARKETPLACE_URL (e.g. a staging marketplace).
+export const DEFAULT_MARKETPLACE_URL = "https://market.wenzdes.com";
+export const MARKETPLACE_URL: string = (import.meta.env.VITE_MARKETPLACE_URL as string | undefined)?.replace(/\/+$/, "") || DEFAULT_MARKETPLACE_URL;
+
+// 2026-09-13 audit fix: apps/marketplace is still "not deployed yet" per
+// the note above -- market.wenzdes.com is not a live target today, so the
+// "اطلب من المتجر" button that calls openMarketplace() was a live-looking
+// link to a dead destination. Gate every call site behind this flag
+// instead of ripping the integration out; flip it once marketplace is
+// actually deployed.
+export const MARKETPLACE_ENABLED = false;
 
 export async function openMarketplace(): Promise<void> {
   await open(`${MARKETPLACE_URL}/buyer`);
+}
+
+// ECOSYSTEM_CONTRACTS.md 6.5: low-stock reorder page, optionally scoped to
+// this terminal's licensed branch.
+export function marketplaceReorderUrl(branchId?: string | null, baseUrl: string = MARKETPLACE_URL): string {
+  const params = new URLSearchParams({ source: "pos" });
+  if (branchId) params.set("branch", branchId);
+  return `${baseUrl}/ar/buyer/reorder?${params.toString()}`;
+}
+
+export async function openMarketplaceReorder(branchId?: string | null): Promise<void> {
+  await open(marketplaceReorderUrl(branchId));
 }

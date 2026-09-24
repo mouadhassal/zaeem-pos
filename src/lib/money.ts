@@ -66,6 +66,30 @@ export function formatMoney(amountCents: number, currency: string = currentCurre
   return `${formatted} ${symbol}`;
 }
 
+// Amount-only formatting (no currency symbol) -- for cart/order-panel/total
+// call sites that render the symbol themselves in separately-styled markup
+// (OrderLine, OrderPanel, TotalBlock, ItemCard, MenuGridContainer). Those
+// used to hand-roll `cents.toLocaleString(..., {minimumFractionDigits:0,
+// maximumFractionDigits:0})`, silently assuming scale 0 -- correct for SYP
+// today only because currency is hardcoded to SYP everywhere, but wrong by
+// 100x/1000x the moment a scale-2/scale-3 currency (USD/SAR/KWD/...) is
+// enabled. Shares formatMoney's scale logic so that can't happen again.
+export function formatAmount(amountCents: number, currency: string = currentCurrency): string {
+  const scale = scaleFor(currency);
+  const amount = amountCents / 10 ** scale;
+  return amount.toLocaleString("en-US", {
+    minimumFractionDigits: scale,
+    maximumFractionDigits: scale,
+  });
+}
+
+// Minor units -> plain major-unit string for an <input> (no grouping, so
+// parseMoneyInput round-trips it).
+export function minorToInputValue(amountCents: number, currency: string = currentCurrency): string {
+  const scale = scaleFor(currency);
+  return (amountCents / 10 ** scale).toFixed(scale);
+}
+
 export function parseMoneyInput(value: string, currency: string = currentCurrency): number {
   const scale = scaleFor(currency);
   const parsed = parseFloat(value) || 0;

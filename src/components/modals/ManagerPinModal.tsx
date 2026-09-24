@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { IconBackspace, IconX } from "@tabler/icons-react";
 import { invoke } from "../../lib/invoke";
+import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 
 interface Props {
@@ -44,15 +45,14 @@ export default function ManagerPinModal({
       // a client-side `app_settings` read via the old Kysely helper, trivially
       // bypassable by clearing local state) and audits a successful grant.
       const token = useAuthStore.getState().token;
-      await invoke<boolean>("verify_manager_override_v3", { sessionToken: token, passwordOrPin: pin });
+      const ok = await invoke<boolean>("verify_manager_override_v3", { sessionToken: token, passwordOrPin: pin });
+      if (!ok) {
+        setError("رمز المدير غير صحيح، أو تم قفل الإدخال مؤقتاً بسبب كثرة المحاولات الخاطئة");
+        return;
+      }
       onSuccess(pin);
     } catch (err) {
-      const msg = typeof err === "string" ? err : (err as Error)?.message ?? "";
-      if (msg.includes("ECONNREFUSED") || msg.includes("network") || msg.includes("fetch")) {
-        setError("خطأ في الاتصال بالخادم");
-      } else {
-        setError("كلمة المرور غير صحيحة، أو تم قفل الإدخال بسبب كثرة المحاولات الخاطئة");
-      }
+      setError(realErrorText(err));
     } finally {
       setLoading(false);
     }

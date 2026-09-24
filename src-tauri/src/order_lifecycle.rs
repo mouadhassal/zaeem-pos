@@ -42,16 +42,15 @@
 //! caller needs e.g. "cancel from KDS," that's a real product decision to
 //! make explicitly, not something to smuggle in as a permissive default.
 //!
-//! Same-status transitions (A -> A) ARE allowed as a no-op: the KDS UI's
-//! own "إعادة" (revert-to-preparing) button at READY has a pre-existing
-//! parameter-passing bug (`handleStatusChange(order.id, "PREPARING")` looks
-//! up `STATUS_FLOW["PREPARING"]` = `"READY"`, so it resends READY instead
-//! of actually reverting to PREPARING as its label implies) -- flagged as a
-//! real frontend bug worth fixing separately, out of scope here. Allowing
-//! A -> A as a no-op means that existing button keeps working (functions
-//! as a silent refresh instead of erroring) rather than this validation
-//! pass turning a pre-existing UI bug into a hard error for kitchen staff
-//! mid-service.
+//! Same-status transitions (A -> A) ARE allowed as a no-op, and
+//! `("READY", "PREPARING")` is allowed as a genuine backward edge: the KDS
+//! UI's "إعادة" (revert-to-preparing) button at READY previously had a
+//! parameter-passing bug (`handleStatusChange(order.id, "PREPARING")` looked
+//! up `STATUS_FLOW["PREPARING"]` = `"READY"`, so it resent READY instead of
+//! actually reverting to PREPARING as its label implied). That button has
+//! since been fixed (`src/app/kds/page.tsx`) to send a real
+//! `READY -> PREPARING` request, so this guard now has to actually allow
+//! it rather than merely tolerate the old bug as a same-status no-op.
 
 /// Returns `Ok(())` if `new_status` is a legal transition from
 /// `current_status`, else an `Err` with an Arabic message safe to surface
@@ -64,7 +63,10 @@ pub fn validate_order_status_transition(current_status: &str, new_status: &str) 
 
     let legal = matches!(
         (current_status, new_status),
-        ("PENDING", "PREPARING") | ("PREPARING", "READY") | ("READY", "SERVED")
+        ("PENDING", "PREPARING")
+            | ("PREPARING", "READY")
+            | ("READY", "SERVED")
+            | ("READY", "PREPARING")
     );
 
     if legal {
@@ -103,6 +105,12 @@ mod tests {
     fn rejects_moving_backward() {
         assert!(validate_order_status_transition("SERVED", "PREPARING").is_err());
         assert!(validate_order_status_transition("READY", "PENDING").is_err());
+        assert!(validate_order_status_transition("SERVED", "READY").is_err());
+    }
+
+    #[test]
+    fn allows_the_kds_revert_from_ready_to_preparing() {
+        assert!(validate_order_status_transition("READY", "PREPARING").is_ok());
     }
 
     #[test]

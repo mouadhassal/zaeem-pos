@@ -6,4962 +6,22 @@
 //! Tenant, and Branch scope, both reads and writes, and to fix DRIFT_REPORT.md
 //! Finding #1 (orders.driver_id) as a side effect of `create_order_v3` never
 //! referencing that column at all.
-
-use crate::audit;
-use crate::repo::{NewOrder, OrderRow, Repo, FullOrderInput, SplitBillInput, TableInfo, HeldOrderResult, ReceiptConfig, LoyaltyCardLookup};
-use crate::security::{self, authorize, authorize_scope, Actor, Permission, Role, Scope};
-use crate::Db;
-use bcrypt::{hash, verify, DEFAULT_COST};
-use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
-use tauri::{Manager, State};
-
-/// Takes `&Db` rather than `&State<Db>` so it (and everything built on it)
-/// can be called both from the real `#[tauri::command]` wrapper (where
-/// `&state` deref-coerces from `State<Db>`) and directly from command-wrapper
-/// tests holding a plain `Db` -- no `tauri::App`/`State` construction needed.
-pub(crate) fn authenticate_actor(state: &Db, session_token: &str) -> Result<Actor, String> {
-    let local_result = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        security::ensure_security_schema(&conn).map_err(|e| e.to_string())?;
-        security::authenticate(&conn, session_token).map_err(|e| e.to_string())
-    };
-    match local_result {
-        Ok(actor) => Ok(actor),
-        // A Satellite's own local `session_v3` never has this row -- every
-        // login is LAN-redirected to the Hub (staff accounts/PINs are
-        // Hub-authoritative, see `lan.rs`'s module doc), so the ~140
-        // commands NOT on the Phase 1 order/table allowlist would
-        // otherwise see a cashier's own just-created session as "session
-        // expired" everywhere except the 11 redirected commands. Only
-        // reached on the local-lookup failure path -- zero extra cost for
-        // every standalone/Hub terminal, where this always returns
-        // `Ok(None)` immediately (mode != "satellite").
-        Err(local_err) => match crate::lan::resolve_actor_via_hub(session_token) {
-            Ok(Some(actor)) => Ok(actor),
-            Ok(None) => Err(local_err),
-            Err(hub_err) => Err(hub_err),
-        },
-    }
-}
-
-/// Wire shape for `__resolve_actor_v3` -- `security::Actor` itself doesn't
-/// derive `Serialize` (it's never persisted or sent anywhere else), so
-/// this is a deliberate, minimal copy just for the one LAN round-trip.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) struct ActorWire {
-    pub id: String,
-    pub tenant_id: String,
-    pub branch_id: Option<String>,
-    pub role: Role,
-    pub device_id: String,
-}
-
-/// The POS-never-stops-selling guarantee is structural, not a flag check:
-/// order/payment/print commands never call this at all. Only back-office /
-/// reports commands do. See license/signed.rs's `LicenseStatus::back_office_locked`.
-fn require_license_not_locked(license: &crate::license::cloud::CloudLicenseState) -> Result<(), String> {
-    if license.cached_status().back_office_locked() {
-        return Err("license expired -- back-office access is locked until renewed. Point of sale keeps working normally.".to_string());
-    }
-    Ok(())
-}
-
-const INITIAL_SETUP_IN_PROGRESS_KEY: &str = "initial_setup_in_progress";
-// Bounds the exemption below even if the wizard's own "تخطي -- الإعداد
-// لاحقاً" (skip) button is used -- that path reloads straight into the
-// authenticated app without ever calling `update_business_mode_v3`,
-// which is the exemption's normal (immediate) close. 30 minutes is far
-// more than any real owner takes to click through three short forms;
-// this is just a backstop so an abandoned/skipped setup can't leave the
-// exemption open indefinitely.
-const INITIAL_SETUP_WINDOW_MS: i64 = 30 * 60 * 1000;
-
-/// 2026-08-21 QA re-audit: same lock as `require_license_not_locked`,
-/// except within `INITIAL_SETUP_WINDOW_MS` of `setup_owner_v3` creating
-/// the very first owner (`INITIAL_SETUP_IN_PROGRESS_KEY` stores that
-/// expiry timestamp). `update_business_mode_v3` -- the wizard's own
-/// final step -- clears it early, on success. In between, SetupWizard's
-/// "branch" and "business" steps call `update_chain_currency_v3`/
-/// `save_legacy_branch_v3`/`update_business_mode_v3`, none of which the
-/// owner could have possibly gotten a license activated for yet:
-/// Settings' activation UI is itself unreachable until setup finishes.
-/// Without this exemption that was a real deadlock --
-/// `require_license_not_locked` failed every one of those three calls
-/// with "لا يوجد ترخيص صالح" on a brand-new device, confirmed live
-/// against a release build (debug builds never hit this, since
-/// `needs_setup_v3` always returns false under `cfg!(debug_assertions)`,
-/// so the wizard was never actually exercised before this pass).
-///
-/// A local `branches`/staff-count check was considered instead and
-/// rejected: `update_business_mode_v3` runs AFTER `save_legacy_branch_v3`
-/// already created the tenant's one branch in the same wizard pass, so
-/// "zero branches" doesn't hold for all three calls, and "exactly one
-/// branch" is indistinguishable from a genuinely already-set-up,
-/// single-branch tenant editing business mode later with an expired
-/// license -- that would reopen the exact licensing bypass this gate
-/// exists to prevent. The flag can't be replayed: `setup_owner_v3`
-/// itself refuses a second run once an owner exists ("المالك موجود
-/// بالفعل"), so there is no path for an already-set-up tenant to ever
-/// see this flag set again.
-fn require_license_not_locked_or_initial_setup(
-    license: &crate::license::cloud::CloudLicenseState,
-    conn: &Connection,
-) -> Result<(), String> {
-    let expires_at_ms: Option<i64> = conn
-        .query_row("SELECT value FROM app_settings WHERE key = ?1", params![INITIAL_SETUP_IN_PROGRESS_KEY], |r| r.get::<_, String>(0))
-        .optional()
-        .unwrap_or(None)
-        .and_then(|v| v.parse().ok());
-    if let Some(expires_at_ms) = expires_at_ms {
-        if chrono::Utc::now().timestamp_millis() < expires_at_ms {
-            return Ok(());
-        }
-    }
-    require_license_not_locked(license)
-}
-
-/// 2026-08-14 pricing tiers: 'pos_lite' is the sell-and-print terminal
-/// without the CRM/ERP layer (reports, loyalty, debt, roster/HR, anomaly/
-/// forecast/reconciliation) -- that's the actual product difference from
-/// 'full', priced accordingly. Reads `plan` off the SAME already-verified
-/// license payload `require_license_not_locked` reads `back_office_locked`
-/// from -- no new trust boundary, just a second check on data that's
-/// already there. An `Invalid`/no-license status has no plan to read; that
-/// case is left to `require_license_not_locked` (called first at every
-/// existing call site) to reject, so this only ever runs against a
-/// verified payload. Any plan string other than the literal "pos_lite"
-/// passes -- this fails OPEN for unrecognized/legacy plan values
-/// (including every already-issued license, whose payload predates this
-/// field's meaning) rather than silently locking out a paying customer on
-/// an unrecognized string, same reasoning as this repo's licensing
-/// incidents already documented in README.md #6.
-fn require_plan_includes_management(license: &crate::license::cloud::CloudLicenseState) -> Result<(), String> {
-    let plan = match license.cached_status() {
-        license_core::signed::LicenseStatus::Active { plan, .. }
-        | license_core::signed::LicenseStatus::Grace { plan, .. }
-        | license_core::signed::LicenseStatus::LockedBackOffice { plan, .. } => plan,
-        license_core::signed::LicenseStatus::Invalid { .. } => return Ok(()),
-    };
-    if plan == "pos_lite" {
-        return Err("هذه الباقة (POS خفيف) لا تشمل هذه الميزة -- تواصل معنا للترقية إلى الباقة الكاملة".to_string());
-    }
-    Ok(())
-}
-
-#[derive(Debug, Serialize)]
-pub struct LoginV3Response {
-    pub token: String,
-    pub actor_id: String,
-    pub name: String,
-    pub role: String,
-    pub tenant_id: String,
-    pub branch_id: Option<String>,
-}
-
-fn login_response(conn: &rusqlite::Connection, actor_id: &str, name: &str, role_str: &str, tenant_id: String, branch_id: Option<String>, device_id: &str) -> Result<LoginV3Response, String> {
-    let role = Role::from_str(role_str).ok_or_else(|| "unknown role".to_string())?;
-    let token = security::create_session(conn, actor_id, device_id).map_err(|e| e.to_string())?;
-    Ok(LoginV3Response {
-        token,
-        actor_id: actor_id.to_string(),
-        name: name.to_string(),
-        role: role_str.to_string(),
-        tenant_id,
-        branch_id: match role { Role::Platform | Role::Owner => None, _ => branch_id },
-    })
-}
-
-/// authn only (this command's whole job IS authentication) -- creates the
-/// session and resolves Scope for the caller to inspect, but the Scope
-/// itself is never trusted from the client on subsequent calls; every other
-/// command re-resolves it from the session token every time. Looks staff up
-/// by `name` (`staff` has no `username` column) -- kept for callers that DO
-/// know a display name; the running app's actual login screen is PIN-only
-/// and has no name field at all, so it uses `login_pin_v3` below instead.
-#[tauri::command]
-pub fn login_v3(state: State<Db>, name: String, password_or_pin: String, device_id: String) -> Result<LoginV3Response, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    security::ensure_security_schema(&conn).map_err(|e| e.to_string())?;
-
-    let (actor_id, tenant_id, branch_id, role_str, password_hash, pin_hash): (String, String, Option<String>, String, Option<String>, Option<String>) = conn
-        .query_row(
-            "SELECT id, tenant_id, branch_id, role, password_hash, pin_hash FROM staff WHERE name = ?1 AND is_active = 1",
-            params![name],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-        )
-        .map_err(|_| "invalid credentials".to_string())?;
-
-    let valid = pin_hash.as_deref().map(|h| verify(&password_or_pin, h).unwrap_or(false)).unwrap_or(false)
-        || password_hash.as_deref().map(|h| verify(&password_or_pin, h).unwrap_or(false)).unwrap_or(false);
-    if !valid {
-        return Err("invalid credentials".to_string());
-    }
-
-    login_response(&conn, &actor_id, &name, &role_str, tenant_id, branch_id, &device_id)
-}
-
-/// The actual login mechanism the running app's UI uses (`LoginPage.tsx` is a
-/// PIN pad, nothing else -- no username/name field exists there at all).
-/// Scans active staff with a `pin_hash` set, same shape as the old (now
-/// broken, `users`-table) `login_with_pin`, but against `staff`.
-#[tauri::command]
-pub fn login_pin_v3(state: State<Db>, pin: String, device_id: String) -> Result<LoginV3Response, String> {
-    login_pin_v3_impl(&state, pin, device_id)
-}
-
-/// Split out (T3.0 LAN hub/satellite) so `dispatch_lan_rpc` can call this
-/// with a plain `&Db` -- `tauri::State<T>` has no public constructor
-/// outside a live `Manager`, and this crate's tests can't build a real
-/// `tauri::App` on this dev box at all (see `command_wrapper_tests`'s own
-/// doc comment for the confirmed `STATUS_ENTRYPOINT_NOT_FOUND` crash), so
-/// anything the LAN dispatcher needs to call has to be reachable without
-/// one.
-const LOGIN_PIN_MAX_ATTEMPTS: i64 = 5;
-const LOGIN_PIN_LOCKOUT_SECONDS: i64 = 5 * 60;
-const LOGIN_PIN_FAILURES_KEY: &str = "login_pin_failures";
-const LOGIN_PIN_LOCKED_UNTIL_KEY: &str = "login_pin_locked_until";
-
-/// Security audit finding (pre-launch pass): this used to scan every active
-/// staff row in the ENTIRE local `staff` table with no tenant filter and no
-/// lockout -- two staff picking the same PIN could cross-authenticate as
-/// each other, and the 10,000-combination 6-digit PIN space had no
-/// brute-force protection on an idle/physically-accessible terminal (unlike
-/// `verify_manager_override_impl`, which already had both). Fixed the same
-/// way: scope candidates to this device's one tenant (a terminal is licensed
-/// to exactly one tenant -- see `setup_owner_v3`), and apply the same
-/// device-wide lockout pattern (there's no authenticated actor yet to scope
-/// a per-actor lockout to; a device-wide one is exactly right here since
-/// this IS the login screen for that one physical terminal).
-fn login_pin_v3_impl(state: &Db, pin: String, device_id: String) -> Result<LoginV3Response, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    security::ensure_security_schema(&conn).map_err(|e| e.to_string())?;
-
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let locked_until_ms: i64 = conn
-        .query_row("SELECT value FROM app_settings WHERE key = ?1", params![LOGIN_PIN_LOCKED_UNTIL_KEY], |r| r.get::<_, String>(0))
-        .optional().map_err(|e| e.to_string())?
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    if locked_until_ms > 0 && now_ms < locked_until_ms {
-        return Err("محاولات كثيرة فاشلة -- حاول مرة أخرى لاحقاً".to_string());
-    }
-    if locked_until_ms > 0 && now_ms >= locked_until_ms {
-        conn.execute("DELETE FROM app_settings WHERE key IN (?1, ?2)", params![LOGIN_PIN_FAILURES_KEY, LOGIN_PIN_LOCKED_UNTIL_KEY])
-            .map_err(|e| e.to_string())?;
-    }
-
-    // A device is licensed/set up for exactly one tenant (setup_owner_v3
-    // attaches the bootstrap owner to `SELECT id FROM tenant LIMIT 1`) --
-    // scoping candidates to that tenant is defense-in-depth even though a
-    // second tenant row should never exist in this local DB at all.
-    let tenant_id: Option<String> = conn
-        .query_row("SELECT id FROM tenant LIMIT 1", [], |r| r.get(0))
-        .optional().map_err(|e| e.to_string())?;
-
-    let mut stmt = conn
-        .prepare("SELECT id, name, tenant_id, branch_id, role, pin_hash FROM staff WHERE pin_hash IS NOT NULL AND is_active = 1 AND (?1 IS NULL OR tenant_id = ?1)")
-        .map_err(|e| e.to_string())?;
-    let candidates: Vec<(String, String, String, Option<String>, String, String)> = stmt
-        .query_map(params![tenant_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-    drop(stmt);
-
-    for (actor_id, name, staff_tenant_id, branch_id, role_str, pin_hash) in candidates {
-        if verify(&pin, &pin_hash).unwrap_or(false) {
-            conn.execute("DELETE FROM app_settings WHERE key IN (?1, ?2)", params![LOGIN_PIN_FAILURES_KEY, LOGIN_PIN_LOCKED_UNTIL_KEY])
-                .map_err(|e| e.to_string())?;
-            return login_response(&conn, &actor_id, &name, &role_str, staff_tenant_id, branch_id, &device_id);
-        }
-    }
-
-    let failures: i64 = conn
-        .query_row("SELECT value FROM app_settings WHERE key = ?1", params![LOGIN_PIN_FAILURES_KEY], |r| r.get::<_, String>(0))
-        .optional().map_err(|e| e.to_string())?
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0) + 1;
-    if failures >= LOGIN_PIN_MAX_ATTEMPTS {
-        let until = now_ms + LOGIN_PIN_LOCKOUT_SECONDS * 1000;
-        conn.execute(
-            "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
-            params![LOGIN_PIN_LOCKED_UNTIL_KEY, until.to_string()],
-        ).map_err(|e| e.to_string())?;
-        conn.execute(
-            "INSERT INTO app_settings (key, value) VALUES (?1, '0') ON CONFLICT(key) DO UPDATE SET value = '0'",
-            params![LOGIN_PIN_FAILURES_KEY],
-        ).map_err(|e| e.to_string())?;
-    } else {
-        conn.execute(
-            "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
-            params![LOGIN_PIN_FAILURES_KEY, failures.to_string()],
-        ).map_err(|e| e.to_string())?;
-    }
-    // 2026-08-28 sweep fix: this was the literal English string "invalid
-    // PIN" -- authStore.ts's loginWithPin() trusts a string error from the
-    // backend verbatim (only falls back to its own Arabic default for a
-    // non-string error), so this leaked untranslated straight to the login
-    // screen while every other error in this codebase is already Arabic.
-    Err("الرمز غير صحيح".to_string())
-}
-
-/// Server-side PIN format enforcement -- `create_staff_v3`/
-/// `update_staff_profile_v3` previously trusted the frontend's zod
-/// `/^\d{6}$/` check entirely; a direct Tauri IPC call (or a future
-/// frontend bug) could store a PIN of any shape.
-fn validate_pin_format(pin: &str) -> Result<(), String> {
-    if pin.len() != 6 || !pin.chars().all(|c| c.is_ascii_digit()) {
-        return Err("الرقم السري يجب أن يكون 6 أرقام".to_string());
-    }
-    Ok(())
-}
-
-/// Rejects a new/changed PIN that collides with another active staff
-/// member's PIN in the same tenant -- bcrypt hashes can't be compared
-/// directly, so this re-verifies the candidate plaintext against every
-/// existing hash the same way login itself does. Two staff sharing a PIN
-/// means whichever one SQLite returns first silently authenticates BOTH of
-/// them at login; this closes that off at the point the PIN is set, not by
-/// changing login's find-first behavior (which is what the underlying
-/// staff-identification model actually depends on).
-fn assert_pin_not_taken(conn: &rusqlite::Connection, tenant_id: &str, pin: &str, exclude_staff_id: Option<&str>) -> Result<(), String> {
-    let mut stmt = conn
-        .prepare("SELECT id, pin_hash FROM staff WHERE tenant_id = ?1 AND pin_hash IS NOT NULL AND is_active = 1")
-        .map_err(|e| e.to_string())?;
-    let candidates: Vec<(String, String)> = stmt
-        .query_map(params![tenant_id], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-    drop(stmt);
-
-    for (staff_id, pin_hash) in candidates {
-        if Some(staff_id.as_str()) == exclude_staff_id {
-            continue;
-        }
-        if verify(pin, &pin_hash).unwrap_or(false) {
-            return Err("هذا الرقم السري مستخدم بالفعل من قبل موظف آخر -- اختر رقماً مختلفاً".to_string());
-        }
-    }
-    Ok(())
-}
-
-/// Bootstraps the very first OWNER. No actor/session can exist to authorize
-/// this (there is no staff yet), so this is the one v3 command that runs
-/// entirely outside the authn -> authz shape -- guarded instead by "an OWNER
-/// already exists" being a hard refusal. T1.1's Migration A always seeds
-/// exactly one tenant + branch from the pre-existing single-tenant install,
-/// so this targets that tenant rather than creating a new one.
-#[tauri::command]
-pub fn setup_owner_v3(state: State<Db>, name: String, password: String, pin: String, device_id: String) -> Result<LoginV3Response, String> {
-    if password.len() < 10 {
-        return Err("كلمة المرور يجب أن تكون 10 أحرف على الأقل".to_string());
-    }
-    if pin.len() != 6 || !pin.chars().all(|c| c.is_ascii_digit()) {
-        return Err("الرقم السري يجب أن يكون 6 أرقام".to_string());
-    }
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    security::ensure_security_schema(&conn).map_err(|e| e.to_string())?;
-    let existing: i64 = conn
-        .query_row("SELECT COUNT(*) FROM staff WHERE role = 'OWNER' AND is_active = 1", [], |r| r.get(0))
-        .unwrap_or(0);
-    if existing > 0 {
-        return Err("المالك موجود بالفعل".to_string());
-    }
-    let tenant_id: String = conn
-        .query_row("SELECT id FROM tenant LIMIT 1", [], |r| r.get(0))
-        .map_err(|_| "no tenant exists to attach an owner to -- migrations have not run".to_string())?;
-
-    let password_hash = hash(&password, DEFAULT_COST).map_err(|e| e.to_string())?;
-    let pin_hash = hash(&pin, DEFAULT_COST).map_err(|e| e.to_string())?;
-
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let staff_id = Repo::new(&tx)
-        .create_staff(&tenant_id, None, None, "OWNER", Role::Owner.rank(), &name, Some(&pin_hash), Some(&password_hash))
-        .map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &device_id, &tenant_id, None, &staff_id,
-        audit::Action::StaffCreated, "staff", &staff_id,
-        None, Some(&serde_json::json!({ "role": "OWNER", "name": name, "bootstrap": true })),
-    ).map_err(|e| e.to_string())?;
-    // Opens the license-gate exemption SetupWizard's own remaining steps
-    // (currency/branch/business-mode) need -- see
-    // `require_license_not_locked_or_initial_setup`'s doc comment.
-    // `update_business_mode_v3` (the wizard's final step) closes it early
-    // on success; this timestamp bounds it regardless.
-    let setup_expires_at_ms = (chrono::Utc::now().timestamp_millis() + INITIAL_SETUP_WINDOW_MS).to_string();
-    tx.execute(
-        "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
-        params![INITIAL_SETUP_IN_PROGRESS_KEY, setup_expires_at_ms],
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-
-    login_response(&conn, &staff_id, &name, "OWNER", tenant_id, None, &device_id)
-}
-
-/// Mirrors the old `needs_setup`'s exact debug-mode shortcut (always `false`
-/// in a debug build -- dev installs are pre-seeded by `seed_default_staff`),
-/// but checks `staff`, not the now-dropped `users` table.
-#[tauri::command]
-pub fn needs_setup_v3(state: State<Db>) -> Result<bool, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    if cfg!(debug_assertions) {
-        return Ok(false);
-    }
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM staff WHERE role = 'OWNER' AND is_active = 1", [], |r| r.get(0))
-        .unwrap_or(0);
-    Ok(count == 0)
-}
-
-#[tauri::command]
-pub fn logout_v3(state: State<Db>, session_token: String) -> Result<(), String> {
-    logout_v3_impl(&state, session_token)
-}
-
-fn logout_v3_impl(state: &Db, session_token: String) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    security::revoke_session(&conn, &session_token).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn create_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, tenant_id: String, name: String, currency: String) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::CreateBranch).map_err(|e| e.to_string())?;
-    // Platform's authorize_scope is unconditional true, but the target tenant
-    // must still exist -- validate, don't trust the argument blindly.
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tenant_exists: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM tenant WHERE id = ?1", params![tenant_id], |r| r.get(0),
-    ).map_err(|e| e.to_string())?;
-    if !tenant_exists {
-        return Err(format!("no such tenant: {tenant_id}"));
-    }
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let branch_id = Repo::new(&tx).create_branch(&tenant_id, &name, &currency).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, None, &actor.id,
-        audit::Action::BranchCreated, "branch", &branch_id,
-        None, Some(&serde_json::json!({ "name": name, "currency": currency })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(branch_id)
-}
-
-#[tauri::command]
-pub fn create_staff_v3(
-    state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>,
-    session_token: String,
-    target_branch_id: Option<String>,
-    role: String,
-    name: String,
-    pin: String,
-) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::CreateStaff).map_err(|e| e.to_string())?;
-
-    let target_role = Role::from_str(&role).ok_or_else(|| "دور غير معروف".to_string())?;
-
-    // Hard rule (SCHEMA_V3.md §2.1, decision 2026-07-16): actor_rank > target_rank, always.
-    // 2026-08-22 QA re-audit: this raw English message reached the Arabic
-    // Staff page verbatim ("role Owner (rank 3) cannot assign role Owner
-    // (rank 3) -- must be strictly below the actor's own rank") -- found
-    // live by trying to create a second Owner from Settings > الموظفين
-    // (the role dropdown offers "مالك" with nothing stopping the actor from
-    // picking it; the backend correctly refuses, just never in Arabic).
-    if actor.role.rank() <= target_role.rank() {
-        return Err("لا يمكنك تعيين دور بنفس رتبة حسابك أو أعلى منها".to_string());
-    }
-
-    // Hard rule (ARCHITECTURE_V3.md #2): Manager's create_staff forces branch_id = actor's own.
-    let actor_branch_id = match actor.role {
-        Role::Manager => actor.branch_id.as_deref(),
-        _ => None,
-    };
-    if actor_branch_id.is_none() {
-        if let Some(ref tb) = target_branch_id {
-            authorize_scope(&actor, &actor.tenant_id, Some(tb.as_str())).map_err(|e| e.to_string())?;
-        }
-    }
-
-    validate_pin_format(&pin)?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    assert_pin_not_taken(&conn, &actor.tenant_id, &pin, None)?;
-    let pin_hash = hash(&pin, DEFAULT_COST).map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let staff_id = Repo::new(&tx)
-        .create_staff(
-            &actor.tenant_id,
-            actor_branch_id,
-            target_branch_id.as_deref(),
-            &role,
-            target_role.rank(),
-            &name,
-            Some(&pin_hash),
-            None,
-        )
-        .map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &actor.tenant_id, actor_branch_id.or(target_branch_id.as_deref()), &actor.id,
-        audit::Action::StaffCreated, "staff", &staff_id,
-        None, Some(&serde_json::json!({ "role": role, "name": name })),
-    ).map_err(|e| e.to_string())?;
-    let license_status = license.cached_status();
-    sync_enqueue_staff_snapshot(&tx, &actor.tenant_id, &staff_id, &actor.device_id, &license_status)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(staff_id)
-}
-
-/// Same rank rule as `create_staff_v3`, checked against the TARGET's current
-/// rank (read back from the DB, never trusted from the caller) as well as
-/// the new role being assigned -- an actor cannot demote-then-promote around
-/// the rule, and cannot touch a target who already outranks them.
-#[tauri::command]
-pub fn update_staff_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, target_staff_id: String, new_role: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
-
-    let new_role_parsed = Role::from_str(&new_role).ok_or_else(|| "دور غير معروف".to_string())?;
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (target_tenant_id, target_branch_id, target_current_rank) =
-        Repo::new(&conn).get_staff_scope(&target_staff_id).map_err(|e| e.to_string())?;
-
-    authorize_scope(&actor, &target_tenant_id, target_branch_id.as_deref()).map_err(|e| e.to_string())?;
-
-    // 2026-08-22 QA re-audit: both of these raw English messages reached
-    // the Arabic Staff page verbatim -- same class of bug as
-    // create_staff_v3's rank check right above, fixed the same way.
-    if actor.role.rank() <= target_current_rank {
-        return Err("لا يمكنك تعديل موظف بنفس رتبتك أو أعلى منها".to_string());
-    }
-    if actor.role.rank() <= new_role_parsed.rank() {
-        return Err("لا يمكنك تعيين دور بنفس رتبة حسابك أو أعلى منها".to_string());
-    }
-
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_staff_role(&target_staff_id, &new_role, new_role_parsed.rank()).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &target_tenant_id, target_branch_id.as_deref(), &actor.id,
-        audit::Action::StaffRoleUpdated, "staff", &target_staff_id,
-        Some(&serde_json::json!({ "role_rank": target_current_rank })),
-        Some(&serde_json::json!({ "role": new_role, "role_rank": new_role_parsed.rank() })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Read-only, gated on being an authenticated staff member at all (no
-/// dedicated permission -- picking a branch to create staff into isn't a
-/// sensitive read by itself; `create_staff_v3` re-checks everything).
-#[tauri::command]
-pub fn list_branches_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<(String, String)>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_branches(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-/// Back-office command -- license-gated (see `require_license_not_locked`).
-/// This is a representative example of the gate, not exhaustive coverage:
-/// staff/reports/settings management are the intended surface, order/
-/// payment/print commands must never be gated this way.
-#[tauri::command]
-pub fn list_staff_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::StaffRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
-    require_license_not_locked(&license)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_staff(&actor.scope()).map_err(|e| e.to_string())
-}
-
-/// Batch 3b -- `staff/page.tsx`'s "edit employee" path. Only `name` and,
-/// optionally, a new PIN -- `staff` has no `email`/`phone`/`photo_path`/
-/// `cv_path` for this to update (see `Repo::update_staff_profile`'s doc
-/// comment). Role changes still go through `update_staff_v3` (the
-/// rank-checked path); this command never touches `role`/`role_rank`.
-#[tauri::command]
-pub fn update_staff_profile_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, target_staff_id: String, name: String, new_pin: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (target_tenant_id, target_branch_id, target_current_rank) =
-        Repo::new(&conn).get_staff_scope(&target_staff_id).map_err(|e| e.to_string())?;
-    authorize_scope(&actor, &target_tenant_id, target_branch_id.as_deref()).map_err(|e| e.to_string())?;
-    // A Manager may edit their own profile (rank equal to self is fine here --
-    // this isn't a rank-elevation action) but never someone who outranks them.
-    // 2026-08-22 QA re-audit: same raw-English-reaches-Arabic-UI bug as
-    // create_staff_v3/update_staff_v3's rank checks.
-    if actor.id != target_staff_id && actor.role.rank() <= target_current_rank {
-        return Err("لا يمكنك تعديل موظف بنفس رتبتك أو أعلى منها".to_string());
-    }
-
-    if let Some(ref p) = new_pin {
-        validate_pin_format(p)?;
-        assert_pin_not_taken(&conn, &target_tenant_id, p, Some(&target_staff_id))?;
-    }
-    let new_pin_hash = new_pin.map(|p| hash(&p, DEFAULT_COST)).transpose().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_staff_profile(&target_staff_id, &name, new_pin_hash.as_deref()).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &target_tenant_id, target_branch_id.as_deref(), &actor.id,
-        audit::Action::StaffRoleUpdated, "staff", &target_staff_id,
-        None, Some(&serde_json::json!({ "name": name, "pin_changed": new_pin_hash.is_some() })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn set_staff_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, target_staff_id: String, is_active: bool) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (target_tenant_id, target_branch_id, target_current_rank) =
-        Repo::new(&conn).get_staff_scope(&target_staff_id).map_err(|e| e.to_string())?;
-    authorize_scope(&actor, &target_tenant_id, target_branch_id.as_deref()).map_err(|e| e.to_string())?;
-    if actor.role.rank() <= target_current_rank {
-        return Err(format!(
-            "actor rank {} cannot deactivate/reactivate a target of rank {} -- must be strictly higher",
-            actor.role.rank(), target_current_rank
-        ));
-    }
-
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).set_staff_active(&target_staff_id, is_active).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &target_tenant_id, target_branch_id.as_deref(), &actor.id,
-        audit::Action::StaffRoleUpdated, "staff", &target_staff_id,
-        None, Some(&serde_json::json!({ "is_active": is_active })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn list_orders_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<OrderRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ViewOrders).map_err(|e| e.to_string())?;
-    let scope = actor.scope();
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_orders(&scope).map_err(|e| e.to_string())
-}
-
-/// Back-office command -- feeds the refund lookup UI (reports/page.tsx's
-/// "الطلبات المدفوعة" section). See Repo::list_recent_paid_orders's own
-/// doc comment for why this is capped and joined for display, not a reuse
-/// of list_orders_v3 above.
-#[tauri::command]
-pub fn list_recent_paid_orders_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::RefundableOrderRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::RefundOrder).map_err(|e| e.to_string())?;
-    let scope = actor.scope();
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_recent_paid_orders(&scope, 50).map_err(|e| e.to_string())
-}
-
-/// `kds/page.tsx`'s kitchen display feed.
-#[tauri::command]
-pub fn list_kitchen_orders_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::KdsOrderRow>, String> {
-    list_kitchen_orders_v3_impl(&state, session_token)
-}
-
-fn list_kitchen_orders_v3_impl(state: &Db, session_token: String) -> Result<Vec<crate::repo::KdsOrderRow>, String> {
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::ViewOrders).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_kitchen_orders(&actor.scope()).map_err(|e| e.to_string())
-}
-
-/// T2.0 per-terminal licensing (plan §2): registers this KDS terminal in
-/// the cloud for fleet visibility ONLY -- deliberately FREE. No license
-/// check (`require_license_not_locked` is never called here, same as
-/// `list_kitchen_orders_v3` above -- KDS is a display, not a till), no
-/// device_token, no billing row. Called once from `kds/page.tsx` on mount.
-///
-/// Still requires a real, authenticated staff session (not a bare
-/// unauthenticated endpoint) -- this reuses the actor's own tenant_id/
-/// branch_id rather than trusting client-supplied ids, even though the
-/// data behind this is low-stakes (fleet visibility, not money). The
-/// actual Supabase write is fire-and-forget on a spawned task: a
-/// kitchen with no internet, or a Supabase outage, must never delay or
-/// block the kitchen display from opening -- this command always returns
-/// `Ok(())` to the frontend immediately, logging (not surfacing) any
-/// eventual failure.
-#[tauri::command]
-pub fn register_kds_terminal_v3(state: State<Db>, session_token: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let Scope::Branch { tenant_id, branch_id } = actor.scope() else {
-        return Ok(()); // Owner/Platform never run a KDS terminal.
-    };
-    let fingerprint = crate::license::fingerprint::current();
-    let device_name = format!("KDS - {}", actor.device_id);
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = crate::license::cloud::register_kds_device(&tenant_id, &branch_id, &device_name, &fingerprint).await {
-            crate::obslog::log_frontend_command_error("register_kds_terminal_v3", &e);
-        }
-    });
-    Ok(())
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn create_order_v3(
-    state: State<Db>,
-    license: State<crate::license::cloud::CloudLicenseState>,
-    session_token: String,
-    table_id: String,
-    order_type: String,
-    subtotal_cents: i64,
-    tax_cents: i64,
-    discount_cents: i64,
-    manager_override_pin: Option<String>,
-) -> Result<String, String> {
-    create_order_v3_impl(&state, &license, session_token, table_id, order_type, subtotal_cents, tax_cents, discount_cents, manager_override_pin)
-}
-
-/// Real body, `&Db` instead of `State<Db>` -- see `authenticate_actor`'s doc
-/// comment for why. Command-wrapper tests call this exact function.
-#[allow(clippy::too_many_arguments)]
-fn create_order_v3_impl(
-    state: &Db,
-    license: &crate::license::cloud::CloudLicenseState,
-    session_token: String,
-    table_id: String,
-    order_type: String,
-    subtotal_cents: i64,
-    tax_cents: i64,
-    discount_cents: i64,
-    manager_override_pin: Option<String>,
-) -> Result<String, String> {
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
-
-    // Owner has no single home branch by role -- but the physical terminal
-    // does (its own license binding), so this auto-resolves instead of
-    // rejecting outright. Platform still has nothing to write into.
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, license, None)?
-    };
-
-    if subtotal_cents < 0 || tax_cents < 0 || discount_cents < 0 {
-        return Err("negative amounts are not valid".to_string());
-    }
-    let total_cents = std::cmp::max(0, subtotal_cents + tax_cents - discount_cents);
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    // Same shift-required gate `create_full_order_v3_impl` already
-    // enforces (2026-08-02 finding) -- this older, simpler command
-    // (superseded by create_full_order_v3 for the real POS UI, but still
-    // a registered, directly-invokable Tauri command) had never received
-    // the same fix, a real gap a devtools/console caller could still hit.
-    Repo::new(&conn)
-        .get_active_shift(&actor.id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "لا توجد وردية مفتوحة -- يجب فتح وردية أولاً قبل البيع".to_string())?;
-    let override_used = enforce_discount_cap(&mut conn, &actor, &tenant_id, subtotal_cents, discount_cents, manager_override_pin.as_deref())?;
-
-    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let order_id = Repo::new(&tx)
-        .create_order(
-            &scope,
-            &tenant_id,
-            &branch_id,
-            NewOrder { table_id, user_id: actor.id.clone(), order_type: order_type.clone(), subtotal_cents, tax_cents, total_cents, discount_cents },
-        )
-        .map_err(|e| e.to_string())?;
-
-    // T1.6: the first status fact for this order, and the projection rebuilt
-    // from a fresh replay -- not a separate "status" column set inline on
-    // the INSERT above. `order_current` never exists before its first event.
-    Repo::new(&tx).append_order_status_event(&tenant_id, &branch_id, &order_id, "PENDING", &actor.id, &actor.device_id)
-        .map_err(|e| e.to_string())?;
-    Repo::new(&tx).rebuild_order_current(&order_id).map_err(|e| e.to_string())?;
-
-    // Per T1.2's command shape: audit write in the SAME transaction. If this
-    // fails, the order insert above rolls back with it -- there is no state
-    // where an order exists but its creation was never recorded.
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::OrderCreated, "order", &order_id,
-        None, Some(&serde_json::json!({ "order_type": order_type, "total_cents": total_cents, "table_id_hash": "omitted" })),
-    ).map_err(|e| e.to_string())?;
-
-    // Anti-theft record: every applied discount is logged (who, how much,
-    // which order), independent of the ManagerOverrideGranted entry (if
-    // any) written by `enforce_discount_cap` above.
-    if discount_cents > 0 {
-        audit::append(
-            &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-            audit::Action::DiscountApplied, "order", &order_id,
-            None, Some(&serde_json::json!({ "discount_cents": discount_cents, "subtotal_cents": subtotal_cents, "manager_override_used": override_used })),
-        ).map_err(|e| e.to_string())?;
-    }
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(order_id)
-}
-
-/// T1.6: appends a new status fact and rebuilds `order_current` from a fresh
-/// replay, all inside one transaction with its audit entry -- there is no
-/// UPDATE anywhere in this path against `orders.status` or `order_current`
-/// directly; both are always derived, never hand-edited.
-#[tauri::command]
-pub fn update_order_status_v3(state: State<Db>, session_token: String, order_id: String, new_status: String) -> Result<(), String> {
-    update_order_status_v3_impl(&state, session_token, order_id, new_status)
-}
-
-fn update_order_status_v3_impl(state: &Db, session_token: String, order_id: String, new_status: String) -> Result<(), String> {
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::UpdateOrderStatus).map_err(|e| e.to_string())?;
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (order_tenant_id, order_branch_id): (String, String) = conn
-        .query_row("SELECT tenant_id, branch_id FROM orders WHERE id = ?1", params![order_id], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map_err(|e| e.to_string())?;
-    authorize_scope(&actor, &order_tenant_id, Some(order_branch_id.as_str())).map_err(|e| e.to_string())?;
-
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let repo = Repo::new(&tx);
-    let previous_status = repo.replay_order_status(&order_id).map_err(|e| e.to_string())?;
-    crate::order_lifecycle::validate_order_status_transition(&previous_status, &new_status)?;
-    repo.append_order_status_event(&order_tenant_id, &order_branch_id, &order_id, &new_status, &actor.id, &actor.device_id)
-        .map_err(|e| e.to_string())?;
-    repo.rebuild_order_current(&order_id).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &order_tenant_id, Some(&order_branch_id), &actor.id,
-        audit::Action::OrderStatusChanged, "order", &order_id,
-        Some(&serde_json::json!({ "status": previous_status })),
-        Some(&serde_json::json!({ "status": new_status })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// T1.9's critical acceptance criterion: order -> PAID, the payment row,
-/// table -> FREE, the optional debt entry, the order_current rebuild, AND
-/// the audit entry all happen inside ONE transaction, committed once. Kill
-/// -9 at any point before `tx.commit()` returns and NONE of this landed --
-/// never a PAID order on an OCCUPIED table, never a payment without an
-/// order. See `repo::Repo::take_payment` for the actual writes and
-/// `commands_v3::tests::kill_9_mid_payment_never_leaves_a_partial_payment`
-/// for the proof.
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn take_payment_v3(
-    state: State<Db>,
-    license: State<crate::license::cloud::CloudLicenseState>,
-    session_token: String,
-    order_id: String,
-    method: String,
-    amount_cents: i64,
-    change_cents: i64,
-    debtor_id: Option<String>,
-) -> Result<String, String> {
-    take_payment_v3_impl(&state, &license, session_token, order_id, method, amount_cents, change_cents, debtor_id)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn take_payment_v3_impl(
-    state: &Db,
-    license: &crate::license::cloud::CloudLicenseState,
-    session_token: String,
-    order_id: String,
-    method: String,
-    amount_cents: i64,
-    change_cents: i64,
-    debtor_id: Option<String>,
-) -> Result<String, String> {
-    crate::lan::reject_if_local_kitchen_satellite("take_payment_v3")?;
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::TakePayment).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, license, None)?
-    };
-    if amount_cents < 0 || change_cents < 0 {
-        return Err("negative amounts are not valid".to_string());
-    }
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let payment_id = Repo::new(&tx)
-        .take_payment(&tenant_id, &branch_id, crate::repo::PaymentInput {
-            order_id: order_id.clone(), method: method.clone(), amount_cents, change_cents,
-            debtor_id: debtor_id.clone(), actor_id: actor.id.clone(),
-        })
-        .map_err(|e| e.to_string())?;
-
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::PaymentTaken, "order", &order_id,
-        None, Some(&serde_json::json!({ "payment_id": payment_id, "method": method, "amount_cents": amount_cents, "change_cents": change_cents, "debtor_id": debtor_id })),
-    ).map_err(|e| e.to_string())?;
-
-    // `Repo::take_payment` just deducted recipe-linked ingredient stock
-    // (`deplete_recipe_stock`) for every non-voided item on this order --
-    // queue the current snapshot of each ingredient touched.
-    let license_status = license.cached_status();
-    sync_enqueue_recipe_ingredients_for_order(&tx, &tenant_id, &branch_id, &order_id, &actor.device_id, &license_status)?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(payment_id)
-}
-
-// ---------------------------------------------------------------------------
-// Batch 3b, slice 2 -- menu CRUD (`categories` + `menu_items`, tenant-only).
-// Deliberately NOT `combo_meals`/`combo_items`/`happy_hour_rules` -- stated
-// scope reduction, `menu/page.tsx` still reads/writes those 3 via `getDb()`.
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub fn list_categories_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::CategoryRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_categories(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn create_category_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, color: Option<String>, sort_order: i64, image_path: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let category_id = Repo::new(&tx).create_category(&actor.tenant_id, &name, color.as_deref(), sort_order, image_path.as_deref()).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "category", &category_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(category_id)
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn update_category_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category_id: String, name: String, color: Option<String>, sort_order: i64, image_path: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_category(&actor.tenant_id, &category_id, &name, color.as_deref(), sort_order, image_path.as_deref()).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "category", &category_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn delete_category_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).delete_category(&actor.tenant_id, &category_id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "category", &category_id, Some(&serde_json::json!({ "deleted": false })), Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// 2026-08-02: real category photo upload, same shape as
-/// `upload_menu_item_photo_v3`/`delete_menu_item_photo_v3`/
-/// `get_menu_item_photo_v3` below -- categories previously only had a raw
-/// URL text field ("رابط الصورة"), inconsistent with menu items' real
-/// upload flow, and most owners don't have an image URL handy.
-#[tauri::command]
-pub fn upload_category_photo_v3(app: tauri::AppHandle, state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category_id: String, photo_bytes: Vec<u8>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-
-    let app_data_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    let file_path = crate::photos::store_photo(&app_data_dir, &actor.tenant_id, &category_id, &photo_bytes).map_err(|e| e.to_string())?;
-    let path_str = file_path.to_string_lossy().to_string();
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).set_category_photo(&actor.tenant_id, &category_id, Some(&path_str)).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "category", &category_id, None, Some(&serde_json::json!({ "photo_uploaded": true, "bytes": photo_bytes.len() }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn delete_category_photo_v3(app: tauri::AppHandle, state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).set_category_photo(&actor.tenant_id, &category_id, None).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "category", &category_id, Some(&serde_json::json!({ "photo_uploaded": true })), Some(&serde_json::json!({ "photo_uploaded": false }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-
-    let app_data_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    crate::photos::delete_photo(&app_data_dir, &actor.tenant_id, &category_id);
-    Ok(())
-}
-
-#[tauri::command]
-pub fn get_category_photo_v3(state: State<Db>, session_token: String, category_id: String) -> Result<Option<String>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let path = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        Repo::new(&conn).get_category_photo_path(&actor.tenant_id, &category_id).map_err(|e| e.to_string())?
-    };
-    Ok(path.as_deref().and_then(crate::photos::read_as_data_uri))
-}
-
-#[tauri::command]
-pub fn list_menu_items_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::MenuItemRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let mut items = Repo::new(&conn).list_menu_items(&actor.tenant_id).map_err(|e| e.to_string())?;
-    // P0 fix (2026-07-18): this used to resolve EVERY item's photo to a
-    // full base64 data: URI right here, inside the SAME state.0.lock()
-    // guard every one of the app's ~141 other commands also needs for any
-    // DB access at all. Measured: 5 items with 2MB photos each added
-    // 415ms of file-read + base64-encode work INSIDE that lock, and blew
-    // the JSON payload up to 13.3MB for a 5-row list -- on a real menu
-    // with dozens of photographed items this is multiple seconds of the
-    // entire app (any payment, any order, any other screen) stalled
-    // behind one menu-grid load. That's the reported "app frequently
-    // hangs" bug, reproduced and measured, not guessed.
-    //
-    // Fixed: this now returns instantly regardless of photo count/size.
-    // `image_path` carries only a boolean-shaped signal ("HAS_PHOTO" or
-    // null) -- never the real filesystem path (nothing for the frontend
-    // to do with a server-local absolute path anyway) and never image
-    // bytes. The actual photo is fetched lazily, one item at a time, via
-    // `get_menu_item_photo_v3`, only for items visible on screen -- see
-    // that command's doc comment for the scope-check + single-file-read
-    // cost (milliseconds, not hundreds of them, and never blocks anyone
-    // else since it touches one row, not the whole list).
-    for item in &mut items {
-        item.image_path = item.image_path.as_deref().map(|_| "HAS_PHOTO".to_string());
-    }
-    Ok(items)
-}
-
-/// P0 fix (2026-07-18): the lazy per-item counterpart to `list_menu_
-/// items_v3` no longer embedding photos. Reads exactly one file, scope-
-/// checked (a Manager can only fetch a photo for their own tenant's
-/// product, same `assert_tenant_owns_row` guard as every other menu_items
-/// access), and returns a data: URI ready for <img src> -- or None if the
-/// item has no photo / the stored path is stale, which the frontend
-/// treats as "show the category glyph", identical to today's fallback.
-#[tauri::command]
-pub fn get_menu_item_photo_v3(state: State<Db>, session_token: String, item_id: String) -> Result<Option<String>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let path = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        Repo::new(&conn).get_menu_item_photo_path(&actor.tenant_id, &item_id).map_err(|e| e.to_string())?
-        // lock dropped here, before the file read -- the DB mutex is never
-        // held during disk I/O, not even for one file.
-    };
-    Ok(path.as_deref().and_then(crate::photos::read_as_data_uri))
-}
-
-/// Phase 2 Part 2: attach a photo to a product. Stored on disk, keyed by
-/// product id, tenant-namespaced (`photos::store_photo`); `menu_items.
-/// image_path` is updated to the real file path in the same transaction.
-/// `ManageMenu`-gated (Manager+) and tenant-scoped via `set_menu_item_
-/// photo`'s `assert_tenant_owns_row` -- a manager can only set a photo for
-/// their own tenant's product, never another tenant's by id.
-#[tauri::command]
-pub fn upload_menu_item_photo_v3(app: tauri::AppHandle, state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, photo_bytes: Vec<u8>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-
-    let app_data_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    let file_path = crate::photos::store_photo(&app_data_dir, &actor.tenant_id, &item_id, &photo_bytes).map_err(|e| e.to_string())?;
-    let path_str = file_path.to_string_lossy().to_string();
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).set_menu_item_photo(&actor.tenant_id, &item_id, Some(&path_str)).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, None, Some(&serde_json::json!({ "photo_uploaded": true, "bytes": photo_bytes.len() }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Removes a product's photo (falls back to the category glyph).
-#[tauri::command]
-pub fn delete_menu_item_photo_v3(app: tauri::AppHandle, state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).set_menu_item_photo(&actor.tenant_id, &item_id, None).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, Some(&serde_json::json!({ "photo_uploaded": true })), Some(&serde_json::json!({ "photo_uploaded": false }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-
-    let app_data_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    crate::photos::delete_photo(&app_data_dir, &actor.tenant_id, &item_id);
-    Ok(())
-}
-
-/// Every "تصدير PDF" button (customers, debt, finance, suppliers, reports)
-/// renders a PDF client-side (html2canvas + jsPDF) then hands the raw bytes
-/// here to actually reach disk. jsPDF's own `doc.save()` -- a blob URL plus
-/// a synthetic `<a download>` click -- relies on a browser's download
-/// manager to catch that click; Tauri's webview has none, and the app's CSP
-/// has no `blob:` allowance either, so every export button silently
-/// generated a PDF in memory and then did nothing with it. Writes straight
-/// to the OS Downloads folder (no save dialog/new plugin: a well-known,
-/// predictable destination is enough for a desktop POS's periodic reports)
-/// and returns the full path so the UI can tell the user where it landed.
-/// NOT_GATED: exports must keep working even with a locked license, same
-/// posture as printing.
-#[tauri::command]
-pub fn export_pdf_v3(app: tauri::AppHandle, state: State<Db>, session_token: String, filename: String, bytes: Vec<u8>) -> Result<String, String> {
-    authenticate_actor(&state, &session_token)?;
-    // No path traversal from a caller-controlled filename -- keep only the
-    // leaf name, strip any ".." segments.
-    let leaf = filename.rsplit(['/', '\\']).next().unwrap_or(&filename);
-    let safe_name = leaf.replace("..", "");
-    if safe_name.is_empty() {
-        return Err("invalid export filename".to_string());
-    }
-    let dir = app.path().download_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(safe_name);
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
-    Ok(path.to_string_lossy().to_string())
-}
-
-#[tauri::command]
-pub fn list_combo_components_v3(state: State<Db>, session_token: String, menu_item_id: String) -> Result<Vec<crate::repo::ComboComponentRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_combo_components(&actor.tenant_id, &menu_item_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn create_menu_item_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, description: Option<String>, barcode: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    if price_cents < 0 || cost_cents < 0 {
-        return Err("negative amounts are not valid".to_string());
-    }
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let item_id = Repo::new(&tx)
-        .create_menu_item(&actor.tenant_id, &name, &category_id, price_cents, cost_cents, description.as_deref(), barcode.as_deref())
-        .map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, None, Some(&serde_json::json!({ "name": name, "price_cents": price_cents }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(item_id)
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn update_menu_item_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, description: Option<String>, barcode: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    if price_cents < 0 || cost_cents < 0 {
-        return Err("negative amounts are not valid".to_string());
-    }
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx)
-        .update_menu_item(&actor.tenant_id, &item_id, &name, &category_id, price_cents, cost_cents, description.as_deref(), barcode.as_deref())
-        .map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, None, Some(&serde_json::json!({ "name": name, "price_cents": price_cents }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn delete_menu_item_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).delete_menu_item(&actor.tenant_id, &item_id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, Some(&serde_json::json!({ "deleted": false })), Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn set_menu_item_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, is_active: bool) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).set_menu_item_active(&actor.tenant_id, &item_id, is_active).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, None, Some(&serde_json::json!({ "is_active": is_active }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// 2026-08-04: "mark an item out of stock mid-rush" -- deliberately a
-/// separate, lower-friction command from `set_menu_item_active_v3` above,
-/// not a relaxed permission on that one. Same underlying repo write
-/// (`Repo::set_menu_item_active`), but `set_menu_item_active_v3` is the
-/// full menu-management action (Manager+, license-gated) and this is
-/// floor work: Cashier/Kitchen rank, and deliberately NOT license-gated
-/// -- a locked back-office license must never stop the kitchen from
-/// pulling a sold-out item off the grid before someone orders it.
-#[tauri::command]
-pub fn toggle_menu_item_availability_v3(state: State<Db>, session_token: String, item_id: String, is_active: bool) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ToggleItemAvailability).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).set_menu_item_active(&actor.tenant_id, &item_id, is_active).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, None, Some(&serde_json::json!({ "is_active": is_active, "via": "kds_availability_toggle" }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-// License-gate removed (found live, 2026-08-30): this is read by the POS
-// floor's own MenuGridContainer/menuStore.fetchMenu() -- bundled into the
-// SAME Promise.all() as list_menu_items_v3/list_categories_v3, all needed
-// just to price and sell what's already on the menu. `require_license_
-// not_locked`'s own doc comment is explicit that "order/payment/print
-// commands never call this at all" and the POS-never-stops-selling
-// guarantee is meant to be structural -- this READ was gating exactly the
-// commands that guarantee promises stay open, and because Promise.all
-// rejects on the FIRST failure, one locked combo-meal read was enough to
-// blank the entire sales floor grid to "0 items" (reproduced live: a real
-// expired-license install showed the console error "license expired --
-// back-office access is locked... Point of sale keeps working normally"
-// immediately followed by a totally empty item grid -- the opposite of
-// what that message promises). The WRITE side (create/update/delete_
-// combo_meal_v3, below) correctly keeps the gate -- editing what's on the
-// menu is a real back-office task; reading it to sell it is not.
-pub fn list_combo_meals_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::ComboMealRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_combo_meals(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-// Same fix, same reasoning as list_combo_meals_v3 immediately above.
-pub fn list_combo_meal_items_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::ComboItemJoinRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_combo_meal_items(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn create_combo_meal_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, bundle_price_cents: i64, items: Vec<(String, i64)>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let combo_id = Repo::new(&tx).create_combo_meal(&actor.tenant_id, &name, bundle_price_cents, &items).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::ComboMealChanged, "combo_meal", &combo_id, None, Some(&serde_json::json!({ "name": name, "item_count": items.len() }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(combo_id)
-}
-
-#[tauri::command]
-pub fn update_combo_meal_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, combo_id: String, name: String, bundle_price_cents: i64, items: Vec<(String, i64)>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_combo_meal(&actor.tenant_id, &combo_id, &name, bundle_price_cents, &items).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::ComboMealChanged, "combo_meal", &combo_id, None, Some(&serde_json::json!({ "name": name, "item_count": items.len() }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn delete_combo_meal_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, combo_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).delete_combo_meal(&actor.tenant_id, &combo_id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::ComboMealChanged, "combo_meal", &combo_id, Some(&serde_json::json!({ "deleted": false })), Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-// Same fix, same reasoning as list_combo_meals_v3's doc comment above --
-// happy-hour discount rules are read live by the sales floor to price an
-// order correctly, not a back-office-only concern. Write side (create/
-// update/delete_happy_hour_rule_v3, below) correctly keeps the gate.
-pub fn list_happy_hour_rules_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::HappyHourRuleRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_happy_hour_rules(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn create_happy_hour_rule_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, menu_item_id: String, discount_percent: i64, day_of_week: i64, start_time: String, end_time: String, is_active: bool) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let rule_id = Repo::new(&tx).create_happy_hour_rule(&actor.tenant_id, &menu_item_id, discount_percent, day_of_week, &start_time, &end_time, is_active).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::HappyHourRuleChanged, "happy_hour_rule", &rule_id, None, Some(&serde_json::json!({ "menu_item_id": menu_item_id, "discount_percent": discount_percent }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(rule_id)
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn update_happy_hour_rule_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, rule_id: String, menu_item_id: String, discount_percent: i64, day_of_week: i64, start_time: String, end_time: String, is_active: bool) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_happy_hour_rule(&actor.tenant_id, &rule_id, &menu_item_id, discount_percent, day_of_week, &start_time, &end_time, is_active).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::HappyHourRuleChanged, "happy_hour_rule", &rule_id, None, Some(&serde_json::json!({ "menu_item_id": menu_item_id, "discount_percent": discount_percent }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn delete_happy_hour_rule_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, rule_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).delete_happy_hour_rule(&actor.tenant_id, &rule_id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::HappyHourRuleChanged, "happy_hour_rule", &rule_id, Some(&serde_json::json!({ "deleted": false })), Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn set_happy_hour_rule_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, rule_id: String, is_active: bool) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).set_happy_hour_rule_active(&actor.tenant_id, &rule_id, is_active).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::HappyHourRuleChanged, "happy_hour_rule", &rule_id, None, Some(&serde_json::json!({ "is_active": is_active }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Slice C -- `branches/page.tsx`'s multi-branch admin CRUD, on the LEGACY
-// `branches` table (see `Repo`'s doc comment on this group -- punch-listed
-// table duality vs T1.1's `branch`, not reconciled here).
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub fn list_branches_full_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::LegacyBranchFullRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_branches_full(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn create_branch_full_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, address: Option<String>, city: Option<String>, phone: Option<String>, timezone: String, currency: String, tax_rate_cents: i64, max_tables: i64) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let branch_id = Repo::new(&tx).create_branch_full(&actor.tenant_id, &name, address.as_deref(), city.as_deref(), phone.as_deref(), &timezone, &currency, tax_rate_cents, max_tables).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::BranchChanged, "branch", &branch_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(branch_id)
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn update_branch_full_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, branch_id: String, name: String, address: Option<String>, city: Option<String>, phone: Option<String>, timezone: String, currency: String, tax_rate_cents: i64, max_tables: i64) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_branch_full(&actor.tenant_id, &branch_id, &name, address.as_deref(), city.as_deref(), phone.as_deref(), &timezone, &currency, tax_rate_cents, max_tables).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::BranchChanged, "branch", &branch_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn set_branch_full_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, branch_id: String, is_active: bool) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).set_branch_full_active(&actor.tenant_id, &branch_id, is_active).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::BranchChanged, "branch", &branch_id, None, Some(&serde_json::json!({ "is_active": is_active }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn update_branch_detail_field_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, branch_id: String, field: String, value: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_branch_detail_field(&actor.tenant_id, &branch_id, &field, value.as_deref()).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::BranchChanged, "branch", &branch_id, None, Some(&serde_json::json!({ "field": field }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn list_terminals_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, branch_id: String) -> Result<Vec<crate::repo::TerminalRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_terminals(&actor.tenant_id, &branch_id).map_err(|e| e.to_string())
-}
-
-#[derive(serde::Serialize)]
-pub struct TenantTodayStats {
-    pub order_count: i64,
-    pub revenue_cents: i64,
-    pub staff_count: i64,
-}
-
-#[tauri::command]
-pub fn get_tenant_today_stats_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<TenantTodayStats, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (order_count, revenue_cents, staff_count) = Repo::new(&conn).tenant_today_stats(&actor.tenant_id).map_err(|e| e.to_string())?;
-    Ok(TenantTodayStats { order_count, revenue_cents, staff_count })
-}
-
-/// Correctness audit finding (pre-launch pass): the branches page used to
-/// show tenant-wide totals identically on every branch card via
-/// `get_tenant_today_stats_v3` -- real per-branch numbers now.
-#[tauri::command]
-pub fn get_branch_today_stats_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<(String, i64, i64)>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).branch_today_stats(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn get_staff_counts_by_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<(String, i64)>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).staff_counts_by_branch(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn get_terminal_counts_by_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<(String, i64)>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).terminal_counts_by_branch(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-// ---------------------------------------------------------------------------
-// Batch 3b, slice 2, group 2 -- inventory: `ingredients` CRUD + stock
-// adjustment. Deliberately OUT of scope, stated not hidden: `suppliers`
-// CRUD, PO-receiving's stock bump, movements/alerts read tabs.
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub fn list_ingredients_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::IngredientRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_ingredients(&actor.scope()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn create_ingredient_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, unit: String, cost_cents_per_unit: i64, min_stock: f64) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageIngredients).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let ingredient_id = Repo::new(&tx).create_ingredient(&tenant_id, &branch_id, &name, &unit, cost_cents_per_unit, min_stock).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "name": name, "created": true }))).map_err(|e| e.to_string())?;
-
-    let license_status = license.cached_status();
-    sync_enqueue_ingredient(&tx, &tenant_id, &branch_id, &ingredient_id, &actor.device_id, &license_status)?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(ingredient_id)
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn update_ingredient_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String, name: String, unit: String, cost_cents_per_unit: i64, min_stock: f64) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageIngredients).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_ingredient(&actor.scope(), &ingredient_id, &name, &unit, cost_cents_per_unit, min_stock).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
-
-    // tenant_id/branch_id come from the ingredient's OWN row, not the
-    // actor's scope -- correct regardless of whether the caller is
-    // Branch- or Tenant-scoped, same reasoning as `void_order_item_v3`.
-    let (ing_tenant_id, ing_branch_id): (String, String) = tx.query_row(
-        "SELECT tenant_id, branch_id FROM ingredients WHERE id = ?1", params![ingredient_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ).map_err(|e| e.to_string())?;
-    let license_status = license.cached_status();
-    sync_enqueue_ingredient(&tx, &ing_tenant_id, &ing_branch_id, &ingredient_id, &actor.device_id, &license_status)?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// One transaction: `ingredients.current_stock` update + the new
-/// `inventory_logs` fact + the audit entry, same atomicity principle as
-/// `take_payment_v3`.
-#[tauri::command]
-pub fn adjust_stock_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String, change_amount: f64, reason: String) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::AdjustStock).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let log_id = Repo::new(&tx).adjust_stock(&actor.scope(), &tenant_id, &branch_id, &ingredient_id, change_amount, &reason, &actor.id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "change_amount": change_amount, "reason": reason, "log_id": log_id }))).map_err(|e| e.to_string())?;
-
-    let license_status = license.cached_status();
-    sync_enqueue_ingredient(&tx, &tenant_id, &branch_id, &ingredient_id, &actor.device_id, &license_status)?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(log_id)
-}
-
-// ---------------------------------------------------------------------------
-// Physical stock counts + COGS variance / margin reporting. Same
-// `Permission::AdjustStock` gate as `adjust_stock_v3` -- a physical count is
-// a stock-affecting write, same trust boundary. `stock_counts` rows
-// themselves are not pushed through `sync::enqueue` (single-branch fact,
-// not yet part of the cross-device sync contract) -- only the ingredient's
-// reconciled `current_stock` propagates, same as any other adjust_stock.
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub fn record_stock_count_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String, counted_stock: f64, note: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::AdjustStock).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let count_id = Repo::new(&tx).record_stock_count(&actor.scope(), &tenant_id, &branch_id, &ingredient_id, counted_stock, &actor.id, note.as_deref()).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "physical_count": counted_stock, "count_id": count_id }))).map_err(|e| e.to_string())?;
-
-    let license_status = license.cached_status();
-    sync_enqueue_ingredient(&tx, &tenant_id, &branch_id, &ingredient_id, &actor.device_id, &license_status)?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(count_id)
-}
-
-/// Count history for one ingredient, most recent first -- the "last
-/// counted" column on the variance report and the count-log modal.
-#[tauri::command]
-pub fn list_stock_counts_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String) -> Result<Vec<crate::repo::StockCountRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::AdjustStock).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_stock_counts(&actor.scope(), &ingredient_id).map_err(|e| e.to_string())
-}
-
-/// Theoretical-vs-actual COGS variance over `[range_start_iso, range_end_iso)`
-/// -- see `Repo::compute_cogs_variance` for the exact semantics.
-#[tauri::command]
-pub fn get_cogs_variance_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, range_start_iso: String, range_end_iso: String) -> Result<Vec<crate::repo::CogsVarianceRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).compute_cogs_variance(&actor.scope(), &range_start_iso, &range_end_iso).map_err(|e| e.to_string())
-}
-
-/// Per-item margin over `[range_start_iso, range_end_iso)`, worst margin %
-/// first -- see `Repo::menu_margin_report` for the exact semantics.
-#[tauri::command]
-pub fn get_menu_margin_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, range_start_iso: String, range_end_iso: String) -> Result<Vec<crate::repo::MenuMarginRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).menu_margin_report(&actor.scope(), &range_start_iso, &range_end_iso).map_err(|e| e.to_string())
-}
-
-// ---------------------------------------------------------------------------
-// 2026-08-20 -- recipe (BOM) management. Same `Permission::ManageMenu` gate
-// as menu item create/update -- attaching what an item consumes is part of
-// managing the menu, not a separate inventory-only permission.
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub fn list_recipe_ingredients_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, menu_item_id: String) -> Result<Vec<crate::repo::RecipeIngredientRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_recipe_ingredients(&actor.scope(), &menu_item_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn add_recipe_ingredient_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, menu_item_id: String, ingredient_id: String, quantity_needed: f64) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    if quantity_needed <= 0.0 {
-        return Err("الكمية المطلوبة يجب أن تكون أكبر من صفر".to_string());
-    }
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let recipe_id = Repo::new(&tx).add_recipe_ingredient(&actor.scope(), &menu_item_id, &ingredient_id, quantity_needed).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &menu_item_id, None, Some(&serde_json::json!({ "recipe_ingredient_added": ingredient_id, "quantity_needed": quantity_needed }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(recipe_id)
-}
-
-#[tauri::command]
-pub fn update_recipe_ingredient_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, recipe_id: String, quantity_needed: f64) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    if quantity_needed <= 0.0 {
-        return Err("الكمية المطلوبة يجب أن تكون أكبر من صفر".to_string());
-    }
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).update_recipe_ingredient(&actor.scope(), &recipe_id, quantity_needed).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn delete_recipe_ingredient_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, recipe_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let menu_item_id = Repo::new(&tx).delete_recipe_ingredient(&actor.scope(), &recipe_id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &menu_item_id, None, Some(&serde_json::json!({ "recipe_ingredient_removed": recipe_id }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Batch 3b, slice 2, group 3 -- shifts.
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub fn get_active_shift_v3(state: State<Db>, session_token: String) -> Result<Option<crate::repo::ShiftRow>, String> {
-    get_active_shift_v3_impl(&state, session_token)
-}
-
-fn get_active_shift_v3_impl(state: &Db, session_token: String) -> Result<Option<crate::repo::ShiftRow>, String> {
-    crate::lan::reject_if_local_kitchen_satellite("get_active_shift_v3")?;
-    let actor = authenticate_actor(state, &session_token)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).get_active_shift(&actor.id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn get_shift_stats_v3(state: State<Db>, session_token: String, shift_id: String) -> Result<crate::repo::ShiftStatsRow, String> {
-    get_shift_stats_v3_impl(&state, session_token, shift_id)
-}
-
-/// Security audit finding (pre-launch pass): previously called only
-/// `authenticate_actor` (no `authorize`, and `shift_stats` itself took no
-/// scope) -- any logged-in staff member, any rank, could read any tenant's
-/// shift revenue by ID. Now requires the same permission `list_shift_orders_v3`
-/// implicitly relies on and scope-qualifies the query, matching that command.
-fn get_shift_stats_v3_impl(state: &Db, session_token: String, shift_id: String) -> Result<crate::repo::ShiftStatsRow, String> {
-    crate::lan::reject_if_local_kitchen_satellite("get_shift_stats_v3")?;
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::ManageShift).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).shift_stats(&shift_id, &actor.scope()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn list_shift_orders_v3(state: State<Db>, session_token: String, shift_id: String) -> Result<Vec<crate::repo::ShiftOrderRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_shift_orders(&shift_id, &actor.scope()).map_err(|e| e.to_string())
-}
-
-/// Pure scope-resolution shared by every branch-scoped write that a
-/// Tenant-scoped Owner might issue (`open_shift_v3`, `create_table_v3`) --
-/// pulled out so it's unit testable without a `Db`/`State` at all.
-/// `tenant_branches` is the caller's already-looked-up `(id, name)` list for
-/// the actor's own tenant (empty slice is fine when `scope` isn't `Tenant`,
-/// since it's never read then).
-///
-/// `branch_id` is only consulted for a Tenant-scoped caller (Owner) -- an
-/// Owner has no home branch (`Actor::scope()` always maps Owner to
-/// `Scope::Tenant`, never `Scope::Branch`, regardless of any assigned
-/// `branch_id`), so without this they could never open a shift (or create a
-/// table) at all, which is exactly the bug this fixes for shifts: the
-/// frontend's "start shift" button silently failed for the seeded Owner
-/// account with "opening a shift requires a Branch-scoped actor" swallowed
-/// by a bare `catch {}`. A Branch-scoped caller (Manager/Cashier/Kitchen/
-/// Server) is forced to their own branch regardless of what `branch_id`
-/// says, same convention as `create_staff`'s `actor_branch_id`/
-/// `target_branch_id` forcing.
-fn resolve_branch_for_actor(
-    scope: Scope,
-    requested_branch_id: Option<String>,
-    tenant_branches: &[(String, String)],
-) -> Result<(String, String), String> {
-    match scope {
-        Scope::Branch { tenant_id, branch_id } => Ok((tenant_id, branch_id)),
-        Scope::Tenant { tenant_id } => {
-            let requested = requested_branch_id.filter(|b| !b.is_empty())
-                .ok_or_else(|| "select a branch first".to_string())?;
-            if !tenant_branches.iter().any(|(id, _)| id == &requested) {
-                return Err("that branch does not belong to your tenant".to_string());
-            }
-            Ok((tenant_id, requested))
-        }
-        Scope::Platform => Err("a platform account has no branch to act on".to_string()),
-    }
-}
-
-/// The single source of truth for "which branch does THIS write act on."
-/// Branch-scoped actors (Manager/Cashier/Kitchen/Server) are unambiguous --
-/// their own branch, always (`resolve_branch_for_actor`'s original
-/// behavior, unchanged). Owner accounts are Tenant-scoped by role design
-/// (`Actor::scope()` gives them every branch, since they oversee the whole
-/// tenant) -- but the PHYSICAL TERMINAL they're sitting at was licensed for
-/// exactly one branch when it was activated, and that doesn't change based
-/// on who's currently logged into it. Prefers the device's own license
-/// binding (`CloudLicenseState::licensed_branch`) over asking the Owner to
-/// pick one from a dropdown every time -- this is what removes the
-/// "select a branch" step that was pure friction for the overwhelmingly
-/// common one-branch-per-device case, and is also what makes
-/// create_debtor_v3/create_supplier_v3/create_ingredient_v3/etc. work for
-/// an Owner testing or running the POS directly instead of hard-failing
-/// with "requires a Branch-scoped actor." Only falls back to
-/// `resolve_branch_for_actor`'s explicit-picker behavior if this terminal
-/// has no branch-bound license yet (pre-activation) -- Platform accounts
-/// still have no branch to act on, ever.
-fn resolve_operating_branch(
-    conn: &Connection,
-    actor: &Actor,
-    license: &crate::license::cloud::CloudLicenseState,
-    requested_branch_id: Option<String>,
-) -> Result<(String, String), String> {
-    let scope = actor.scope();
-    if let Scope::Branch { tenant_id, branch_id } = &scope {
-        return Ok((tenant_id.clone(), branch_id.clone()));
-    }
-    if let Scope::Tenant { tenant_id } = &scope {
-        if let Some((lic_tenant, lic_branch)) = license.licensed_branch() {
-            if &lic_tenant == tenant_id {
-                return Ok((lic_tenant, lic_branch));
-            }
-        }
-    }
-    let tenant_branches = if let Scope::Tenant { tenant_id } = &scope {
-        Repo::new(conn).list_branches(tenant_id).map_err(|e| e.to_string())?
-    } else {
-        vec![]
-    };
-    // An unlicensed (or differently-licensed) Owner testing locally with
-    // exactly one branch on file has nothing ambiguous to pick between --
-    // don't force them through a branch selector that printer setup (and
-    // other Owner-testing call sites passing `None`) never actually offers.
-    if requested_branch_id.is_none() && tenant_branches.len() == 1 {
-        if let Scope::Tenant { tenant_id } = &scope {
-            return Ok((tenant_id.clone(), tenant_branches[0].0.clone()));
-        }
-    }
-    resolve_branch_for_actor(scope, requested_branch_id, &tenant_branches)
-}
-
-#[tauri::command]
-pub fn open_shift_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, starting_cash_cents: i64, branch_id: Option<String>) -> Result<String, String> {
-    open_shift_v3_impl(&state, &license, session_token, starting_cash_cents, branch_id)
-}
-
-fn open_shift_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, starting_cash_cents: i64, branch_id: Option<String>) -> Result<String, String> {
-    crate::lan::reject_if_local_kitchen_satellite("open_shift_v3")?;
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::ManageShift).map_err(|e| e.to_string())?;
-    if starting_cash_cents < 0 {
-        return Err("negative starting cash is not valid".to_string());
-    }
-
-    let (tenant_id, resolved_branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, license, branch_id)?
-    };
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let shift_id = Repo::new(&tx).open_shift(&tenant_id, &resolved_branch_id, &actor.id, starting_cash_cents).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &tenant_id, Some(&resolved_branch_id), &actor.id, audit::Action::ShiftOpened, "shift", &shift_id, None, Some(&serde_json::json!({ "starting_cash_cents": starting_cash_cents }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(shift_id)
-}
-
-#[tauri::command]
-pub fn close_shift_v3(state: State<Db>, session_token: String, shift_id: String, ending_cash_cents: i64, difference_cents: i64, manager_override_pin: Option<String>) -> Result<(), String> {
-    close_shift_v3_impl(&state, session_token, shift_id, ending_cash_cents, difference_cents, manager_override_pin)
-}
-
-/// 2026-08-02: previously this threshold existed ONLY client-side
-/// (`shift/page.tsx`'s `DIFF_THRESHOLD_CENTS`) with no server enforcement
-/// at all -- a cashier calling this command directly (bypassing the UI)
-/// could close any shift with any discrepancy, no PIN, ever. Now checked
-/// here against the tenant's real `shift_diff_manager_threshold_cents`,
-/// same shape as `void_order_item_v3_impl`'s check.
-fn close_shift_v3_impl(state: &Db, session_token: String, shift_id: String, ending_cash_cents: i64, difference_cents: i64, manager_override_pin: Option<String>) -> Result<(), String> {
-    crate::lan::reject_if_local_kitchen_satellite("close_shift_v3")?;
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::ManageShift).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let threshold_cents = Repo::new(&conn).get_manager_thresholds(&actor.tenant_id).map_err(|e| e.to_string())?.shift_diff_threshold_cents;
-    if difference_cents.abs() >= threshold_cents {
-        let Some(pin) = manager_override_pin.as_deref() else {
-            return Err("closing a shift with a discrepancy over the manager-override threshold requires a manager PIN".to_string());
-        };
-        if !verify_manager_override_impl(&mut conn, &actor, pin)? {
-            return Err("manager PIN is not valid".to_string());
-        }
-    }
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).close_shift(&actor.scope(), &shift_id, ending_cash_cents, difference_cents).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::ShiftClosed, "shift", &shift_id, None, Some(&serde_json::json!({ "ending_cash_cents": ending_cash_cents, "difference_cents": difference_cents }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// `staff/page.tsx`'s shifts tab: list + filter, and a manager's "force
-/// close" for an abandoned shift.
-#[tauri::command]
-pub fn list_shifts_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, date_from: Option<String>, date_to: Option<String>, user_id: Option<String>) -> Result<Vec<crate::repo::ShiftAdminRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_shifts(&actor.scope(), date_from.as_deref(), date_to.as_deref(), user_id.as_deref()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn force_close_shift_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, shift_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).force_close_shift(&actor.scope(), &shift_id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::ShiftClosed, "shift", &shift_id, None, Some(&serde_json::json!({ "forced": true }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn list_attendance_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, date_from: Option<String>, date_to: Option<String>, user_id: Option<String>) -> Result<Vec<crate::repo::AttendanceRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_attendance(&actor.scope(), date_from.as_deref(), date_to.as_deref(), user_id.as_deref()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn clock_in_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String) -> Result<(), String> {
-    clock_in_v3_impl(&state, &license, session_token, user_id)
-}
-
-fn clock_in_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String) -> Result<(), String> {
-    crate::lan::reject_if_local_kitchen_satellite("clock_in_v3")?;
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, license, None)?
-    };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).clock_in(&actor.scope(), &tenant_id, &branch_id, &user_id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::SettingsChanged, "attendance", &user_id, None, Some(&serde_json::json!({ "action": "clock_in" }))).map_err(|e| e.to_string())?;
-    let license_status = license.cached_status();
-    sync_enqueue_staff_snapshot(&tx, &tenant_id, &user_id, &actor.device_id, &license_status)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn clock_out_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String) -> Result<(), String> {
-    clock_out_v3_impl(&state, &license, session_token, user_id)
-}
-
-fn clock_out_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String) -> Result<(), String> {
-    crate::lan::reject_if_local_kitchen_satellite("clock_out_v3")?;
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).clock_out(&actor.scope(), &user_id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "attendance", &user_id, None, Some(&serde_json::json!({ "action": "clock_out" }))).map_err(|e| e.to_string())?;
-    let license_status = license.cached_status();
-    sync_enqueue_staff_snapshot(&tx, &actor.tenant_id, &user_id, &actor.device_id, &license_status)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// HR_AND_GENERALIZATION_PLAN.md Part A -- roster (planned work
-// assignments). Distinct from attendance (above): a roster entry can be
-// any date, past or future, and represents a plan, not a fact.
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub fn list_roster_entries_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, date_from: String, date_to: String) -> Result<Vec<crate::repo::RosterEntryRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageRoster).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_roster_entries(&actor.scope(), &date_from, &date_to).map_err(|e| e.to_string())
-}
-
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub fn create_roster_entry_v3(
-    state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String,
-    staff_id: String, work_date: String, start_time: String, end_time: String, notes: Option<String>,
-) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageRoster).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let id = Repo::new(&tx)
-        .create_roster_entry(&actor.scope(), &tenant_id, &branch_id, &staff_id, &actor.id, &work_date, &start_time, &end_time, notes.as_deref(), &actor.device_id)
-        .map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::SettingsChanged, "roster_entry", &id, None, Some(&serde_json::json!({ "action": "create", "staff_id": staff_id, "work_date": work_date }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(id)
-}
-
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub fn update_roster_entry_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, id: String, work_date: String, start_time: String, end_time: String, notes: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageRoster).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_roster_entry(&actor.scope(), &id, &work_date, &start_time, &end_time, notes.as_deref(), &actor.device_id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "roster_entry", &id, None, Some(&serde_json::json!({ "action": "update" }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn delete_roster_entry_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageRoster).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).delete_roster_entry(&actor.scope(), &id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "roster_entry", &id, None, Some(&serde_json::json!({ "action": "delete" }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Batch 3b, slice 3, group 2 -- debt (بيع بالدين). DEBT-type entries are
-// already created by `take_payment_v3`; this group is debtor CRUD + payments.
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub fn list_debtors_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::DebtorRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_debtors(&actor.scope()).map_err(|e| e.to_string())
-}
-
-/// `phone` is optional (DebtSelectModal's inline "new debtor" form -- the
-/// POS debt flow -- allows email-only, matching create_customer_v3's same
-/// "at least one of phone/email" pattern). Was `String` (required) until
-/// this fix: the frontend sending `phone: null` for an email-only debtor
-/// failed to deserialize at the Tauri IPC boundary before this command
-/// body ever ran, so the debtor was silently never created -- the debtor
-/// list looked permanently empty because nothing had ever successfully
-/// been added to it.
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>, initial_debt_cents: Option<i64>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
-    let phone = phone.filter(|p| !p.trim().is_empty());
-    let email = email.filter(|e| !e.trim().is_empty());
-    if phone.is_none() && email.is_none() {
-        return Err("either a phone number or an email is required".to_string());
-    }
-    let initial_debt_cents = initial_debt_cents.unwrap_or(0);
-    if initial_debt_cents < 0 {
-        return Err("initial debt amount cannot be negative".to_string());
-    }
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let debtor_id = Repo::new(&tx).create_debtor(&tenant_id, &branch_id, &name, phone.as_deref(), email.as_deref(), address.as_deref(), notes.as_deref()).map_err(|e| e.to_string())?;
-    if initial_debt_cents > 0 {
-        // Local-only fact (see `record_initial_debt`'s doc comment) --
-        // customer debt does not sync to the cloud, deliberately: the web
-        // owner dashboard shows business (supplier) debt only, never
-        // per-customer balances, so there is nothing on the other end to
-        // feed.
-        Repo::new(&tx).record_initial_debt(&tenant_id, &branch_id, &debtor_id, initial_debt_cents, &actor.id).map_err(|e| e.to_string())?;
-    }
-    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "name": name, "created": true, "initial_debt_cents": initial_debt_cents }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(debtor_id)
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn update_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_debtor(&actor.scope(), &debtor_id, &name, &phone, email.as_deref(), address.as_deref(), notes.as_deref()).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn deactivate_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).deactivate_debtor(&actor.scope(), &debtor_id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, Some(&serde_json::json!({ "is_active": true })), Some(&serde_json::json!({ "is_active": false }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn list_debt_entries_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String) -> Result<Vec<crate::repo::DebtEntryRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_debt_entries(&actor.scope(), &debtor_id).map_err(|e| e.to_string())
-}
-
-/// One transaction: the PAYMENT fact + the debtor's running-balance update +
-/// the audit entry, same atomicity principle as `take_payment_v3`.
-///
-/// Unlike `create_debtor_v3`, this does NOT require a Branch-scoped actor:
-/// paying off an existing debtor's balance doesn't need to invent a branch
-/// for a Tenant-scoped Owner (who has none) -- `Repo::record_debt_payment`
-/// looks up and stamps the DEBTOR's own tenant_id/branch_id instead. Was
-/// previously hard-required to be Branch-scoped, which meant an Owner
-/// account could never record a debt payment at all -- every attempt
-/// failed with "recording a debt payment requires a Branch-scoped actor",
-/// which the frontend's catch block showed as a generic "حدث خطأ في
-/// تسجيل الدفعة" with no indication of why, indistinguishable from the
-/// amount input simply not working.
-#[tauri::command]
-pub fn record_debt_payment_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String, amount_cents: i64, notes: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
-    if amount_cents <= 0 {
-        return Err("payment amount must be positive".to_string());
-    }
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let entry_id = Repo::new(&tx).record_debt_payment(&actor.scope(), &debtor_id, amount_cents, notes.as_deref(), &actor.id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "entry_id": entry_id, "amount_cents": amount_cents, "type": "PAYMENT" }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(entry_id)
-}
-
-// ---------------------------------------------------------------------------
-// Batch 3b, slice 3, group 3 -- finance + reports.
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub fn get_finance_revenue_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String) -> Result<crate::repo::RevenueSummaryRow, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).finance_revenue_summary(&actor.scope(), &start_iso, &end_iso).map_err(|e| e.to_string())
-}
-
-/// T2.0 owner dashboard (plan §3): a single command, parameterized by the
-/// caller's OWN scope -- `Scope::Tenant` (Owner) gets every branch of the
-/// tenant, `Scope::Branch` (Manager, if ever nav-exposed to them) gets
-/// exactly their one branch. Same query, same struct, no second command.
-/// Gated the same as the rest of Finance (`Permission::ManageFinance`) --
-/// today that's reachable from `OWNER_NAV` only, matching "OWNER: all
-/// branches, money" vs "MANAGER: own branch, operations" from the plan.
-#[tauri::command]
-pub fn get_dashboard_summary_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String) -> Result<crate::repo::DashboardSummaryRow, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).dashboard_summary(&actor.scope(), &start_iso, &end_iso).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn get_tax_collected_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, since_iso: String) -> Result<i64, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).tax_collected_since(&actor.scope(), &since_iso).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn list_operational_costs_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::OperationalCostRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_operational_costs(&actor.scope()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn create_operational_cost_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category: String, amount_cents: i64, date: String, notes: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    if amount_cents <= 0 {
-        return Err("cost amount must be positive".to_string());
-    }
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let cost_id = Repo::new(&tx).create_operational_cost(&tenant_id, &branch_id, &category, amount_cents, &date, notes.as_deref(), &actor.id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::OperationalCostRecorded, "operational_cost", &cost_id, None, Some(&serde_json::json!({ "category": category, "amount_cents": amount_cents }))).map_err(|e| e.to_string())?;
-    // T2.0 plan §0 flag #4: operational_costs' first-ever sync wire-up.
-    let license_status = license.cached_status();
-    sync_enqueue_operational_cost(&tx, &tenant_id, &branch_id, &cost_id, &actor.device_id, &license_status)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(cost_id)
-}
-
-#[tauri::command]
-pub fn list_invoices_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::InvoiceRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_invoices(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn create_invoice_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, period_start: String, period_end: String, amount_cents: i64, due_date: String) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    if amount_cents <= 0 {
-        return Err("invoice amount must be positive".to_string());
-    }
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let invoice_id = Repo::new(&tx).create_invoice(&tenant_id, &branch_id, &period_start, &period_end, amount_cents, &due_date).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InvoiceChanged, "invoice", &invoice_id, None, Some(&serde_json::json!({ "amount_cents": amount_cents, "created": true }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(invoice_id)
-}
-
-#[tauri::command]
-pub fn mark_invoice_paid_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, invoice_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).mark_invoice_paid(&actor.scope(), &invoice_id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::InvoiceChanged, "invoice", &invoice_id, Some(&serde_json::json!({ "status": "PENDING" })), Some(&serde_json::json!({ "status": "PAID" }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Back-office command -- license-gated. See the note on `list_staff_v3`.
-/// `range_end_iso` is optional (`None` = "up to now") so the existing
-/// "today so far" call site keeps working unchanged; the Reports page's
-/// new date-range picker passes a real closed window.
-#[tauri::command]
-pub fn get_sales_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, today_start_iso: String, range_end_iso: Option<String>) -> Result<crate::repo::SalesReportRow, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).sales_report(&actor.scope(), &today_start_iso, range_end_iso.as_deref()).map_err(|e| e.to_string())
-}
-
-/// 2026-08-04: the business assistant -- "you ask, it answers from your
-/// own real data, and gives an actual recommendation, not just a number."
-/// Same Manager+ rank as every other report (real revenue data). Two
-/// separate Tauri-managed states: `Db` for the real snapshot query
-/// (crate::assistant::build_snapshot, same repo-layer pattern as every
-/// other `_v3` report command) and `ai::commands::AppState` for the AI
-/// provider call -- deliberately does NOT hold the `Db` mutex while the
-/// (up to 30s) network call to the AI service is in flight, so a slow/
-/// down AI backend can never block a sale on another terminal sharing
-/// this connection.
-#[tauri::command]
-pub fn ask_assistant_v3(
-    state: State<Db>,
-    ai_state: State<crate::ai::commands::AppState>,
-    license: State<crate::license::cloud::CloudLicenseState>,
-    session_token: String,
-    question: String,
-    start_iso: String,
-    end_iso: String,
-) -> Result<crate::ai::Answer, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
-    require_license_not_locked(&license)?;
-
-    if question.trim().is_empty() {
-        return Err("السؤال فارغ".into());
-    }
-
-    let snapshot = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        crate::assistant::build_snapshot(&conn, &actor.scope(), &start_iso, &end_iso).map_err(|e| e.to_string())?
-    };
-
-    ai_state.provider.answer(&question, &snapshot).map_err(|e| e.to_string())
-}
-
-/// 2026-08-02: fully-offline anomaly detection (void rate, cash variance,
-/// void-then-resell pattern) -- see anomaly.rs's module doc for why this
-/// deliberately never goes through an AI vendor. On-demand only (a
-/// "فحص الآن" button), not a background job -- Manager+, same rank as
-/// every other report.
-#[tauri::command]
-pub fn detect_anomalies_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::anomaly::AnomalyFinding>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    crate::anomaly::detect_anomalies(&conn, &actor.scope(), 30).map_err(|e| e.to_string())
-}
-
-/// 2026-08-02: fully-offline demand forecasting (see forecast.rs's module
-/// doc) -- day-of-week average over the last 8 weeks, plus an ingredient
-/// tier for items that already have a recipe defined. On-demand only,
-/// same Manager+ rank as every other report.
-#[tauri::command]
-pub fn forecast_demand_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<crate::forecast::DemandForecast, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    crate::forecast::forecast_demand(&conn, &actor.scope()).map_err(|e| e.to_string())
-}
-
-/// 2026-08-02: manual database backup (see backup.rs's module doc for
-/// why this exists at all -- there was previously no recovery path for
-/// a dead machine or a corrupted DB file). Owner+ only -- this exports
-/// every order/payment/customer record in the tenant, more sensitive
-/// than any report read. Deliberately NEVER gated on the license, same
-/// reasoning as the license commands themselves: an owner must always
-/// be able to get their own data out, especially a lapsed one about to
-/// lose service.
-#[tauri::command]
-pub fn backup_database_v3(state: State<Db>, session_token: String) -> Result<crate::backup::BackupInfo, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ManageBackups).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    crate::backup::create_backup(&conn)
-}
-
-#[tauri::command]
-pub fn list_backups_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::backup::BackupInfo>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ManageBackups).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    crate::backup::list_backups(&conn)
-}
-
-/// 2026-08-02: manual, opt-in "send a diagnostic report" -- see
-/// diagnostics.rs's module doc. No extra permission gate beyond being
-/// logged in at all: reporting a bug is something any floor role should
-/// be able to do, not just a manager, and the log text itself is never
-/// sensitive payment data.
-#[tauri::command]
-pub fn send_diagnostics_report_v3(app: tauri::AppHandle, state: State<Db>, session_token: String) -> Result<crate::diagnostics::DiagnosticsResult, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let log_dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
-    crate::diagnostics::send_report(
-        &log_dir,
-        &crate::license::cloud::supabase_url(),
-        &crate::license::cloud::supabase_anon_key(),
-        &actor.tenant_id,
-        &actor.device_id,
-        app.package_info().version.to_string().as_str(),
-    )
-}
-
-/// 2026-08-02: payment-reconciliation safety net -- see reconcile.rs's
-/// module doc. Manager+, same rank as every other report; on-demand only.
-#[tauri::command]
-pub fn reconcile_orders_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<crate::reconcile::ReconciliationReport, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    crate::reconcile::reconcile(&conn, &actor.scope()).map_err(|e| e.to_string())
-}
-
-// ---------------------------------------------------------------------------
-// Batch 3b, slice 3, group 4 -- settings (currency/tax/branch/printer).
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub fn get_chain_config_v3(state: State<Db>, session_token: String) -> Result<crate::repo::ChainConfigRow, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).get_chain_config(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn update_chain_currency_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, currency: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    require_license_not_locked_or_initial_setup(&license, &conn)?;
-    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_chain_currency(&actor.tenant_id, &currency).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "chain_config", "default", None, Some(&serde_json::json!({ "currency": currency }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn update_chain_tax_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, tax_rate_cents: i64, tax_mode: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
-    if tax_rate_cents < 0 {
-        return Err("negative tax rate is not valid".to_string());
-    }
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_chain_tax(&actor.tenant_id, tax_rate_cents, &tax_mode).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "chain_config", "default", None, Some(&serde_json::json!({ "tax_rate_cents": tax_rate_cents, "tax_mode": tax_mode }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[derive(Debug, Serialize)]
-pub struct DiscountCapsResponse {
-    pub caps: crate::pricing::DiscountCaps,
-    /// The requesting actor's own cap, pre-resolved so the frontend doesn't
-    /// need to duplicate the role->cap mapping `pricing.rs` owns.
-    pub your_cap_percent: i64,
-}
-
-/// No `authorize` beyond being logged in -- every role needs to know its
-/// own cap to render the "disable above this" affordance (UI is affordance
-/// only, Rust enforces regardless of what this returns).
-#[tauri::command]
-pub fn get_discount_caps_v3(state: State<Db>, session_token: String) -> Result<DiscountCapsResponse, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let caps = Repo::new(&conn).get_discount_caps(&actor.tenant_id).map_err(|e| e.to_string())?;
-    let your_cap_percent = caps.for_role(actor.role);
-    Ok(DiscountCapsResponse { caps, your_cap_percent })
-}
-
-/// Owner-only (per `Permission::ManageSettings`, same gate as currency/tax):
-/// adjusts the per-role discount ceilings future orders are checked
-/// against.
-#[tauri::command]
-pub fn update_discount_caps_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, cashier_percent: i64, manager_percent: i64, owner_percent: i64) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
-    if !(0..=100).contains(&cashier_percent) || !(0..=100).contains(&manager_percent) || !(0..=100).contains(&owner_percent) {
-        return Err("discount caps must be between 0 and 100 percent".to_string());
-    }
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_discount_caps(&actor.tenant_id, cashier_percent, manager_percent, owner_percent).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
-        audit::Action::SettingsChanged, "chain_config", "default",
-        None, Some(&serde_json::json!({ "discount_cap_cashier_percent": cashier_percent, "discount_cap_manager_percent": manager_percent, "discount_cap_owner_percent": owner_percent })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// No `authorize` beyond being logged in -- `VoidItemModal`/the shift-close
-/// screen both need this value to render the right label/PIN prompt for
-/// every role, same reasoning as `get_discount_caps_v3`. Rust enforces the
-/// actual gate server-side regardless of what the frontend does with this.
-#[tauri::command]
-pub fn get_manager_thresholds_v3(state: State<Db>, session_token: String) -> Result<crate::pricing::ManagerThresholds, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).get_manager_thresholds(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-/// Manager+ (`Permission::ManageSettings`, same gate as currency/tax/
-/// discount caps): lets a real restaurant tune these to their own actual
-/// prices instead of living with a number that was never right for them.
-#[tauri::command]
-pub fn update_manager_thresholds_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, void_threshold_cents: i64, shift_diff_threshold_cents: i64) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
-    if void_threshold_cents < 0 || shift_diff_threshold_cents < 0 {
-        return Err("thresholds must not be negative".to_string());
-    }
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_manager_thresholds(&actor.tenant_id, void_threshold_cents, shift_diff_threshold_cents).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
-        audit::Action::SettingsChanged, "chain_config", "default",
-        None, Some(&serde_json::json!({ "void_manager_threshold_cents": void_threshold_cents, "shift_diff_manager_threshold_cents": shift_diff_threshold_cents })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// No `authorize` beyond being logged in -- every page that renders the
-/// table bar, order-type picker, kitchen ticket flow, or printer-type list
-/// needs this on load, and it must never be blocked by a locked license
-/// (a dinner service, or a coffee counter, is never interrupted over
-/// licensing). See nextphase.md §2 for the full plan this implements.
-#[tauri::command]
-pub fn get_business_mode_v3(state: State<Db>, session_token: String) -> Result<crate::repo::BusinessMode, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).get_business_mode(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-/// The one implicit table every branch gets when tables are turned off --
-/// `create_table_v3` is `ManageSettings`-gated (Manager+), so a cashier
-/// could never create this themselves; ensuring it here, inside the same
-/// transaction as the toggle flip, means a counter table is guaranteed to
-/// exist by the time anyone next opens the POS. Matched by exact name, so
-/// flipping the toggle off and back on never creates duplicates.
-const COUNTER_TABLE_NAME: &str = "المنضدة";
-
-fn ensure_counter_tables_exist(tx: &rusqlite::Transaction, tenant_id: &str) -> Result<(), String> {
-    let branches = Repo::new(tx).list_branches(tenant_id).map_err(|e| e.to_string())?;
-    for (branch_id, _name) in branches {
-        let has_counter: bool = tx.query_row(
-            "SELECT COUNT(*) > 0 FROM tables WHERE tenant_id = ?1 AND branch_id = ?2 AND name = ?3",
-            params![tenant_id, branch_id, COUNTER_TABLE_NAME],
-            |r| r.get(0),
-        ).map_err(|e| e.to_string())?;
-        if !has_counter {
-            Repo::new(tx).create_table(tenant_id, &branch_id, COUNTER_TABLE_NAME).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
-}
-
-/// Whenever a caller sends an empty `table_id` (currently only possible
-/// for non-DINE_IN order types, since DINE_IN's own frontend flow always
-/// requires a real table selection first -- see pos/page.tsx's PayKey
-/// disabled condition), silently resolve to that branch's counter table
-/// instead of failing the NOT NULL / FK constraint on `orders.table_id`.
-/// A non-empty table_id is returned unchanged -- this never overrides a
-/// real, caller-selected dine-in table. Reuses `ensure_counter_tables_exist`
-/// (idempotent, matched by exact name) so this never creates duplicates.
-fn resolve_order_table_id(tx: &rusqlite::Transaction, tenant_id: &str, branch_id: &str, table_id: &str) -> Result<String, String> {
-    if !table_id.trim().is_empty() {
-        return Ok(table_id.to_string());
-    }
-    ensure_counter_tables_exist(tx, tenant_id)?;
-    tx.query_row(
-        "SELECT id FROM tables WHERE tenant_id = ?1 AND branch_id = ?2 AND name = ?3",
-        params![tenant_id, branch_id, COUNTER_TABLE_NAME],
-        |r| r.get(0),
-    ).map_err(|e| e.to_string())
-}
-
-/// Manager+ (`Permission::ManageSettings`, same gate as currency/tax/
-/// discount caps/manager thresholds).
-#[tauri::command]
-pub fn update_business_mode_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, has_tables: bool, has_kitchen: bool) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    require_license_not_locked_or_initial_setup(&license, &conn)?;
-    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_business_mode(&actor.tenant_id, has_tables, has_kitchen).map_err(|e| e.to_string())?;
-    if !has_tables {
-        ensure_counter_tables_exist(&tx, &actor.tenant_id)?;
-    }
-    audit::append(
-        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
-        audit::Action::SettingsChanged, "chain_config", "default",
-        None, Some(&serde_json::json!({ "has_tables": has_tables, "has_kitchen": has_kitchen })),
-    ).map_err(|e| e.to_string())?;
-    // SetupWizard's own final step -- the exemption
-    // `require_license_not_locked_or_initial_setup` grants during initial
-    // setup closes here, permanently, the moment setup genuinely
-    // completes. A no-op on every later, ordinary Settings edit (the flag
-    // is already gone by then).
-    tx.execute("DELETE FROM app_settings WHERE key = ?1", params![INITIAL_SETUP_IN_PROGRESS_KEY]).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn get_legacy_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Option<crate::repo::LegacyBranchRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).get_legacy_branch(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn save_legacy_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, existing_id: Option<String>, name: String, address: Option<String>, phone: Option<String>, max_tables: i64, currency: String) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    require_license_not_locked_or_initial_setup(&license, &conn)?;
-    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let branch_id = Repo::new(&tx).upsert_legacy_branch(&actor.tenant_id, existing_id.as_deref(), &name, address.as_deref(), phone.as_deref(), max_tables, &currency).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "branch", &branch_id, None, Some(&serde_json::json!({ "name": name }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(branch_id)
-}
-
-#[tauri::command]
-pub fn set_printer_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, printer_id: String, is_active: bool) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).set_printer_active(&actor.scope(), &printer_id, is_active).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "printer", &printer_id, None, Some(&serde_json::json!({ "is_active": is_active }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn update_printer_paper_width_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, printer_id: String, paper_width_mm: i64) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_printer_paper_width(&actor.scope(), &printer_id, paper_width_mm).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "printer", &printer_id, None, Some(&serde_json::json!({ "paper_width_mm": paper_width_mm }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Binds a printer row to a real OS-registered print queue name (see
-/// `print.rs`'s `list_system_printers_v3`) -- required for a USB printer
-/// to actually print anything (see `print_raw_bytes_v3`); a no-op for
-/// NETWORK printers, which never needed this.
-#[tauri::command]
-pub fn update_printer_system_name_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, printer_id: String, system_printer_name: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_printer_system_name(&actor.scope(), &printer_id, &system_printer_name).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "printer", &printer_id, None, Some(&serde_json::json!({ "system_printer_name": system_printer_name }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// T1.6: two-layer menu price resolution (`override ?? default`), exposed
-/// read-only so a client can price an item before/while building an order.
-/// Gated on `CreateOrder` (the same permission that lets an actor build an
-/// order at all) plus branch scope -- pricing another branch's menu is not a
-/// query anyone below Owner/Platform should be able to make.
-#[tauri::command]
-pub fn resolve_menu_price_v3(state: State<Db>, session_token: String, branch_id: String, item_id: String) -> Result<i64, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tenant_id: String = conn
-        .query_row("SELECT tenant_id FROM branch WHERE id = ?1", params![branch_id], |r| r.get(0))
-        .map_err(|_| format!("no such branch: {branch_id}"))?;
-    authorize_scope(&actor, &tenant_id, Some(branch_id.as_str())).map_err(|e| e.to_string())?;
-    Repo::new(&conn).resolve_menu_price(&branch_id, &item_id).map_err(|e| e.to_string())
-}
-
-// ---------------------------------------------------------------------------
-// Batch 3a, Decision B -- customers, purchase_orders, drivers, printers,
-// delivery. Each of these fixes its DRIFT_REPORT.md finding for free: the
-// repo methods behind these commands write/read the columns Migration D just
-// added, so the frontend pages this replaces stop hard-erroring on a fresh
-// install. `customers` is tenant-only (no Branch destructure); the other 4
-// are branch-scoped writes, same shape as `create_order_v3`.
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn create_customer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>, birthday: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
-    // Loyalty card issuance needs to create a customer with just an email --
-    // phone used to be mandatory here, blocking that. At least one of the
-    // two is still required so a customer row always has a way to reach them.
-    let phone = phone.filter(|p| !p.trim().is_empty());
-    let email = email.filter(|e| !e.trim().is_empty());
-    if phone.is_none() && email.is_none() {
-        return Err("either a phone number or an email is required".to_string());
-    }
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let customer_id = Repo::new(&tx)
-        .create_customer(&actor.tenant_id, &name, phone.as_deref(), email.as_deref(), address.as_deref(), notes.as_deref(), birthday.as_deref())
-        .map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
-        audit::Action::CustomerChanged, "customer", &customer_id,
-        None, Some(&serde_json::json!({ "name": name, "phone": phone })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(customer_id)
-}
-
-#[tauri::command]
-pub fn list_customers_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::CustomerRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_customers(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn update_customer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, customer_id: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>, birthday: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx)
-        .update_customer(&actor.tenant_id, &customer_id, &name, &phone, email.as_deref(), address.as_deref(), notes.as_deref(), birthday.as_deref())
-        .map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::CustomerChanged, "customer", &customer_id, None, Some(&serde_json::json!({ "name": name, "phone": phone }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn delete_customer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, customer_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).delete_customer(&actor.tenant_id, &customer_id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::CustomerChanged, "customer", &customer_id, Some(&serde_json::json!({ "deleted": false })), Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[derive(Debug, Serialize)]
-pub struct CustomerDetailV3 {
-    pub orders: Vec<crate::repo::CustomerOrderRow>,
-    pub favorite_items: Vec<crate::repo::FavoriteItemRow>,
-    // Live-computed (see Repo::customer_order_stats) -- NOT the dead
-    // customers.total_orders/total_spent_cents columns, which never get
-    // updated after row creation. The frontend previously read those
-    // stale columns and always showed 0/0 regardless of real history.
-    pub total_orders: i64,
-    pub total_spent_cents: i64,
-    // Live-computed (see Repo::customer_loyalty_points) -- NOT the dead
-    // customers.loyalty_points column (same class of bug as the two
-    // fields above, flagged but deferred in commit 4e9cf0e). The real
-    // balance lives on loyalty_cards.points; this sums every card the
-    // customer holds.
-    pub loyalty_points: i64,
-}
-
-#[tauri::command]
-pub fn get_customer_detail_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, phone: String) -> Result<CustomerDetailV3, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let repo = Repo::new(&conn);
-    let (total_orders, total_spent_cents) = repo.customer_order_stats(&actor.tenant_id, &phone).map_err(|e| e.to_string())?;
-    let loyalty_points = repo.customer_loyalty_points(&actor.tenant_id, &phone).map_err(|e| e.to_string())?;
-    Ok(CustomerDetailV3 {
-        orders: repo.customer_order_history(&actor.tenant_id, &phone).map_err(|e| e.to_string())?,
-        favorite_items: repo.customer_favorite_items(&actor.tenant_id, &phone).map_err(|e| e.to_string())?,
-        total_orders,
-        total_spent_cents,
-        loyalty_points,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Batch 3b, slice 3, group 1b -- loyalty. Card issuance is UID
-// keyboard-entry ONLY -- no hardware scan integration (Phase 2, out of scope).
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub fn list_loyalty_cards_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::LoyaltyCardRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_loyalty_cards(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-/// `card_number` is whatever was typed or scanned into the UID field on the
-/// issue-card form -- a scanner is just a keyboard emitting the UID string,
-/// so there is no separate hardware code path here at all.
-#[tauri::command]
-pub fn issue_loyalty_card_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, customer_id: String, card_number: String) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
-    if card_number.trim().is_empty() {
-        return Err("رقم البطاقة مطلوب".to_string());
-    }
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let card_id = Repo::new(&tx)
-        .issue_loyalty_card(&actor.tenant_id, &customer_id, card_number.trim())
-        .map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::LoyaltyCardIssued, "loyalty_card", &card_id, None, Some(&serde_json::json!({ "customer_id": customer_id, "card_number": card_number }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(card_id)
-}
-
-#[tauri::command]
-pub fn list_loyalty_transactions_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, card_id: Option<String>) -> Result<Vec<crate::repo::LoyaltyTxRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_loyalty_transactions(&actor.scope(), card_id.as_deref()).map_err(|e| e.to_string())
-}
-
-// ---------------------------------------------------------------------------
-// T2.0 loyalty rethink -- tier config, rewards catalog, redemption. Tier/
-// reward config is tenant-only (chain-wide), same Owner-configurable
-// pattern as menu defaults; back-office gated same as the rest of loyalty.
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub fn list_loyalty_tiers_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::LoyaltyTierRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_loyalty_tiers(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn create_loyalty_tier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, min_points: i64, points_multiplier: f64, sort_order: i64) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
-    if min_points < 0 || points_multiplier <= 0.0 {
-        return Err("الحد الأدنى للنقاط ومضاعف النقاط يجب أن يكونا موجبين".to_string());
-    }
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let tier_id = Repo::new(&tx).create_loyalty_tier(&actor.tenant_id, &name, min_points, points_multiplier, sort_order).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::LoyaltyTierChanged, "loyalty_tier", &tier_id, None, Some(&serde_json::json!({ "name": name, "min_points": min_points, "points_multiplier": points_multiplier }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(tier_id)
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn update_loyalty_tier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, tier_id: String, name: String, min_points: i64, points_multiplier: f64, sort_order: i64) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
-    if min_points < 0 || points_multiplier <= 0.0 {
-        return Err("الحد الأدنى للنقاط ومضاعف النقاط يجب أن يكونا موجبين".to_string());
-    }
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_loyalty_tier(&actor.tenant_id, &tier_id, &name, min_points, points_multiplier, sort_order).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::LoyaltyTierChanged, "loyalty_tier", &tier_id, None, Some(&serde_json::json!({ "name": name, "min_points": min_points, "points_multiplier": points_multiplier }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn delete_loyalty_tier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, tier_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).delete_loyalty_tier(&actor.tenant_id, &tier_id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::LoyaltyTierChanged, "loyalty_tier", &tier_id, None, Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn list_loyalty_rewards_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::LoyaltyRewardRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_loyalty_rewards(&actor.tenant_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn create_loyalty_reward_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, points_cost: i64, reward_type: String, value_cents: Option<i64>, value_percent_bps: Option<i64>, linked_menu_item_id: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
-    if points_cost <= 0 {
-        return Err("تكلفة المكافأة بالنقاط يجب أن تكون موجبة".to_string());
-    }
-    if !["FREE_ITEM", "DISCOUNT_FIXED", "DISCOUNT_PERCENT"].contains(&reward_type.as_str()) {
-        return Err("نوع مكافأة غير صالح".to_string());
-    }
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let reward_id = Repo::new(&tx).create_loyalty_reward(&actor.tenant_id, &name, points_cost, &reward_type, value_cents, value_percent_bps, linked_menu_item_id.as_deref()).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::LoyaltyRewardChanged, "loyalty_reward", &reward_id, None, Some(&serde_json::json!({ "name": name, "points_cost": points_cost, "reward_type": reward_type }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(reward_id)
-}
-
-#[tauri::command]
-pub fn set_loyalty_reward_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, reward_id: String, is_active: bool) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).set_loyalty_reward_active(&actor.tenant_id, &reward_id, is_active).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::LoyaltyRewardChanged, "loyalty_reward", &reward_id, None, Some(&serde_json::json!({ "is_active": is_active }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn delete_loyalty_reward_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, reward_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
-    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).delete_loyalty_reward(&actor.tenant_id, &reward_id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::LoyaltyRewardChanged, "loyalty_reward", &reward_id, None, Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Redeem points for a catalog reward at checkout. Cashier-facing (selling
-/// path), NOT gated by `require_license_not_locked` -- a dinner service
-/// redemption is exactly the kind of thing that must keep working even
-/// with a lapsed back-office license, same reasoning as `earn_loyalty_points_v3`.
-/// Per AGENTS.md prime directive #4 (the threat model is the employee): a
-/// redemption is money leaving through a side door exactly like a manual
-/// discount, so it gets the same audit rigor, non-negotiably.
-#[tauri::command]
-pub fn redeem_loyalty_reward_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, card_number: String, reward_id: String) -> Result<crate::repo::LoyaltyRewardRow, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
-    let (_, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let reward = Repo::new(&tx).redeem_loyalty_reward(&actor.tenant_id, &branch_id, &card_number, &reward_id, &actor.id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::LoyaltyPointsRedeemed, "loyalty_card", &card_number, None, Some(&serde_json::json!({ "reward_id": reward_id, "reward_name": reward.name, "points_cost": reward.points_cost }))).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(reward)
-}
-
-#[tauri::command]
-pub fn create_purchase_order_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, notes: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let po_id = Repo::new(&tx)
-        .create_purchase_order(&actor.scope(), &tenant_id, &branch_id, &supplier_id, &actor.id, notes.as_deref())
-        .map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::PurchaseOrderChanged, "purchase_order", &po_id,
-        None, Some(&serde_json::json!({ "supplier_id": supplier_id })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(po_id)
-}
-
-/// `NewOrderModal`'s quick-create path -- bare PO + `total_orders` bump.
-#[tauri::command]
-pub fn create_purchase_order_and_bump_supplier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, notes: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let po_id = Repo::new(&tx)
-        .create_purchase_order_and_bump_supplier(&actor.scope(), &tenant_id, &branch_id, &supplier_id, &actor.id, notes.as_deref())
-        .map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::PurchaseOrderChanged, "purchase_order", &po_id,
-        None, Some(&serde_json::json!({ "supplier_id": supplier_id })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(po_id)
-}
-
-/// `CreatePOModal`'s full line-item flow. `items` is `(ingredient_id,
-/// quantity_ordered, unit_cost_cents)` triples -- the same shape
-/// `create_purchase_order_with_items` expects, so no reshaping needed
-/// between the Tauri boundary and the repo call.
-#[tauri::command]
-pub fn create_purchase_order_with_items_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, notes: Option<String>, items: Vec<(String, f64, i64)>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let po_id = Repo::new(&tx)
-        .create_purchase_order_with_items(&actor.scope(), &tenant_id, &branch_id, &supplier_id, &actor.id, notes.as_deref(), &items)
-        .map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::PurchaseOrderChanged, "purchase_order", &po_id,
-        None, Some(&serde_json::json!({ "supplier_id": supplier_id, "item_count": items.len() })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(po_id)
-}
-
-#[tauri::command]
-pub fn list_purchase_orders_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::PurchaseOrderRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_purchase_orders(&actor.scope()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn cancel_purchase_order_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, po_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).cancel_purchase_order(&po_id, &scope).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::PurchaseOrderChanged, "purchase_order", &po_id,
-        None, Some(&serde_json::json!({ "status": "CANCELLED" })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn list_purchase_order_items_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, po_id: String) -> Result<Vec<crate::repo::PurchaseOrderItemRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_purchase_order_items(&po_id, &actor.scope()).map_err(|e| e.to_string())
-}
-
-/// The atomicity target for this group -- see `Repo::receive_purchase_order`.
-/// `items` is `(purchase_order_item_id, ingredient_id, quantity_received)`
-/// triples for however many line items the PO has.
-///
-/// T2.0 supplier ledger: `amount_paid_cents` (default 0 if the frontend
-/// sends nothing, preserving today's fully-unpaid-by-default behavior) and
-/// `method` are new, optional trailing arguments -- what the cashier/manager
-/// actually paid the driver/supplier at receive time. Zero validation
-/// ceiling on "paid more than total_cents" -- that's a legitimate advance,
-/// handled by `Repo::receive_purchase_order`'s payment_status logic.
-#[tauri::command]
-pub fn receive_purchase_order_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, po_id: String, items: Vec<(String, String, f64)>, amount_paid_cents: Option<i64>, method: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-    let amount_paid_cents = amount_paid_cents.unwrap_or(0);
-    if amount_paid_cents < 0 {
-        return Err("amount paid cannot be negative".to_string());
-    }
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let (payment_ids, cost_id) = Repo::new(&tx)
-        .receive_purchase_order(&tenant_id, &branch_id, &po_id, &actor.id, &scope, &items, amount_paid_cents, method.as_deref())
-        .map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::PurchaseOrderReceived, "purchase_order", &po_id,
-        None, Some(&serde_json::json!({ "item_count": items.len(), "amount_paid_cents": amount_paid_cents })),
-    ).map_err(|e| e.to_string())?;
-    if amount_paid_cents > 0 {
-        audit::append(
-            &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-            audit::Action::SupplierPaymentRecorded, "purchase_order", &po_id,
-            None, Some(&serde_json::json!({ "payment_ids": payment_ids, "amount_paid_cents": amount_paid_cents, "method": method })),
-        ).map_err(|e| e.to_string())?;
-    }
-
-    let license_status = license.cached_status();
-    for payment_id in &payment_ids {
-        sync_enqueue_supplier_payment(&tx, &tenant_id, &branch_id, payment_id, &actor.device_id, &license_status)?;
-    }
-    if let Some(cost_id) = &cost_id {
-        sync_enqueue_operational_cost(&tx, &tenant_id, &branch_id, cost_id, &actor.device_id, &license_status)?;
-    }
-
-    // Every ingredient whose current_stock just got bumped by receiving --
-    // real ingredient_id re-derived from `purchase_order_items` itself
-    // (same server-side-authoritative lookup `Repo::receive_purchase_order`
-    // already does internally), not trusted from the client's own `items`
-    // tuples.
-    let mut received_ingredient_ids: Vec<String> = Vec::new();
-    for (item_id, _client_ingredient_id, _qty) in &items {
-        let real_ingredient_id: Option<String> = tx.query_row(
-            "SELECT ingredient_id FROM purchase_order_items WHERE id = ?1 AND purchase_order_id = ?2",
-            params![item_id, po_id],
-            |r| r.get(0),
-        ).optional().map_err(|e| e.to_string())?;
-        if let Some(id) = real_ingredient_id {
-            if !received_ingredient_ids.contains(&id) {
-                received_ingredient_ids.push(id);
-            }
-        }
-    }
-    for ingredient_id in &received_ingredient_ids {
-        sync_enqueue_ingredient(&tx, &tenant_id, &branch_id, ingredient_id, &actor.device_id, &license_status)?;
-    }
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Standalone supplier payment -- settling an old invoice or recording an
-/// advance, not tied to a fresh receive. Mirrors `record_debt_payment_v3`
-/// exactly, including the "no Branch-scope requirement" reasoning: the
-/// supplier's own tenant_id/branch_id is looked up by `Repo::record_supplier_payment`,
-/// so a Tenant-scoped Owner (no home branch) can still pay off any supplier
-/// in their own tenant.
-#[tauri::command]
-pub fn record_supplier_payment_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, amount_cents: i64, method: Option<String>, notes: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    if amount_cents <= 0 {
-        return Err("payment amount must be positive".to_string());
-    }
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let (payment_id, cost_id) = Repo::new(&tx).record_supplier_payment(&actor.scope(), &supplier_id, amount_cents, method.as_deref(), notes.as_deref(), &actor.id).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
-        audit::Action::SupplierPaymentRecorded, "supplier", &supplier_id,
-        None, Some(&serde_json::json!({ "payment_id": payment_id, "amount_cents": amount_cents, "type": "PAYMENT" })),
-    ).map_err(|e| e.to_string())?;
-
-    // The supplier's own tenant_id/branch_id (looked up by
-    // Repo::record_supplier_payment, not necessarily the actor's own scope
-    // -- see that function's doc comment) is what the fact must be enqueued
-    // under, same reasoning as `record_debt_payment_v3` if it synced.
-    let (tenant_id, branch_id): (String, String) = tx.query_row(
-        "SELECT tenant_id, branch_id FROM suppliers WHERE id = ?1", params![supplier_id], |r| Ok((r.get(0)?, r.get(1)?)),
-    ).map_err(|e| e.to_string())?;
-    let license_status = license.cached_status();
-    sync_enqueue_supplier_payment(&tx, &tenant_id, &branch_id, &payment_id, &actor.device_id, &license_status)?;
-    sync_enqueue_operational_cost(&tx, &tenant_id, &branch_id, &cost_id, &actor.device_id, &license_status)?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(payment_id)
-}
-
-#[tauri::command]
-pub fn list_supplier_payments_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String) -> Result<Vec<crate::repo::SupplierPaymentRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_supplier_payments(&actor.scope(), &supplier_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn list_suppliers_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::SupplierRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_suppliers(&actor.scope()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn create_supplier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: Option<String>, email: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let supplier_id = Repo::new(&tx)
-        .create_supplier(&tenant_id, &branch_id, &name, phone.as_deref(), email.as_deref())
-        .map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::SupplierChanged, "supplier", &supplier_id,
-        None, Some(&serde_json::json!({ "name": name })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(supplier_id)
-}
-
-#[tauri::command]
-pub fn update_supplier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, name: String, phone: Option<String>, email: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).update_supplier(&scope, &supplier_id, &name, phone.as_deref(), email.as_deref()).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::SupplierChanged, "supplier", &supplier_id,
-        None, Some(&serde_json::json!({ "name": name })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn delete_supplier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).delete_supplier(&scope, &supplier_id).map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::SupplierChanged, "supplier", &supplier_id,
-        None, None,
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn list_inventory_logs_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::InventoryLogRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_inventory_logs(&actor.scope()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn list_low_stock_ingredients_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::IngredientRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_low_stock_ingredients(&actor.scope()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn create_printer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, printer_type: String, interface: String, vendor_id: Option<String>, product_id: Option<String>, drawer_pulse_ms: i64, is_primary: bool, system_printer_name: Option<String>, ip_address: Option<String>, port: Option<i64>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let printer_id = Repo::new(&tx)
-        .create_printer(&tenant_id, &branch_id, &name, &printer_type, &interface, vendor_id.as_deref(), product_id.as_deref(), drawer_pulse_ms, is_primary, system_printer_name.as_deref(), ip_address.as_deref(), port)
-        .map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::StaffCreated, "printer", &printer_id,
-        None, Some(&serde_json::json!({ "name": name, "printer_type": printer_type })),
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(printer_id)
-}
-
-#[tauri::command]
-pub fn list_printers_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::PrinterRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_printers(&actor.scope()).map_err(|e| e.to_string())
-}
-
-/// `printer.ts`'s read path (print receipt/kitchen ticket/open drawer) --
-/// Cashier+, distinct from `list_printers_v3` (Manager+, Settings' printer
-/// config tab, which also needs to see deactivated printers). Filters to
-/// `is_active = 1` server-side, matching the old frontend's own filter.
-#[tauri::command]
-pub fn list_active_printers_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::PrinterRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::UsePrinter).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Ok(Repo::new(&conn).list_printers(&actor.scope()).map_err(|e| e.to_string())?
-        .into_iter().filter(|p| p.is_active == 1).collect())
-}
-
-/// Fixes the pre-existing account-takeover bug (FEATURE_TRUTH.md, `change_password`
-/// takes `user_id` as a caller-supplied argument): the actor to change is
-/// ALWAYS derived from the authenticated session, never from an argument.
-#[tauri::command]
-pub fn change_own_password_v3(state: State<Db>, session_token: String, old_password: String, new_password: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ChangeOwnPassword).map_err(|e| e.to_string())?;
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let current_hash: Option<String> = conn
-        .query_row("SELECT password_hash FROM staff WHERE id = ?1", params![actor.id], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
-    let current_hash = current_hash.ok_or_else(|| "account has no password set".to_string())?;
-    if !verify(&old_password, &current_hash).unwrap_or(false) {
-        return Err("current password is incorrect".to_string());
-    }
-    let new_hash = hash(&new_password, DEFAULT_COST).map_err(|e| e.to_string())?;
-
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    tx.execute("UPDATE staff SET password_hash = ?1 WHERE id = ?2", params![new_hash, actor.id])
-        .map_err(|e| e.to_string())?;
-    // Never put a hash (old or new) in the audit payload -- the fact that a
-    // change happened, by whom, and when is what matters here.
-    audit::append(
-        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
-        audit::Action::PasswordChanged, "staff", &actor.id,
-        None, None,
-    ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-const MANAGER_OVERRIDE_MAX_ATTEMPTS: i64 = 5;
-const MANAGER_OVERRIDE_LOCKOUT_SECONDS: i64 = 5 * 60;
-const MANAGER_OVERRIDE_FAILURES_KEY: &str = "manager_pin_failures";
-const MANAGER_OVERRIDE_LOCKED_UNTIL_KEY: &str = "manager_pin_locked_until";
-
-/// Replaces the old, unscoped, unaudited `verify_manager_override` command
-/// (Batch 3b, Slice B verification finding): that command took no session,
-/// no scope, picked an arbitrary `LIMIT 1` manager row from the ENTIRE
-/// `staff` table with no tenant/branch filter at all, and never logged a
-/// successful override anywhere -- for a control that authorizes voids and
-/// discounts (the textbook anti-theft gate), that's a real gap, not a
-/// cosmetic one.
-///
-/// This version: authenticates the REQUESTING actor's session first (so the
-/// override is scoped to their own tenant/branch, not the whole database),
-/// scans every active MANAGER/OWNER/PLATFORM staff member in that scope
-/// (there may be more than one manager on a branch; the cashier doesn't
-/// know which one's PIN is being entered, so all are tried), and -- on a
-/// match -- writes a same-transaction audit entry naming BOTH the
-/// requesting actor and the manager whose credential authorized the
-/// override. The lockout/failure-count bookkeeping (previously a
-/// client-side `app_settings` read via `getDb()`, trivially bypassable by
-/// clearing local state) now lives here too, enforced server-side.
-#[tauri::command]
-pub fn verify_manager_override_v3(state: State<Db>, session_token: String, password_or_pin: String) -> Result<bool, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    verify_manager_override_impl(&mut conn, &actor, &password_or_pin)
-}
-
-/// Extracted from `verify_manager_override_v3` so the test module (which
-/// exercises real `rusqlite::Connection`s directly, not a live `tauri::App`
-/// -- see the test module's own doc comment) can call it without needing
-/// `State<Db>`.
-fn verify_manager_override_impl(conn: &mut rusqlite::Connection, actor: &Actor, password_or_pin: &str) -> Result<bool, String> {
-    let now_ms = chrono::Utc::now().timestamp_millis();
-
-    let locked_until_ms: i64 = conn
-        .query_row("SELECT value FROM app_settings WHERE key = ?1", params![MANAGER_OVERRIDE_LOCKED_UNTIL_KEY], |r| r.get::<_, String>(0))
-        .optional().map_err(|e| e.to_string())?
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    if locked_until_ms > 0 && now_ms < locked_until_ms {
-        return Ok(false);
-    }
-    if locked_until_ms > 0 && now_ms >= locked_until_ms {
-        conn.execute("DELETE FROM app_settings WHERE key IN (?1, ?2)", params![MANAGER_OVERRIDE_FAILURES_KEY, MANAGER_OVERRIDE_LOCKED_UNTIL_KEY])
-            .map_err(|e| e.to_string())?;
-    }
-
-    // Every active manager-rank-or-above staff member in the requesting
-    // actor's own tenant (and, for a Branch-scoped actor, that same branch
-    // -- Owner/Platform staff are branch-less and can override anywhere in
-    // their tenant).
-    let mut stmt = conn.prepare(
-        "SELECT id, password_hash, pin_hash FROM staff \
-         WHERE tenant_id = ?1 AND (branch_id = ?2 OR branch_id IS NULL OR role IN ('OWNER', 'PLATFORM')) \
-         AND role IN ('MANAGER', 'OWNER', 'PLATFORM') AND is_active = 1",
-    ).map_err(|e| e.to_string())?;
-    let candidates: Vec<(String, Option<String>, Option<String>)> = stmt
-        .query_map(params![actor.tenant_id, actor.branch_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
-    drop(stmt);
-
-    let matched = candidates.into_iter().find(|(_, password_hash, pin_hash)| {
-        pin_hash.clone().or_else(|| password_hash.clone())
-            .map(|h| verify(password_or_pin, &h).unwrap_or(false))
-            .unwrap_or(false)
-    });
-
-    match matched {
-        Some((manager_id, _, _)) => {
-            conn.execute("DELETE FROM app_settings WHERE key IN (?1, ?2)", params![MANAGER_OVERRIDE_FAILURES_KEY, MANAGER_OVERRIDE_LOCKED_UNTIL_KEY])
-                .map_err(|e| e.to_string())?;
-            let tx = conn.transaction().map_err(|e| e.to_string())?;
-            audit::append(
-                &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
-                audit::Action::ManagerOverrideGranted, "staff", &manager_id,
-                None, Some(&serde_json::json!({ "requested_by": actor.id, "authorized_by": manager_id })),
-            ).map_err(|e| e.to_string())?;
-            tx.commit().map_err(|e| e.to_string())?;
-            Ok(true)
-        }
-        None => {
-            let failures: i64 = conn
-                .query_row("SELECT value FROM app_settings WHERE key = ?1", params![MANAGER_OVERRIDE_FAILURES_KEY], |r| r.get::<_, String>(0))
-                .optional().map_err(|e| e.to_string())?
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0) + 1;
-            if failures >= MANAGER_OVERRIDE_MAX_ATTEMPTS {
-                let until = now_ms + MANAGER_OVERRIDE_LOCKOUT_SECONDS * 1000;
-                conn.execute(
-                    "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
-                    params![MANAGER_OVERRIDE_LOCKED_UNTIL_KEY, until.to_string()],
-                ).map_err(|e| e.to_string())?;
-                conn.execute(
-                    "INSERT INTO app_settings (key, value) VALUES (?1, '0') ON CONFLICT(key) DO UPDATE SET value = '0'",
-                    params![MANAGER_OVERRIDE_FAILURES_KEY],
-                ).map_err(|e| e.to_string())?;
-            } else {
-                conn.execute(
-                    "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
-                    params![MANAGER_OVERRIDE_FAILURES_KEY, failures.to_string()],
-                ).map_err(|e| e.to_string())?;
-            }
-            Ok(false)
-        }
-    }
-}
-
-/// Discount cap enforcement, shared by `create_order_v3` and
-/// `create_full_order_v3`. Returns `Ok(true)` if a manager override was
-/// used to authorize a discount above the actor's own cap (so the caller
-/// can note that in its own audit entry), `Ok(false)` if the discount was
-/// within the actor's cap (including zero) and no override was needed.
-/// The override itself, when used, is audited by
-/// `verify_manager_override_impl` (naming both the requesting actor and
-/// the authorizing manager) -- this function does not duplicate that
-/// write, only the order-level `DiscountApplied` entry the caller writes.
-fn enforce_discount_cap(
-    conn: &mut rusqlite::Connection,
-    actor: &Actor,
-    tenant_id: &str,
-    subtotal_cents: i64,
-    discount_cents: i64,
-    manager_override_pin: Option<&str>,
-) -> Result<bool, String> {
-    if discount_cents <= 0 {
-        return Ok(false);
-    }
-    let caps = Repo::new(conn).get_discount_caps(tenant_id).map_err(|e| e.to_string())?;
-    let cap_percent = caps.for_role(actor.role);
-    match crate::pricing::check_discount_cap(subtotal_cents, discount_cents, cap_percent) {
-        Ok(()) => Ok(false),
-        Err(over) => {
-            let Some(pin) = manager_override_pin else {
-                return Err(over.to_string());
-            };
-            if verify_manager_override_impl(conn, actor, pin)? {
-                Ok(true)
-            } else {
-                Err(over.to_string())
-            }
-        }
-    }
-}
-
-/// §3.3 money-trust-boundary fix: the Rust command layer, not the frontend,
-/// is now the authority on what an order costs. Previously
-/// `create_full_order_v3`/`hold_order_v3` took `subtotal_cents`/`tax_cents`/
-/// `total_cents` as trusted caller-supplied arguments -- only checked for
-/// non-negativity and internal self-consistency
-/// (`validate_order_money_consistency`), never against a real price or a
-/// real tax computation. A modified client (or any direct Tauri command
-/// invocation bypassing the real POS UI) could set `unit_price_cents` to 1
-/// on every item and both the old subtotal-matches-items check AND the
-/// total-matches-formula check would still pass, because both were only
-/// checking arithmetic self-consistency against numbers the same hostile
-/// caller supplied.
-///
-/// This re-prices every item from `menu_items` (see
-/// `Repo::price_authoritative_items`'s own doc comment for why that table
-/// and not the separate, unpopulated `menu_item_default`/`menu_item_override`
-/// pair), sums the real subtotal, fetches the tenant's real tax config from
-/// `chain_config`, and runs it through `pricing::calculate_tax` -- the exact
-/// same rounding and "discount before tax" logic as
-/// `taxCalculator.ts::calculateTax`, just no longer optional to honor.
-/// Returns `(authoritative_items, subtotal_cents, combined_tax_cents,
-/// total_cents)`. Callers still pass `discount_cents` in (permission-gated
-/// and cap-checked separately by `enforce_discount_cap`, using THIS
-/// function's authoritative subtotal, not whatever stale subtotal the
-/// caller sent) and `delivery_fee_cents` (added on top, untaxed, matching
-/// `orderService.ts`'s own convention).
-fn price_order_authoritatively(
-    conn: &rusqlite::Connection,
-    tenant_id: &str,
-    items: &[crate::repo::OrderItemInput],
-    discount_cents: i64,
-    delivery_fee_cents: i64,
-) -> Result<(Vec<crate::repo::OrderItemInput>, i64, i64, i64), String> {
-    let repo = Repo::new(conn);
-    let priced_items = repo.price_authoritative_items(tenant_id, items).map_err(|e| e.to_string())?;
-    let subtotal_cents = Repo::sum_item_total_cents(&priced_items);
-
-    let chain_config = repo.get_chain_config(tenant_id).map_err(|e| e.to_string())?;
-    let tax_config = crate::pricing::TaxConfig {
-        mode: crate::pricing::TaxMode::from_str(&chain_config.tax_mode),
-        tax_rate_cents: chain_config.tax_rate_cents,
-        secondary_tax_rate_cents: chain_config.secondary_tax_rate_cents,
-        service_charge_rate_cents: chain_config.service_charge_rate_cents,
-    };
-    let breakdown = crate::pricing::calculate_tax(subtotal_cents, discount_cents, &tax_config);
-    let combined_tax_cents = breakdown.combined_tax_cents();
-    let total_cents = std::cmp::max(0, subtotal_cents + combined_tax_cents - discount_cents + delivery_fee_cents);
-
-    Ok((priced_items, subtotal_cents, combined_tax_cents, total_cents))
-}
-
-// ---------------------------------------------------------------------------
-// Slice A -- POS flow commands. These replace the frontend's `orderService.ts`
-// and `pos/page.tsx` getDb() calls with Rust-backed, auth-checked commands.
-// Each write command: authn → authz → validate → repo (with transaction) →
-// audit → commit.
-// ---------------------------------------------------------------------------
-
-/// Simple list of all tables. No scope filter (tables has no tenant_id/branch_id).
-#[tauri::command]
-pub fn list_tables_v3(state: State<Db>, session_token: String) -> Result<Vec<TableInfo>, String> {
-    list_tables_v3_impl(&state, session_token)
-}
-
-fn list_tables_v3_impl(state: &Db, session_token: String) -> Result<Vec<TableInfo>, String> {
-    crate::lan::reject_if_local_kitchen_satellite("list_tables_v3")?;
-    let actor = authenticate_actor(state, &session_token)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_tables(&actor.scope()).map_err(|e| e.to_string())
-}
-
-/// Lets a restaurant configure any number of physical tables (0, 1, 20, ...)
-/// -- previously the only ones that ever existed were 2 hardcoded dev-seed
-/// rows, with no way for a real install to add its own. Same Owner/Branch
-/// scope-resolution convention as `open_shift_v3`: a Branch-scoped caller
-/// (Manager/Cashier/...) is pinned to their own branch; an Owner (Tenant-
-/// scoped, no home branch) must pass an explicit `branch_id` naming one of
-/// their own tenant's branches.
-#[tauri::command]
-pub fn create_table_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, branch_id: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
-    if name.trim().is_empty() {
-        return Err("اسم الطاولة مطلوب".to_string());
-    }
-
-    // QA audit fix (2026-08-21): this used to call `resolve_branch_for_actor`
-    // directly, which requires an explicit `branch_id` for any Tenant-scoped
-    // caller (Owner) and fails closed with a raw, untranslated English error
-    // ("select a branch first") otherwise -- exactly the friction
-    // `resolve_operating_branch` (added later, see its own doc comment) was
-    // built to remove for the common single-branch case, but this call site
-    // was never migrated to it. Reproduced live: an Owner on a genuinely
-    // single-branch tenant could not create a table at all. Settings' own
-    // table-creation form (settings/page.tsx) never collects/sends a
-    // branch_id either, so this was unconditionally broken for every
-    // single-branch install, not just an edge case.
-    let (tenant_id, resolved_branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, branch_id)?
-    };
-
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).create_table(&tenant_id, &resolved_branch_id, name.trim()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn rename_table_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, table_id: String, name: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
-    if name.trim().is_empty() {
-        return Err("table name cannot be empty".to_string());
-    }
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).rename_table(&actor.scope(), &table_id, name.trim()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn delete_table_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, table_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).delete_table(&actor.scope(), &table_id).map_err(|e| e.to_string())
-}
-
-/// Atomic full order creation: order + items + modifiers + table→OCCUPIED.
-/// Replaces `orderService.createOrder`. Returns the new order ID.
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn create_full_order_v3(
-    state: State<Db>,
-    license: State<crate::license::cloud::CloudLicenseState>,
-    session_token: String,
-    table_id: String,
-    order_type: String,
-    items: Vec<crate::repo::OrderItemInput>,
-    subtotal_cents: i64,
-    tax_cents: i64,
-    total_cents: i64,
-    discount_cents: i64,
-    discount_reason: Option<String>,
-    customer_name: Option<String>,
-    customer_phone: Option<String>,
-    delivery_address: Option<String>,
-    delivery_fee_cents: i64,
-    shift_id: Option<String>,
-    manager_override_pin: Option<String>,
-) -> Result<String, String> {
-    create_full_order_v3_impl(
-        &state, &license, session_token, table_id, order_type, items, subtotal_cents, tax_cents,
-        total_cents, discount_cents, discount_reason, customer_name, customer_phone,
-        delivery_address, delivery_fee_cents, shift_id, manager_override_pin,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn create_full_order_v3_impl(
-    state: &Db,
-    license: &crate::license::cloud::CloudLicenseState,
-    session_token: String,
-    table_id: String,
-    order_type: String,
-    items: Vec<crate::repo::OrderItemInput>,
-    // No longer trusted -- the command recomputes its own authoritative
-    // subtotal/tax/total via `price_order_authoritatively` below. Kept as
-    // parameters so the Tauri command signature (and every existing
-    // frontend call site) doesn't need to change; a caller-supplied value
-    // here is now read by nobody. See `price_order_authoritatively`'s doc
-    // comment for the attack this closes.
-    _subtotal_cents: i64,
-    _tax_cents: i64,
-    _total_cents: i64,
-    discount_cents: i64,
-    discount_reason: Option<String>,
-    customer_name: Option<String>,
-    customer_phone: Option<String>,
-    delivery_address: Option<String>,
-    delivery_fee_cents: i64,
-    // No longer trusted -- see the real `shift_id` binding resolved
-    // server-side below, right before it's used.
-    _shift_id: Option<String>,
-    manager_override_pin: Option<String>,
-) -> Result<String, String> {
-    crate::lan::reject_if_local_kitchen_satellite("create_full_order_v3")?;
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, license, None)?
-    };
-    if discount_cents < 0 || delivery_fee_cents < 0 {
-        return Err("negative amounts are not valid".to_string());
-    }
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    // 2026-08-02 client walkthrough finding: nothing previously stopped a
-    // cashier from ringing up orders with no shift open at all -- the
-    // caller-supplied `shift_id` param was trusted as-is (or silently
-    // left null), so those sales never showed up in ANY shift's stats
-    // (`repo.rs`'s `shift_stats` filters `orders.shift_id = ?1`), breaking
-    // end-of-day cash reconciliation with zero warning. Never trust the
-    // caller's claim (R1) -- always resolve the actor's own real,
-    // currently-open shift server-side instead of using whatever
-    // `shift_id` this call happened to pass in.
-    let shift_id = Some(
-        Repo::new(&conn)
-            .get_active_shift(&actor.id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "لا توجد وردية مفتوحة -- يجب فتح وردية أولاً قبل البيع".to_string())?
-            .id,
-    );
-    let (items, subtotal_cents, tax_cents, total_cents) =
-        price_order_authoritatively(&conn, &tenant_id, &items, discount_cents, delivery_fee_cents)?;
-    let override_used = enforce_discount_cap(&mut conn, &actor, &tenant_id, subtotal_cents, discount_cents, manager_override_pin.as_deref())?;
-
-    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let table_id = resolve_order_table_id(&tx, &tenant_id, &branch_id, &table_id)?;
-    let input = FullOrderInput {
-        table_id, user_id: actor.id.clone(), order_type: order_type.clone(),
-        subtotal_cents, tax_cents, total_cents, discount_cents,
-        discount_reason, customer_name, customer_phone, delivery_address,
-        delivery_fee_cents, shift_id, items,
-    };
-    let order_id = Repo::new(&tx).create_full_order(&scope, &tenant_id, &branch_id, input)
-        .map_err(|e| e.to_string())?;
-
-    Repo::new(&tx).append_order_status_event(&tenant_id, &branch_id, &order_id, "PENDING", &actor.id, &actor.device_id)
-        .map_err(|e| e.to_string())?;
-    Repo::new(&tx).rebuild_order_current(&order_id).map_err(|e| e.to_string())?;
-
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::OrderCreated, "order", &order_id,
-        None, Some(&serde_json::json!({ "order_type": order_type, "total_cents": total_cents })),
-    ).map_err(|e| e.to_string())?;
-
-    if discount_cents > 0 {
-        audit::append(
-            &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-            audit::Action::DiscountApplied, "order", &order_id,
-            None, Some(&serde_json::json!({ "discount_cents": discount_cents, "subtotal_cents": subtotal_cents, "manager_override_used": override_used })),
-        ).map_err(|e| e.to_string())?;
-    }
-
-    // Sync (Plan §5, Slice 2a): queued in the SAME transaction as the order
-    // and its items -- if anything above rolls back, these outbox rows never
-    // existed either. No network here; a background worker drains this.
-    let license_status = license.cached_status();
-    sync_enqueue_order(&tx, &tenant_id, &branch_id, &order_id, &actor.device_id, &license_status)?;
-    sync_enqueue_order_items(&tx, &tenant_id, &branch_id, &order_id, &actor.device_id, &license_status)?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(order_id)
-}
-
-/// Stamps `orders.rev`/`updated_at_hlc`/`device_id` (previously never
-/// populated on write -- the v9 migration added the columns but nothing
-/// filled them in) and queues the row's current snapshot. Called at
-/// creation (rev 1) and again whenever the order's status changes to a
-/// terminal state (rev 2+, see `finalize_order_with_payment_v3`).
-fn sync_enqueue_order(
-    tx: &rusqlite::Transaction,
-    tenant_id: &str,
-    branch_id: &str,
-    order_id: &str,
-    device_id: &str,
-    license_status: &crate::license::signed::LicenseStatus,
-) -> Result<(), String> {
-    tx.execute(
-        "UPDATE orders SET rev = COALESCE(rev, 0) + 1, updated_at_hlc = ?1, device_id = ?2 WHERE id = ?3",
-        params![crate::hlc::next(), device_id, order_id],
-    ).map_err(|e| e.to_string())?;
-
-    let (status, order_type, subtotal_cents, tax_cents, total_cents, discount_cents, created_at, rev): (String, String, i64, i64, i64, i64, String, i64) = tx.query_row(
-        "SELECT status, order_type, subtotal_cents, tax_cents, total_cents, discount_cents, created_at, rev FROM orders WHERE id = ?1",
-        params![order_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
-    ).map_err(|e| e.to_string())?;
-
-    let payload = serde_json::json!({
-        "id": order_id, "tenant_id": tenant_id, "branch_id": branch_id, "device_id": device_id,
-        "status": status, "order_type": order_type, "subtotal_cents": subtotal_cents,
-        "tax_cents": tax_cents, "total_cents": total_cents, "discount_cents": discount_cents,
-        "created_at": created_at,
-    });
-    crate::sync::enqueue(tx, "orders", order_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
-}
-
-/// Stamps and queues every item currently on `order_id` -- called once at
-/// order creation (all items at rev 1). `void_order_item_v3` handles its own
-/// single-item re-stamp+enqueue separately (see `sync_enqueue_single_order_item`).
-fn sync_enqueue_order_items(
-    tx: &rusqlite::Transaction,
-    tenant_id: &str,
-    branch_id: &str,
-    order_id: &str,
-    device_id: &str,
-    license_status: &crate::license::signed::LicenseStatus,
-) -> Result<(), String> {
-    let item_ids: Vec<String> = {
-        let mut stmt = tx.prepare("SELECT id FROM order_items WHERE order_id = ?1").map_err(|e| e.to_string())?;
-        let ids = stmt.query_map(params![order_id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
-        ids.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
-    };
-    for item_id in item_ids {
-        sync_enqueue_single_order_item(tx, tenant_id, branch_id, &item_id, device_id, license_status)?;
-    }
-    Ok(())
-}
-
-/// Stamps `order_items.rev`/`updated_at_hlc`/`device_id` and queues one
-/// item's current snapshot -- `menu_item_name` is denormalized in
-/// (looked up now, not stored by reference) so a later menu rename can never
-/// rewrite this historical fact.
-fn sync_enqueue_single_order_item(
-    tx: &rusqlite::Transaction,
-    tenant_id: &str,
-    branch_id: &str,
-    item_id: &str,
-    device_id: &str,
-    license_status: &crate::license::signed::LicenseStatus,
-) -> Result<(), String> {
-    tx.execute(
-        "UPDATE order_items SET rev = COALESCE(rev, 0) + 1, updated_at_hlc = ?1, device_id = ?2 WHERE id = ?3",
-        params![crate::hlc::next(), device_id, item_id],
-    ).map_err(|e| e.to_string())?;
-
-    let (order_id, menu_item_id, quantity, unit_price_cents, voided, rev): (String, String, i64, i64, i64, i64) = tx.query_row(
-        "SELECT order_id, menu_item_id, quantity, unit_price_cents, voided, rev FROM order_items WHERE id = ?1",
-        params![item_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-    ).map_err(|e| e.to_string())?;
-    let menu_item_name: String = tx.query_row("SELECT name FROM menu_items WHERE id = ?1", params![menu_item_id], |r| r.get(0))
-        .unwrap_or_default();
-
-    let payload = serde_json::json!({
-        "id": item_id, "order_id": order_id, "tenant_id": tenant_id, "branch_id": branch_id,
-        "menu_item_id": menu_item_id, "menu_item_name": menu_item_name,
-        "quantity": quantity, "unit_price_cents": unit_price_cents, "voided": voided != 0,
-    });
-    crate::sync::enqueue(tx, "order_items", item_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
-}
-
-/// DRAFT order + items + modifiers + table→OCCUPIED. Replaces `orderService.holdOrder`.
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn hold_order_v3(
-    state: State<Db>,
-    license: State<crate::license::cloud::CloudLicenseState>,
-    session_token: String,
-    table_id: String,
-    order_type: String,
-    items: Vec<crate::repo::OrderItemInput>,
-    subtotal_cents: i64,
-    tax_cents: i64,
-    total_cents: i64,
-    shift_id: Option<String>,
-) -> Result<String, String> {
-    hold_order_v3_impl(&state, &license, session_token, table_id, order_type, items, subtotal_cents, tax_cents, total_cents, shift_id)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn hold_order_v3_impl(
-    state: &Db,
-    license: &crate::license::cloud::CloudLicenseState,
-    session_token: String,
-    table_id: String,
-    order_type: String,
-    items: Vec<crate::repo::OrderItemInput>,
-    // No longer trusted -- see `price_order_authoritatively`. A held DRAFT
-    // should show the cashier real prices when retrieved, same as a live
-    // order; there's no reason a hold gets a weaker guarantee than a sale.
-    _subtotal_cents: i64,
-    _tax_cents: i64,
-    _total_cents: i64,
-    shift_id: Option<String>,
-) -> Result<String, String> {
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, license, None)?
-    };
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (items, subtotal_cents, tax_cents, total_cents) =
-        price_order_authoritatively(&conn, &tenant_id, &items, 0, 0)?;
-    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let table_id = resolve_order_table_id(&tx, &tenant_id, &branch_id, &table_id)?;
-    let input = FullOrderInput {
-        table_id, user_id: actor.id.clone(), order_type: order_type.clone(),
-        subtotal_cents, tax_cents, total_cents, discount_cents: 0,
-        discount_reason: None, customer_name: None, customer_phone: None,
-        delivery_address: None, delivery_fee_cents: 0, shift_id, items,
-    };
-    let order_id = Repo::new(&tx).hold_order(&scope, &tenant_id, &branch_id, input)
-        .map_err(|e| e.to_string())?;
-
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::OrderCreated, "order", &order_id,
-        None, Some(&serde_json::json!({ "action": "hold", "order_type": order_type })),
-    ).map_err(|e| e.to_string())?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(order_id)
-}
-
-/// Read a DRAFT order with all items + modifiers + menu item names.
-/// Returns null if no DRAFT order with that ID exists.
-#[tauri::command]
-pub fn retrieve_held_order_v3(state: State<Db>, _session_token: String, order_id: String) -> Result<Option<HeldOrderResult>, String> {
-    let actor = authenticate_actor(&state, &_session_token)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).retrieve_held_order(&actor.scope(), &order_id).map_err(|e| e.to_string())
-}
-
-/// Split a PENDING order into child orders, moving items.
-#[tauri::command]
-pub fn split_bill_v3(
-    state: State<Db>,
-    session_token: String,
-    order_id: String,
-    splits: Vec<SplitBillInput>,
-    table_id: String,
-) -> Result<Vec<String>, String> {
-    split_bill_v3_impl(&state, session_token, order_id, splits, table_id)
-}
-
-fn split_bill_v3_impl(
-    state: &Db,
-    session_token: String,
-    order_id: String,
-    splits: Vec<SplitBillInput>,
-    table_id: String,
-) -> Result<Vec<String>, String> {
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
-    let scope = actor.scope();
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let ids = Repo::new(&tx).split_bill(&scope, &order_id, splits, &actor.id, &table_id)
-        .map_err(|e| e.to_string())?;
-
-    audit::append(
-        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
-        audit::Action::OrderStatusChanged, "order", &order_id,
-        None, Some(&serde_json::json!({ "action": "split", "child_count": ids.len() })),
-    ).map_err(|e| e.to_string())?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(ids)
-}
-
-/// Merge source tables into target: all become MERGED, source order items
-/// move to target order, source orders cancelled.
-#[tauri::command]
-pub fn merge_tables_v3(
-    state: State<Db>,
-    session_token: String,
-    source_table_ids: Vec<String>,
-    target_table_id: String,
-) -> Result<Option<String>, String> {
-    merge_tables_v3_impl(&state, session_token, source_table_ids, target_table_id)
-}
-
-fn merge_tables_v3_impl(
-    state: &Db,
-    session_token: String,
-    source_table_ids: Vec<String>,
-    target_table_id: String,
-) -> Result<Option<String>, String> {
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
-    let scope = actor.scope();
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let target_order_id = Repo::new(&tx).merge_tables(&scope, source_table_ids, &target_table_id)
-        .map_err(|e| e.to_string())?;
-
-    audit::append(
-        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
-        audit::Action::OrderStatusChanged, "table", &target_table_id,
-        None, Some(&serde_json::json!({ "action": "merge" })),
-    ).map_err(|e| e.to_string())?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(target_order_id)
-}
-
-/// Unmerge all tables in a merge group back to FREE.
-#[tauri::command]
-pub fn unmerge_tables_v3(state: State<Db>, session_token: String, merge_group_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
-    let scope = actor.scope();
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).unmerge_tables(&scope, &merge_group_id).map_err(|e| e.to_string())?;
-
-    audit::append(
-        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
-        audit::Action::OrderStatusChanged, "table", &merge_group_id,
-        None, Some(&serde_json::json!({ "action": "unmerge" })),
-    ).map_err(|e| e.to_string())?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Soft-void an order item (set voided=1 + void_reason).
-#[tauri::command]
-pub fn void_order_item_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, reason: String, manager_override_pin: Option<String>) -> Result<(), String> {
-    void_order_item_v3_impl(&state, &license, session_token, item_id, reason, manager_override_pin)
-}
-
-/// WENZDES audit C5/H5, updated 2026-08-02: below the tenant's
-/// `void_manager_threshold_cents` (Owner-configurable via
-/// `update_manager_thresholds_v3` -- see pricing.rs's `ManagerThresholds`
-/// doc for why this replaced a hardcoded constant), any actor holding
-/// `Permission::CreateOrder` (i.e. a cashier) may void a line on their own
-/// authority, same as before. At or above it, a valid manager PIN is
-/// required -- checked here, server-side, against the line's REAL price
-/// (`order_item_line_total_cents`, itself scope-checked), not whatever
-/// price the caller claims. Mirrors `enforce_discount_cap`'s established
-/// shape exactly: verify on the plain `Connection` before the write
-/// transaction opens, since `verify_manager_override_impl` needs
-/// `&mut Connection`, not a `Transaction`.
-fn void_order_item_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String, reason: String, manager_override_pin: Option<String>) -> Result<(), String> {
-    crate::lan::reject_if_local_kitchen_satellite("void_order_item_v3")?;
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
-    let scope = actor.scope();
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let line_total_cents = Repo::new(&conn).order_item_line_total_cents(&scope, &item_id).map_err(|e| e.to_string())?;
-    let threshold_cents = Repo::new(&conn).get_manager_thresholds(&actor.tenant_id).map_err(|e| e.to_string())?.void_threshold_cents;
-    let override_used = if line_total_cents >= threshold_cents {
-        let Some(pin) = manager_override_pin.as_deref() else {
-            return Err("voiding an item over the manager-override threshold requires a manager PIN".to_string());
-        };
-        if !verify_manager_override_impl(&mut conn, &actor, pin)? {
-            return Err("manager PIN is not valid".to_string());
-        }
-        true
-    } else {
-        false
-    };
-
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).void_order_item(&scope, &item_id, &reason, &actor.id).map_err(|e| e.to_string())?;
-
-    audit::append(
-        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
-        audit::Action::OrderStatusChanged, "order_item", &item_id,
-        None, Some(&serde_json::json!({ "action": "void", "reason": reason, "manager_override_used": override_used })),
-    ).map_err(|e| e.to_string())?;
-
-    // Sync: re-stamp+re-queue this one item at its next rev (voided=1).
-    // tenant_id/branch_id come from the item's OWN row, not the actor's
-    // scope -- correct regardless of whether the caller is Branch- or
-    // Tenant-scoped, and it's the row's true scope that matters for RLS
-    // once this reaches Supabase (Slice 2b).
-    let (item_tenant_id, item_branch_id): (String, String) = tx.query_row(
-        "SELECT tenant_id, branch_id FROM order_items WHERE id = ?1", params![item_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ).map_err(|e| e.to_string())?;
-    let license_status = license.cached_status();
-    sync_enqueue_single_order_item(&tx, &item_tenant_id, &item_branch_id, &item_id, &actor.device_id, &license_status)?;
-
-    // `Repo::void_order_item` restores this item's recipe-linked
-    // ingredient stock ONLY when its parent order was already PAID (see
-    // that function's doc comment) -- re-check the same condition here to
-    // decide whether there's anything to sync.
-    let (order_id, menu_item_id): (String, String) = tx.query_row(
-        "SELECT order_id, menu_item_id FROM order_items WHERE id = ?1", params![item_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ).map_err(|e| e.to_string())?;
-    let order_status: String = tx.query_row(
-        "SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0),
-    ).map_err(|e| e.to_string())?;
-    if order_status == "PAID" {
-        sync_enqueue_recipe_ingredients_for_menu_item(&tx, &item_tenant_id, &item_branch_id, &menu_item_id, &actor.device_id, &license_status)?;
-    }
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Transfer an order from one table to another.
-#[tauri::command]
-pub fn transfer_order_v3(state: State<Db>, session_token: String, order_id: String, from_table_id: String, to_table_id: String) -> Result<(), String> {
-    transfer_order_v3_impl(&state, session_token, order_id, from_table_id, to_table_id)
-}
-
-fn transfer_order_v3_impl(state: &Db, session_token: String, order_id: String, from_table_id: String, to_table_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
-    let scope = actor.scope();
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).transfer_order(&scope, &order_id, &from_table_id, &to_table_id).map_err(|e| e.to_string())?;
-
-    audit::append(
-        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
-        audit::Action::OrderStatusChanged, "order", &order_id,
-        None, Some(&serde_json::json!({ "action": "transfer", "from": from_table_id, "to": to_table_id })),
-    ).map_err(|e| e.to_string())?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Create a SCHEDULED order + items + modifiers + delayed_orders entry.
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn schedule_delayed_order_v3(
-    state: State<Db>,
-    license: State<crate::license::cloud::CloudLicenseState>,
-    session_token: String,
-    table_id: String,
-    order_type: String,
-    items: Vec<crate::repo::OrderItemInput>,
-    subtotal_cents: i64,
-    tax_cents: i64,
-    total_cents: i64,
-    scheduled_at: String,
-) -> Result<String, String> {
-    schedule_delayed_order_v3_impl(&state, &license, session_token, table_id, order_type, items, subtotal_cents, tax_cents, total_cents, scheduled_at)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn schedule_delayed_order_v3_impl(
-    state: &Db,
-    license: &crate::license::cloud::CloudLicenseState,
-    session_token: String,
-    table_id: String,
-    order_type: String,
-    items: Vec<crate::repo::OrderItemInput>,
-    // No longer trusted -- see `price_order_authoritatively`.
-    _subtotal_cents: i64,
-    _tax_cents: i64,
-    _total_cents: i64,
-    scheduled_at: String,
-) -> Result<String, String> {
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, license, None)?
-    };
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (items, subtotal_cents, tax_cents, total_cents) =
-        price_order_authoritatively(&conn, &tenant_id, &items, 0, 0)?;
-    let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let table_id = resolve_order_table_id(&tx, &tenant_id, &branch_id, &table_id)?;
-    let input = FullOrderInput {
-        table_id, user_id: actor.id.clone(), order_type: order_type.clone(),
-        subtotal_cents, tax_cents, total_cents, discount_cents: 0,
-        discount_reason: None, customer_name: None, customer_phone: None,
-        delivery_address: None, delivery_fee_cents: 0, shift_id: None, items,
-    };
-    let order_id = Repo::new(&tx).schedule_delayed_order(&scope, &tenant_id, &branch_id, input, &scheduled_at)
-        .map_err(|e| e.to_string())?;
-
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::OrderCreated, "order", &order_id,
-        None, Some(&serde_json::json!({ "action": "schedule", "scheduled_at": scheduled_at })),
-    ).map_err(|e| e.to_string())?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(order_id)
-}
-
-/// Activate all delayed orders where scheduled_at <= now.
-#[tauri::command]
-pub fn activate_delayed_orders_v3(state: State<Db>, _session_token: String) -> Result<Vec<String>, String> {
-    let _actor = authenticate_actor(&state, &_session_token)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).activate_delayed_orders().map_err(|e| e.to_string())
-}
-
-/// Get receipt config: chain_name, currency from chain_config + branch name.
-#[tauri::command]
-pub fn get_receipt_config_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<ReceiptConfig, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).get_receipt_config(&tenant_id, &branch_id).map_err(|e| e.to_string())
-}
-
-/// Look up a loyalty card by card_number.
-#[tauri::command]
-pub fn lookup_loyalty_card_v3(state: State<Db>, _session_token: String, card_number: String) -> Result<Option<LoyaltyCardLookup>, String> {
-    let actor = authenticate_actor(&state, &_session_token)?;
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).lookup_loyalty_card(&actor.tenant_id, &card_number).map_err(|e| e.to_string())
-}
-
-/// Earn loyalty points after an order.
-#[tauri::command]
-pub fn earn_loyalty_points_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, card_number: String, points: i64, order_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
-    };
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    Repo::new(&tx).earn_loyalty_points(&tenant_id, &branch_id, &card_number, points, &order_id).map_err(|e| e.to_string())?;
-
-    audit::append(
-        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
-        audit::Action::LoyaltyCardIssued, "loyalty_card", &card_number,
-        None, Some(&serde_json::json!({ "action": "earn", "points": points, "order_id": order_id })),
-    ).map_err(|e| e.to_string())?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Return shape for `finalize_order_with_payment_v3` -- `points_earned` is
-/// `Some` only when a `card_number` was passed and accrual actually ran, so
-/// the frontend can show "earned N points" without a second round trip.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct FinalizePaymentResult {
-    pub payment_id: String,
-    pub points_earned: Option<i64>,
-}
-
-/// Finalize a PENDING order: status→PAID, insert payment, free table,
-/// optional debt entry, optional atomic loyalty accrual (see
-/// `Repo::finalize_order_with_payment`'s doc comment). Replaces
-/// `orderService.finalizeOrder` (the DB part). Receipt printing stays on
-/// the frontend.
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn finalize_order_with_payment_v3(
-    state: State<Db>,
-    license: State<crate::license::cloud::CloudLicenseState>,
-    session_token: String,
-    order_id: String,
-    method: String,
-    amount_cents: i64,
-    change_cents: i64,
-    debtor_id: Option<String>,
-    card_number: Option<String>,
-) -> Result<FinalizePaymentResult, String> {
-    finalize_order_with_payment_v3_impl(&state, &license, session_token, order_id, method, amount_cents, change_cents, debtor_id, card_number)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn finalize_order_with_payment_v3_impl(
-    state: &Db,
-    license: &crate::license::cloud::CloudLicenseState,
-    session_token: String,
-    order_id: String,
-    method: String,
-    amount_cents: i64,
-    change_cents: i64,
-    debtor_id: Option<String>,
-    card_number: Option<String>,
-) -> Result<FinalizePaymentResult, String> {
-    let actor = authenticate_actor(state, &session_token)?;
-    authorize(&actor, Permission::TakePayment).map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, license, None)?
-    };
-    if amount_cents < 0 || change_cents < 0 {
-        return Err("negative amounts are not valid".to_string());
-    }
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let (payment_id, points_earned) = Repo::new(&tx).finalize_order_with_payment(
-        &tenant_id, &branch_id, &order_id, &method, amount_cents, change_cents,
-        debtor_id.as_deref(), &actor.id, card_number.as_deref(),
-    ).map_err(|e| e.to_string())?;
-
-    audit::append(
-        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
-        audit::Action::PaymentTaken, "order", &order_id,
-        None, Some(&serde_json::json!({ "payment_id": payment_id, "method": method, "amount_cents": amount_cents, "change_cents": change_cents, "debtor_id": debtor_id, "loyalty_points_earned": points_earned })),
-    ).map_err(|e| e.to_string())?;
-
-    // Sync: the payment is a brand-new fact (rev 1); the order's own row
-    // changed too (status -> PAID), so it gets re-stamped and re-queued at
-    // its next rev -- same transaction as everything else above.
-    let license_status = license.cached_status();
-    sync_enqueue_payment(&tx, &tenant_id, &branch_id, &payment_id, &actor.device_id, &license_status)?;
-    sync_enqueue_order(&tx, &tenant_id, &branch_id, &order_id, &actor.device_id, &license_status)?;
-
-    // `Repo::finalize_order_with_payment` just deducted recipe-linked
-    // ingredient stock for every non-voided item on this order -- queue
-    // the current snapshot of each ingredient touched.
-    sync_enqueue_recipe_ingredients_for_order(&tx, &tenant_id, &branch_id, &order_id, &actor.device_id, &license_status)?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(FinalizePaymentResult { payment_id, points_earned })
-}
-
-/// Back-office command -- license-gated (unlike void/payment: a refund
-/// happens AFTER the sale already closed, never mid-service, so it's not
-/// on the "must stay open during a locked license" list those are).
-/// Single function body, not a wrapper+impl split -- the license-gate
-/// coverage test scans this exact body's literal source text for the
-/// require_license_not_locked call, same constraint every other GATED
-/// command here follows (see list_staff_v3/create_roster_entry_v3's own
-/// notes on this).
-#[tauri::command]
-pub fn refund_order_v3(
-    state: State<Db>,
-    license: State<crate::license::cloud::CloudLicenseState>,
-    session_token: String,
-    order_id: String,
-    reason: Option<String>,
-) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::RefundOrder).map_err(|e| e.to_string())?;
-    require_license_not_locked(&license)?;
-    let scope = actor.scope();
-
-    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let refund_id = Repo::new(&tx)
-        .refund_order(&scope, &order_id, &actor.id, reason.as_deref())
-        .map_err(|e| e.to_string())?;
-    audit::append(
-        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
-        audit::Action::OrderRefunded, "order", &order_id,
-        None, Some(&serde_json::json!({ "refund_id": refund_id, "reason": reason })),
-    ).map_err(|e| e.to_string())?;
-
-    // `Repo::refund_order` just restored recipe-linked ingredient stock for
-    // every non-voided item on this order (mirror of the deplete at
-    // payment time) -- queue the current snapshot of each ingredient
-    // touched. tenant_id/branch_id come from the order's OWN row, not the
-    // actor's scope, same reasoning as elsewhere in this file.
-    let (order_tenant_id, order_branch_id): (String, String) = tx.query_row(
-        "SELECT tenant_id, branch_id FROM orders WHERE id = ?1", params![order_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ).map_err(|e| e.to_string())?;
-    let license_status = license.cached_status();
-    sync_enqueue_recipe_ingredients_for_order(&tx, &order_tenant_id, &order_branch_id, &order_id, &actor.device_id, &license_status)?;
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(refund_id)
-}
-
-/// Stamps `payments.rev`/`updated_at_hlc`/`device_id` and queues the row --
-/// payments are never mutated after creation, so this only ever runs once
-/// per payment, always at rev 1.
-fn sync_enqueue_payment(
-    tx: &rusqlite::Transaction,
-    tenant_id: &str,
-    branch_id: &str,
-    payment_id: &str,
-    device_id: &str,
-    license_status: &crate::license::signed::LicenseStatus,
-) -> Result<(), String> {
-    tx.execute(
-        "UPDATE payments SET rev = COALESCE(rev, 0) + 1, updated_at_hlc = ?1, device_id = ?2 WHERE id = ?3",
-        params![crate::hlc::next(), device_id, payment_id],
-    ).map_err(|e| e.to_string())?;
-
-    let (order_id, method, amount_cents, change_cents, created_at, rev): (String, String, i64, i64, String, i64) = tx.query_row(
-        "SELECT order_id, method, amount_cents, change_cents, created_at, rev FROM payments WHERE id = ?1",
-        params![payment_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-    ).map_err(|e| e.to_string())?;
-
-    let payload = serde_json::json!({
-        "id": payment_id, "order_id": order_id, "tenant_id": tenant_id, "branch_id": branch_id,
-        "method": method, "amount_cents": amount_cents, "change_cents": change_cents, "created_at": created_at,
-    });
-    crate::sync::enqueue(tx, "payments", payment_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
-}
-
-/// T2.0 supplier ledger: first sync wire-up for `supplier_payments` -- a
-/// brand-new fact table, always at rev 1 when this runs (it's called once,
-/// right after the row is inserted, same as `sync_enqueue_single_order_item`
-/// for a freshly-created order item). Money paid to suppliers must reach
-/// the cloud for the owner dashboard's cross-branch cash-flow rollup
-/// (T2.0 plan §0 flag #4 / §3) to be possible at all.
-fn sync_enqueue_supplier_payment(
-    tx: &rusqlite::Transaction,
-    tenant_id: &str,
-    branch_id: &str,
-    payment_id: &str,
-    device_id: &str,
-    license_status: &crate::license::signed::LicenseStatus,
-) -> Result<(), String> {
-    tx.execute(
-        "UPDATE supplier_payments SET rev = COALESCE(rev, 0) + 1, updated_at_hlc = ?1, device_id = ?2 WHERE id = ?3",
-        params![crate::hlc::next(), device_id, payment_id],
-    ).map_err(|e| e.to_string())?;
-
-    #[allow(clippy::type_complexity)]
-    let (supplier_id, purchase_order_id, entry_type, amount_cents, method, notes, created_at, rev): (String, Option<String>, String, i64, Option<String>, Option<String>, String, i64) = tx.query_row(
-        "SELECT supplier_id, purchase_order_id, type, amount_cents, method, notes, created_at, rev FROM supplier_payments WHERE id = ?1",
-        params![payment_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
-    ).map_err(|e| e.to_string())?;
-
-    let payload = serde_json::json!({
-        "id": payment_id, "supplier_id": supplier_id, "purchase_order_id": purchase_order_id,
-        "tenant_id": tenant_id, "branch_id": branch_id, "type": entry_type,
-        "amount_cents": amount_cents, "method": method, "notes": notes, "created_at": created_at,
-    });
-    crate::sync::enqueue(tx, "supplier_payments", payment_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
-}
-
-/// The marketplace "reorder low-stock ingredients" feature's POS-side
-/// half: stamps `ingredients.rev`/`updated_at_hlc`/`device_id` and queues
-/// the ingredient's CURRENT row -- always re-read fresh here, never
-/// reconstructed from the caller's own view of what changed, same
-/// "always send the live state" principle as `sync_enqueue_order`. Called
-/// after every write that can change what the marketplace needs to see
-/// (name/unit/min_stock/cost on create+edit, current_stock on manual
-/// adjustment, recipe-based depletion at payment, restoration on
-/// void/refund, and purchase-order receiving). Silently a no-op if the
-/// ingredient was hard-deleted between the write and this call -- nothing
-/// left to sync, not an error.
-fn sync_enqueue_ingredient(
-    tx: &rusqlite::Transaction,
-    tenant_id: &str,
-    branch_id: &str,
-    ingredient_id: &str,
-    device_id: &str,
-    license_status: &crate::license::signed::LicenseStatus,
-) -> Result<(), String> {
-    tx.execute(
-        "UPDATE ingredients SET rev = COALESCE(rev, 0) + 1, updated_at_hlc = ?1, device_id = ?2 WHERE id = ?3",
-        params![crate::hlc::next(), device_id, ingredient_id],
-    ).map_err(|e| e.to_string())?;
-
-    #[allow(clippy::type_complexity)]
-    let row: Option<(String, String, f64, f64, i64, i64, i64)> = tx.query_row(
-        "SELECT name, unit, current_stock, min_stock, cost_cents_per_unit, is_active, rev FROM ingredients WHERE id = ?1",
-        params![ingredient_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
-    ).optional().map_err(|e| e.to_string())?;
-    let Some((name, unit, current_stock, min_stock, cost_cents_per_unit, is_active, rev)) = row else {
-        return Ok(());
-    };
-
-    let payload = serde_json::json!({
-        "id": ingredient_id, "tenant_id": tenant_id, "branch_id": branch_id,
-        "name": name, "unit": unit, "current_stock": current_stock,
-        "min_stock": min_stock, "cost_cents_per_unit": cost_cents_per_unit,
-        "is_active": is_active != 0,
-    });
-    crate::sync::enqueue(tx, "ingredients", ingredient_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
-}
-
-/// Every ingredient_id touched by recipe-based stock movement (deplete at
-/// payment, restore on refund) for a whole order -- re-derived from
-/// `order_items` JOIN `recipes`, the exact same query shape
-/// `Repo::deplete_recipe_stock`/`Repo::refund_order` use internally to
-/// decide what to move, so this always matches what the repo layer just
-/// changed. Enqueues each one via `sync_enqueue_ingredient`.
-fn sync_enqueue_recipe_ingredients_for_order(
-    tx: &rusqlite::Transaction,
-    tenant_id: &str,
-    branch_id: &str,
-    order_id: &str,
-    device_id: &str,
-    license_status: &crate::license::signed::LicenseStatus,
-) -> Result<(), String> {
-    let ingredient_ids: Vec<String> = {
-        let mut stmt = tx.prepare(
-            "SELECT DISTINCT r.ingredient_id FROM order_items oi JOIN recipes r ON r.menu_item_id = oi.menu_item_id \
-             WHERE oi.order_id = ?1 AND oi.voided = 0",
-        ).map_err(|e| e.to_string())?;
-        let ids = stmt.query_map(params![order_id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
-        ids.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
-    };
-    for ingredient_id in ingredient_ids {
-        sync_enqueue_ingredient(tx, tenant_id, branch_id, &ingredient_id, device_id, license_status)?;
-    }
-    Ok(())
-}
-
-/// Every ingredient_id in one menu item's recipe -- used by
-/// `void_order_item_v3` (a single item's own recipe, restored only when its
-/// parent order was already PAID; see `Repo::void_order_item`'s doc
-/// comment for that condition).
-fn sync_enqueue_recipe_ingredients_for_menu_item(
-    tx: &rusqlite::Transaction,
-    tenant_id: &str,
-    branch_id: &str,
-    menu_item_id: &str,
-    device_id: &str,
-    license_status: &crate::license::signed::LicenseStatus,
-) -> Result<(), String> {
-    let ingredient_ids: Vec<String> = {
-        let mut stmt = tx.prepare("SELECT ingredient_id FROM recipes WHERE menu_item_id = ?1").map_err(|e| e.to_string())?;
-        let ids = stmt.query_map(params![menu_item_id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
-        ids.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
-    };
-    for ingredient_id in ingredient_ids {
-        sync_enqueue_ingredient(tx, tenant_id, branch_id, &ingredient_id, device_id, license_status)?;
-    }
-    Ok(())
-}
-
-/// Owner dashboard "staff" summary (aggregate-only, per user's explicit
-/// scope decision: who exists / who's clocked in per branch, no remote
-/// edit path -- that stays a POS-only, in-person action, same trust
-/// boundary as everything else that requires a manager PIN in person).
-/// Called at the 3 points that change what this snapshot should show:
-/// `create_staff_v3` (new hire appears), `clock_in_v3`/`clock_out_v3`
-/// (attendance is the purpose-built "who's here today" system -- NOT
-/// shifts, which track cash-register sessions and can span multiple
-/// staff or stay open across a clock-out). `update_staff_v3` (role
-/// changes) is NOT hooked -- role edits are rare and this is a summary
-/// view, not a management tool, so a few minutes of staleness there is
-/// an accepted tradeoff rather than wiring a 4th call site for it.
-///
-/// Skips PLATFORM/OWNER-role staff rows entirely (no branch_id -- there's
-/// nothing to attach them to on a per-branch dashboard card, and an
-/// owner doesn't need to see themselves listed as "staff").
-fn sync_enqueue_staff_snapshot(
-    tx: &rusqlite::Transaction,
-    tenant_id: &str,
-    staff_id: &str,
-    device_id: &str,
-    license_status: &crate::license::signed::LicenseStatus,
-) -> Result<(), String> {
-    tx.execute(
-        "UPDATE staff SET rev = COALESCE(rev, 0) + 1, updated_at_hlc = ?1, device_id = ?2 WHERE id = ?3",
-        params![crate::hlc::next(), device_id, staff_id],
-    ).map_err(|e| e.to_string())?;
-
-    let (branch_id, name, role, is_active, rev): (Option<String>, String, String, i64, i64) = tx.query_row(
-        "SELECT branch_id, name, role, is_active, rev FROM staff WHERE id = ?1",
-        params![staff_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-    ).map_err(|e| e.to_string())?;
-
-    let Some(branch_id) = branch_id else {
-        // OWNER/PLATFORM staff row -- nothing to sync, not an error.
-        return Ok(());
-    };
-
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let today_attendance: Option<(Option<String>, Option<String>)> = tx.query_row(
-        "SELECT clock_in, clock_out FROM attendance WHERE user_id = ?1 AND date = ?2",
-        params![staff_id, today],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ).optional().map_err(|e| e.to_string())?;
-    let (last_clock_in, is_clocked_in) = match today_attendance {
-        Some((clock_in, clock_out)) => (clock_in.clone(), clock_in.is_some() && clock_out.is_none()),
-        None => (None, false),
-    };
-
-    let payload = serde_json::json!({
-        "id": staff_id, "tenant_id": tenant_id, "branch_id": branch_id,
-        "name": name, "role": role, "is_active": is_active != 0,
-        "is_clocked_in": is_clocked_in, "last_clock_in": last_clock_in,
-    });
-    crate::sync::enqueue(tx, "staff", staff_id, tenant_id, &branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
-}
-
-/// T2.0 plan §0 flag #4: `operational_costs` existed since day one but was
-/// never wired into the sync outbox at all -- this is its first sync
-/// wire-up, same pattern as every other enqueue function here.
-fn sync_enqueue_operational_cost(
-    tx: &rusqlite::Transaction,
-    tenant_id: &str,
-    branch_id: &str,
-    cost_id: &str,
-    device_id: &str,
-    license_status: &crate::license::signed::LicenseStatus,
-) -> Result<(), String> {
-    tx.execute(
-        "UPDATE operational_costs SET rev = COALESCE(rev, 0) + 1, updated_at_hlc = ?1, device_id = ?2 WHERE id = ?3",
-        params![crate::hlc::next(), device_id, cost_id],
-    ).map_err(|e| e.to_string())?;
-
-    let (category, amount_cents, date, notes, reference_type, reference_id, rev): (String, i64, String, Option<String>, Option<String>, Option<String>, i64) = tx.query_row(
-        "SELECT category, amount_cents, date, notes, reference_type, reference_id, rev FROM operational_costs WHERE id = ?1",
-        params![cost_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
-    ).map_err(|e| e.to_string())?;
-
-    let payload = serde_json::json!({
-        "id": cost_id, "tenant_id": tenant_id, "branch_id": branch_id, "category": category,
-        "amount_cents": amount_cents, "date": date, "notes": notes,
-        "reference_type": reference_type, "reference_id": reference_id,
-    });
-    crate::sync::enqueue(tx, "operational_costs", cost_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
-}
-
-// ---------------------------------------------------------------------------
-// Offline signed license -- see src-tauri/src/license/ for the actual
-// crypto/fingerprint/grace-period logic. These three commands are thin
-// wrappers, no auth required for the read paths (the license banner must be
-// visible even at the login screen, before any staff session exists).
-// ---------------------------------------------------------------------------
-
-/// Fast path: returns whatever the last `recheck` computed, no disk I/O or
-/// crypto. Safe to call frequently (e.g. every app render) without concern.
-#[tauri::command]
-pub fn get_cached_license_status_v3(license: State<crate::license::cloud::CloudLicenseState>) -> crate::license::signed::LicenseStatus {
-    license.cached_status()
-}
-
-/// The real-world minting flow: shown on Settings -> License even before
-/// any license exists (no auth, same reasoning as the status reads below --
-/// this screen has to work for a brand new install with no staff session
-/// yet). The customer copies this and sends it to whoever mints their
-/// license; apps/admin's mint form decodes it back into the raw cpu/disk/
-/// mac values the signing service needs.
-#[tauri::command]
-pub fn get_device_id_v3() -> String {
-    crate::license::fingerprint::device_id()
-}
-
-/// Forces a fresh read of the license file + re-verification. Called at
-/// boot and on a 6h timer (see lib.rs's setup); also safe to call from a
-/// UI "check now" action.
-#[tauri::command]
-pub fn check_license_v3(license: State<crate::license::cloud::CloudLicenseState>) -> crate::license::signed::LicenseStatus {
-    license.recheck()
-}
-
-/// Installs a renewal blob (pasted/scanned/dropped in by the collector on
-/// cash payment). `blob_json` is the raw text of the .lic file the CLI
-/// produced -- fully offline, no server round trip. No permission check
-/// beyond being an authenticated staff member: a forged or wrong-machine
-/// blob is rejected by signature/fingerprint verification regardless of
-/// who submits it, and an owner handing a cashier the renewal file to type
-/// in is a completely normal flow for this product.
-#[tauri::command]
-pub fn renew_license_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, blob_json: String) -> Result<crate::license::signed::LicenseStatus, String> {
-    authenticate_actor(&state, &session_token)?;
-    let file: crate::license::signed::SignedLicenseFile = serde_json::from_str(&blob_json).map_err(|_| "renewal file is not valid JSON".to_string())?;
-    license.accept_renewal(file).map_err(|e| e.to_string())
-}
-
-/// Settings -> License page's "activate" action: decodes the base64
-/// activation-key bundle apps/admin's mint flow produces, installs its
-/// offline blob through the exact same `accept_renewal` validation
-/// `renew_license_v3` uses (signature, machine fingerprint, staleness), and
-/// -- if that succeeds -- wires up the cloud identity (license_id +
-/// device_token) so future hybrid cloud checks (Slice 1c) start working too,
-/// both in this running process and on the next boot.
-#[tauri::command]
-pub async fn activate_license_v3(state: State<'_, Db>, license: State<'_, crate::license::cloud::CloudLicenseState>, session_token: String, activation_key: String) -> Result<crate::license::signed::LicenseStatus, String> {
-    authenticate_actor(&state, &session_token)?;
-    let bundle = crate::license::cloud::decode_activation_key(&activation_key)?;
-    let file = crate::license::signed::SignedLicenseFile { payload_json: bundle.payload_json, signature_b64: bundle.signature_b64 };
-    let status = match license.accept_renewal(file) {
-        Ok(status) => status,
-        // T2.0 (plan §2): "unpaid terminal #3, better UX" -- the signature
-        // already verified (that's the only way to reach WrongMachine at
-        // all), so `branch_id` is authentic. A best-effort cloud lookup
-        // turns "wrong machine" into either "this branch has N active
-        // seats already, get a new one for this device" or -- if the count
-        // comes back 0, or the cloud is unreachable -- the original,
-        // generic message. Never blocks or panics on a network failure.
-        Err(crate::license::signed::LicenseError::WrongMachine { branch_id, .. }) => {
-            match crate::license::cloud::count_active_licenses(&branch_id).await {
-                Ok(count) if count > 0 => {
-                    return Err(format!(
-                        "لم يتم العثور على ترخيص لهذا الجهاز. هذا الفرع لديه {count} ترخيص مفعّل — تواصل مع المندوب لإضافة جهاز جديد."
-                    ));
-                }
-                // Cloud unreachable, or the branch genuinely has zero other
-                // active seats -- fall back to the original generic message
-                // rather than claim a fact the cloud couldn't confirm.
-                _ => return Err("license was not issued for this machine".to_string()),
-            }
-        }
-        Err(e) => return Err(e.to_string()),
-    };
-
-    // A bare, hand-signed blob (no license_id/device_token) has no cloud
-    // identity to wire up -- that's fine, it just means this device stays
-    // offline-only until a proper cloud-aware key is pasted later.
-    if let (Some(license_id), Some(device_token)) = (bundle.license_id, bundle.device_token) {
-        license.set_config(crate::license::cloud::CloudConfig { license_id, device_token });
-        // Best-effort: if the disk write fails, activation itself already
-        // succeeded (the offline blob is installed and cached_status
-        // reflects it) -- this only affects whether the NEXT boot also has
-        // cloud credentials, not the result the user sees right now.
-        let _ = license.persist_cloud_config();
-    }
-
-    Ok(status)
-}
-
-// ---------------------------------------------------------------------------
-// T3.0 LAN hub/satellite: Phase 1 RPC dispatch allowlist. See `lan.rs`'s
-// module doc for the full design. Every arm here calls the SAME, real,
-// unmodified `#[tauri::command]` function a local/standalone terminal
-// would call -- there is no parallel business-logic path, only a second
-// way to reach the existing one. Deliberately a curated allowlist, not
-// "every command": commands not listed here simply aren't available to a
-// Satellite in Phase 1 (menu/inventory/supplier/finance management, for
-// example) -- those still need to be done from the Hub terminal itself
-// for now. Growing this list is safe and additive; it never changes what
-// a Hub or standalone terminal does.
-// ---------------------------------------------------------------------------
-
-/// True for any command whose success means an order/table/kitchen-queue
-/// changed -- exactly the set of events a KDS (or any other Satellite)
-/// needs to know to re-fetch. Deliberately conservative (a false positive
-/// here just costs one harmless extra re-fetch; a false negative would
-/// mean a Satellite silently goes stale).
-pub fn lan_rpc_mutates_orders(command: &str) -> bool {
-    matches!(
-        command,
-        "create_full_order_v3"
-            | "create_order_v3"
-            | "update_order_status_v3"
-            | "void_order_item_v3"
-            | "take_payment_v3"
-            | "finalize_order_with_payment_v3"
-            | "hold_order_v3"
-            | "retrieve_held_order_v3"
-            | "transfer_order_v3"
-            | "split_bill_v3"
-            | "merge_tables_v3"
-            | "unmerge_tables_v3"
-    )
-}
-
-/// Parses `args[key]` into `T`, treating a missing key the same as JSON
-/// `null` (so an `Option<T>` field the frontend simply omits still
-/// deserializes correctly, matching how Tauri's own IPC argument binding
-/// already behaves for optional params).
-fn lan_arg<T: serde::de::DeserializeOwned>(args: &serde_json::Value, key: &str) -> Result<T, String> {
-    serde_json::from_value(args.get(key).cloned().unwrap_or(serde_json::Value::Null))
-        .map_err(|e| format!("invalid or missing '{key}': {e}"))
-}
-
-/// The Phase 1 dispatcher. `args` is exactly the JSON object the frontend
-/// already builds for `invoke(command, args)` -- a Satellite's `invoke()`
-/// wrapper forwards that object over the LAN completely unchanged (see
-/// `invoke.ts`), so nothing about a page's own calling code needs to know
-/// or care whether it's talking to its own local Tauri backend or a
-/// paired Hub over the network.
-///
-/// Takes a plain `&Db`/`&CloudLicenseState`, NOT a `tauri::AppHandle` --
-/// deliberately, so this function is reachable both from the Hub's real
-/// axum handler (which gets these via `AppHandle::state::<T>()`, a
-/// `State<T>` that derefs to exactly this) AND from a unit test with a
-/// real `Db`/`CloudLicenseState` built the same way every other test in
-/// `command_wrapper_tests` already does -- `tauri::test::mock_builder()`
-/// is confirmed to crash this dev box (see that module's own doc
-/// comment), so anything built on top of a real `tauri::App`/`State<T>`
-/// would be untestable here.
-pub fn dispatch_lan_rpc(
-    db: &Db,
-    license: &crate::license::cloud::CloudLicenseState,
-    command: &str,
-    args: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let result: serde_json::Value = match command {
-        "login_pin_v3" => {
-            let pin: String = lan_arg(&args, "pin")?;
-            let device_id: String = lan_arg(&args, "deviceId")?;
-            let r = login_pin_v3_impl(db, pin, device_id)?;
-            serde_json::to_value(r).map_err(|e| e.to_string())?
-        }
-        "logout_v3" => {
-            let session_token: String = lan_arg(&args, "sessionToken")?;
-            logout_v3_impl(db, session_token)?;
-            serde_json::Value::Null
-        }
-        "list_tables_v3" => {
-            let session_token: String = lan_arg(&args, "sessionToken")?;
-            let r = list_tables_v3_impl(db, session_token)?;
-            serde_json::to_value(r).map_err(|e| e.to_string())?
-        }
-        "list_kitchen_orders_v3" => {
-            let session_token: String = lan_arg(&args, "sessionToken")?;
-            let r = list_kitchen_orders_v3_impl(db, session_token)?;
-            serde_json::to_value(r).map_err(|e| e.to_string())?
-        }
-        "update_order_status_v3" => {
-            let session_token: String = lan_arg(&args, "sessionToken")?;
-            let order_id: String = lan_arg(&args, "orderId")?;
-            let new_status: String = lan_arg(&args, "newStatus")?;
-            update_order_status_v3_impl(db, session_token, order_id, new_status)?;
-            serde_json::Value::Null
-        }
-        "create_full_order_v3" => {
-            let session_token: String = lan_arg(&args, "sessionToken")?;
-            let table_id: String = lan_arg(&args, "tableId")?;
-            let order_type: String = lan_arg(&args, "orderType")?;
-            let items: Vec<crate::repo::OrderItemInput> = lan_arg(&args, "items")?;
-            let subtotal_cents: i64 = lan_arg(&args, "subtotalCents")?;
-            let tax_cents: i64 = lan_arg(&args, "taxCents")?;
-            let total_cents: i64 = lan_arg(&args, "totalCents")?;
-            let discount_cents: i64 = lan_arg(&args, "discountCents")?;
-            let discount_reason: Option<String> = lan_arg(&args, "discountReason")?;
-            let customer_name: Option<String> = lan_arg(&args, "customerName")?;
-            let customer_phone: Option<String> = lan_arg(&args, "customerPhone")?;
-            let delivery_address: Option<String> = lan_arg(&args, "deliveryAddress")?;
-            let delivery_fee_cents: i64 = args.get("deliveryFeeCents").and_then(|v| v.as_i64()).unwrap_or(0);
-            let shift_id: Option<String> = lan_arg(&args, "shiftId")?;
-            let manager_override_pin: Option<String> = lan_arg(&args, "managerOverridePin")?;
-            let r = create_full_order_v3_impl(
-                db, license, session_token, table_id, order_type, items, subtotal_cents, tax_cents,
-                total_cents, discount_cents, discount_reason, customer_name, customer_phone,
-                delivery_address, delivery_fee_cents, shift_id, manager_override_pin,
-            )?;
-            serde_json::to_value(r).map_err(|e| e.to_string())?
-        }
-        "void_order_item_v3" => {
-            let session_token: String = lan_arg(&args, "sessionToken")?;
-            let item_id: String = lan_arg(&args, "itemId")?;
-            let reason: String = lan_arg(&args, "reason")?;
-            let manager_override_pin: Option<String> = lan_arg(&args, "managerOverridePin")?;
-            void_order_item_v3_impl(db, license, session_token, item_id, reason, manager_override_pin)?;
-            serde_json::Value::Null
-        }
-        "take_payment_v3" => {
-            let session_token: String = lan_arg(&args, "sessionToken")?;
-            let order_id: String = lan_arg(&args, "orderId")?;
-            let method: String = lan_arg(&args, "method")?;
-            let amount_cents: i64 = lan_arg(&args, "amountCents")?;
-            let change_cents: i64 = args.get("changeCents").and_then(|v| v.as_i64()).unwrap_or(0);
-            let debtor_id: Option<String> = lan_arg(&args, "debtorId")?;
-            let r = take_payment_v3_impl(db, license, session_token, order_id, method, amount_cents, change_cents, debtor_id)?;
-            serde_json::to_value(r).map_err(|e| e.to_string())?
-        }
-        "get_active_shift_v3" => {
-            let session_token: String = lan_arg(&args, "sessionToken")?;
-            let r = get_active_shift_v3_impl(db, session_token)?;
-            serde_json::to_value(r).map_err(|e| e.to_string())?
-        }
-        "clock_in_v3" => {
-            let session_token: String = lan_arg(&args, "sessionToken")?;
-            let user_id: String = lan_arg(&args, "userId")?;
-            clock_in_v3_impl(db, license, session_token, user_id)?;
-            serde_json::Value::Null
-        }
-        "clock_out_v3" => {
-            let session_token: String = lan_arg(&args, "sessionToken")?;
-            let user_id: String = lan_arg(&args, "userId")?;
-            clock_out_v3_impl(db, license, session_token, user_id)?;
-            serde_json::Value::Null
-        }
-        // T3.0 follow-up: a shift opened/closed on a Satellite must live in
-        // the SAME `shifts` table its orders/payments already land in (the
-        // Hub's) -- otherwise end-of-shift cash reconciliation reads an
-        // empty local table while the drawer holds real Hub-recorded
-        // sales. See the audit that flagged this as the #1 remaining gap
-        // after Phase 1's order/table redirection.
-        "open_shift_v3" => {
-            let session_token: String = lan_arg(&args, "sessionToken")?;
-            let starting_cash_cents: i64 = lan_arg(&args, "startingCashCents")?;
-            let branch_id: Option<String> = lan_arg(&args, "branchId")?;
-            let r = open_shift_v3_impl(db, license, session_token, starting_cash_cents, branch_id)?;
-            serde_json::to_value(r).map_err(|e| e.to_string())?
-        }
-        "close_shift_v3" => {
-            let session_token: String = lan_arg(&args, "sessionToken")?;
-            let shift_id: String = lan_arg(&args, "shiftId")?;
-            let ending_cash_cents: i64 = lan_arg(&args, "endingCashCents")?;
-            let difference_cents: i64 = lan_arg(&args, "differenceCents")?;
-            let manager_override_pin: Option<String> = lan_arg(&args, "managerOverridePin")?;
-            close_shift_v3_impl(db, session_token, shift_id, ending_cash_cents, difference_cents, manager_override_pin)?;
-            serde_json::Value::Null
-        }
-        "get_shift_stats_v3" => {
-            let session_token: String = lan_arg(&args, "sessionToken")?;
-            let shift_id: String = lan_arg(&args, "shiftId")?;
-            let r = get_shift_stats_v3_impl(db, session_token, shift_id)?;
-            serde_json::to_value(r).map_err(|e| e.to_string())?
-        }
-        // Resolves a session token that only exists in the Hub's own
-        // `session_v3` table (every login is redirected -- staff accounts
-        // are Hub-authoritative) into an `Actor` a Satellite can use
-        // locally. Not a real business command and never on the frontend
-        // allowlist directly -- `authenticate_actor`'s own Hub-fallback
-        // path (see `lan::resolve_actor_via_hub`) is the only caller, for
-        // every one of the ~140 commands NOT on the Phase 1 allowlist that
-        // would otherwise see a session that "doesn't exist" the moment a
-        // cashier logs in at a Satellite.
-        "__resolve_actor_v3" => {
-            let session_token: String = lan_arg(&args, "sessionToken")?;
-            let actor = authenticate_actor(db, &session_token)?;
-            serde_json::to_value(ActorWire {
-                id: actor.id,
-                tenant_id: actor.tenant_id,
-                branch_id: actor.branch_id,
-                role: actor.role,
-                device_id: actor.device_id,
-            }).map_err(|e| e.to_string())?
-        }
-        _ => return Err("UNKNOWN_COMMAND".to_string()),
-    };
-    Ok(result)
-}
+//!
+//! As of the `refactor/commands-v3-split` branch, the actual
+//! `#[tauri::command]` surface described above now lives in
+//! `src/commands/*.rs`, split by domain (auth, orders, menu, branches,
+//! inventory, shifts, staff, debt, reports, settings, customers, loyalty,
+//! suppliers, license, lan_rpc). This file is now just a thin shell: the
+//! `use` statements below bridge a handful of names the integration test
+//! module below still reaches via `super::`, and the test module itself
+//! -- which exercises business logic directly through `security::`/
+//! `repo::Repo`, not through the command wrapper functions -- stayed here
+//! unsplit (see its own doc comment for why).
+
+#[cfg(test)]
+use crate::commands::orders::{verify_manager_override_impl, enforce_discount_cap, MANAGER_OVERRIDE_MAX_ATTEMPTS};
+#[cfg(test)]
+use crate::commands::shared::{resolve_branch_for_actor, resolve_operating_branch, require_license_not_locked_or_initial_setup, INITIAL_SETUP_IN_PROGRESS_KEY, INITIAL_SETUP_WINDOW_MS};
 
 #[cfg(test)]
 mod tests {
@@ -4979,6 +39,39 @@ mod tests {
     use rusqlite::{params, Connection};
     use std::fs;
     use std::path::PathBuf;
+
+    /// The several source-inspection tests below (`sale_path_commands_
+    /// enqueue_sync_facts_and_never_touch_the_network`, everything in
+    /// `license_gate_coverage`) used to `include_str!("commands_v3.rs")`
+    /// and grep the resulting text for a command's `fn` signature/body --
+    /// that worked when every command lived in this one file. Now that
+    /// the `refactor/commands-v3-split` branch moved the actual
+    /// `#[tauri::command]` surface out to `src/commands/*.rs`, this stands
+    /// in for that same "the whole command surface as one string" view by
+    /// concatenating all of the split-out domain files at test time. Pure
+    /// mechanical shim for the split -- the tests' own logic (and what
+    /// they assert about the command bodies) is unchanged.
+    fn all_commands_source() -> String {
+        [
+            include_str!("commands/shared.rs"),
+            include_str!("commands/auth.rs"),
+            include_str!("commands/orders.rs"),
+            include_str!("commands/menu.rs"),
+            include_str!("commands/branches.rs"),
+            include_str!("commands/inventory.rs"),
+            include_str!("commands/shifts.rs"),
+            include_str!("commands/staff.rs"),
+            include_str!("commands/debt.rs"),
+            include_str!("commands/reports.rs"),
+            include_str!("commands/settings.rs"),
+            include_str!("commands/customers.rs"),
+            include_str!("commands/loyalty.rs"),
+            include_str!("commands/suppliers.rs"),
+            include_str!("commands/license.rs"),
+            include_str!("commands/lan_rpc.rs"),
+            include_str!("commands/marketplace.rs"),
+        ].join("\n")
+    }
 
     fn seeded_db(tag: &str) -> (PathBuf, String, String, String) {
         let temp = std::env::temp_dir().join(format!("commands_v3_test_{tag}_{}", std::process::id()));
@@ -5008,6 +101,12 @@ mod tests {
         migrate_v3::run_manager_threshold_syp_rescale_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_ingredient_sync_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_item_kind_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_payment_reference_code_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_backup_settings_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_manager_threshold_new_syp_defaults_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_marketplace_receipt_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -5204,7 +303,8 @@ mod tests {
     /// to a real network call in this slice) may.
     #[test]
     fn sale_path_commands_enqueue_sync_facts_and_never_touch_the_network() {
-        let source = include_str!("commands_v3.rs");
+        let source = all_commands_source();
+        let source = source.as_str();
 
         // `_v3`/`_v3_impl` split (this slice's test-gap closure): each
         // command is a one-line `State<T>` shim now, and the real body --
@@ -5258,7 +358,10 @@ mod tests {
     /// within a transaction" error this bug produced.
     mod command_wrapper_tests {
         use super::*;
-        use crate::commands_v3::*;
+        use crate::commands::orders::*;
+        use crate::commands::shifts::*;
+        use crate::commands::settings::ensure_counter_tables_exist;
+        use crate::commands::lan_rpc::dispatch_lan_rpc;
         use crate::repo::OrderItemInput;
         use crate::Db;
 
@@ -5645,6 +748,10 @@ mod tests {
             migrate_v3::run_manager_threshold_syp_rescale_migration(&mut conn, &db_path).unwrap();
             migrate_v3::run_ingredient_sync_migration(&mut conn, &db_path).unwrap();
             migrate_v3::run_item_kind_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_payment_reference_code_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_backup_settings_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
 
             let fx = seed_two_tenant_two_branch("recipe_scope", &conn);
             let repo = Repo::new(&conn);
@@ -5908,7 +1015,7 @@ mod tests {
 
             let result = finalize_order_with_payment_v3_impl(
                 &db, &license,
-                session, order_id.clone(), "CASH".to_string(), 1000, 0, None, None,
+                session, order_id.clone(), "CASH".to_string(), 1000, 0, None, None, None,
             ).expect("finalize_order_with_payment_v3 must succeed through the real wrapper body");
 
             let conn = Connection::open(&db_path).unwrap();
@@ -5918,6 +1025,226 @@ mod tests {
             assert!(payment_exists);
             let outbox_count: i64 = conn.query_row("SELECT COUNT(*) FROM sync_outbox WHERE tenant_id = ?1", params![tenant_id], |r| r.get(0)).unwrap();
             assert_eq!(outbox_count, 2, "one payments row + one re-stamped orders row must have been enqueued");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// "Send to kitchen now, pay later" dine-in fix -- the core new
+        /// flow, exercised end to end through the real command wrappers:
+        /// create a real order (PENDING, same as today -- this is what
+        /// makes it visible to the kitchen/KDS immediately, no payment
+        /// collected yet), retrieve it back as an OPEN order (not a DRAFT),
+        /// append a second item to it as a running tab, confirm the totals
+        /// updated authoritatively, then pay it for EXACTLY the new total.
+        #[test]
+        fn add_items_to_order_v3_appends_items_updates_totals_and_the_order_stays_payable() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_add_items_to_order");
+            let (cashier_id, item_1_id, item_2_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.execute("UPDATE tables SET tenant_id = ?1, branch_id = ?2 WHERE id = ?3", params![tenant_id, branch_id, table_id]).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_1_id = repo.create_menu_item(&tenant_id, "Burger", &category_id, 1000, 500, None, None).unwrap();
+                let item_2_id = repo.create_menu_item(&tenant_id, "Fries", &category_id, 500, 200, None, None).unwrap();
+                (cashier_id, item_1_id, item_2_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+
+            // 1. "Send to kitchen": the real order is created PENDING --
+            // already visible on KDS -- with nothing paid yet.
+            let first_items = vec![OrderItemInput {
+                menu_item_id: item_1_id, name: None, quantity: 1, unit_price_cents: 1000,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let order_id = create_full_order_v3_impl(
+                &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(), first_items,
+                1000, 0, 1000, 0, None, None, None, None, 0, None, None,
+            ).unwrap();
+            let status: String = {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap()
+            };
+            assert_eq!(status, "PENDING", "a freshly sent-to-kitchen order must be PENDING (KDS-visible), not silently PAID or DRAFT");
+
+            // 2. Retrieving it as an OPEN order works (this is the "resume
+            // a table's running tab" read path) -- and, crucially, it is
+            // NOT reachable through the DRAFT-only retrieval, proving the
+            // two states stay genuinely separate.
+            let held = Repo::new(&Connection::open(&db_path).unwrap()).retrieve_held_order(&security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() }, &order_id).unwrap();
+            assert!(held.is_none(), "a PENDING (sent-to-kitchen) order must never be returned by the DRAFT-only retrieval");
+
+            let open_before = {
+                let conn = Connection::open(&db_path).unwrap();
+                Repo::new(&conn).retrieve_open_order(&security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() }, &order_id).unwrap()
+            }.expect("a PENDING order must be retrievable as an OPEN order");
+            assert_eq!(open_before.items.len(), 1);
+            assert_eq!(open_before.total_cents, 1000);
+
+            // 3. Cashier rings in a second item mid-meal -- appended to the
+            // SAME order, not a new one, and the kitchen ticket for this
+            // trip (fired client-side in the real app) would only ever
+            // contain this one new line.
+            let second_items = vec![OrderItemInput {
+                menu_item_id: item_2_id, name: None, quantity: 2, unit_price_cents: 500,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            add_items_to_order_v3_impl(&db, &license, session.clone(), order_id.clone(), second_items)
+                .expect("add_items_to_order_v3 must succeed on an open PENDING order");
+
+            let open_after = {
+                let conn = Connection::open(&db_path).unwrap();
+                Repo::new(&conn).retrieve_open_order(&security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() }, &order_id).unwrap()
+            }.unwrap();
+            assert_eq!(open_after.items.len(), 2, "both the original and the newly appended item must be present");
+            // 1000 (burger) + 2*500 (fries) = 2000, no tax configured in this test tenant.
+            assert_eq!(open_after.total_cents, 2000, "orders.total_cents must be re-priced authoritatively after the append");
+            let db_total: i64 = {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.query_row("SELECT total_cents FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap()
+            };
+            assert_eq!(db_total, 2000, "the orders row itself (not just the read helper) must reflect the new total");
+
+            // 4. The order is STILL exactly one order (not a second one
+            // created alongside it), and it can now be paid for its new,
+            // combined total -- proving the running tab is real money, not
+            // just a display artifact.
+            let order_count: i64 = {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.query_row("SELECT COUNT(*) FROM orders WHERE table_id = ?1", params![table_id], |r| r.get(0)).unwrap()
+            };
+            assert_eq!(order_count, 1, "adding items must never create a second order for the same table");
+
+            let result = finalize_order_with_payment_v3_impl(
+                &db, &license, session, order_id.clone(), "CASH".to_string(), 2000, 0, None, None, None,
+            ).expect("the order must be payable for exactly its new, post-addition total");
+            let conn = Connection::open(&db_path).unwrap();
+            let final_status: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(final_status, "PAID");
+            let payment_exists: bool = conn.query_row("SELECT COUNT(*) > 0 FROM payments WHERE id = ?1", params![result.payment_id], |r| r.get(0)).unwrap();
+            assert!(payment_exists);
+            let table_status: String = conn.query_row("SELECT status FROM tables WHERE id = ?1", params![table_id], |r| r.get(0)).unwrap();
+            assert_eq!(table_status, "FREE", "paying the order must free the table, same as any other finalize_order_with_payment call");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// 2026-09-23 acceptance-run finding: voiding a line on an open
+        /// tab left `orders.total_cents` at the pre-void amount, and
+        /// finalize insists on paying exactly that -- so the table could
+        /// only be charged for the voided food too. The void must re-price.
+        #[test]
+        fn void_on_an_open_tab_reprices_the_order_and_it_pays_for_the_new_total() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_void_reprices");
+            let (cashier_id, burger_id, fries_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.execute("UPDATE tables SET tenant_id = ?1, branch_id = ?2 WHERE id = ?3", params![tenant_id, branch_id, table_id]).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let burger_id = repo.create_menu_item(&tenant_id, "Burger", &category_id, 1000, 500, None, None).unwrap();
+                let fries_id = repo.create_menu_item(&tenant_id, "Fries", &category_id, 500, 200, None, None).unwrap();
+                (cashier_id, burger_id, fries_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                // Keep this test about pricing, not the manager-PIN gate.
+                Repo::new(&conn).update_manager_thresholds(&tenant_id, 100_000_000, 100_000_000).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+
+            let items = vec![
+                OrderItemInput { menu_item_id: burger_id, name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] },
+                OrderItemInput { menu_item_id: fries_id.clone(), name: None, quantity: 2, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] },
+            ];
+            let order_id = create_full_order_v3_impl(
+                &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(), items,
+                2000, 0, 2000, 0, None, None, None, None, 0, None, None,
+            ).unwrap();
+            let fries_line: String = Connection::open(&db_path).unwrap()
+                .query_row("SELECT id FROM order_items WHERE order_id = ?1 AND menu_item_id = ?2", params![order_id, fries_id], |r| r.get(0)).unwrap();
+
+            void_order_item_v3_impl(&db, &license, session.clone(), fries_line, "wrong order".to_string(), None).unwrap();
+
+            let total: i64 = Connection::open(&db_path).unwrap()
+                .query_row("SELECT total_cents FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(total, 1000, "voiding the 2x fries line must take 1000 off the open tab");
+            finalize_order_with_payment_v3_impl(&db, &license, session, order_id, "CASH".to_string(), 1000, 0, None, None, None)
+                .expect("the tab must be payable for its post-void total");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// A PAID (or otherwise non-open) order must refuse `add_items_to_order_v3`
+        /// -- nothing left to add to, and the kitchen has already been paid
+        /// for/closed out on this ticket.
+        #[test]
+        fn add_items_to_order_v3_rejects_a_paid_order() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_add_items_rejects_paid");
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier")
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+            let order_id = create_order_v3_impl(&db, &license, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None).unwrap();
+            finalize_order_with_payment_v3_impl(&db, &license, session.clone(), order_id.clone(), "CASH".to_string(), 1000, 0, None, None, None).unwrap();
+
+            let err = add_items_to_order_v3_impl(&db, &license, session, order_id, vec![]);
+            // Empty `items` short-circuits to Ok(()) before the status check --
+            // this asserts the short-circuit, matching the frontend which
+            // never calls this with an empty list. The real "rejects PAID"
+            // guard is exercised by the next test with a non-empty list.
+            assert!(err.is_ok(), "an empty items list is a documented no-op regardless of order status");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Same as above, but with a real item -- this is the guard that
+        /// actually matters: a PAID order must reject an addition attempt
+        /// outright rather than silently accepting money-losing changes
+        /// after the sale already closed.
+        #[test]
+        fn add_items_to_order_v3_rejects_a_nonempty_addition_to_a_paid_order() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("wrapper_add_items_rejects_paid_nonempty");
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 1000, 500, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+            let order_id = create_order_v3_impl(&db, &license, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None).unwrap();
+            finalize_order_with_payment_v3_impl(&db, &license, session.clone(), order_id.clone(), "CASH".to_string(), 1000, 0, None, None, None).unwrap();
+
+            let more_items = vec![OrderItemInput {
+                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let err = add_items_to_order_v3_impl(&db, &license, session, order_id, more_items)
+                .expect_err("adding items to an already-PAID order must be rejected");
+            assert!(err.contains("PAID"), "error must name the real blocking status, got: {err}");
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
@@ -6026,7 +1353,7 @@ mod tests {
                 items: vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] }],
             }).unwrap();
             let item_row_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_id], |r| r.get(0)).unwrap();
-            repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CASH", 2000, 0, None, &cashier_id, None).unwrap();
+            repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CASH", 2000, 0, None, &cashier_id, None, None).unwrap();
 
             let bun_after_sale: f64 = conn.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![bun_id], |r| r.get(0)).unwrap();
             assert!((bun_after_sale - 48.0).abs() < 0.001, "2 burgers sold must deplete 2 buns (50 -> 48)");
@@ -6164,7 +1491,7 @@ mod tests {
                 let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
                 let repo = Repo::new(&conn);
                 let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
-                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 1000, 500, None, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 400, 200, None, None).unwrap();
                 (cashier_id, item_id)
             };
             let session = {
@@ -6176,13 +1503,13 @@ mod tests {
             let license = never_checked_license(&db_path);
             open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let items = vec![OrderItemInput {
-                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
+                menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 400,
                 notes: None, combo_id: None, modifiers: vec![],
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license,
                 session.clone(), table_id, "DINE_IN".to_string(), items,
-                1000, 0, 1000, 0, None, None, None, None, 0, None, None,
+                400, 0, 400, 0, None, None, None, None, 0, None, None,
             ).unwrap();
             let item_db_id: String = {
                 let conn = Connection::open(&db_path).unwrap();
@@ -6220,8 +1547,7 @@ mod tests {
                 let repo = Repo::new(&conn);
                 let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
                 // Line total 6,000,000 -- well over the default
-                // void_manager_threshold_cents (5,000,000, per the 2026-08-14
-                // SYP rescale) chain_config seeds.
+                // void threshold (500, new SYP).
                 let item_id = repo.create_menu_item(&tenant_id, "Expensive Item", &category_id, 6000000, 3000000, None, None).unwrap();
                 (cashier_id, item_id)
             };
@@ -6285,10 +1611,9 @@ mod tests {
             let repo = Repo::new(&conn);
 
             let defaults = repo.get_manager_thresholds(&tenant_id).unwrap();
-            // 2026-08-14 SYP rescale (migrate_v3::run_manager_threshold_syp_rescale_migration):
-            // was 20000/50000, bumped to realistic SYP-scale defaults.
-            assert_eq!(defaults.void_threshold_cents, 5000000, "migration default must be seeded, not zero");
-            assert_eq!(defaults.shift_diff_threshold_cents, 10000000);
+            // v32: untouched legacy defaults become 500 / 1,000 new SYP.
+            assert_eq!(defaults.void_threshold_cents, 500, "migration default must be seeded, not zero");
+            assert_eq!(defaults.shift_diff_threshold_cents, 1_000);
 
             repo.update_manager_thresholds(&tenant_id, 75000, 150000).unwrap();
             let updated = repo.get_manager_thresholds(&tenant_id).unwrap();
@@ -6642,8 +1967,7 @@ mod tests {
             let license = never_checked_license(&db_path);
             let shift_id = open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
 
-            // -12,000,000 is well past the default 10,000,000-cent
-            // shift_diff threshold (per the 2026-08-14 SYP rescale).
+            // -12,000,000 is well past the default 1,000 shift_diff threshold.
             let no_pin = close_shift_v3_impl(&db, session.clone(), shift_id.clone(), 40000, -12000000, None);
             assert!(no_pin.is_err(), "closing with a discrepancy at/above the manager threshold with no PIN must be rejected");
 
@@ -6661,6 +1985,195 @@ mod tests {
             let conn = Connection::open(&db_path).unwrap();
             let closed_at: Option<String> = conn.query_row("SELECT closed_at FROM shifts WHERE id = ?1", params![shift_id], |r| r.get(0)).unwrap();
             assert!(closed_at.is_some());
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// A sale can't be completed (paid) once the cashier's shift is closed.
+        #[test]
+        fn finalize_and_take_payment_require_an_open_shift() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("payment_requires_shift");
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 300, 100, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            let shift_id = open_shift_v3_impl(&db, &license, session.clone(), 0, None).unwrap();
+            let mk_items = || vec![OrderItemInput {
+                menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 300,
+                notes: None, combo_id: None, modifiers: vec![],
+            }];
+            let order_a = create_full_order_v3_impl(&db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(), mk_items(), 300, 0, 300, 0, None, None, None, None, 0, None, None).unwrap();
+            let order_b = create_full_order_v3_impl(&db, &license, session.clone(), table_id, "DINE_IN".to_string(), mk_items(), 300, 0, 300, 0, None, None, None, None, 0, None, None).unwrap();
+            close_shift_v3_impl(&db, session.clone(), shift_id, 0, 0, None).unwrap();
+
+            let err = finalize_order_with_payment_v3_impl(&db, &license, session.clone(), order_a.clone(), "CASH".to_string(), 300, 0, None, None, None).unwrap_err();
+            assert_eq!(err, crate::commands::orders::NO_OPEN_SHIFT_ERR);
+            let err = take_payment_v3_impl(&db, &license, session.clone(), order_b.clone(), "CASH".to_string(), 300, 0, None).unwrap_err();
+            assert_eq!(err, crate::commands::orders::NO_OPEN_SHIFT_ERR);
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                let paid: i64 = conn.query_row("SELECT COUNT(*) FROM payments WHERE order_id IN (?1, ?2)", params![order_a, order_b], |r| r.get(0)).unwrap();
+                assert_eq!(paid, 0, "no payment row may be written without an open shift");
+            }
+
+            open_shift_v3_impl(&db, &license, session.clone(), 0, None).unwrap();
+            finalize_order_with_payment_v3_impl(&db, &license, session, order_a, "CASH".to_string(), 300, 0, None, None, None)
+                .expect("payment must succeed once a shift is open");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Supplier "new order" / inventory auto-order prefill: only low-stock
+        /// items, supplier view limited to that supplier's items at its last cost.
+        #[test]
+        fn reorder_suggestions_prefill_low_stock_lines() {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("reorder_suggestions");
+            let conn = Connection::open(&db_path).unwrap();
+            let repo = Repo::new(&conn);
+            let staff = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Manager");
+            let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+            let flour = repo.create_ingredient(&tenant_id, &branch_id, "Flour", "kg", 30, 10.0).unwrap();
+            let sugar = repo.create_ingredient(&tenant_id, &branch_id, "Sugar", "kg", 20, 5.0).unwrap();
+            let salt = repo.create_ingredient(&tenant_id, &branch_id, "Salt", "kg", 5, 2.0).unwrap();
+            conn.execute("UPDATE ingredients SET current_stock = 4.0 WHERE id = ?1", params![flour]).unwrap();
+            conn.execute("UPDATE ingredients SET current_stock = 1.0 WHERE id = ?1", params![sugar]).unwrap();
+            conn.execute("UPDATE ingredients SET current_stock = 9.0 WHERE id = ?1", params![salt]).unwrap();
+            let supplier = repo.create_supplier(&tenant_id, &branch_id, "Mill", None, None).unwrap();
+            repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier, &staff, None, &[(flour.clone(), 5.0, 27)]).unwrap();
+
+            let all = repo.list_reorder_suggestions(&scope, None).unwrap();
+            let ids: Vec<&str> = all.iter().map(|r| r.ingredient_id.as_str()).collect();
+            assert_eq!(ids, vec![sugar.as_str(), flour.as_str()], "only low-stock items, lowest stock first");
+            assert_eq!(all[0].quantity, 9.0, "sugar: target 10 - 1 in stock");
+            assert_eq!(all[0].unit_cost_cents, 20);
+
+            let mill = repo.list_reorder_suggestions(&scope, Some(&supplier)).unwrap();
+            assert_eq!(mill.len(), 1, "only items previously bought from this supplier");
+            assert_eq!(mill[0].ingredient_id, flour);
+            assert_eq!(mill[0].quantity, 16.0, "flour: target 20 - 4 in stock");
+            assert_eq!(mill[0].unit_cost_cents, 27, "supplier's last unit cost wins over the ingredient default");
+            drop(conn);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn reorder_quantity_restocks_to_twice_the_minimum() {
+            assert_eq!(crate::repo::reorder_quantity(4.0, 10.0), 16.0);
+            assert_eq!(crate::repo::reorder_quantity(0.0, 0.5), 2.0);
+            assert_eq!(crate::repo::reorder_quantity(-3.0, 1.0), 2.0);
+            assert_eq!(crate::repo::reorder_quantity(1.5, 2.0), 3.0);
+        }
+
+        /// Goods received: stock is added once, a repeat receipt of the same
+        /// marketplace order is a no-op, and the cloud ack is queued.
+        #[test]
+        fn marketplace_receipt_is_applied_once_and_queued() {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("marketplace_receipt");
+            let mut conn = Connection::open(&db_path).unwrap();
+            let staff = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Manager");
+            let flour = Repo::new(&conn).create_ingredient(&tenant_id, &branch_id, "طحين", "kg", 30, 10.0).unwrap();
+            let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+            let lines = vec![
+                crate::goods_receipt::ReceiptLine { order_item_id: "i1".into(), received_qty: 3.0, local_ingredient_id: Some(flour.clone()), stock_added: Some(30.0) },
+                crate::goods_receipt::ReceiptLine { order_item_id: "i2".into(), received_qty: 1.0, local_ingredient_id: None, stock_added: None },
+            ];
+            let stock = |c: &Connection| -> f64 { c.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![flour], |r| r.get(0)).unwrap() };
+            let before = stock(&conn);
+
+            let tx = conn.transaction().unwrap();
+            let first = crate::goods_receipt::apply_receipt(&tx, &scope, &tenant_id, &branch_id, &staff, "mkt-order-1", &lines, None).unwrap();
+            tx.commit().unwrap();
+            assert_eq!(first, crate::goods_receipt::ApplyOutcome::Applied(vec![flour.clone()]));
+            assert_eq!(stock(&conn), before + 30.0);
+
+            let tx = conn.transaction().unwrap();
+            let second = crate::goods_receipt::apply_receipt(&tx, &scope, &tenant_id, &branch_id, &staff, "mkt-order-1", &lines, None).unwrap();
+            tx.commit().unwrap();
+            assert_eq!(second, crate::goods_receipt::ApplyOutcome::AlreadyReceived);
+            assert_eq!(stock(&conn), before + 30.0, "a repeat receipt must not add stock twice");
+
+            let due = crate::goods_receipt::due_receipts(&conn, 10).unwrap();
+            assert_eq!(due.len(), 1);
+            let queued: Vec<crate::goods_receipt::ReceiptLine> = serde_json::from_str(&due[0].lines_json).unwrap();
+            assert_eq!(queued, lines, "p_lines must be queued exactly as confirmed");
+
+            crate::goods_receipt::record_mark_outcome(&conn, "mkt-order-1", 1, &crate::goods_receipt::MarkOutcome::Retry).unwrap();
+            assert!(crate::goods_receipt::due_receipts(&conn, 10).unwrap().is_empty(), "retry waits for backoff");
+            crate::goods_receipt::record_mark_outcome(&conn, "mkt-order-1", 2, &crate::goods_receipt::MarkOutcome::Sent).unwrap();
+            let status: String = conn.query_row("SELECT cloud_status FROM marketplace_receipt_local WHERE order_id = 'mkt-order-1'", [], |r| r.get(0)).unwrap();
+            assert_eq!(status, "SENT");
+
+            // Already-received orders are filtered out of the pending list.
+            let pending = crate::goods_receipt::PendingReceipts {
+                tenant_id: None, branch_id: None,
+                orders: ["mkt-order-1", "mkt-order-2"].iter().map(|id| crate::goods_receipt::PendingOrder {
+                    order_id: id.to_string(), supplier_id: None, supplier_name: None, delivered_at: None, total_cents: 0, note: None,
+                    items: vec![crate::goods_receipt::PendingItem {
+                        order_item_id: "x".into(), supplier_product_id: None, product_name: "طحين".into(), unit: None,
+                        unit_size: Some(10.0), unit_measure: Some("kg".into()), qty: 2.0, unit_price_cents: 0, line_total_cents: 0,
+                        suggested_local_ingredient_id: Some(flour.clone()), suggested_ingredient_name: None, suggested_ingredient_unit: None,
+                        suggested_match_score: Some(0.8), suggested_stock_added: None,
+                    }],
+                }).collect(),
+            };
+            let prepared = crate::goods_receipt::prepare_pending(&conn, pending).unwrap();
+            assert_eq!(prepared.orders.len(), 1);
+            assert_eq!(prepared.orders[0].order_id, "mkt-order-2");
+            assert_eq!(prepared.orders[0].items[0].suggested_stock_added, Some(20.0), "2 x 10kg bags into a kg ingredient");
+            drop(conn);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// New-SYP defaults: ordinary till drift closes without a PIN; a
+        /// difference at the 1,000 threshold needs one.
+        #[test]
+        fn close_shift_v3_new_syp_default_threshold_boundary() {
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("wrapper_shift_diff_new_syp");
+            let cashier_id = {
+                let conn = Connection::open(&db_path).unwrap();
+                seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier")
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+
+            let small = open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+            close_shift_v3_impl(&db, session.clone(), small, 9001, -999, None)
+                .expect("a 999 difference is under the default threshold and must not need a PIN");
+
+            let big = open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+            let err = close_shift_v3_impl(&db, session, big, 9000, -1000, None).unwrap_err();
+            assert!(err.contains("manager PIN"), "unexpected error: {err}");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Default thresholds follow a currency-scale change; custom ones stay.
+        #[test]
+        fn currency_change_rescales_only_default_thresholds() {
+            let (db_path, tenant_id, _branch_id, _table_id) = seeded_db("threshold_currency_rescale");
+            let conn = Connection::open(&db_path).unwrap();
+            let repo = Repo::new(&conn);
+            assert_eq!(repo.get_manager_thresholds(&tenant_id).unwrap(), crate::pricing::ManagerThresholds::default_for("SYP"));
+
+            repo.update_chain_currency(&tenant_id, "USD").unwrap();
+            assert_eq!(repo.get_manager_thresholds(&tenant_id).unwrap(), crate::pricing::ManagerThresholds::default_for("USD"));
+
+            repo.update_manager_thresholds(&tenant_id, 12_345, 100_000).unwrap();
+            repo.update_chain_currency(&tenant_id, "SYP").unwrap();
+            let t = repo.get_manager_thresholds(&tenant_id).unwrap();
+            assert_eq!(t.void_threshold_cents, 12_345, "custom value must be kept");
+            assert_eq!(t.shift_diff_threshold_cents, 1_000, "USD default must rescale back to SYP default");
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
@@ -6829,7 +2342,7 @@ mod tests {
                 let high_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "High Void Cashier");
                 let repo = Repo::new(&conn);
                 let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
-                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 500, 250, None, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 400, 200, None, None).unwrap();
                 (avg_id, high_id, item_id)
             };
             let db = real_db(&db_path);
@@ -6838,7 +2351,7 @@ mod tests {
             let items_of = |n: usize| -> Vec<OrderItemInput> {
                 (0..n)
                     .map(|_| OrderItemInput {
-                        menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 500,
+                        menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 400,
                         notes: None, combo_id: None, modifiers: vec![],
                     })
                     .collect()
@@ -6873,7 +2386,7 @@ mod tests {
             };
             for id in high_item_ids.into_iter().take(10) {
                 void_order_item_v3_impl(&db, &license, high_session.clone(), id, "تالف".to_string(), None)
-                    .expect("voiding a 500-cent line needs no manager PIN");
+                    .expect("voiding a 400 line needs no manager PIN");
             }
 
             let conn = Connection::open(&db_path).unwrap();
@@ -6902,15 +2415,15 @@ mod tests {
             let db = real_db(&db_path);
             let license = never_checked_license(&db_path);
 
-            // Three shifts, every one short by 1000 cents -- consistent,
-            // not a single bad night.
+            // Three shifts, every one short by 900 (under the 1,000 PIN
+            // threshold) -- consistent, not a single bad night.
             let short_session = {
                 let conn = Connection::open(&db_path).unwrap();
                 security::create_session(&conn, &short_cashier_id, "device-1").unwrap()
             };
             for _ in 0..3 {
                 let shift_id = open_shift_v3_impl(&db, &license, short_session.clone(), 10000, None).unwrap();
-                close_shift_v3_impl(&db, short_session.clone(), shift_id, 9000, -1000, None).unwrap();
+                close_shift_v3_impl(&db, short_session.clone(), shift_id, 9100, -900, None).unwrap();
             }
 
             // Three shifts, every one balanced -- must never be flagged.
@@ -6945,7 +2458,7 @@ mod tests {
                 let scammer_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Scammer");
                 let repo = Repo::new(&conn);
                 let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
-                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 500, 250, None, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &category_id, 400, 200, None, None).unwrap();
                 (scammer_id, item_id)
             };
             let db = real_db(&db_path);
@@ -6962,8 +2475,8 @@ mod tests {
             for _ in 0..2 {
                 let voided_order_id = create_full_order_v3_impl(
                     &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
-                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
-                    500, 0, 500, 0, None, None, None, None, 0, None, None,
+                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 400, notes: None, combo_id: None, modifiers: vec![] }],
+                    400, 0, 400, 0, None, None, None, None, 0, None, None,
                 ).unwrap();
                 let voided_item_db_id: String = {
                     let conn = Connection::open(&db_path).unwrap();
@@ -6973,10 +2486,10 @@ mod tests {
 
                 let resale_order_id = create_full_order_v3_impl(
                     &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
-                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
-                    500, 0, 500, 0, None, None, None, None, 0, None, None,
+                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 400, notes: None, combo_id: None, modifiers: vec![] }],
+                    400, 0, 400, 0, None, None, None, None, 0, None, None,
                 ).unwrap();
-                take_payment_v3_impl(&db, &license, session.clone(), resale_order_id, "CASH".to_string(), 500, 0, None).unwrap();
+                take_payment_v3_impl(&db, &license, session.clone(), resale_order_id, "CASH".to_string(), 400, 0, None).unwrap();
             }
 
             let conn = Connection::open(&db_path).unwrap();
@@ -7206,7 +2719,7 @@ mod tests {
                 &db, &license, session.clone(), table_id, "DINE_IN".to_string(), 1000, 0, 0, None,
             ).unwrap();
             finalize_order_with_payment_v3_impl(
-                &db, &license, session, order_id.clone(), "CASH".to_string(), 1000, 0, None, None,
+                &db, &license, session, order_id.clone(), "CASH".to_string(), 1000, 0, None, None, None,
             ).unwrap();
             // Old enough to have tripped the staleness check too, if the
             // PAID/CANCELLED/VOIDED exclusion in the query were missing.
@@ -8049,15 +3562,19 @@ mod tests {
         assert_eq!(active.starting_cash_cents, 10000);
         println!("[shifts] shift opened with starting_cash_cents=10000, get_active_shift confirms it");
 
-        // Two orders paid against this shift, one CASH one CARD.
-        for (method, amount) in [("CASH", 2000i64), ("CARD", 3500i64)] {
+        // Two orders paid against this shift, one CASH one CARD. The cash
+        // customer hands over 5000 for a 2000 bill and gets 3000 back --
+        // the drawer only keeps 2000 (2026-09-23: stats used to sum the
+        // tendered amount, so every shift that gave change "expected"
+        // more cash than the drawer could hold and closed short).
+        for (method, amount, tendered, change) in [("CASH", 2000i64, 5000i64, 3000i64), ("CARD", 3500i64, 3500i64, 0i64)] {
             let order_id = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
                 table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".into(),
                 subtotal_cents: amount, tax_cents: 0, total_cents: amount, discount_cents: 0,
             }).unwrap();
             conn.execute("UPDATE orders SET shift_id = ?1 WHERE id = ?2", params![shift_id, order_id]).unwrap();
             repo.take_payment(&tenant_id, &branch_id, crate::repo::PaymentInput {
-                order_id, method: method.to_string(), amount_cents: amount, change_cents: 0, debtor_id: None, actor_id: cashier_id.clone(),
+                order_id, method: method.to_string(), amount_cents: tendered, change_cents: change, debtor_id: None, actor_id: cashier_id.clone(),
             }).unwrap();
         }
 
@@ -8309,7 +3826,7 @@ mod tests {
         let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
         let repo = Repo::new(&conn);
 
-        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "بقالة الحي", Some("0955443322"), None, None, None).unwrap();
+        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "بقالة الحي", Some("0955443322"), None, None, None, None).unwrap();
         let list = repo.list_debtors(&scope).unwrap();
         assert!(list.iter().any(|d| d.id == debtor_id && d.balance_cents == 0));
         println!("[debt] debtor created with balance_cents=0");
@@ -8357,12 +3874,111 @@ mod tests {
         assert!(entries.iter().any(|e| e.entry_type == "DEBT" && e.amount_cents == 5000));
         println!("[debt] list_debt_entries shows both facts: DEBT(5000) and PAYMENT(2000)");
 
-        repo.update_debtor(&scope, &debtor_id, "بقالة الحي الجديدة", "0955443322", Some("shop@x.com"), None, None).unwrap();
+        repo.update_debtor(&scope, &debtor_id, "بقالة الحي الجديدة", Some("0955443322"), Some("shop@x.com"), None, None, None).unwrap();
         assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == debtor_id).unwrap().name, "بقالة الحي الجديدة");
+
+        // 2026-09-13 fix: a debtor created phone-less (email-only, same as
+        // create_debtor_v3's DebtSelectModal path) must remain editable --
+        // update_debtor's `phone` param used to be `&str` (required),
+        // which meant `phone: null` from the frontend failed to
+        // deserialize at the Tauri IPC boundary before this ever ran, so
+        // the debtor was PERMANENTLY stuck un-editable. `Option<&str>` +
+        // `None` here proves the update succeeds and phone stays absent.
+        let phoneless_id = repo.create_debtor(&tenant_id, &branch_id, "عميل بلا هاتف", None, Some("noph@x.com"), None, None, None).unwrap();
+        repo.update_debtor(&scope, &phoneless_id, "عميل بلا هاتف محدث", None, Some("noph@x.com"), None, None, None).unwrap();
+        let updated = repo.list_debtors(&scope).unwrap().into_iter().find(|d| d.id == phoneless_id).unwrap();
+        assert_eq!(updated.name, "عميل بلا هاتف محدث");
+        assert_eq!(updated.phone, "", "phone stays absent (COALESCE'd to '') after an update that didn't supply one");
+        println!("[debt] update_debtor no longer requires phone -- a phone-less debtor stays editable");
 
         repo.deactivate_debtor(&scope, &debtor_id).unwrap();
         assert!(!repo.list_debtors(&scope).unwrap().iter().any(|d| d.id == debtor_id), "deactivated debtors must not appear in the active list");
         println!("[debt] debtor updated then deactivated -- no longer in the active list");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// 2026-09-13 audit finding: there was previously no way to configure a
+    /// maximum debt limit per debtor and nothing enforced one anywhere.
+    /// Proves: (1) a NULL/unset limit preserves old behavior (unlimited),
+    /// (2) record_initial_debt rejects an opening balance that alone would
+    /// exceed a configured limit, (3) take_payment's CREDIT/debt path
+    /// rejects a sale that would push balance_cents over the limit and
+    /// leaves the order untouched (still not PAID) when it does, (4)
+    /// finalize_order_with_payment's debt path enforces the same limit,
+    /// (5) a payment that brings the balance back under the limit allows a
+    /// following debt sale to succeed again.
+    #[test]
+    fn debtor_credit_limit_is_enforced_on_every_debt_extending_path() {
+        let (db_path, tenant_id, branch_id, table_id) = seeded_db("credit_limit");
+        let conn = Connection::open(&db_path).unwrap();
+        let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Credit Limit Cashier");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let repo = Repo::new(&conn);
+
+        // No limit set (NULL) -- a large initial debt must succeed unchanged, preserving old behavior.
+        let unlimited_id = repo.create_debtor(&tenant_id, &branch_id, "بلا حد ائتماني", Some("0500000001"), None, None, None, None).unwrap();
+        repo.record_initial_debt(&tenant_id, &branch_id, &unlimited_id, 1_000_000, &cashier_id).unwrap();
+        assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == unlimited_id).unwrap().balance_cents, 1_000_000);
+        println!("[credit-limit] a NULL credit_limit_cents never blocks debt -- unlimited, matches pre-existing behavior");
+
+        // A debtor with a 5000-cent limit.
+        let limited_id = repo.create_debtor(&tenant_id, &branch_id, "بحد ائتماني", Some("0500000002"), None, None, None, Some(5000)).unwrap();
+        assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == limited_id).unwrap().credit_limit_cents, Some(5000));
+
+        // record_initial_debt: an opening balance ABOVE the limit is rejected outright.
+        match repo.record_initial_debt(&tenant_id, &branch_id, &limited_id, 6000, &cashier_id) {
+            Err(RepoError::CreditLimitExceeded { credit_limit_cents, balance_cents, amount_cents, .. }) => {
+                assert_eq!(credit_limit_cents, 5000);
+                assert_eq!(balance_cents, 0);
+                assert_eq!(amount_cents, 6000);
+                println!("[credit-limit] record_initial_debt correctly rejects an opening balance above the limit");
+            }
+            other => panic!("expected CreditLimitExceeded, got {other:?}"),
+        }
+        assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == limited_id).unwrap().balance_cents, 0, "a rejected initial debt must not have touched balance_cents");
+
+        // An opening balance AT the limit exactly must be allowed (>, not >=).
+        repo.record_initial_debt(&tenant_id, &branch_id, &limited_id, 5000, &cashier_id).unwrap();
+        assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == limited_id).unwrap().balance_cents, 5000);
+        println!("[credit-limit] a balance landing exactly AT the limit is allowed");
+
+        // take_payment's CREDIT/debt path: any further debt sale must now be rejected (already at the limit).
+        let order_id = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
+            table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".into(),
+            subtotal_cents: 100, tax_cents: 0, total_cents: 100, discount_cents: 0,
+        }).unwrap();
+        match repo.take_payment(&tenant_id, &branch_id, crate::repo::PaymentInput {
+            order_id: order_id.clone(), method: "CREDIT".into(), amount_cents: 100, change_cents: 0, debtor_id: Some(limited_id.clone()), actor_id: cashier_id.clone(),
+        }) {
+            Err(RepoError::CreditLimitExceeded { .. }) => println!("[credit-limit] take_payment correctly rejects a debt sale that would exceed the limit"),
+            other => panic!("expected CreditLimitExceeded, got {other:?}"),
+        }
+        // The order must be untouched -- still not PAID, no partial writes from the rejected attempt.
+        let order_status: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+        assert_ne!(order_status, "PAID", "a rejected over-limit debt sale must leave the order un-paid, not partially applied");
+        assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == limited_id).unwrap().balance_cents, 5000, "the rejected sale must not have touched balance_cents");
+
+        // Pay it back down under the limit, then the same kind of debt sale must succeed.
+        repo.record_debt_payment(&scope, &limited_id, 4900, None, &cashier_id).unwrap();
+        assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == limited_id).unwrap().balance_cents, 100);
+        repo.take_payment(&tenant_id, &branch_id, crate::repo::PaymentInput {
+            order_id: order_id.clone(), method: "CREDIT".into(), amount_cents: 100, change_cents: 0, debtor_id: Some(limited_id.clone()), actor_id: cashier_id.clone(),
+        }).unwrap();
+        assert_eq!(repo.list_debtors(&scope).unwrap().iter().find(|d| d.id == limited_id).unwrap().balance_cents, 200, "100 (paid down to) + 100 (new sale) = 200");
+        println!("[credit-limit] once back under the limit, a debt sale succeeds again");
+
+        // finalize_order_with_payment's debt path enforces the same limit.
+        let order_id2 = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
+            table_id, user_id: cashier_id.clone(), order_type: "DINE_IN".into(),
+            subtotal_cents: 10000, tax_cents: 0, total_cents: 10000, discount_cents: 0,
+        }).unwrap();
+        match repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id2, "CREDIT", 10000, 0, Some(&limited_id), &cashier_id, None, None) {
+            Err(RepoError::CreditLimitExceeded { .. }) => println!("[credit-limit] finalize_order_with_payment correctly rejects a debt sale that would exceed the limit"),
+            other => panic!("expected CreditLimitExceeded, got {other:?}"),
+        }
+        let order2_status: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id2], |r| r.get(0)).unwrap();
+        assert_ne!(order2_status, "PAID", "a rejected over-limit debt sale via finalize_order_with_payment must leave the order un-paid");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
@@ -8386,7 +4002,7 @@ mod tests {
         let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
         let repo = Repo::new(&conn);
 
-        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "عميل بريد فقط", None, Some("client@example.com"), None, None).unwrap();
+        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "عميل بريد فقط", None, Some("client@example.com"), None, None, None).unwrap();
         let list = repo.list_debtors(&scope).unwrap();
         let d = list.iter().find(|d| d.id == debtor_id).unwrap();
         assert_eq!(d.phone, "", "phone column stores NULL as empty string via rusqlite's String getter, not an error");
@@ -8415,7 +4031,7 @@ mod tests {
 
         // Created under a specific branch (the normal path -- a debtor
         // must belong to one).
-        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "مدين", Some("0911111111"), None, None, None).unwrap();
+        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "مدين", Some("0911111111"), None, None, None, None).unwrap();
         // Seed a pre-existing balance directly -- record_debt_payment only
         // ever *reduces* balance_cents (real debt entries come from
         // take_payment_v3's CREDIT path, already covered by the test
@@ -8440,7 +4056,7 @@ mod tests {
         let (other_db, other_tenant, other_branch, _) = seeded_db("debt_owner_scope_other_tenant");
         let other_conn = Connection::open(&other_db).unwrap();
         let other_repo = Repo::new(&other_conn);
-        let other_debtor = other_repo.create_debtor(&other_tenant, &other_branch, "مدين آخر", Some("0922222222"), None, None, None).unwrap();
+        let other_debtor = other_repo.create_debtor(&other_tenant, &other_branch, "مدين آخر", Some("0922222222"), None, None, None, None).unwrap();
         match repo.record_debt_payment(&owner_scope, &other_debtor, 100, None, &owner_id) {
             Err(_) => println!("[debt] cross-tenant debtor payment correctly rejected"),
             Ok(_) => panic!("an Owner must NEVER be able to pay down a debtor belonging to a different tenant"),
@@ -8715,6 +4331,76 @@ mod tests {
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
+    /// 2026-09-13 audit findings: (1) create_purchase_order_with_items had
+    /// no server-side check on a line's quantity_ordered/unit_cost_cents
+    /// (only inventory/page.tsx validated it, client-side, bypassable via
+    /// direct IPC); (2) receive_purchase_order applied a client-supplied
+    /// quantity_received straight to current_stock with no floor/ceiling
+    /// (unlike adjust_stock's StockAdjustmentBelowZero guard). Proves both
+    /// are now rejected server-side, and that a rejected receive leaves
+    /// stock/quantity_received/PO status completely untouched.
+    #[test]
+    fn purchase_order_create_and_receive_quantities_are_server_validated() {
+        let (db_path, tenant_id, branch_id, _table_id) = seeded_db("po_validation");
+        let conn = Connection::open(&db_path).unwrap();
+        let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "PO Validation Manager");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let repo = Repo::new(&conn);
+        let supplier_id = repo.create_supplier(&tenant_id, &branch_id, "مورد التحقق", None, None).unwrap();
+        let ing_id = repo.create_ingredient(&tenant_id, &branch_id, "مكوّن", "kg", 100, 5.0).unwrap();
+
+        // create_purchase_order_with_items: non-positive quantity_ordered rejected.
+        match repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), 0.0, 100)]) {
+            Err(RepoError::InvalidPurchaseOrderItem { .. }) => println!("[po-validation] create correctly rejects quantity_ordered = 0"),
+            other => panic!("expected InvalidPurchaseOrderItem, got {other:?}"),
+        }
+        match repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), -5.0, 100)]) {
+            Err(RepoError::InvalidPurchaseOrderItem { .. }) => println!("[po-validation] create correctly rejects a negative quantity_ordered"),
+            other => panic!("expected InvalidPurchaseOrderItem, got {other:?}"),
+        }
+        // Negative unit_cost_cents rejected.
+        match repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), 10.0, -1)]) {
+            Err(RepoError::InvalidPurchaseOrderItem { .. }) => println!("[po-validation] create correctly rejects a negative unit_cost_cents"),
+            other => panic!("expected InvalidPurchaseOrderItem, got {other:?}"),
+        }
+        assert_eq!(repo.list_purchase_orders(&scope).unwrap().len(), 0, "every rejected create must leave zero purchase_orders rows behind");
+
+        // A valid PO to test receive-time caps against.
+        let po_id = repo.create_purchase_order_with_items(&scope, &tenant_id, &branch_id, &supplier_id, &manager_id, None, &[(ing_id.clone(), 10.0, 100)]).unwrap();
+        let items = repo.list_purchase_order_items(&po_id, &scope).unwrap();
+        let item_id = items[0].id.clone();
+
+        // receive_purchase_order: a negative quantity_received is rejected.
+        match repo.receive_purchase_order(&tenant_id, &branch_id, &po_id, &manager_id, &scope, &[(item_id.clone(), ing_id.clone(), -1.0)], 0, None) {
+            Err(RepoError::InvalidReceiveQuantity { quantity_ordered, quantity_received, .. }) => {
+                assert_eq!(quantity_ordered, 10.0);
+                assert_eq!(quantity_received, -1.0);
+                println!("[po-validation] receive correctly rejects a negative quantity_received");
+            }
+            other => panic!("expected InvalidReceiveQuantity, got {other:?}"),
+        }
+        // A quantity_received ABOVE quantity_ordered (10.0) is rejected -- no over-receive-allowed flag exists.
+        match repo.receive_purchase_order(&tenant_id, &branch_id, &po_id, &manager_id, &scope, &[(item_id.clone(), ing_id.clone(), 15.0)], 0, None) {
+            Err(RepoError::InvalidReceiveQuantity { quantity_ordered, quantity_received, .. }) => {
+                assert_eq!(quantity_ordered, 10.0);
+                assert_eq!(quantity_received, 15.0);
+                println!("[po-validation] receive correctly rejects quantity_received above quantity_ordered");
+            }
+            other => panic!("expected InvalidReceiveQuantity, got {other:?}"),
+        }
+        // Both rejections above must have left the PO fully untouched: still PENDING, stock unchanged, quantity_received unchanged.
+        assert_eq!(repo.list_ingredients(&scope).unwrap().iter().find(|i| i.id == ing_id).unwrap().current_stock, 0.0, "a rejected receive must not have touched current_stock");
+        assert_eq!(repo.list_purchase_order_items(&po_id, &scope).unwrap()[0].quantity_received, 0.0, "a rejected receive must not have touched quantity_received");
+        assert_eq!(repo.list_purchase_orders(&scope).unwrap().iter().find(|p| p.id == po_id).unwrap().status, "PENDING", "a rejected receive must leave the PO PENDING, not RECEIVED");
+
+        // Receiving exactly quantity_ordered (the ceiling itself) must still succeed.
+        repo.receive_purchase_order(&tenant_id, &branch_id, &po_id, &manager_id, &scope, &[(item_id, ing_id.clone(), 10.0)], 0, None).unwrap();
+        assert_eq!(repo.list_ingredients(&scope).unwrap().iter().find(|i| i.id == ing_id).unwrap().current_stock, 10.0);
+        println!("[po-validation] receiving exactly the ordered quantity (the ceiling) still succeeds");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
     /// Kill-9 simulation for `receive_purchase_order`: perform all the
     /// atomic writes inside a transaction, drop it WITHOUT committing
     /// (simulating a crashed process), reopen a fresh connection, and
@@ -8944,7 +4630,7 @@ mod tests {
             &tenant_id, &branch_id,
             crate::repo::NewOrder { table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".to_string(), subtotal_cents: 4000, tax_cents: 0, total_cents: 4000, discount_cents: 0 },
         ).unwrap();
-        let (_, points1) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &order1, "CASH", 4000, 0, None, &cashier_id, Some("CARD-001")).unwrap();
+        let (_, points1) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &order1, "CASH", 4000, 0, None, &cashier_id, Some("CARD-001"), None).unwrap();
         assert_eq!(points1, Some(40), "BRONZE tier: floor(4000/100) * 1.0 = 40");
 
         let card = repo.lookup_loyalty_card(&tenant_id, "CARD-001").unwrap().unwrap();
@@ -8960,7 +4646,7 @@ mod tests {
             &tenant_id, &branch_id,
             crate::repo::NewOrder { table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".to_string(), subtotal_cents: 4000, tax_cents: 0, total_cents: 4000, discount_cents: 0 },
         ).unwrap();
-        let (_, points2) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &order2, "CASH", 4000, 0, None, &cashier_id, Some("CARD-001")).unwrap();
+        let (_, points2) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &order2, "CASH", 4000, 0, None, &cashier_id, Some("CARD-001"), None).unwrap();
         assert_eq!(points2, Some(48), "SILVER tier: floor(4000/100 * 1.2) = 48");
         let card_after = repo.lookup_loyalty_card(&tenant_id, "CARD-001").unwrap().unwrap();
         assert_eq!(card_after.points, 500 + 48);
@@ -8974,7 +4660,7 @@ mod tests {
             &tenant_id, &branch_id,
             crate::repo::NewOrder { table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".to_string(), subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0 },
         ).unwrap();
-        match repo.finalize_order_with_payment(&tenant_id, &branch_id, &order3, "CASH", 1000, 0, None, &cashier_id, Some("NO-SUCH-CARD")) {
+        match repo.finalize_order_with_payment(&tenant_id, &branch_id, &order3, "CASH", 1000, 0, None, &cashier_id, Some("NO-SUCH-CARD"), None) {
             Err(crate::repo::RepoError::LoyaltyCardNotFound { .. }) => println!("[loyalty] a bad card_number fails loud (LoyaltyCardNotFound), not silently"),
             other => panic!("expected LoyaltyCardNotFound, got {other:?}"),
         }
@@ -8997,7 +4683,7 @@ mod tests {
         {
             let mut conn2 = Connection::open(&db_path).unwrap();
             let tx = conn2.transaction().unwrap();
-            let result = Repo::new(&tx).finalize_order_with_payment(&tenant_id, &branch_id, &order4, "CASH", 1000, 0, None, &cashier_id, Some("NO-SUCH-CARD"));
+            let result = Repo::new(&tx).finalize_order_with_payment(&tenant_id, &branch_id, &order4, "CASH", 1000, 0, None, &cashier_id, Some("NO-SUCH-CARD"), None);
             assert!(result.is_err());
             // tx dropped here WITHOUT commit -- rolls back, simulating the
             // command wrapper's `?`-propagated error before `tx.commit()`.
@@ -9033,7 +4719,7 @@ mod tests {
         let customer_id = repo.create_customer(&tenant_id, "عميل استرداد", Some("0501234567"), None, None, None, None).unwrap();
         let card_id = repo.issue_loyalty_card(&tenant_id, &customer_id, "REFUND-CARD").unwrap();
         let _ = card_id;
-        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "دائن استرداد", Some("0509999999"), None, None, None).unwrap();
+        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "دائن استرداد", Some("0509999999"), None, None, None, None).unwrap();
 
         // 2 burgers, 2000 cents total, paid on CREDIT with a loyalty card attached.
         let order_id = repo.create_full_order(&scope, &tenant_id, &branch_id, crate::repo::FullOrderInput {
@@ -9043,7 +4729,7 @@ mod tests {
             delivery_fee_cents: 0, shift_id: None,
             items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 2, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![] }],
         }).unwrap();
-        repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CREDIT", 2000, 0, Some(&debtor_id), &manager_id, Some("REFUND-CARD")).unwrap();
+        repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CREDIT", 2000, 0, Some(&debtor_id), &manager_id, Some("REFUND-CARD"), None).unwrap();
 
         let bun_after_sale: f64 = conn.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![bun_id], |r| r.get(0)).unwrap();
         assert!((bun_after_sale - 48.0).abs() < 0.001, "2 burgers sold must deplete 2 buns (50 -> 48), got {bun_after_sale}");
@@ -9235,7 +4921,7 @@ mod tests {
         println!("[pos-flow] transfer_order: split order moved to table_2, table_2 now OCCUPIED");
 
         // finalize_order_with_payment -- the actual payment path.
-        let (payment_id, _points_earned) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &split_ids[0], "CASH", 700, 0, None, &cashier_id, None).unwrap();
+        let (payment_id, _points_earned) = repo.finalize_order_with_payment(&tenant_id, &branch_id, &split_ids[0], "CASH", 700, 0, None, &cashier_id, None, None).unwrap();
         let paid_status: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![split_ids[0]], |r| r.get(0)).unwrap();
         assert_eq!(paid_status, "PAID");
         let payment_amount: i64 = conn.query_row("SELECT amount_cents FROM payments WHERE id = ?1", params![payment_id], |r| r.get(0)).unwrap();
@@ -9725,6 +5411,16 @@ mod tests {
         assert_eq!(shifts_a[0].ending_cash_cents, Some(0));
         assert_eq!(shifts_a[0].difference_cents, Some(0));
         println!("[staff] force_close_shift closed Branch A's own shift with zeroed ending cash/difference");
+
+        // Owner (tenant scope, no branch) and Platform can force-close any
+        // branch's stuck shift; Cashier can't.
+        let owner = Actor { id: "owner-x".into(), tenant_id: tenant_id.clone(), branch_id: None, role: Role::Owner, device_id: "dev".into() };
+        let platform = Actor { id: "plat-x".into(), tenant_id: tenant_id.clone(), branch_id: None, role: Role::Platform, device_id: "dev".into() };
+        let cashier = Actor { id: cashier_a.clone(), tenant_id: tenant_id.clone(), branch_id: Some(branch_a.clone()), role: Role::Cashier, device_id: "dev".into() };
+        authorize(&owner, Permission::UpdateStaff).expect("owner may force-close");
+        authorize(&platform, Permission::UpdateStaff).expect("platform may force-close");
+        assert!(authorize(&cashier, Permission::UpdateStaff).is_err());
+        repo.force_close_shift(&owner.scope(), &shift_b).expect("owner closes another branch's stuck shift");
         let _ = table_id;
 
         // Attendance: clock in must reject a staff member from another branch.
@@ -9838,6 +5534,66 @@ mod tests {
         repo.delete_roster_entry(&scope_a, &entry_id).unwrap();
         assert_eq!(repo.list_roster_entries(&scope_a, "2026-08-01", "2026-08-31").unwrap().len(), 0, "a deleted roster entry must not appear in subsequent listings");
         println!("[roster] delete removed the row entirely");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// 2026-09-13 fix: create_roster_entry/update_roster_entry previously
+    /// only checked `end_time > start_time` -- nothing stopped the SAME
+    /// staff member being scheduled twice on overlapping windows the same
+    /// day. Proves the new overlap guard rejects a genuine overlap,
+    /// allows a back-to-back (non-overlapping) entry, allows the same
+    /// window for a DIFFERENT staff member or a different day, and
+    /// doesn't trip over the entry being moved when updating it in place.
+    #[test]
+    fn roster_entry_overlap_is_rejected() {
+        let (db_path, tenant_id, branch_a, _table_id) = seeded_db("roster_overlap");
+        let conn = Connection::open(&db_path).unwrap();
+        let repo = Repo::new(&conn);
+        let manager_a = seed_staff(&conn, &tenant_id, Some(&branch_a), Role::Manager, "Manager A");
+        let cashier_a = seed_staff(&conn, &tenant_id, Some(&branch_a), Role::Cashier, "Cashier A");
+        let cashier_b = seed_staff(&conn, &tenant_id, Some(&branch_a), Role::Cashier, "Cashier B");
+        let scope_a = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_a.clone() };
+
+        let morning = repo.create_roster_entry(&scope_a, &tenant_id, &branch_a, &cashier_a, &manager_a, "2026-08-20", "09:00", "17:00", None, "test-device").unwrap();
+
+        // A genuinely overlapping window for the SAME staff member, same day, must be rejected.
+        match repo.create_roster_entry(&scope_a, &tenant_id, &branch_a, &cashier_a, &manager_a, "2026-08-20", "14:00", "22:00", None, "test-device") {
+            Err(RepoError::RosterOverlap { staff_id, work_date, .. }) => {
+                assert_eq!(staff_id, cashier_a);
+                assert_eq!(work_date, "2026-08-20");
+                println!("[roster] overlapping create correctly rejected (09:00-17:00 vs 14:00-22:00)");
+            }
+            other => panic!("expected RosterOverlap, got {other:?}"),
+        }
+        // An entry fully containing an existing one must also be rejected (not just partial overlaps).
+        match repo.create_roster_entry(&scope_a, &tenant_id, &branch_a, &cashier_a, &manager_a, "2026-08-20", "08:00", "18:00", None, "test-device") {
+            Err(RepoError::RosterOverlap { .. }) => println!("[roster] a window fully containing an existing entry is correctly rejected too"),
+            other => panic!("expected RosterOverlap, got {other:?}"),
+        }
+
+        // Back-to-back (13:00 shared boundary, no actual time overlap) must be allowed.
+        let evening = repo.create_roster_entry(&scope_a, &tenant_id, &branch_a, &cashier_a, &manager_a, "2026-08-20", "17:00", "22:00", None, "test-device").unwrap();
+        println!("[roster] a back-to-back entry (17:00 boundary shared, no overlap) is correctly allowed");
+
+        // The same window for a DIFFERENT staff member must be allowed.
+        repo.create_roster_entry(&scope_a, &tenant_id, &branch_a, &cashier_b, &manager_a, "2026-08-20", "09:00", "17:00", None, "test-device").unwrap();
+        println!("[roster] the identical window for a different staff member is correctly allowed");
+
+        // The same window on a DIFFERENT day must be allowed.
+        repo.create_roster_entry(&scope_a, &tenant_id, &branch_a, &cashier_a, &manager_a, "2026-08-21", "09:00", "17:00", None, "test-device").unwrap();
+        println!("[roster] the identical window on a different day is correctly allowed");
+
+        // Updating an entry in place (same id) must not trip over itself.
+        repo.update_roster_entry(&scope_a, &morning, "2026-08-20", "08:30", "17:00", None, "test-device").unwrap();
+        println!("[roster] update_roster_entry does not falsely overlap against its own prior row");
+
+        // But moving it to overlap a DIFFERENT existing entry must still be rejected.
+        match repo.update_roster_entry(&scope_a, &morning, "2026-08-20", "08:30", "18:00", None, "test-device") {
+            Err(RepoError::RosterOverlap { .. }) => println!("[roster] update correctly rejected moving into an overlap with another staff member's other entry"),
+            other => panic!("expected RosterOverlap, got {other:?}"),
+        }
+        let _ = evening;
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
@@ -9974,7 +5730,7 @@ mod tests {
         }).unwrap();
         repo.append_order_status_event(&tenant_id, &branch_a, &order_a_paid_first, "PENDING", &cashier_a, "test-device").unwrap();
         repo.rebuild_order_current(&order_a_paid_first).unwrap();
-        repo.finalize_order_with_payment(&tenant_id, &branch_a, &order_a_paid_first, "CASH", 1000, 0, None, &cashier_a, None).unwrap();
+        repo.finalize_order_with_payment(&tenant_id, &branch_a, &order_a_paid_first, "CASH", 1000, 0, None, &cashier_a, None, None).unwrap();
 
         // Branch A: a fully SERVED (and paid) order -- THIS is the real
         // exclusion criterion the feed must apply, not payment status.
@@ -9989,7 +5745,7 @@ mod tests {
             repo.append_order_status_event(&tenant_id, &branch_a, &order_a_served, status, &cashier_a, "test-device").unwrap();
         }
         repo.rebuild_order_current(&order_a_served).unwrap();
-        repo.finalize_order_with_payment(&tenant_id, &branch_a, &order_a_served, "CASH", 500, 0, None, &cashier_a, None).unwrap();
+        repo.finalize_order_with_payment(&tenant_id, &branch_a, &order_a_served, "CASH", 500, 0, None, &cashier_a, None, None).unwrap();
 
         // Branch B: its own PENDING order.
         repo.create_full_order(&scope_b, &tenant_id, &branch_b, FullOrderInput {
@@ -10066,8 +5822,8 @@ mod tests {
         }
 
         // ---- 3/4/5/6: debtors (update_debtor, deactivate_debtor, list_debt_entries, record_debt_payment) ----
-        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "دائن محلي", Some("0992220000"), None, None, None).unwrap();
-        repo.update_debtor(&scope, &debtor_id, "دائن محلي محدث", "0992220000", None, None, None).unwrap();
+        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "دائن محلي", Some("0992220000"), None, None, None, None).unwrap();
+        repo.update_debtor(&scope, &debtor_id, "دائن محلي محدث", Some("0992220000"), None, None, None, None).unwrap();
         repo.list_debt_entries(&scope, &debtor_id).unwrap();
         // This test is purely about scope isolation, not debt amounts --
         // give the debtor a real balance first so a 100-cent payment isn't
@@ -10077,7 +5833,7 @@ mod tests {
         println!("[t1.9] debtor writes succeed for an in-scope debtor");
         let other_debtor = "other-tenant-debtor";
         conn.execute("INSERT INTO debtors (id, tenant_id, branch_id, name, phone) VALUES (?1, 'other-tenant', 'other-branch', 'X', 'Y')", params![other_debtor]).unwrap();
-        match repo.update_debtor(&scope, other_debtor, "hijacked", "0000", None, None, None) {
+        match repo.update_debtor(&scope, other_debtor, "hijacked", Some("0000"), None, None, None, None) {
             Err(RepoError::TenantOwnershipViolation { table, .. }) => { assert_eq!(table, "debtors"); println!("[t1.9] update_debtor correctly rejects another tenant's debtor"); }
             other => panic!("expected TenantOwnershipViolation, got {other:?}"),
         }
@@ -10324,6 +6080,10 @@ mod tests {
         migrate_v3::run_drift_fix_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_index_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_supplier_ledger_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_payment_reference_code_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_backup_settings_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("dashboard", &conn);
@@ -10353,7 +6113,7 @@ mod tests {
         ).unwrap();
 
         // Outstanding debt/supplier balances, one per branch (running totals, not date-ranged).
-        let debtor_1a = repo.create_debtor(&fx.tenant1, &fx.branch1a, "مدين 1A", Some("0501"), None, None, None).unwrap();
+        let debtor_1a = repo.create_debtor(&fx.tenant1, &fx.branch1a, "مدين 1A", Some("0501"), None, None, None, None).unwrap();
         conn.execute("UPDATE debtors SET balance_cents = 700 WHERE id = ?1", params![debtor_1a]).unwrap();
         let supplier_1a = repo.create_supplier(&fx.tenant1, &fx.branch1a, "مورد 1A", None, None).unwrap();
         conn.execute("UPDATE suppliers SET balance_cents = 300 WHERE id = ?1", params![supplier_1a]).unwrap();
@@ -10436,6 +6196,10 @@ mod tests {
         // minimal chain intentionally skips (discount_cap/sync_outbox/etc),
         // so it's safe to run directly after Migration E.
         migrate_v3::run_item_kind_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_payment_reference_code_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_backup_settings_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("matrix", &conn);
@@ -10975,7 +6739,7 @@ mod tests {
         let mut conn = Connection::open(&db_path).unwrap();
         let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Kill100 Cashier");
         let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
-        let debtor_id = Repo::new(&conn).create_debtor(&tenant_id, &branch_id, "دائن كسر-9", Some("0900000000"), None, None, None).unwrap();
+        let debtor_id = Repo::new(&conn).create_debtor(&tenant_id, &branch_id, "دائن كسر-9", Some("0900000000"), None, None, None, None).unwrap();
 
         let mut never_paid_on_occupied = 0u32;
         let mut never_payment_without_order = 0u32;
@@ -11124,13 +6888,14 @@ mod tests {
             "list_ingredients_v3", "create_ingredient_v3", "update_ingredient_v3", "adjust_stock_v3",
             "record_stock_count_v3", "list_stock_counts_v3",
             "get_cogs_variance_report_v3", "get_menu_margin_report_v3",
-            "list_inventory_logs_v3", "list_low_stock_ingredients_v3",
+            "list_inventory_logs_v3", "list_low_stock_ingredients_v3", "list_reorder_suggestions_v3",
+            "get_marketplace_context_v3", "receive_marketplace_order_v3",
             "list_recipe_ingredients_v3", "add_recipe_ingredient_v3", "update_recipe_ingredient_v3", "delete_recipe_ingredient_v3",
             "create_debtor_v3", "update_debtor_v3", "deactivate_debtor_v3",
             "list_debt_entries_v3", "record_debt_payment_v3",
             "get_finance_revenue_v3", "get_dashboard_summary_v3", "get_tax_collected_v3", "list_operational_costs_v3",
             "create_operational_cost_v3", "list_invoices_v3", "create_invoice_v3", "mark_invoice_paid_v3",
-            "update_chain_currency_v3", "update_chain_tax_v3", "update_discount_caps_v3", "update_manager_thresholds_v3",
+            "update_chain_currency_v3", "update_chain_name_v3", "update_chain_tax_v3", "update_discount_caps_v3", "update_manager_thresholds_v3",
             "update_business_mode_v3",
             "get_legacy_branch_v3", "save_legacy_branch_v3", "set_printer_active_v3",
             "update_printer_paper_width_v3", "update_printer_system_name_v3", "create_printer_v3", "list_printers_v3",
@@ -11161,8 +6926,21 @@ mod tests {
             "change_own_password_v3",
             "get_cached_license_status_v3", "check_license_v3", "renew_license_v3", "activate_license_v3", "get_device_id_v3",
             "backup_database_v3", "list_backups_v3", "send_diagnostics_report_v3",
+            // Same reasoning as backup_database_v3/list_backups_v3 right
+            // above: a lapsed license must never be able to block an owner
+            // from configuring (or checking the status of) their disaster-
+            // recovery backup schedule -- that is exactly the moment a
+            // real off-machine backup destination matters most.
+            "get_backup_settings_v3", "update_backup_settings_v3",
             "create_order_v3", "update_order_status_v3", "take_payment_v3",
             "create_full_order_v3", "hold_order_v3", "retrieve_held_order_v3",
+            "list_pending_orders_for_table_v3",
+            // "Send to kitchen now, pay later" dine-in fix: same selling-
+            // path reasoning as retrieve_held_order_v3/split_bill_v3 right
+            // above -- reading back a table's open tab and appending items
+            // to it (fires a kitchen ticket) are both mid-service actions
+            // that must never be interrupted by a lapsed back-office license.
+            "retrieve_open_order_v3", "add_items_to_order_v3",
             "split_bill_v3", "merge_tables_v3", "unmerge_tables_v3", "void_order_item_v3",
             "transfer_order_v3", "schedule_delayed_order_v3", "activate_delayed_orders_v3",
             "finalize_order_with_payment_v3", "list_tables_v3",
@@ -11182,7 +6960,9 @@ mod tests {
             "get_receipt_config_v3", "get_chain_config_v3", "list_active_printers_v3",
             "get_discount_caps_v3", "get_manager_thresholds_v3", "get_business_mode_v3", "list_debtors_v3",
             "verify_manager_override_v3",
-            "lookup_loyalty_card_v3", "earn_loyalty_points_v3", "redeem_loyalty_reward_v3",
+            // earn_loyalty_points_v3 removed 2026-09-13 (dead, superseded
+            // command -- see its removal note above lookup_loyalty_card_v3).
+            "lookup_loyalty_card_v3", "redeem_loyalty_reward_v3",
             "list_kitchen_orders_v3", "register_kds_terminal_v3", "toggle_menu_item_availability_v3",
             "export_pdf_v3",
             "get_active_shift_v3", "open_shift_v3", "close_shift_v3", "get_shift_stats_v3",
@@ -11220,7 +7000,7 @@ mod tests {
 
         #[test]
         fn every_back_office_command_calls_the_license_gate() {
-            let source = include_str!("commands_v3.rs");
+            let source = super::all_commands_source(); let source = source.as_str();
             let mut missing = Vec::new();
             for name in GATED {
                 let body = function_body(source, name);
@@ -11247,7 +7027,7 @@ mod tests {
 
         #[test]
         fn no_selling_path_command_blocks_on_a_locked_license() {
-            let source = include_str!("commands_v3.rs");
+            let source = super::all_commands_source(); let source = source.as_str();
             let mut wrongly_gated = Vec::new();
             for name in NOT_GATED {
                 let body = function_body(source, name);
@@ -11266,7 +7046,7 @@ mod tests {
 
         #[test]
         fn gated_and_not_gated_lists_are_disjoint_and_cover_every_v3_command() {
-            let source = include_str!("commands_v3.rs");
+            let source = super::all_commands_source(); let source = source.as_str();
             let all: std::collections::HashSet<&str> = {
                 let mut set = std::collections::HashSet::new();
                 let mut rest = source;
@@ -11563,7 +7343,7 @@ mod tests {
         println!("B failed iters ({}): {:?}", b_errors.len(), b_errors);
         println!("A last 10 iters (0..120) succeeded or failed: {:?}", (110..120).map(|i| !a_errors.contains(&i)).collect::<Vec<_>>());
         println!("B last 10 iters (0..120) succeeded or failed: {:?}", (110..120).map(|i| !b_errors.contains(&i)).collect::<Vec<_>>());
-        println!("first 5 B error messages: {:?}", &all_errors.iter().filter(|e| e.starts_with('B')).take(5).collect::<Vec<_>>());
+        println!("first 5 B error messages: {:?}", all_errors.iter().filter(|e| e.starts_with('B')).take(5).collect::<Vec<_>>());
 
         assert!(
             all_errors.len() < 60,

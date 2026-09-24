@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
-import { realErrorText } from "../../lib/errors";
+import { realErrorText, friendlyDeleteErrorText } from "../../lib/errors";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import { IconPackage as Package, IconSearch as Search, IconEdit as Edit3, IconChevronDown as ChevronDown, IconChevronUp as ChevronUp, IconShoppingCart as ShoppingCart } from "@tabler/icons-react";
@@ -8,9 +8,13 @@ import { IconPencil, IconTrash, IconClipboardList, IconEye, IconPackageImport, I
 import EmptyState from "../../components/ui/EmptyState";
 import DatePicker from "../../components/ui/DatePicker";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
-import { openMarketplace } from "../../lib/marketplace";
+import { openMarketplace, openMarketplaceReorder, MARKETPLACE_ENABLED } from "../../lib/marketplace";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { formatArabicDateTime, formatArabicDate } from "../../lib/dateLocal";
+import { useToast } from "../../hooks/useToast";
+import { reorderQuantity } from "../../lib/inventoryReorder";
+import { buildReceiptLines, initialEdit, type LineEdit, type PendingOrder, type PendingReceipts } from "../../lib/marketplaceReceipt";
+import { orderNo } from "../../lib/orderNumber";
 
 const editSchema = z.object({
   name: z.string().min(1, "الاسم مطلوب"),
@@ -220,13 +224,20 @@ interface PurchaseOrderItem {
   ingredient_name: string;
 }
 
-type TabKey = "stock" | "suppliers" | "movements" | "alerts" | "purchases";
+type TabKey = "stock" | "suppliers" | "movements" | "alerts" | "purchases" | "marketplace";
 
 export default function InventoryPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("stock");
   const [showAddIngredient, setShowAddIngredient] = useState(false);
   const [showReceiveStock, setShowReceiveStock] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const token = useAuthStore((s) => s.token);
+  const [marketplaceCtx, setMarketplaceCtx] = useState<{ branch_id: string | null; receipts_enabled: boolean } | null>(null);
+  useEffect(() => {
+    invoke<{ branch_id: string | null; receipts_enabled: boolean }>("get_marketplace_context_v3", { sessionToken: token })
+      .then(setMarketplaceCtx)
+      .catch(() => setMarketplaceCtx(null));
+  }, [token]);
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: "stock", label: "المخزون" },
@@ -234,6 +245,8 @@ export default function InventoryPage() {
     { key: "movements", label: "حركات المخزون" },
     { key: "alerts", label: "تنبيهات" },
     { key: "purchases", label: "طلبيات الشراء" },
+    // Cloud-activated terminals only (needs a device token).
+    ...(marketplaceCtx?.receipts_enabled ? [{ key: "marketplace" as TabKey, label: "طلبيات السوق" }] : []),
   ];
 
   return (
@@ -249,6 +262,14 @@ export default function InventoryPage() {
               user naturally looks for "I just got a delivery, log it."
               This button is that missing front door: one click, straight
               into the same proven CreatePOModal/ReceivePOModal flow. */}
+          <button
+            onClick={() => openMarketplaceReorder(marketplaceCtx?.branch_id).catch(() => {})}
+            className="h-10 px-5 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm font-bold hover:border-saffron-600 hover:text-saffron-600 transition-all duration-150 flex items-center gap-1.5"
+            title="فتح صفحة إعادة الطلب في سوق WENZDES"
+          >
+            <ShoppingCart className="w-4 h-4" />
+            إعادة الطلب
+          </button>
           <button onClick={() => setShowReceiveStock(true)} className="h-10 px-5 rounded-sm bg-white border-2 border-saffron-600 text-saffron-600 text-sm font-bold hover:bg-saffron-50 active:scale-[0.98] transition-all duration-150 flex items-center gap-1.5">
             <IconTruckDelivery className="w-4 h-4" />
             استلام بضاعة
@@ -271,6 +292,9 @@ export default function InventoryPage() {
       {activeTab === "alerts" && <AlertsTab />}
       {activeTab === "movements" && <MovementsTab />}
       {activeTab === "purchases" && <PurchasesTab />}
+      {activeTab === "marketplace" && marketplaceCtx?.receipts_enabled && (
+        <MarketplaceReceiptsTab onReceived={() => setRefreshKey((k) => k + 1)} />
+      )}
 
       {showReceiveStock && (
         <ReceiveStockEntryModal
@@ -408,6 +432,7 @@ function TabBar({
 /* ============= TAB 1: المخزون ============= */
 
 function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiveStock: () => void }) {
+  const toast = useToast();
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [filtered, setFiltered] = useState<Ingredient[]>([]);
   const [search, setSearch] = useState("");
@@ -456,6 +481,7 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
     try {
       const token = useAuthStore.getState().token;
       await invoke("adjust_stock_v3", { sessionToken: token, ingredientId: ingredient.id, changeAmount: change, reason });
+      toast.success("تم تعديل المخزون ✓");
       await fetch();
     } catch (err) {
       setActionError(`حدث خطأ في تعديل المخزون: ${realErrorText(err)}`);
@@ -575,7 +601,10 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
                   >
                     <Edit3 className="w-4 h-4" />
                   </button>
-                  {required > 0 && (
+                  {/* 2026-09-13 audit fix: apps/marketplace isn't deployed
+                      yet (see lib/marketplace.ts) -- hidden behind this
+                      flag rather than shown as a live-looking dead link. */}
+                  {MARKETPLACE_ENABLED && required > 0 && (
                     <button
                       onClick={() => openMarketplace()}
                       className="p-2 rounded-sm text-ink-500 hover:text-saffron-600 hover:bg-saffron-50 transition-colors"
@@ -781,6 +810,7 @@ function AddIngredientModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const toast = useToast();
   const [name, setName] = useState("");
   const [unit, setUnit] = useState("");
   const [cost, setCost] = useState(0);
@@ -810,6 +840,7 @@ function AddIngredientModal({
         costCentsPerUnit: parsed.data.cost_cents_per_unit,
         minStock: parsed.data.min_stock,
       });
+      toast.success("تمت إضافة المادة ✓");
       onSaved();
     } catch (err) { setErrors({ _form: `حدث خطأ في الحفظ: ${realErrorText(err)}` }); }
     finally { setSaving(false); }
@@ -853,6 +884,7 @@ function EditIngredientModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const toast = useToast();
   const [name, setName] = useState("");
   const [unit, setUnit] = useState("");
   const [cost, setCost] = useState(0);
@@ -900,6 +932,7 @@ function EditIngredientModal({
         costCentsPerUnit: parsed.data.cost_cents_per_unit,
         minStock: parsed.data.min_stock,
       });
+      toast.success("تم تحديث المادة ✓");
       onSaved();
       onClose();
     } catch (err) {
@@ -1027,7 +1060,7 @@ function SuppliersTab() {
       await invoke("delete_supplier_v3", { sessionToken: token, supplierId: id });
       await fetch();
     } catch (err) {
-      setActionError(`حدث خطأ في حذف المورد: ${realErrorText(err)}`);
+      setActionError(friendlyDeleteErrorText(err, "هذا المورد"));
     }
   };
 
@@ -1192,6 +1225,7 @@ function SuppliersTab() {
       {showOrder && (
         <CreatePOModal
           initialSupplierId={showOrder.id}
+          prefill="supplier"
           onClose={() => setShowOrder(null)}
           onSaved={() => { setShowOrder(null); fetch(); }}
         />
@@ -1277,6 +1311,7 @@ function SuppliersTab() {
 }
 
 function PaySupplierModal({ supplier, onClose, onSaved }: { supplier: Supplier; onClose: () => void; onSaved: () => void }) {
+  const toast = useToast();
   const token = useAuthStore((s) => s.token);
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<"CASH" | "BANK" | "CARD">("CASH");
@@ -1296,6 +1331,7 @@ function PaySupplierModal({ supplier, onClose, onSaved }: { supplier: Supplier; 
         method,
         notes: notes || null,
       });
+      toast.success("تم تسجيل الدفعة ✓");
       onSaved();
     } catch (err) {
       setError(`حدث خطأ في تسجيل الدفعة: ${realErrorText(err)}`);
@@ -1343,6 +1379,7 @@ function SupplierModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const toast = useToast();
   const token = useAuthStore((s) => s.token);
   const isEdit = !!target;
   const [name, setName] = useState("");
@@ -1400,6 +1437,7 @@ function SupplierModal({
           email: parsed.data.email ?? null,
         });
       }
+      toast.success(isEdit ? "تم تحديث المورد ✓" : "تمت إضافة المورد ✓");
       onSaved();
       onClose();
     } catch (err) {
@@ -1620,7 +1658,15 @@ function PurchasesTab() {
 }
 
 /* Create PO Modal */
-function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () => void; onSaved: () => void; initialSupplierId?: string }) {
+interface ReorderSuggestion {
+  ingredient_id: string;
+  quantity: number;
+  unit_cost_cents: number;
+}
+
+// prefill: "supplier" = that supplier's low-stock items; "all" = every low-stock item.
+function CreatePOModal({ onClose, onSaved, initialSupplierId, prefill }: { onClose: () => void; onSaved: () => void; initialSupplierId?: string; prefill?: "supplier" | "all" }) {
+  const toast = useToast();
   const token = useAuthStore((s) => s.token);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
@@ -1629,15 +1675,35 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [prefillEmpty, setPrefillEmpty] = useState(false);
+
+  const loadSuggestions = useCallback(async (supplierId: string | null) => {
+    try {
+      const rows = await invoke<ReorderSuggestion[]>("list_reorder_suggestions_v3", { sessionToken: token, supplierId });
+      setItems(rows.map((r) => ({ ingredient_id: r.ingredient_id, quantity_ordered: r.quantity, unit_cost_cents: r.unit_cost_cents })));
+      setPrefillEmpty(rows.length === 0);
+    } catch (err) {
+      setError(`تعذر تحميل المواد المنخفضة: ${realErrorText(err)}`);
+    }
+  }, [token]);
 
   useEffect(() => {
     (async () => {
-      const s = await invoke<Supplier[]>("list_suppliers_v3", { sessionToken: token });
-      setSuppliers(s);
-      const i = await invoke<Ingredient[]>("list_ingredients_v3", { sessionToken: token });
-      setIngredients(i);
+      try {
+        const s = await invoke<Supplier[]>("list_suppliers_v3", { sessionToken: token });
+        setSuppliers(s);
+        const i = await invoke<Ingredient[]>("list_ingredients_v3", { sessionToken: token });
+        setIngredients(i);
+      } catch (err) {
+        setError(`تعذر تحميل البيانات: ${realErrorText(err)}`);
+      }
     })();
   }, [token]);
+
+  useEffect(() => {
+    if (prefill === "supplier" && initialSupplierId) loadSuggestions(initialSupplierId);
+    else if (prefill === "all") loadSuggestions(null);
+  }, [prefill, initialSupplierId, loadSuggestions]);
 
   const addItem = () => {
     setItems((prev) => [...prev, { ingredient_id: "", quantity_ordered: 0, unit_cost_cents: 0 }]);
@@ -1670,6 +1736,7 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
         notes: notes || null,
         items: items.map((item) => [item.ingredient_id, item.quantity_ordered, item.unit_cost_cents]),
       });
+      toast.success("تم إنشاء طلبية الشراء ✓");
       onSaved();
     } catch (err) {
       setError(`حدث خطأ في إنشاء الطلبية: ${realErrorText(err)}`);
@@ -1686,6 +1753,14 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
           <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
         </div>
         {error && <p className="text-sm text-danger font-arabic">{error}</p>}
+        {prefillEmpty && (
+          <div className="flex items-center justify-between gap-2 bg-warn-soft rounded-sm p-3 text-sm text-warn font-arabic">
+            <span>{prefill === "supplier" ? "لا توجد مواد منخفضة سبق طلبها من هذا المورد." : "لا توجد مواد منخفضة المخزون حالياً."}</span>
+            {prefill === "supplier" && (
+              <button onClick={() => loadSuggestions(null)} className="px-3 py-1.5 rounded-sm bg-white text-xs font-bold text-ink-900 hover:bg-ink-100">+ كل المواد المنخفضة</button>
+            )}
+          </div>
+        )}
         <div className="space-y-3">
           <div>
             <label className="block text-sm font-arabic text-ink-900 mb-1">المورد</label>
@@ -1734,6 +1809,7 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId }: { onClose: () =>
 
 /* Receive PO Modal */
 function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: () => void; onSaved: () => void }) {
+  const toast = useToast();
   const token = useAuthStore((s) => s.token);
   const [items, setItems] = useState<PurchaseOrderItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1772,6 +1848,7 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
         amountPaidCents,
         method: amountPaidCents > 0 ? payMethod : null,
       });
+      toast.success("تم استلام الطلبية وتحديث المخزون ✓");
       onSaved();
     } catch (err) {
       setReceiveError(`حدث خطأ في الاستلام: ${realErrorText(err)}`);
@@ -2143,6 +2220,112 @@ function MovementsTab() {
 
 /* ============= TAB 4: تنبيهات ============= */
 
+/* Marketplace deliveries: confirm what arrived, map to local stock items. */
+function MarketplaceReceiptsTab({ onReceived }: { onReceived: () => void }) {
+  const toast = useToast();
+  const token = useAuthStore((s) => s.token);
+  const [orders, setOrders] = useState<PendingOrder[]>([]);
+  const [ingredients, setIngredients] = useState<Ingredient[]>([]);
+  const [edits, setEdits] = useState<Record<string, LineEdit>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [resp, ings] = await Promise.all([
+        invoke<PendingReceipts>("list_marketplace_receipts_v3", { sessionToken: token }),
+        invoke<Ingredient[]>("list_ingredients_v3", { sessionToken: token }),
+      ]);
+      setOrders(resp.orders);
+      setIngredients(ings);
+      const next: Record<string, LineEdit> = {};
+      for (const o of resp.orders) for (const it of o.items) next[it.order_item_id] = initialEdit(it);
+      setEdits(next);
+    } catch (err) {
+      setError(`تعذر تحميل طلبيات السوق: ${realErrorText(err)}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const setEdit = (id: string, patch: Partial<LineEdit>) =>
+    setEdits((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+
+  const confirm = async (order: PendingOrder) => {
+    const lines = buildReceiptLines(order.items, edits);
+    if (!lines) {
+      setError("تأكد أن الكميات أرقام غير سالبة");
+      return;
+    }
+    setSaving(order.order_id);
+    setError(null);
+    try {
+      const applied = await invoke<boolean>("receive_marketplace_order_v3", { sessionToken: token, orderId: order.order_id, lines, note: null });
+      toast.success(applied ? "تم استلام الطلبية وتحديث المخزون ✓" : "هذه الطلبية مستلمة مسبقاً على هذا الجهاز");
+      onReceived();
+      await load();
+    } catch (err) {
+      setError(`تعذر تسجيل الاستلام: ${realErrorText(err)}`);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  if (loading) return <div className="py-10 text-center text-ink-500 text-sm">جاري التحميل...</div>;
+
+  return (
+    <div className="space-y-4">
+      {error && <div className="bg-danger-soft rounded-sm p-3 text-sm text-danger font-arabic">{error}</div>}
+      {orders.length === 0 && !error && (
+        <div className="bg-ok-soft rounded-sm p-4 text-sm text-ok font-arabic">لا توجد طلبيات سوق بانتظار الاستلام.</div>
+      )}
+      {orders.map((order) => (
+        <div key={order.order_id} className="zc-card p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-bold text-ink-900">{order.supplier_name ?? "مورد السوق"}</h3>
+              <p className="text-xs text-ink-400 font-mono">#{orderNo(order.order_id)} · {order.delivered_at?.slice(0, 10) ?? ""}</p>
+            </div>
+            <span className="font-mono font-bold text-saffron-600">{formatCurrency(order.total_cents)}</span>
+          </div>
+          {order.items.map((it) => {
+            const e = edits[it.order_item_id] ?? initialEdit(it);
+            const ing = ingredients.find((i) => i.id === e.ingredientId);
+            return (
+              <div key={it.order_item_id} className="flex flex-wrap items-center gap-2 text-sm">
+                <span className="flex-1 min-w-[140px] font-arabic text-ink-900">{it.product_name} <span className="text-ink-400">× {it.qty} {it.unit ?? ""}</span></span>
+                <input type="number" min="0" value={e.receivedQty} onChange={(ev) => setEdit(it.order_item_id, { receivedQty: ev.target.value })} title="الكمية المستلمة (عبوات)" className="w-20 h-9 px-2 rounded-sm border-2 border-ink-200" />
+                <select value={e.ingredientId} onChange={(ev) => setEdit(it.order_item_id, { ingredientId: ev.target.value })} className="w-40 h-9 px-2 rounded-sm border-2 border-ink-200">
+                  <option value="">بدون ربط بالمخزون</option>
+                  {ingredients.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
+                </select>
+                {e.ingredientId && (
+                  <span className="flex items-center gap-1">
+                    <input type="number" min="0" value={e.stockAdded} onChange={(ev) => setEdit(it.order_item_id, { stockAdded: ev.target.value })} title="الكمية المضافة للمخزون" className="w-24 h-9 px-2 rounded-sm border-2 border-ink-200" />
+                    <span className="text-xs text-ink-400">{ing?.unit ?? ""}</span>
+                  </span>
+                )}
+              </div>
+            );
+          })}
+          <button
+            onClick={() => confirm(order)}
+            disabled={saving === order.order_id}
+            className="h-10 px-5 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
+          >
+            {saving === order.order_id ? "جاري التسجيل..." : "تأكيد الاستلام"}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function AlertsTab() {
   const token = useAuthStore((s) => s.token);
   const [lowStock, setLowStock] = useState<Ingredient[]>([]);
@@ -2151,6 +2334,7 @@ function AlertsTab() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [orderError, setOrderError] = useState<string | null>(null);
   const [creating, setCreating] = useState<string | null>(null);
+  const [showOrderAll, setShowOrderAll] = useState(false);
   // 2026-08-02: the previous version of this button always picked
   // suppliers[0] blindly, with no way for the owner to pick a supplier
   // who actually stocks the ingredient in question. A single "order from"
@@ -2188,7 +2372,7 @@ function AlertsTab() {
     if (!selectedSupplierId) return;
     setCreating(ingredient.id);
     try {
-      const quantityOrdered = Math.max(ingredient.min_stock - ingredient.current_stock, ingredient.min_stock, 1);
+      const quantityOrdered = reorderQuantity(ingredient.current_stock, ingredient.min_stock);
       await invoke("create_purchase_order_with_items_v3", {
         sessionToken: token,
         supplierId: selectedSupplierId,
@@ -2235,7 +2419,23 @@ function AlertsTab() {
           >
             {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
+          <button
+            onClick={() => setShowOrderAll(true)}
+            disabled={!selectedSupplierId}
+            className="h-9 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
+          >
+            طلبية لكل المواد المنخفضة ({lowStock.length})
+          </button>
         </div>
+      )}
+
+      {showOrderAll && (
+        <CreatePOModal
+          initialSupplierId={selectedSupplierId}
+          prefill="all"
+          onClose={() => setShowOrderAll(false)}
+          onSaved={() => { setShowOrderAll(false); fetch(); }}
+        />
       )}
 
       {lowStock.length === 0 && (

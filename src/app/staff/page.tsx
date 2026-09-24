@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
+import { canForceCloseShift } from "../../lib/permissions";
 import { z } from "zod";
 import { useAuthStore } from "../../stores/authStore";
 import type { UserRole } from "../../db/types";
@@ -9,6 +10,7 @@ import { IconDeviceMobile, IconPencil, IconLock, IconX } from "@tabler/icons-rea
 import DatePicker from "../../components/ui/DatePicker";
 import { formatMoney } from "../../lib/money";
 import { toLocalDateStr, parseLocalDateStr, formatArabicDate, formatArabicTime } from "../../lib/dateLocal";
+import { useToast } from "../../hooks/useToast";
 /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 type Tab = "employees" | "shifts" | "attendance";
@@ -48,32 +50,46 @@ interface Attendance {
   user_name: string;
 }
 
-const ROLE_COLORS: Record<UserRole, string> = {
+// 2026-09-13 audit fix: security.rs's `Role` enum (the actual backend
+// source of truth) is Cashier/Kitchen/Server/Manager/Owner/Platform --
+// ADMIN and ACCOUNTANT were never real, assignable roles server-side (they
+// don't parse via `Role::from_str`), just dead entries left in this map
+// with no dropdown option ever offering them. Removed rather than added,
+// since there's no backend role to wire them up to.
+// Partial, not Record<UserRole, ...>: `UserRole` (db/types.ts) is a shared
+// type that still carries ADMIN/ACCOUNTANT for other pages/permissions.ts
+// use -- this page just no longer has entries for roles it never assigns
+// and the backend never accepts. Lookups below fall back safely.
+const ROLE_COLORS: Partial<Record<UserRole, string>> = {
   OWNER: "bg-purple-100 text-purple-700",
   MANAGER: "bg-blue-100 text-blue-700",
   CASHIER: "bg-saffron-100 text-saffron-600",
-  ADMIN: "bg-amber-100 text-amber-700",
-  ACCOUNTANT: "bg-white text-ink-900",
   KITCHEN: "bg-white text-ink-900",
 };
 
-const ROLE_NAMES: Record<UserRole, string> = {
+const ROLE_NAMES: Partial<Record<UserRole, string>> = {
   OWNER: "مالك",
   MANAGER: "مدير",
   CASHIER: "كاشير",
-  ADMIN: "مشرف",
-  ACCOUNTANT: "محاسب",
   KITCHEN: "مطبخ",
 };
 
 // `staff`'s own CHECK constraint allows PLATFORM/OWNER/MANAGER/CASHIER/
-// KITCHEN/SERVER -- ADMIN/ACCOUNTANT no longer exist as assignable roles
-// (Migration C folded both into MANAGER permanently); PLATFORM/SERVER are
-// not offered here (Platform is a cross-tenant role this UI has no business
-// creating; SERVER isn't in `UserRole` yet).
+// KITCHEN/SERVER -- ADMIN/ACCOUNTANT never existed as real backend roles
+// (see security.rs's `Role` enum); PLATFORM/SERVER are not offered here
+// (Platform is a cross-tenant role this UI has no business creating;
+// SERVER isn't in `UserRole` yet).
+//
+// OWNER is deliberately excluded from the assignable set (not just from
+// this literal list but from the role dropdown below too): create_staff_v3
+// / update_staff_v3 both hard-require `actor.role.rank() > target_role.
+// rank()` (commands_v3.rs ~476, ~543) -- since nothing outranks Owner, no
+// actor, including another Owner, can ever legally assign Owner through
+// this screen. Offering it in the dropdown just let the actor pick an
+// option that was mathematically guaranteed to be rejected.
 const employeeSchema = z.object({
   name: z.string().min(1, "الاسم مطلوب"),
-  role: z.enum(["CASHIER", "MANAGER", "OWNER", "KITCHEN"]),
+  role: z.enum(["CASHIER", "MANAGER", "KITCHEN"]),
   // Login is PIN-only now (the old username/password path is gone) -- every
   // staff member needs a working PIN, not just managers, so this is
   // required on create. Left blank on edit means "don't change the PIN".
@@ -136,6 +152,7 @@ function formatCents(cents: number | null): string {
 }
 
 export default function StaffPage() {
+  const toast = useToast();
   const user = useAuthStore((s) => s.user);
   const token = useAuthStore((s) => s.token);
   const [tab, setTab] = useState<Tab>("employees");
@@ -333,6 +350,7 @@ export default function StaffPage() {
         }).catch(() => {});
       }
       setShowEmployeeModal(false);
+      toast.success(editEmployeeId ? "تم تحديث بيانات الموظف ✓" : "تمت إضافة الموظف ✓");
       await fetchEmployees();
     } catch (err) {
       setEmployeeErrors({ _form: typeof err === "string" ? err : `حدث خطأ في الحفظ: ${realErrorText(err)}` });
@@ -346,6 +364,7 @@ export default function StaffPage() {
     try {
       await invoke("set_staff_active_v3", { sessionToken: token, targetStaffId: suspendEmployeeId, isActive: false });
       setSuspendEmployeeId(null);
+      toast.success("تم تعليق الموظف ✓");
       await fetchEmployees();
     } catch (err) {
       setError(`حدث خطأ في التعليق: ${realErrorText(err)}`);
@@ -366,6 +385,7 @@ export default function StaffPage() {
     try {
       await invoke("force_close_shift_v3", { sessionToken: token, shiftId });
       setForceCloseShiftId(null);
+      toast.success("تم إغلاق الوردية ✓");
       await fetchShifts();
     } catch (err) {
       setError(`حدث خطأ في إغلاق الوردية: ${realErrorText(err)}`);
@@ -408,14 +428,6 @@ export default function StaffPage() {
     );
   }
 
-  if (error && employees.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-full text-danger font-arabic">
-        {error}
-      </div>
-    );
-  }
-
   return (
     <div className="bg-canvas p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
       <div className="flex items-center justify-between">
@@ -429,6 +441,23 @@ export default function StaffPage() {
           </button>
         )}
       </div>
+
+      {/* Used to be an `if (error && employees.length === 0) return <bare
+          error text>` that replaced this whole page -- title, add-button,
+          and tabs included -- with no way back except a full remount. Now
+          the chrome always renders and a retry button re-runs the fetch
+          that failed, in place. */}
+      {error && employees.length === 0 && (
+        <div className="flex items-center justify-between gap-3 rounded-sm bg-danger/10 border border-danger/30 px-4 py-3 text-danger font-arabic text-sm">
+          <span>{error}</span>
+          <button
+            onClick={fetchAll}
+            className="shrink-0 h-8 px-3 rounded-sm bg-danger text-white text-xs font-bold hover:opacity-90 transition-opacity"
+          >
+            إعادة المحاولة
+          </button>
+        </div>
+      )}
 
       <div className="flex gap-2 border-b border-ink-200 pb-2">
         {(["employees", "shifts", "attendance"] as Tab[]).map((t) => (
@@ -482,9 +511,9 @@ export default function StaffPage() {
                     </td>
                     <td className="p-3">
                       <span
-                        className={`inline-block px-3 py-1 rounded-full text-xs font-arabic font-medium ${ROLE_COLORS[emp.role]}`}
+                        className={`inline-block px-3 py-1 rounded-full text-xs font-arabic font-medium ${ROLE_COLORS[emp.role] ?? "bg-white text-ink-900"}`}
                       >
-                        {ROLE_NAMES[emp.role]}
+                        {ROLE_NAMES[emp.role] ?? emp.role}
                       </span>
                     </td>
                     <td className="p-3 text-center">
@@ -654,7 +683,7 @@ export default function StaffPage() {
                         </span>
                       </td>
                       <td className="p-3 text-center">
-                        {isOpen && (user?.role === "MANAGER" || user?.role === "OWNER") && (
+                        {isOpen && canForceCloseShift(user?.role) && (
                           <button
                             onClick={() => setForceCloseShiftId(shift.id)}
                             className="px-3 py-1 rounded-sm text-xs font-arabic text-amber-600 hover:bg-amber-50 transition-colors"
@@ -700,6 +729,14 @@ export default function StaffPage() {
 
           {attendanceSubTab === "today" && (
             <>
+              {/* 2026-09-13 audit fix: this used to also render a table
+                  directly below with the exact same per-employee data
+                  (clock in/out time, duration, status) and nothing else --
+                  a pure duplicate. Kept this card grid, not the table: only
+                  the cards carry the clock-in/clock-out actions, and
+                  "today" is bounded by the active employee count (not a
+                  growing history), so the grid never needs table-style
+                  scanning of a long list the way the history sub-tab does. */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {employees.filter((e) => e.is_active).map((emp) => {
                   const record = getAttendanceForUser(emp.id);
@@ -786,56 +823,9 @@ export default function StaffPage() {
                   );
                 })}
               </div>
-
-              <div className="zc-card overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
-                      <th className="text-right p-3 font-medium">الموظف</th>
-                      <th className="text-right p-3 font-medium">وقت الحضور</th>
-                      <th className="text-right p-3 font-medium">وقت الانصراف</th>
-                      <th className="text-right p-3 font-medium">المدة</th>
-                      <th className="text-center p-3 font-medium">الحالة</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {attendance.map((rec) => {
-                      const sc: Record<string, string> = {
-                        PRESENT: "bg-saffron-100 text-saffron-600",
-                        LATE: "bg-amber-100 text-amber-700",
-                        HALF_DAY: "bg-orange-100 text-orange-700",
-                        ABSENT: "bg-white text-ink-400",
-                      };
-                      const sl: Record<string, string> = {
-                        PRESENT: "حاضر",
-                        LATE: "متأخر",
-                        HALF_DAY: "نصف يوم",
-                        ABSENT: "غائب",
-                      };
-                      return (
-                        <tr key={rec.id} className="border-b border-ink-200 hover:bg-saffron-50">
-                          <td className="p-3 font-arabic text-ink-900 font-medium">{rec.user_name}</td>
-                          <td className="p-3 font-mono text-ink-900 text-xs" dir="ltr">{formatTime(rec.clock_in)}</td>
-                          <td className="p-3 font-mono text-ink-900 text-xs" dir="ltr">{formatTime(rec.clock_out)}</td>
-                          <td className="p-3 font-mono text-ink-900">{formatDuration(rec.clock_in, rec.clock_out)}</td>
-                          <td className="p-3 text-center">
-                            <span className={`inline-block px-3 py-1 rounded-full text-xs font-arabic font-medium ${sc[rec.status] ?? "bg-white text-ink-400"}`}>
-                              {sl[rec.status] ?? "غائب"}
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {attendance.length === 0 && (
-                      <tr>
-                        <td colSpan={5} className="p-6 text-center text-ink-500 font-arabic">
-                          لا يوجد تسجيل حضور اليوم
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+              {employees.filter((e) => e.is_active).length === 0 && (
+                <div className="zc-card p-6 text-center text-ink-500 font-arabic">لا يوجد موظفون نشطون</div>
+              )}
             </>
           )}
 
@@ -966,7 +956,7 @@ export default function StaffPage() {
                   }
                   className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
                 >
-                  {(["CASHIER", "KITCHEN", "MANAGER", "OWNER"] as const).map((r) => (
+                  {(["CASHIER", "KITCHEN", "MANAGER"] as const).map((r) => (
                     <option key={r} value={r}>
                       {ROLE_NAMES[r]}
                     </option>

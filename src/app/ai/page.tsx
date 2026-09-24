@@ -14,7 +14,11 @@ interface Message {
 
 interface AssistantAnswer {
   text: string;
-  confidence: number;
+  // `null` when the provider has no real confidence signal for this answer
+  // (the real remote provider always sends null -- see Answer's doc comment
+  // in src-tauri/src/ai/mod.rs). Not currently rendered in this UI; typed
+  // honestly here rather than assumed-always-a-number.
+  confidence: number | null;
 }
 
 const QUICK_ACTIONS = [

@@ -38,7 +38,7 @@ impl AiProvider for MockAiProvider {
     fn answer(&self, q: &str, _s: &Snapshot) -> Result<Answer, AiError> {
         Ok(Answer {
             text: format!("Mock response to: {}", q),
-            confidence: 0.75,
+            confidence: Some(0.75),
         })
     }
 }
