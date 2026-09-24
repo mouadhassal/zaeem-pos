@@ -2559,6 +2559,80 @@ pub fn run_menu_item_barcode_tenant_unique_migration(conn: &mut Connection, db_p
     result
 }
 
+pub const MIGRATION_AB_VERSION: i64 = 34;
+
+/// Migration AB (2026-09-25): owner-named loyalty tiers broke checkout.
+/// `loyalty_tier` (Migration I) lets the owner name tiers anything
+/// ("فضي", "VIP" ...) and `Repo::tier_for` writes that name into
+/// `loyalty_cards.tier` -- but 0001_init.sql still pins that column to
+/// `CHECK(tier IN ('BRONZE','SILVER','GOLD','PLATINUM'))`. The moment a
+/// card's points crossed into an owner-named tier, earning points inside
+/// `finalize_order_with_payment` failed the CHECK and the whole payment
+/// rolled back ("CHECK constraint failed: tier IN ..."). The column is a
+/// display cache of the tier's name (loyalty/page.tsx, pos/page.tsx show
+/// it as-is), so the fix is to drop the stale CHECK, not to force names
+/// back into the four legacy codes.
+///
+/// Same table-rebuild procedure as Migration Y (`run_menu_item_barcode_
+/// tenant_unique_migration`): read the real current CREATE TABLE from
+/// `sqlite_master`, remove the one CHECK clause, copy every row, drop,
+/// rename, re-create the named indexes. `loyalty_transactions.card_id`
+/// references `loyalty_cards(id)`, hence `foreign_keys=OFF` around it.
+pub fn run_loyalty_tier_name_migration(conn: &mut Connection, db_path: &Path) -> Result<(), V3Error> {
+    use rusqlite::OptionalExtension;
+    const CHECK_CLAUSE: &str = " CHECK(tier IN ('BRONZE','SILVER','GOLD','PLATINUM'))";
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AB_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    conn.execute_batch("PRAGMA foreign_keys=OFF;").ok();
+    let result = with_snapshot_protection(conn, db_path, "v34_loyalty_tier_names", |tx| {
+        let original_sql: Option<String> = tx
+            .query_row("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'loyalty_cards'", [], |r| r.get(0))
+            .optional()?;
+
+        if let Some(original_sql) = original_sql.filter(|sql| sql.contains(CHECK_CLAUSE)) {
+            let existing_index_sql: Vec<String> = {
+                let mut stmt = tx.prepare(
+                    "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'loyalty_cards' AND sql IS NOT NULL"
+                )?;
+                let rows: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(0))?.filter_map(|r| r.ok()).collect();
+                rows
+            };
+
+            let new_table = "loyalty_cards_v34";
+            let new_sql = strip_create_table_prefix(&original_sql, "loyalty_cards", new_table)
+                .ok_or_else(|| V3Error::Db(rusqlite::Error::InvalidParameterName(
+                    format!("unrecognized CREATE TABLE prefix for loyalty_cards: {original_sql}")
+                )))?
+                .replacen(CHECK_CLAUSE, "", 1);
+
+            tx.execute_batch(&new_sql)?;
+            tx.execute_batch(&format!("INSERT INTO {new_table} SELECT * FROM loyalty_cards;"))?;
+            tx.execute_batch(&format!("DROP TABLE loyalty_cards; ALTER TABLE {new_table} RENAME TO loyalty_cards;"))?;
+            for idx_sql in &existing_index_sql {
+                tx.execute_batch(idx_sql)?;
+            }
+            println!(
+                "v34_loyalty_tier_names: dropped loyalty_cards.tier's legacy BRONZE/SILVER/GOLD/PLATINUM CHECK so owner-named tiers can be stored; {} index(es) preserved",
+                existing_index_sql.len()
+            );
+        }
+
+        let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+            params![MIGRATION_AB_VERSION, "0034_loyalty_tier_names", applied_at, "n/a-programmatic"],
+        )?;
+        Ok(())
+    });
+    conn.execute_batch("PRAGMA foreign_keys=ON;").ok();
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3549,6 +3623,62 @@ mod tests {
     /// clean no-op, not an error), (4) all pre-existing menu_items rows
     /// and a pre-existing, unrelated index survive the table-recreation
     /// intact.
+    /// Migration AB: loyalty_cards.tier accepts owner-named tiers after the
+    /// rebuild, while existing cards, their transactions' FK, the named
+    /// index and the card_number UNIQUE all survive; second run is a no-op.
+    #[test]
+    fn test_loyalty_tier_name_migration() {
+        let db_path = fresh_db_path("loyalty_tier_name_migration");
+        build_base_fixture(&db_path);
+        {
+            let mut conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+            run_expand_migration(&mut conn, &db_path).expect("Migration A failed");
+            run_remap_migration(&mut conn, &db_path).expect("Migration B failed");
+            run_identity_migration(&mut conn, &db_path).expect("Migration C failed");
+            run_drift_fix_migration(&mut conn, &db_path).expect("Migration D failed");
+            run_index_migration(&mut conn, &db_path).expect("Migration E failed");
+
+            let tenant_id: String = conn.query_row("SELECT id FROM tenant LIMIT 1", [], |r| r.get(0)).unwrap();
+            conn.execute("INSERT INTO loyalty_cards (id, card_number, points, tier, tenant_id) VALUES ('lc-1', 'CARD-1', 420, 'SILVER', ?1)", params![tenant_id]).unwrap();
+            conn.execute("INSERT INTO loyalty_transactions (id, card_id, points, type, tenant_id) VALUES ('lt-1', 'lc-1', 420, 'EARN', ?1)", params![tenant_id]).unwrap();
+            assert!(
+                conn.execute("UPDATE loyalty_cards SET tier = 'فضي' WHERE id = 'lc-1'", []).is_err(),
+                "premise violated: the legacy CHECK no longer rejects owner-named tiers -- this test no longer exercises the bug"
+            );
+
+            run_loyalty_tier_name_migration(&mut conn, &db_path).expect("Migration AB failed (first run)");
+            run_loyalty_tier_name_migration(&mut conn, &db_path).expect("Migration AB failed (second run -- must be idempotent)");
+        }
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+
+        let sql_after: String = conn.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='loyalty_cards'", [], |r| r.get(0)).unwrap();
+        assert!(!sql_after.contains("CHECK(tier IN"), "the legacy tier CHECK must be gone after Migration AB");
+
+        conn.execute("UPDATE loyalty_cards SET tier = 'فضي' WHERE id = 'lc-1'", []).expect("an owner-named tier must now be storable");
+        let (points, tier): (i64, String) = conn.query_row("SELECT points, tier FROM loyalty_cards WHERE id = 'lc-1'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((points, tier.as_str()), (420, "فضي"), "the existing card must survive the rebuild");
+
+        let has_tenant_index: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND tbl_name='loyalty_cards' AND name='idx_loyalty_cards_tenant'", [], |r| r.get(0),
+        ).unwrap();
+        assert!(has_tenant_index, "idx_loyalty_cards_tenant (from Migration E) must survive the rebuild");
+
+        let tenant_id: String = conn.query_row("SELECT id FROM tenant LIMIT 1", [], |r| r.get(0)).unwrap();
+        assert!(
+            conn.execute("INSERT INTO loyalty_cards (id, card_number, tenant_id) VALUES ('lc-2', 'CARD-1', ?1)", params![tenant_id]).is_err(),
+            "card_number UNIQUE must survive the rebuild"
+        );
+
+        let fk_violations: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check('loyalty_transactions')", [], |r| r.get(0)).unwrap();
+        assert_eq!(fk_violations, 0, "loyalty_transactions.card_id must still resolve to the rebuilt table");
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(integrity, "ok");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
     #[test]
     fn test_menu_item_barcode_tenant_unique_migration() {
         let db_path = fresh_db_path("menu_item_barcode_tenant_unique_migration");

@@ -107,6 +107,7 @@ mod tests {
         migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_manager_threshold_new_syp_defaults_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_marketplace_receipt_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_loyalty_tier_name_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -4605,6 +4606,41 @@ mod tests {
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
         let _ = fs::remove_dir_all(other_db.parent().unwrap());
+    }
+
+    /// 2026-09-25 regression (Migration AB): an owner-named tier ("فضي")
+    /// used to fail loyalty_cards' legacy BRONZE/SILVER/GOLD/PLATINUM CHECK
+    /// the moment a card crossed into it, rolling back the whole payment.
+    #[test]
+    fn payment_succeeds_when_a_card_reaches_an_owner_named_tier() {
+        let (db_path, tenant_id, branch_id, table_id) = seeded_db("loyalty_owner_named_tier");
+        let conn = Connection::open(&db_path).unwrap();
+        let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Tier Cashier");
+        let repo = Repo::new(&conn);
+        repo.create_loyalty_tier(&tenant_id, "فضي", 30, 1.25, 1).unwrap();
+
+        let customer_id = repo.create_customer(&tenant_id, "عميلة فضية", Some("0933000111"), None, None, None, None).unwrap();
+        repo.issue_loyalty_card(&tenant_id, &customer_id, "CARD-AR").unwrap();
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let pay = |total: i64| {
+            let order = repo.create_order(&scope, &tenant_id, &branch_id,
+                crate::repo::NewOrder { table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".to_string(), subtotal_cents: total, tax_cents: 0, total_cents: total, discount_cents: 0 },
+            ).unwrap();
+            repo.finalize_order_with_payment(&tenant_id, &branch_id, &order, "CASH", total, 0, None, &cashier_id, Some("CARD-AR"), None)
+        };
+
+        // 4000 -> 40 points: crosses the owner's "فضي" threshold (30).
+        let (_, points1) = pay(4000).expect("payment must not fail when the card enters an owner-named tier");
+        assert_eq!(points1, Some(40));
+        let card = repo.lookup_loyalty_card(&tenant_id, "CARD-AR").unwrap().unwrap();
+        assert_eq!(card.tier, "فضي");
+
+        // Next order earns at the owner's multiplier: floor(4000/100 * 1.25) = 50.
+        let (_, points2) = pay(4000).expect("payment at an owner-named tier must succeed");
+        assert_eq!(points2, Some(50));
+        assert_eq!(repo.lookup_loyalty_card(&tenant_id, "CARD-AR").unwrap().unwrap().points, 90);
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
     /// T2.0 loyalty: `finalize_order_with_payment` with a `card_number`

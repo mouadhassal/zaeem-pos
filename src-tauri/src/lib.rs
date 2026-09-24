@@ -99,6 +99,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_menu_item_barcode_tenant_unique_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_manager_threshold_new_syp_defaults_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_marketplace_receipt_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_loyalty_tier_name_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
