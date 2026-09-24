@@ -354,7 +354,7 @@ function renderReceiptCanvas(data: ReceiptData, paperWidthMm: number): HTMLCanva
   // delivery order (tableName = "") or ANY order from a has_tables=false
   // business printed a "طاولة" row with nothing next to it, on every
   // single receipt for a non-table business.
-  if (data.tableName) drawTwoCol(b, "طاولة", data.tableName);
+  if (isSeatedTable(data.tableName)) drawTwoCol(b, "طاولة", data.tableName);
 
   const typeLabels: Record<string, string> = {
     DINE_IN: "داخلي", TAKEAWAY: "سفري", ONLINE: "أونلاين",
@@ -409,7 +409,7 @@ function renderKitchenTicketCanvas(data: KitchenTicketData, paperWidthMm: number
   const typeLabels: Record<string, string> = {
     DINE_IN: "داخلي", TAKEAWAY: "سفري", ONLINE: "أونلاين",
   };
-  if (data.tableName) drawTwoCol(b, "طاولة", data.tableName);
+  if (isSeatedTable(data.tableName)) drawTwoCol(b, "طاولة", data.tableName);
   drawTwoCol(b, "رقم", data.orderNumber);
   drawTwoCol(b, "النوع", typeLabels[data.orderType] ?? data.orderType);
   drawTwoCol(b, "التاريخ", formatArabicDate(new Date()));
@@ -438,6 +438,13 @@ function renderKitchenTicketCanvas(data: KitchenTicketData, paperWidthMm: number
   b.y += 16;
 
   return finalizeCanvas(b);
+}
+
+// The implicit counter table ("المنضدة") carries takeaway and every sale in
+// a shop with no tables -- printing "طاولة: المنضدة" on those receipts
+// and kitchen tickets read as if the customer sat at a table.
+function isSeatedTable(name: string | undefined): name is string {
+  return !!name && name !== "المنضدة";
 }
 
 export async function printToDevice(data: Uint8Array, printer: PrinterConfig): Promise<void> {
@@ -690,7 +697,7 @@ export function generateOnScreenReceiptHTML(data: ReceiptData): string {
         <tr><td>التاريخ</td><td style="text-align:left">${formatArabicDate(new Date())}</td></tr>
         <tr><td>الوقت</td><td style="text-align:left">${formatArabicTime(new Date())}</td></tr>
         <tr><td>رقم الطلب</td><td style="text-align:left">${escapeHtml(data.orderNumber)}</td></tr>
-        ${data.tableName ? `<tr><td>طاولة</td><td style="text-align:left">${escapeHtml(data.tableName)}</td></tr>` : ""}
+        ${isSeatedTable(data.tableName) ? `<tr><td>طاولة</td><td style="text-align:left">${escapeHtml(data.tableName)}</td></tr>` : ""}
       </table>
       <hr/>
       <table style="width:100%;font-size:14px">
