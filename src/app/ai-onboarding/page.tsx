@@ -89,8 +89,10 @@ export default function AiOnboardingPage() {
       if (selectedIdx !== null && items.length <= selectedIdx) {
         setSelectedIdx(null);
       }
+      return items;
     } catch (e) {
       setUploadError(`تعذر تحميل قائمة الملفات: ${realErrorText(e)}`);
+      return null;
     }
   }, [selectedIdx, token]);
 
@@ -130,7 +132,11 @@ export default function AiOnboardingPage() {
     setProcessing(true);
     try {
       await invoke("process_queue", { sessionToken: token });
-      await refreshUploads();
+      const items = await refreshUploads();
+      // Open the first result straight away -- the extracted menu used to
+      // stay hidden until the owner thought to click the small thumbnail.
+      const firstDone = items?.findIndex((u) => u.status === "DONE") ?? -1;
+      if (selectedIdx === null && firstDone >= 0) selectUpload(firstDone);
     } catch (e) {
       console.error("Failed to process queue:", e);
     } finally {
