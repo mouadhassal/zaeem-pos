@@ -471,6 +471,9 @@ async fn send_batch(
         "ingredients": ingredients,
         "device_name": "WENZDES POS",
         "version": env!("CARGO_PKG_VERSION"),
+        // Amounts in this payload are whole units (SYP has no sub-unit);
+        // sync-pos converts them to the cloud's hundredths.
+        "money_scale": 0,
     });
 
     let url = format!("{}/functions/v1/sync-pos", base);

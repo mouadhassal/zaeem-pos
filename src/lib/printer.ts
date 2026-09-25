@@ -732,20 +732,21 @@ export async function testPrint(): Promise<void> {
   await printReceipt({
     chainName: cfg?.chain_name ?? "منشأة التجربة",
     branchName: "الفرع الرئيسي",
-    currency: cfg?.currency ?? "SAR",
+    currency: cfg?.currency ?? "SYP",
     orderNumber: "TEST-001",
     tableName: mode.has_tables ? "طاولة 1" : "",
     orderType: mode.has_tables ? "DINE_IN" : "TAKEAWAY",
-    items: [{ name: "برجر", quantity: 1, priceCents: 2500 }],
-    subtotalCents: 2500,
-    taxCents: 375,
+    // New-lira sized (100 old SYP = 1 new since 2026).
+    items: [{ name: "برجر", quantity: 1, priceCents: 250 }],
+    subtotalCents: 250,
+    taxCents: 0,
     secondaryTaxCents: 0,
     serviceChargeCents: 0,
     discountCents: 0,
     savingsCents: 0,
-    totalCents: 2875,
+    totalCents: 250,
     paymentMethod: "CASH",
-    changeCents: 125,
+    changeCents: 50,
   });
 }
 
