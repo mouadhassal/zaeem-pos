@@ -32,7 +32,15 @@ interface Printer {
   ip_address: string | null;
   port: number;
   system_printer_name: string | null;
+  print_mode?: "raster" | "bitimage" | "driver";
 }
+
+// Print modes, in the order to try them when a test print comes out wrong.
+const PRINT_MODES = [
+  { value: "raster", label: "عادي", hint: "أغلب طابعات الإيصالات الحرارية" },
+  { value: "bitimage", label: "متوافق", hint: "لطابعات حرارية أقدم تطبع رموزاً غريبة بالوضع العادي" },
+  { value: "driver", label: "تعريف ويندوز", hint: "يطبع عبر تعريف الطابعة نفسه -- يعمل مع أي طابعة مثبتة، بدون قص تلقائي للورق" },
+] as const;
 
 interface Branch {
   id: string;
@@ -567,10 +575,25 @@ export default function SettingsPage() {
     if (!systemPrinterName) return;
     try {
       await invoke("update_printer_system_name_v3", { sessionToken: token, printerId: printer.id, systemPrinterName });
+      // Same rule as handleAddPrinter: a 58mm queue sent an 80mm-wide image
+      // drops the image command and prints its bytes as garbage.
+      if (/58/.test(systemPrinterName) && printer.paper_width_mm !== 58) {
+        await invoke("update_printer_paper_width_v3", { sessionToken: token, printerId: printer.id, paperWidthMm: 58 });
+      }
       showMsg("تم ربط الطابعة بنجاح");
       fetchData();
     } catch {
       showMsg("حدث خطأ في ربط الطابعة");
+    }
+  };
+
+  const updatePrintMode = async (printer: Printer, printMode: string) => {
+    try {
+      await invoke("update_printer_print_mode_v3", { sessionToken: token, printerId: printer.id, printMode });
+      showMsg("تم تغيير طريقة الطباعة -- اضغط اختبار الطباعة للتأكد");
+      fetchData();
+    } catch {
+      showMsg("حدث خطأ في تغيير طريقة الطباعة");
     }
   };
 
@@ -827,19 +850,25 @@ export default function SettingsPage() {
                   </button>
                 </div>
 
-                {printer.interface === "USB" && !printer.system_printer_name && (
-                  <div className="bg-warn-soft border border-warn-soft rounded-sm p-3 space-y-2">
-                    <p className="text-xs font-arabic text-warn">
-                      هذه الطابعة غير مرتبطة بطابعة حقيقية على هذا الجهاز -- لن تطبع حتى يتم الاختيار.
-                    </p>
-                    <div className="flex gap-2">
+                {printer.interface === "USB" && (
+                  <div className={`${printer.system_printer_name ? "" : "bg-warn-soft border border-warn-soft p-3"} rounded-sm space-y-2`}>
+                    {!printer.system_printer_name && (
+                      <p className="text-xs font-arabic text-warn">
+                        هذه الطابعة غير مرتبطة بطابعة حقيقية على هذا الجهاز -- لن تطبع حتى يتم الاختيار.
+                      </p>
+                    )}
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm text-ink-400 font-arabic shrink-0">طابعة ويندوز:</span>
                       <select
                         onFocus={() => { if (systemPrinters.length === 0) loadSystemPrinters(); }}
                         onChange={(e) => bindSystemPrinter(printer, e.target.value)}
-                        defaultValue=""
+                        value={printer.system_printer_name ?? ""}
                         className="flex-1 h-9 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-xs outline-none focus:border-saffron-600"
                       >
                         <option value="">-- اختر طابعة --</option>
+                        {printer.system_printer_name && !systemPrinters.some((sp) => sp.systemName === printer.system_printer_name) && (
+                          <option value={printer.system_printer_name}>{printer.system_printer_name}</option>
+                        )}
                         {systemPrinters.map((sp) => (
                           <option key={sp.systemName} value={sp.systemName}>{sp.name}</option>
                         ))}
@@ -847,6 +876,30 @@ export default function SettingsPage() {
                     </div>
                   </div>
                 )}
+
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm text-ink-400 font-arabic">طريقة الطباعة:</span>
+                    <div className="flex gap-2">
+                      {PRINT_MODES.filter((m) => m.value !== "driver" || printer.interface === "USB").map((m) => (
+                        <button
+                          key={m.value}
+                          onClick={() => updatePrintMode(printer, m.value)}
+                          className={`px-3 py-1 rounded-sm text-xs font-arabic transition-colors ${
+                            (printer.print_mode ?? "raster") === m.value
+                              ? "bg-saffron-600 text-white"
+                              : "bg-white text-ink-500 hover:bg-ink-200"
+                          }`}
+                        >
+                          {m.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <p className="text-xs text-ink-400 font-arabic">
+                    {PRINT_MODES.find((m) => m.value === (printer.print_mode ?? "raster"))?.hint}. إذا طلعت الورقة برموز غريبة جرّب الطريقة التالية.
+                  </p>
+                </div>
 
                 <div className="flex items-center gap-3">
                   <span className="text-sm text-ink-400 font-arabic">عرض الورق:</span>
@@ -870,7 +923,7 @@ export default function SettingsPage() {
                   onClick={async () => {
                     try {
                       const { testPrint } = await import("../../lib/printer");
-                      await testPrint();
+                      await testPrint(printer.id);
                       showMsg("تم إرسال أمر الطباعة التجريبي");
                     } catch (err) {
                       showMsg(err instanceof Error ? err.message : "فشلت الطباعة التجريبية");

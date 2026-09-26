@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.5.1"
+version = "0.5.2"
 description = "A Tauri App"
 authors = ["you"]
 license = ""
@@ -70,3 +70,9 @@ tauri-plugin-shell = "2"
 
 [dev-dependencies]
 tokio = { version = "1.53.0", features = ["time", "macros", "rt-multi-thread"] }
+
+# 2026-09-26: "Windows driver" print mode (print.rs::print_image_driver_v3)
+# draws the receipt through the printer's own GDI driver, for printers
+# that don't understand our ESC/POS raster bytes.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_Xps"] }

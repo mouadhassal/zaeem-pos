@@ -289,6 +289,23 @@ pub fn update_printer_system_name_v3(state: State<Db>, license: State<crate::lic
     Ok(())
 }
 
+/// Per-printer print mode (Migration AC): 'raster' | 'bitimage' | 'driver'.
+#[tauri::command]
+pub fn update_printer_print_mode_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, printer_id: String, print_mode: String) -> Result<(), String> {
+    if !matches!(print_mode.as_str(), "raster" | "bitimage" | "driver") {
+        return Err(format!("unknown print mode: {print_mode}"));
+    }
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).update_printer_print_mode(&actor.scope(), &printer_id, &print_mode).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "printer", &printer_id, None, Some(&serde_json::json!({ "print_mode": print_mode }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// T1.6: two-layer menu price resolution (`override ?? default`), exposed
 /// read-only so a client can price an item before/while building an order.
 /// Gated on `CreateOrder` (the same permission that lets an actor build an

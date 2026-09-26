@@ -116,11 +116,16 @@ function finalizeCanvas(b: CanvasBuilder): HTMLCanvasElement {
   return out;
 }
 
-/** Converts a canvas to ESC/POS `GS v 0` raster-image command bytes:
- * threshold to 1bpp (MSB-first, 1 = black dot), chunked into <=255-row
- * strips so no single command exceeds a conservative, universally-safe
- * printer buffer size. */
-function canvasToEscPosRaster(canvas: HTMLCanvasElement): number[] {
+interface PackedImage {
+  width: number;
+  height: number;
+  widthBytes: number;
+  /** Rows of `widthBytes` bytes, MSB first, 1 = black dot. */
+  bitmap: Uint8Array;
+}
+
+/** Thresholds a canvas to 1 bit per dot. */
+function packCanvas(canvas: HTMLCanvasElement): PackedImage {
   const { width, height } = canvas;
   const img = canvas.getContext("2d")!.getImageData(0, 0, width, height);
   const widthBytes = Math.ceil(width / 8);
@@ -136,7 +141,13 @@ function canvasToEscPosRaster(canvas: HTMLCanvasElement): number[] {
       }
     }
   }
+  return { width, height, widthBytes, bitmap };
+}
 
+/** ESC/POS `GS v 0` raster-image command bytes, chunked into <=255-row
+ * strips so no single command exceeds a conservative, universally-safe
+ * printer buffer size. */
+function rasterBytes({ height, widthBytes, bitmap }: PackedImage): number[] {
   const out: number[] = [];
   const GS = 0x1d;
   const MAX_ROWS = 255;
@@ -147,6 +158,36 @@ function canvasToEscPosRaster(canvas: HTMLCanvasElement): number[] {
     for (let i = 0; i < rows * widthBytes; i++) out.push(bitmap[start + i]);
   }
   return out;
+}
+
+/** ESC/POS `ESC * 33` (24-dot double density) bit-image bytes: the older
+ * column format nearly every ESC/POS printer supports, for firmware that
+ * doesn't know `GS v 0`. One 24-dot band per line, line spacing 24. */
+function bitImageBytes({ width, height, widthBytes, bitmap }: PackedImage): number[] {
+  const ESC = 0x1b;
+  const out: number[] = [ESC, 0x33, 24];
+  const dot = (x: number, y: number) => y < height && (bitmap[y * widthBytes + (x >> 3)] & (0x80 >> (x & 7))) !== 0;
+  for (let band = 0; band < height; band += 24) {
+    out.push(ESC, 0x2a, 33, width & 0xff, (width >> 8) & 0xff);
+    for (let x = 0; x < width; x++) {
+      for (let k = 0; k < 3; k++) {
+        let b = 0;
+        for (let bit = 0; bit < 8; bit++) if (dot(x, band + k * 8 + bit)) b |= 0x80 >> bit;
+        out.push(b);
+      }
+    }
+    out.push(0x0a);
+  }
+  out.push(ESC, 0x32); // default line spacing
+  return out;
+}
+
+/** Plain-text line in the printer's own font, printed before the image on
+ * a test print: if this line is readable but the image is not, the printer
+ * needs another print mode; if both are garbage, it is not an ESC/POS
+ * printer (pick "Windows driver"). */
+function asciiLine(text: string): number[] {
+  return [...Array.from(text, (ch) => ch.charCodeAt(0) & 0x7f), 0x0a];
 }
 
 export interface ReceiptItem {
@@ -211,6 +252,8 @@ interface PrinterRowV3 {
   port: number;
   code_page: number;
   system_printer_name: string | null;
+  /** 'raster' (GS v 0) | 'bitimage' (ESC *) | 'driver' (Windows driver). */
+  print_mode?: PrintMode;
 }
 
 /** A real, OS-installed printer (winspool/CUPS via the Rust `printers` crate). */
@@ -229,8 +272,13 @@ export interface SystemPrinter {
  * thermal printer actually needs to be reached going forward: pick one
  * from this list in Settings, not a WebUSB device chooser.
  */
+// Virtual queues (PDF, XPS, OneNote, Fax) are never a receipt printer --
+// picking one by mistake was an easy way to get "printing" that isn't.
+const VIRTUAL_PRINTER = /pdf|xps|onenote|fax|send to|anydesk/i;
+
 export async function listSystemPrinters(): Promise<SystemPrinter[]> {
-  return invoke<SystemPrinter[]>("list_system_printers_v3");
+  const all = await invoke<SystemPrinter[]>("list_system_printers_v3");
+  return all.filter((p) => !VIRTUAL_PRINTER.test(p.name) && !VIRTUAL_PRINTER.test(p.systemName));
 }
 
 interface ChainConfigV3 {
@@ -255,6 +303,14 @@ interface PrinterConfig {
   /** Real OS print-queue name -- what a USB printer is actually reached by now. */
   systemPrinterName?: string;
 }
+
+/** How the rendered receipt image reaches the paper (per printer, Settings):
+ *  raster   = ESC/POS `GS v 0` (default, most thermal printers)
+ *  bitimage = ESC/POS `ESC *` 24-dot columns (older/cheaper firmware that
+ *             prints `GS v 0` as garbage characters)
+ *  driver   = the printer's own Windows driver draws the image (any printer
+ *             with a working driver; no cut/drawer commands). */
+export type PrintMode = "raster" | "bitimage" | "driver";
 
 const KNOWN_PRINTERS = [
   { vendorId: "0x0416", productId: "0x5011", name: "Epson TM-T88V" },
@@ -480,25 +536,58 @@ export async function printToDevice(data: Uint8Array, printer: PrinterConfig): P
   URL.revokeObjectURL(url);
 }
 
-function buildReceiptJob(data: ReceiptData, paperWidthMm: number): Uint8Array {
-  const canvas = renderReceiptCanvas(data, paperWidthMm);
-  const buf = createEscPosCommandBuffer();
-  buf.writeBytes(canvasToEscPosRaster(canvas));
-  // 2026-08-10 audit fix (kept from the text-mode version): no
-  // unconditional drawer-kick here -- PaymentModal.tsx already opens the
-  // drawer explicitly, but only for CASH. The drawer is the caller's
-  // decision, not baked into every receipt.
-  buf.cut();
-  return buf.getBuffer();
+function rowToConfig(p: PrinterRowV3, printerType: PrinterConfig["printerType"]): PrinterConfig {
+  return {
+    id: p.id,
+    name: p.name,
+    printerType,
+    interface: p.interface,
+    ...(p.vendor_id ? { vendorId: p.vendor_id } : {}),
+    ...(p.ip_address ? { ipAddress: p.ip_address } : {}),
+    port: p.port,
+    paperWidthMm: p.paper_width_mm,
+    drawerPulseMs: p.drawer_pulse_ms,
+    isPrimary: p.is_primary,
+    isSecondary: p.is_secondary,
+    ...(p.system_printer_name ? { systemPrinterName: p.system_printer_name } : {}),
+  };
 }
 
-function buildKitchenTicketJob(data: KitchenTicketData, paperWidthMm: number): Uint8Array {
-  const canvas = renderKitchenTicketCanvas(data, paperWidthMm);
+/** Sends one rendered receipt/ticket image to one printer in that
+ * printer's print mode. `bell` rings a kitchen printer; `testLine` adds the
+ * plain-text diagnostic line (ESC/POS modes only). */
+async function printCanvasTo(
+  canvas: HTMLCanvasElement,
+  p: PrinterRowV3,
+  printerType: PrinterConfig["printerType"],
+  paperWidthMm: number,
+  opts: { bell?: boolean; testLine?: string } = {}
+): Promise<void> {
+  const mode: PrintMode = p.print_mode ?? "raster";
+  const packed = packCanvas(canvas);
+
+  if (mode === "driver") {
+    if (p.interface !== "USB" || !p.system_printer_name) {
+      throw new Error("وضع \"تعريف ويندوز\" يعمل فقط مع طابعة مثبتة على هذا الجهاز -- اختر الطابعة من القائمة");
+    }
+    await invoke("print_image_driver_v3", {
+      printerName: p.system_printer_name,
+      width: packed.width,
+      height: packed.height,
+      bitmap: Array.from(packed.bitmap),
+      paperWidthMm,
+    });
+    return;
+  }
+
   const buf = createEscPosCommandBuffer();
-  buf.writeBytes(canvasToEscPosRaster(canvas));
-  for (let i = 0; i < 3; i++) buf.writeCommand(0x07); // kitchen bell, a raw control byte -- unaffected by any codepage
+  if (opts.testLine) buf.writeBytes(asciiLine(opts.testLine));
+  buf.writeBytes(mode === "bitimage" ? bitImageBytes(packed) : rasterBytes(packed));
+  // 2026-08-10 audit fix (kept): no unconditional drawer-kick on receipts --
+  // PaymentModal.tsx opens the drawer explicitly, and only for CASH.
+  if (opts.bell) for (let i = 0; i < 3; i++) buf.writeCommand(0x07); // kitchen bell
   buf.cut();
-  return buf.getBuffer();
+  await printToDevice(buf.getBuffer(), rowToConfig(p, printerType));
 }
 
 export async function printReceipt(data: ReceiptData): Promise<void> {
@@ -512,23 +601,10 @@ export async function printReceipt(data: ReceiptData): Promise<void> {
 
   let lastError: string | null = null;
   for (const printerPartial of printers.slice(0, 2)) {
-    const p = printerPartial as any;
+    const p = printerPartial;
     try {
-      const buf = buildReceiptJob(data, p.paper_width_mm ?? defaultPaperWidth);
-      await printToDevice(buf, {
-        id: p.id,
-        name: p.name,
-        printerType: "RECEIPT",
-        interface: p.interface,
-        vendorId: p.vendor_id,
-        ipAddress: p.ip_address,
-        port: p.port,
-        paperWidthMm: p.paper_width_mm,
-        drawerPulseMs: p.drawer_pulse_ms,
-        isPrimary: p.is_primary,
-        isSecondary: p.is_secondary,
-        systemPrinterName: p.system_printer_name ?? undefined,
-      });
+      const width = p.paper_width_mm ?? defaultPaperWidth;
+      await printCanvasTo(renderReceiptCanvas(data, width), p, "RECEIPT", width);
       return;
     } catch (err) {
       lastError = err instanceof Error ? err.message : "Print failed";
@@ -549,21 +625,8 @@ async function sendKitchenTicketToPrinter(
   p: any,
   defaultPaperWidthK: number
 ): Promise<void> {
-  const buf = buildKitchenTicketJob(data, p.paper_width_mm ?? defaultPaperWidthK);
-  await printToDevice(buf, {
-    id: p.id,
-    name: p.name,
-    printerType: "KITCHEN",
-    interface: p.interface,
-    vendorId: p.vendor_id,
-    ipAddress: p.ip_address,
-    port: p.port,
-    paperWidthMm: p.paper_width_mm,
-    drawerPulseMs: p.drawer_pulse_ms,
-    isPrimary: p.is_primary,
-    isSecondary: p.is_secondary,
-    systemPrinterName: p.system_printer_name ?? undefined,
-  });
+  const width = p.paper_width_mm ?? defaultPaperWidthK;
+  await printCanvasTo(renderKitchenTicketCanvas(data, width), p, "KITCHEN", width, { bell: true });
 }
 
 export async function printKitchenTicket(data: KitchenTicketData): Promise<void> {
@@ -718,7 +781,10 @@ export function generateOnScreenReceiptHTML(data: ReceiptData): string {
   `;
 }
 
-export async function testPrint(): Promise<void> {
+/** Test print from a printer's own card in Settings. Prints a sample
+ * receipt to THAT printer (not whichever receipt printer is primary), in
+ * its print mode, preceded by a plain-text line (see asciiLine). */
+export async function testPrint(printerId?: string): Promise<void> {
   const cfg = await invoke<ChainConfigV3>("get_chain_config_v3", { sessionToken: token() });
   // 2026-08-21 vocabulary-leak audit fix: this used to hardcode
   // tableName/orderType to a restaurant dine-in order unconditionally --
@@ -729,7 +795,7 @@ export async function testPrint(): Promise<void> {
   // 2026-08-13 fix comment). Reads business mode the same way
   // orderService.ts already does for the real print paths.
   const mode = await invoke<{ has_tables: boolean }>("get_business_mode_v3", { sessionToken: token() }).catch(() => ({ has_tables: true }));
-  await printReceipt({
+  const sample: ReceiptData = {
     chainName: cfg?.chain_name ?? "منشأة التجربة",
     branchName: "الفرع الرئيسي",
     currency: cfg?.currency ?? "SYP",
@@ -747,6 +813,17 @@ export async function testPrint(): Promise<void> {
     totalCents: 250,
     paymentMethod: "CASH",
     changeCents: 50,
+  };
+  if (!printerId) {
+    await printReceipt(sample);
+    return;
+  }
+  const all = await invoke<PrinterRowV3[]>("list_printers_v3", { sessionToken: token() });
+  const p = all.find((x) => x.id === printerId);
+  if (!p) throw new Error("الطابعة غير موجودة");
+  const width = p.paper_width_mm ?? cfg?.default_paper_width ?? 80;
+  await printCanvasTo(renderReceiptCanvas(sample, width), p, p.printer_type, width, {
+    testLine: `WENZDES TEST ${p.print_mode ?? "raster"} 1234567890`,
   });
 }
 

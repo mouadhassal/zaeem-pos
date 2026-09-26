@@ -279,6 +279,23 @@ export default function AiOnboardingPage() {
   const selectedItem = selectedIdx !== null ? uploads[selectedIdx] : null;
   const displayDraft = editing ? editedDraft : selectedItem?.draft_menu ?? null;
 
+  // Old printed menus are still around (100 old SYP = 1 new since 2026).
+  // The AI copies prices exactly as printed; when the typical price looks
+  // like old lira, offer the /100 conversion -- never apply it silently.
+  const typicalPrice = (() => {
+    const ps = (displayDraft?.items ?? []).map((i) => i.price_cents).filter((p) => p > 0).sort((a, b) => a - b);
+    return ps.length ? ps[Math.floor(ps.length / 2)] : 0;
+  })();
+  const convertOldLira = () => {
+    if (!displayDraft) return;
+    const conv = (p: number) => Math.round(p / 100);
+    setEditedDraft({
+      ...displayDraft,
+      items: displayDraft.items.map((i) => ({ ...i, price_cents: conv(i.price_cents), modifiers: i.modifiers.map((m) => ({ ...m, price_cents: conv(m.price_cents) })) })),
+    });
+    setEditing(true);
+  };
+
   return (
     <div className="h-full flex flex-col overflow-hidden relative" dir="rtl">
       {uploadError && (
@@ -449,6 +466,15 @@ export default function AiOnboardingPage() {
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
                 {editing && applyResult && (
                   <div className="px-4 py-3 rounded-lg bg-ok-100 text-ok-800 text-sm font-arabic">{applyResult}</div>
+                )}
+
+                {typicalPrice >= 5000 && !applyResult && (
+                  <div className="px-4 py-3 rounded-lg bg-warn-100 text-warn-700 text-sm font-arabic flex items-center justify-between gap-3">
+                    <span>الأسعار كبيرة -- هل القائمة مطبوعة بالليرة القديمة؟ الأسعار منقولة كما هي بالصورة.</span>
+                    <button onClick={convertOldLira} className="shrink-0 h-8 px-3 rounded-md bg-white border border-warn-600 text-warn-700 text-xs font-bold">
+                      نعم، حوّلها للجديدة (÷100)
+                    </button>
+                  </div>
                 )}
 
                 <div className="flex items-center justify-between">

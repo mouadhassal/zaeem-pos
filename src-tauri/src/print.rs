@@ -120,3 +120,133 @@ mod tests {
         assert!(started.elapsed().as_secs() < 5);
     }
 }
+
+/// "Windows driver" print mode: draws an already-rendered 1-bit receipt
+/// image through the printer's own Windows driver (GDI), so the driver
+/// speaks whatever language its printer needs. For printers that print
+/// our ESC/POS bytes as garbage (no `GS v 0` support, or not an ESC/POS
+/// printer at all). `bitmap` = rows of `ceil(width/8)` bytes, MSB first,
+/// 1 = black -- the same packing `canvasToEscPosRaster` uses. Printed at
+/// its real paper width (`paper_width_mm`), split across pages when the
+/// driver's page is shorter than the receipt.
+#[tauri::command]
+pub async fn print_image_driver_v3(printer_name: String, width: u32, height: u32, bitmap: Vec<u8>, paper_width_mm: u32) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || gdi::print_bitmap(&printer_name, width, height, &bitmap, paper_width_mm))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[cfg(windows)]
+pub mod gdi {
+    use windows_sys::Win32::Graphics::Gdi::{
+        CreateDCW, DeleteDC, GetDeviceCaps, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HORZRES,
+        LOGPIXELSX, RGBQUAD, SRCCOPY, VERTRES,
+    };
+    use windows_sys::Win32::Storage::Xps::{AbortDoc, EndDoc, EndPage, StartDocW, StartPage, DOCINFOW};
+
+    #[repr(C)]
+    struct MonoBitmapInfo {
+        header: BITMAPINFOHEADER,
+        colors: [RGBQUAD; 2],
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    pub fn print_bitmap(printer: &str, width: u32, height: u32, bitmap: &[u8], paper_width_mm: u32) -> Result<(), String> {
+        print_bitmap_to(printer, width, height, bitmap, paper_width_mm, None)
+    }
+
+    /// `output`: spool to this file instead of the device (used by the
+    /// test_print_driver tool with "Microsoft Print to PDF").
+    pub fn print_bitmap_to(printer: &str, width: u32, height: u32, bitmap: &[u8], paper_width_mm: u32, output: Option<&str>) -> Result<(), String> {
+        let src_stride = width.div_ceil(8) as usize;
+        if width == 0 || height == 0 || bitmap.len() < src_stride * height as usize {
+            return Err("receipt image is empty or truncated".into());
+        }
+        // DIB rows are DWORD-aligned; palette index 1 = black to match our packing.
+        let dib_stride = src_stride.div_ceil(4) * 4;
+        let mut dib = vec![0u8; dib_stride * height as usize];
+        for y in 0..height as usize {
+            dib[y * dib_stride..y * dib_stride + src_stride].copy_from_slice(&bitmap[y * src_stride..(y + 1) * src_stride]);
+        }
+
+        unsafe {
+            let driver = wide("WINSPOOL");
+            let device = wide(printer);
+            let hdc = CreateDCW(driver.as_ptr(), device.as_ptr(), std::ptr::null(), std::ptr::null());
+            if hdc.is_null() {
+                return Err(format!("could not open printer \"{printer}\" through its Windows driver"));
+            }
+            let page_w = GetDeviceCaps(hdc, HORZRES as i32).max(1);
+            let page_h = GetDeviceCaps(hdc, VERTRES as i32).max(1);
+            let dpi = GetDeviceCaps(hdc, LOGPIXELSX as i32).max(1);
+            // Real paper width (58/80 mm), never wider than the printable page.
+            let dest_w = ((paper_width_mm.max(40) as f64 / 25.4 * dpi as f64) as i32).min(page_w).max(1);
+            let scale = dest_w as f64 / width as f64;
+            let rows_per_page = ((page_h as f64 / scale) as u32).max(1);
+
+            let doc_name = wide("WENZDES POS");
+            let out_path = output.map(wide);
+            let doc = DOCINFOW {
+                cbSize: std::mem::size_of::<DOCINFOW>() as i32,
+                lpszDocName: doc_name.as_ptr(),
+                lpszOutput: out_path.as_ref().map_or(std::ptr::null(), |w| w.as_ptr()),
+                lpszDatatype: std::ptr::null(),
+                fwType: 0,
+            };
+            if StartDocW(hdc, &doc) <= 0 {
+                DeleteDC(hdc);
+                return Err(format!("printer \"{printer}\" refused the print job"));
+            }
+
+            let mut row = 0u32;
+            while row < height {
+                let rows = rows_per_page.min(height - row);
+                if StartPage(hdc) <= 0 {
+                    AbortDoc(hdc);
+                    DeleteDC(hdc);
+                    return Err("printer driver refused a page".into());
+                }
+                let info = MonoBitmapInfo {
+                    header: BITMAPINFOHEADER {
+                        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                        biWidth: width as i32,
+                        biHeight: -(rows as i32), // top-down
+                        biPlanes: 1,
+                        biBitCount: 1,
+                        biCompression: BI_RGB,
+                        biSizeImage: 0,
+                        biXPelsPerMeter: 0,
+                        biYPelsPerMeter: 0,
+                        biClrUsed: 2,
+                        biClrImportant: 2,
+                    },
+                    colors: [
+                        RGBQUAD { rgbBlue: 255, rgbGreen: 255, rgbRed: 255, rgbReserved: 0 },
+                        RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 },
+                    ],
+                };
+                let dest_h = (rows as f64 * scale).round() as i32;
+                let bits = dib[row as usize * dib_stride..].as_ptr();
+                StretchDIBits(
+                    hdc, 0, 0, dest_w, dest_h, 0, 0, width as i32, rows as i32,
+                    bits.cast(), &info as *const MonoBitmapInfo as *const BITMAPINFO, DIB_RGB_COLORS, SRCCOPY,
+                );
+                EndPage(hdc);
+                row += rows;
+            }
+            EndDoc(hdc);
+            DeleteDC(hdc);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+pub mod gdi {
+    pub fn print_bitmap(_printer: &str, _width: u32, _height: u32, _bitmap: &[u8], _paper_width_mm: u32) -> Result<(), String> {
+        Err("Windows driver printing is only available on Windows".into())
+    }
+}

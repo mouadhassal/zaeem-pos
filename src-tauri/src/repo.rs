@@ -1061,6 +1061,8 @@ pub struct PrinterRow {
     /// Tauri's webview). `None` until re-selected via Settings' printer
     /// picker for any printer created before this column existed.
     pub system_printer_name: Option<String>,
+    /// 'raster' | 'bitimage' | 'driver' (Migration AC).
+    pub print_mode: String,
 }
 
 impl<'a> Repo<'a> {
@@ -3434,6 +3436,12 @@ impl<'a> Repo<'a> {
     /// enumerates what's actually installed -- needed both at creation
     /// time and later if the OS queue name ever changes (driver
     /// reinstall, printer renamed in Windows' own Printers & Scanners).
+    pub fn update_printer_print_mode(&self, scope: &Scope, printer_id: &str, print_mode: &str) -> Result<(), RepoError> {
+        self.assert_row_in_scope("printers", printer_id, scope)?;
+        self.conn.execute("UPDATE printers SET print_mode = ?1, last_modified = datetime('now') WHERE id = ?2", params![print_mode, printer_id])?;
+        Ok(())
+    }
+
     pub fn update_printer_system_name(&self, scope: &Scope, printer_id: &str, system_printer_name: &str) -> Result<(), RepoError> {
         self.assert_row_in_scope("printers", printer_id, scope)?;
         self.conn.execute("UPDATE printers SET system_printer_name = ?1, last_modified = datetime('now') WHERE id = ?2", params![system_printer_name, printer_id])?;
@@ -3451,7 +3459,7 @@ impl<'a> Repo<'a> {
         self.assert_scope_populated("printers", true)?;
         let (predicate, args) = Self::scope_predicate(scope);
         let sql = format!(
-            "SELECT id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary, is_secondary, is_active, paper_width_mm, ip_address, port, code_page, system_printer_name FROM printers WHERE {predicate} ORDER BY name ASC"
+            "SELECT id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary, is_secondary, is_active, paper_width_mm, ip_address, port, code_page, system_printer_name, print_mode FROM printers WHERE {predicate} ORDER BY name ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
@@ -3460,6 +3468,7 @@ impl<'a> Repo<'a> {
                 id: r.get(0)?, name: r.get(1)?, printer_type: r.get(2)?, interface: r.get(3)?, vendor_id: r.get(4)?, product_id: r.get(5)?,
                 drawer_pulse_ms: r.get(6)?, is_primary: r.get(7)?, is_secondary: r.get(8)?, is_active: r.get(9)?, paper_width_mm: r.get(10)?,
                 ip_address: r.get(11)?, port: r.get(12)?, code_page: r.get(13)?, system_printer_name: r.get(14)?,
+                print_mode: r.get::<_, Option<String>>(15)?.unwrap_or_else(|| "raster".into()),
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
