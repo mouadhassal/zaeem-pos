@@ -362,6 +362,11 @@ pub fn create_printer_v3(state: State<Db>, license: State<crate::license::cloud:
     let printer_id = Repo::new(&tx)
         .create_printer(&tenant_id, &branch_id, &name, &printer_type, &interface, vendor_id.as_deref(), product_id.as_deref(), drawer_pulse_ms, is_primary, system_printer_name.as_deref(), ip_address.as_deref(), port)
         .map_err(|e| e.to_string())?;
+    // Every USB printer prints through its own Windows driver by default:
+    // it works whatever the brand or firmware (see Migration AC).
+    if interface == "USB" {
+        Repo::new(&tx).update_printer_print_mode(&actor.scope(), &printer_id, "driver").map_err(|e| e.to_string())?;
+    }
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
         audit::Action::StaffCreated, "printer", &printer_id,

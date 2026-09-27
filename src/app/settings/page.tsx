@@ -37,9 +37,9 @@ interface Printer {
 
 // Print modes, in the order to try them when a test print comes out wrong.
 const PRINT_MODES = [
-  { value: "raster", label: "عادي", hint: "أغلب طابعات الإيصالات الحرارية" },
-  { value: "bitimage", label: "متوافق", hint: "لطابعات حرارية أقدم تطبع رموزاً غريبة بالوضع العادي" },
-  { value: "driver", label: "تعريف ويندوز", hint: "يطبع عبر تعريف الطابعة نفسه -- يعمل مع أي طابعة مثبتة، بدون قص تلقائي للورق" },
+  { value: "driver", label: "تعريف ويندوز (الموصى به)", hint: "يطبع عبر تعريف الطابعة نفسه -- يعمل مع أي طابعة تطبع من ويندوز" },
+  { value: "raster", label: "مباشر", hint: "أوامر ESC/POS مباشرة -- لطابعات الشبكة" },
+  { value: "bitimage", label: "مباشر متوافق", hint: "أوامر ESC/POS القديمة -- لطابعات شبكة أقدم" },
 ] as const;
 
 interface Branch {
@@ -897,7 +897,7 @@ export default function SettingsPage() {
                     </div>
                   </div>
                   <p className="text-xs text-ink-400 font-arabic">
-                    {PRINT_MODES.find((m) => m.value === (printer.print_mode ?? "raster"))?.hint}. إذا طلعت الورقة برموز غريبة جرّب الطريقة التالية.
+                    {PRINT_MODES.find((m) => m.value === (printer.print_mode ?? "raster"))?.hint}.
                   </p>
                 </div>
 

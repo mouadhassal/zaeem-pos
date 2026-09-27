@@ -2637,9 +2637,10 @@ pub const MIGRATION_AC_VERSION: i64 = 35;
 
 /// Migration AC (2026-09-26): per-printer print mode. First restaurant
 /// install printed garbage on a printer that ignores `GS v 0` raster.
-/// `printers.print_mode`: 'raster' (GS v 0, default), 'bitimage'
-/// (ESC * 24-dot, older/cheaper ESC/POS firmware) or 'driver' (render
-/// through the printer's own Windows driver -- works for any printer).
+/// `printers.print_mode`: 'driver' (render through the printer's own
+/// Windows driver -- works with any printer that prints from Windows; the
+/// default for every USB printer), 'raster' (ESC/POS GS v 0; network
+/// printers, which have no local driver) or 'bitimage' (ESC * 24-dot).
 pub fn run_printer_print_mode_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
     let already: bool = conn
         .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AC_VERSION], |row| row.get(0))
@@ -2651,6 +2652,7 @@ pub fn run_printer_print_mode_migration(conn: &mut Connection, _db_path: &Path) 
     let tx = conn.transaction()?;
     if table_exists(&tx, "printers")? {
         add_column_if_missing(&tx, "printers", "print_mode", "TEXT NOT NULL DEFAULT 'raster'")?;
+        tx.execute("UPDATE printers SET print_mode = 'driver' WHERE interface = 'USB'", [])?;
     }
     let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
     tx.execute(
