@@ -292,7 +292,7 @@ pub fn update_printer_system_name_v3(state: State<Db>, license: State<crate::lic
 /// Per-printer print mode (Migration AC): 'raster' | 'bitimage' | 'driver'.
 #[tauri::command]
 pub fn update_printer_print_mode_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, printer_id: String, print_mode: String) -> Result<(), String> {
-    if !matches!(print_mode.as_str(), "raster" | "bitimage" | "driver") {
+    if !matches!(print_mode.as_str(), "raster" | "bitimage" | "driver") || (print_mode == "driver" && !cfg!(windows)) {
         return Err(format!("unknown print mode: {print_mode}"));
     }
     let actor = authenticate_actor(&state, &session_token)?;

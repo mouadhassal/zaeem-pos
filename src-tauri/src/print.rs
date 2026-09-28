@@ -246,7 +246,11 @@ pub mod gdi {
 
 #[cfg(not(windows))]
 pub mod gdi {
-    pub fn print_bitmap(_printer: &str, _width: u32, _height: u32, _bitmap: &[u8], _paper_width_mm: u32) -> Result<(), String> {
+    pub fn print_bitmap(printer: &str, width: u32, height: u32, bitmap: &[u8], paper_width_mm: u32) -> Result<(), String> {
+        print_bitmap_to(printer, width, height, bitmap, paper_width_mm, None)
+    }
+
+    pub fn print_bitmap_to(_printer: &str, _width: u32, _height: u32, _bitmap: &[u8], _paper_width_mm: u32, _output: Option<&str>) -> Result<(), String> {
         Err("Windows driver printing is only available on Windows".into())
     }
 }

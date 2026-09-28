@@ -364,7 +364,7 @@ pub fn create_printer_v3(state: State<Db>, license: State<crate::license::cloud:
         .map_err(|e| e.to_string())?;
     // Every USB printer prints through its own Windows driver by default:
     // it works whatever the brand or firmware (see Migration AC).
-    if interface == "USB" {
+    if interface == "USB" && cfg!(windows) {
         Repo::new(&tx).update_printer_print_mode(&actor.scope(), &printer_id, "driver").map_err(|e| e.to_string())?;
     }
     audit::append(

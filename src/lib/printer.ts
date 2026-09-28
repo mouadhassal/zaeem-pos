@@ -563,7 +563,10 @@ async function printCanvasTo(
   paperWidthMm: number,
   opts: { bell?: boolean; testLine?: string } = {}
 ): Promise<void> {
-  const mode: PrintMode = p.print_mode ?? "raster";
+  // The driver mode draws through Windows GDI; on macOS/Linux fall back to
+  // direct ESC/POS (CUPS raw queue).
+  const onWindows = navigator.userAgent.includes("Windows");
+  const mode: PrintMode = p.print_mode === "driver" && !onWindows ? "raster" : p.print_mode ?? "raster";
   const packed = packCanvas(canvas);
 
   if (mode === "driver") {

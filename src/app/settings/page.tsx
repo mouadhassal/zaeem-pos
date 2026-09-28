@@ -881,7 +881,7 @@ export default function SettingsPage() {
                   <div className="flex items-center gap-3">
                     <span className="text-sm text-ink-400 font-arabic">طريقة الطباعة:</span>
                     <div className="flex gap-2">
-                      {PRINT_MODES.filter((m) => m.value !== "driver" || printer.interface === "USB").map((m) => (
+                      {PRINT_MODES.filter((m) => m.value !== "driver" || (printer.interface === "USB" && navigator.userAgent.includes("Windows"))).map((m) => (
                         <button
                           key={m.value}
                           onClick={() => updatePrintMode(printer, m.value)}

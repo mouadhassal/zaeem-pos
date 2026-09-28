@@ -2652,7 +2652,9 @@ pub fn run_printer_print_mode_migration(conn: &mut Connection, _db_path: &Path) 
     let tx = conn.transaction()?;
     if table_exists(&tx, "printers")? {
         add_column_if_missing(&tx, "printers", "print_mode", "TEXT NOT NULL DEFAULT 'raster'")?;
-        tx.execute("UPDATE printers SET print_mode = 'driver' WHERE interface = 'USB'", [])?;
+        if cfg!(windows) {
+            tx.execute("UPDATE printers SET print_mode = 'driver' WHERE interface = 'USB'", [])?;
+        }
     }
     let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
     tx.execute(
