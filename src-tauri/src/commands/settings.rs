@@ -289,6 +289,20 @@ pub fn update_printer_system_name_v3(state: State<Db>, license: State<crate::lic
     Ok(())
 }
 
+/// Which menu categories a kitchen printer prints (Migration AD). Empty = all.
+#[tauri::command]
+pub fn set_printer_categories_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, printer_id: String, category_ids: Vec<String>) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).set_printer_categories(&actor.scope(), &printer_id, &category_ids).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "printer", &printer_id, None, Some(&serde_json::json!({ "category_ids": category_ids }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Per-printer print mode (Migration AC): 'raster' | 'bitimage' | 'driver'.
 #[tauri::command]
 pub fn update_printer_print_mode_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, printer_id: String, print_mode: String) -> Result<(), String> {

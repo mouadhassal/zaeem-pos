@@ -109,6 +109,7 @@ mod tests {
         migrate_v3::run_marketplace_receipt_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_loyalty_tier_name_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_printer_print_mode_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_printer_categories_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -6935,7 +6936,7 @@ mod tests {
             "update_chain_currency_v3", "update_chain_name_v3", "update_chain_tax_v3", "update_discount_caps_v3", "update_manager_thresholds_v3",
             "update_business_mode_v3",
             "get_legacy_branch_v3", "save_legacy_branch_v3", "set_printer_active_v3",
-            "update_printer_paper_width_v3", "update_printer_system_name_v3", "update_printer_print_mode_v3", "create_printer_v3", "list_printers_v3",
+            "update_printer_paper_width_v3", "update_printer_system_name_v3", "update_printer_print_mode_v3", "set_printer_categories_v3", "create_printer_v3", "list_printers_v3",
             "create_customer_v3", "list_customers_v3", "update_customer_v3", "delete_customer_v3",
             "get_customer_detail_v3",
             "list_loyalty_cards_v3", "issue_loyalty_card_v3", "list_loyalty_transactions_v3",
@@ -6994,7 +6995,7 @@ mod tests {
             // require_license_not_locked calls' replacement doc comments
             // on these three functions above for the full reasoning.
             "list_combo_meals_v3", "list_combo_meal_items_v3", "list_happy_hour_rules_v3",
-            "get_receipt_config_v3", "get_chain_config_v3", "list_active_printers_v3",
+            "get_receipt_config_v3", "get_chain_config_v3", "list_active_printers_v3", "list_printer_categories_v3",
             "get_discount_caps_v3", "get_manager_thresholds_v3", "get_business_mode_v3", "list_debtors_v3",
             "verify_manager_override_v3",
             // earn_loyalty_points_v3 removed 2026-09-13 (dead, superseded

@@ -189,9 +189,10 @@ export async function createOrder(
   if (!has_kitchen) return orderId;
 
   const kitchenItems = items.map((i) => {
-    const ki: { name: string; quantity: number; notes?: string; modifiers?: string[] } = {
+    const ki: { name: string; quantity: number; notes?: string; modifiers?: string[]; menuItemId?: string } = {
       name: i.name ?? "", quantity: i.quantity,
     };
+    if (i.menuItemId) ki.menuItemId = i.menuItemId;
     if (i.notes) ki.notes = i.notes;
     if (i.modifiers?.length) ki.modifiers = i.modifiers.map((m) => m.name);
     return ki;
@@ -491,9 +492,10 @@ export async function addItemsToOrder(
   if (!has_kitchen) return;
 
   const kitchenItems = items.map((i) => {
-    const ki: { name: string; quantity: number; notes?: string; modifiers?: string[] } = {
+    const ki: { name: string; quantity: number; notes?: string; modifiers?: string[]; menuItemId?: string } = {
       name: i.name ?? "", quantity: i.quantity,
     };
+    if (i.menuItemId) ki.menuItemId = i.menuItemId;
     if (i.notes) ki.notes = i.notes;
     if (i.modifiers?.length) ki.modifiers = i.modifiers.map((m) => m.name);
     return ki;
@@ -647,7 +649,7 @@ export async function activateDelayedOrders(): Promise<void> {
           tableName,
           orderNumber: orderNo(orderId),
           orderType: "DINE_IN",
-          items: held.items.map((i) => ({ name: i.name, quantity: i.quantity, ...(i.notes ? { notes: i.notes } : {}) })),
+          items: held.items.map((i) => ({ name: i.name, quantity: i.quantity, ...(i.menuItemId ? { menuItemId: i.menuItemId } : {}), ...(i.notes ? { notes: i.notes } : {}) })),
         });
       } catch (err) {
         // A scheduled order that just came due and silently never reached

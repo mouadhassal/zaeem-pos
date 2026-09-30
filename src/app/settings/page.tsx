@@ -144,6 +144,9 @@ export default function SettingsPage() {
   const [hasKitchen, setHasKitchen] = useState(true);
 
   const [printers, setPrinters] = useState<Printer[]>([]);
+  // Kitchen stations: the menu categories and which ones each kitchen printer prints.
+  const [menuCategories, setMenuCategories] = useState<{ id: string; name: string }[]>([]);
+  const [printerCategories, setPrinterCategories] = useState<Record<string, string[]>>({});
   const [systemPrinters, setSystemPrinters] = useState<{ systemName: string; name: string; isDefault: boolean }[]>([]);
   const [showAddPrinter, setShowAddPrinter] = useState(false);
   const [newPrinterName, setNewPrinterName] = useState("");
@@ -327,6 +330,13 @@ export default function SettingsPage() {
 
       const printerRows = await invoke<Printer[]>("list_printers_v3", { sessionToken: token });
       setPrinters(printerRows);
+
+      const cats = await invoke<{ id: string; name: string }[]>("list_categories_v3", { sessionToken: token });
+      setMenuCategories(cats);
+      const links = await invoke<{ printer_id: string; category_id: string }[]>("list_printer_categories_v3", { sessionToken: token });
+      const grouped: Record<string, string[]> = {};
+      for (const l of links) (grouped[l.printer_id] ??= []).push(l.category_id);
+      setPrinterCategories(grouped);
 
       const branchRow = await invoke<Branch | null>("get_legacy_branch_v3", { sessionToken: token });
       if (branchRow) {
@@ -584,6 +594,17 @@ export default function SettingsPage() {
       fetchData();
     } catch {
       showMsg("حدث خطأ في ربط الطابعة");
+    }
+  };
+
+  const toggleStationCategory = async (printer: Printer, categoryId: string) => {
+    const current = printerCategories[printer.id] ?? [];
+    const next = current.includes(categoryId) ? current.filter((c) => c !== categoryId) : [...current, categoryId];
+    try {
+      await invoke("set_printer_categories_v3", { sessionToken: token, printerId: printer.id, categoryIds: next });
+      setPrinterCategories((prev) => ({ ...prev, [printer.id]: next }));
+    } catch {
+      showMsg("حدث خطأ في حفظ أقسام الطابعة");
     }
   };
 
@@ -919,6 +940,32 @@ export default function SettingsPage() {
                     ))}
                   </div>
                 </div>
+                {printer.printer_type === "KITCHEN" && (
+                  <div className="space-y-1.5">
+                    <span className="text-sm text-ink-400 font-arabic">أقسام المطبخ (ماذا تطبع هذه الطابعة):</span>
+                    <div className="flex flex-wrap gap-2">
+                      {menuCategories.map((c) => {
+                        const on = (printerCategories[printer.id] ?? []).includes(c.id);
+                        return (
+                          <button
+                            key={c.id}
+                            onClick={() => toggleStationCategory(printer, c.id)}
+                            className={`px-3 py-1 rounded-full text-xs font-arabic transition-colors ${
+                              on ? "bg-saffron-600 text-white" : "bg-white border border-ink-200 text-ink-500 hover:bg-ink-200"
+                            }`}
+                          >
+                            {c.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="text-xs text-ink-400 font-arabic">
+                      {(printerCategories[printer.id] ?? []).length === 0
+                        ? "لم تختر أي قسم: هذه الطابعة تطبع كل الطلب (مناسبة لطابعة التجميع/الباس)."
+                        : "هذه الطابعة تطبع أصناف الأقسام المختارة فقط. أي صنف ما اختارته أي طابعة يطبع على الطابعة التي بلا أقسام، وإن لم توجد فعلى أول طابعة."}
+                    </p>
+                  </div>
+                )}
                 <button
                   onClick={async () => {
                     try {

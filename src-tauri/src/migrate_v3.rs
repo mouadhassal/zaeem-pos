@@ -2665,6 +2665,39 @@ pub fn run_printer_print_mode_migration(conn: &mut Connection, _db_path: &Path) 
     Ok(())
 }
 
+pub const MIGRATION_AD_VERSION: i64 = 36;
+
+/// Migration AD (2026-09-30): kitchen stations. A big kitchen has one printer
+/// per station (grill, fryer, bar...). `printer_categories` says which menu
+/// categories each KITCHEN printer prints. A printer with no rows keeps the
+/// old behaviour and prints every item, so existing installs are unchanged.
+/// No foreign keys on purpose: a deleted category just stops matching.
+pub fn run_printer_categories_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AD_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS printer_categories (
+            printer_id TEXT NOT NULL,
+            category_id TEXT NOT NULL,
+            PRIMARY KEY (printer_id, category_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_printer_categories_category ON printer_categories (category_id);",
+    )?;
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AD_VERSION, "0036_printer_categories", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3657,6 +3690,32 @@ mod tests {
     /// intact.
     /// Migration AB: loyalty_cards.tier accepts owner-named tiers after the
     /// rebuild, while existing cards, their transactions' FK, the named
+    /// Migration AD: the printer->category table exists, is idempotent, keeps
+    /// one row per (printer, category) and leaves an unassigned printer empty.
+    #[test]
+    fn test_printer_categories_migration() {
+        let db_path = fresh_db_path("printer_categories_migration");
+        build_base_fixture(&db_path);
+        {
+            let mut conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+            run_expand_migration(&mut conn, &db_path).expect("Migration A failed");
+            run_printer_categories_migration(&mut conn, &db_path).expect("Migration AD failed (first run)");
+            run_printer_categories_migration(&mut conn, &db_path).expect("Migration AD failed (second run -- must be idempotent)");
+        }
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute("INSERT INTO printer_categories (printer_id, category_id) VALUES ('p1', 'c1')", []).unwrap();
+        conn.execute("INSERT OR IGNORE INTO printer_categories (printer_id, category_id) VALUES ('p1', 'c1')", []).unwrap();
+        conn.execute("INSERT INTO printer_categories (printer_id, category_id) VALUES ('p1', 'c2'), ('p2', 'c1')", []).unwrap();
+        assert!(
+            conn.execute("INSERT INTO printer_categories (printer_id, category_id) VALUES ('p1', 'c1')", []).is_err(),
+            "a (printer, category) pair must be unique"
+        );
+        let for_p1: i64 = conn.query_row("SELECT COUNT(*) FROM printer_categories WHERE printer_id = 'p1'", [], |r| r.get(0)).unwrap();
+        let for_p3: i64 = conn.query_row("SELECT COUNT(*) FROM printer_categories WHERE printer_id = 'p3'", [], |r| r.get(0)).unwrap();
+        assert_eq!((for_p1, for_p3), (2, 0), "p1 has two categories, an unassigned printer has none (= prints everything)");
+    }
+
     /// index and the card_number UNIQUE all survive; second run is a no-op.
     #[test]
     fn test_loyalty_tier_name_migration() {

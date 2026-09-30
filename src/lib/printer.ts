@@ -2,6 +2,7 @@ import { invoke } from "./invoke";
 import { useAuthStore } from "../stores/authStore";
 import { formatMoney } from "./money";
 import { formatArabicDate, formatArabicTime } from "./dateLocal";
+import { routeKitchenItems } from "./kitchenRouting";
 
 function token() {
   return useAuthStore.getState().token ?? "";
@@ -232,8 +233,10 @@ export interface KitchenTicketData {
   tableName: string;
   orderNumber: string;
   orderType: string;
-  items: { name: string; quantity: number; notes?: string; modifiers?: string[] }[];
+  items: { name: string; quantity: number; notes?: string; modifiers?: string[]; menuItemId?: string }[];
   scheduledAt?: string;
+  /** Station name printed under the title when this copy is for one kitchen station only. */
+  station?: string;
 }
 
 interface PrinterRowV3 {
@@ -459,6 +462,7 @@ function renderKitchenTicketCanvas(data: KitchenTicketData, paperWidthMm: number
   const b = newCanvasBuilder(W);
 
   drawLine(b, "*** المطبخ ***", { size: 38, bold: true, align: "center" });
+  if (data.station) drawLine(b, data.station, { size: 34, bold: true, align: "center" });
   b.y += 6;
   drawRule(b);
 
@@ -656,27 +660,57 @@ export async function printKitchenTicket(data: KitchenTicketData): Promise<void>
   // is an independent station that needs its own physical copy, so each
   // printer's outcome is now tracked and surfaced individually.
   let anyPrinted = false;
-  const failedPrinters: { id: string; name: string; error: string }[] = [];
+  const failedPrinters: { id: string; name: string; error: string; ticket: KitchenTicketData }[] = [];
+
+  // Station printing (Migration AD): each kitchen printer with categories
+  // gets only its items. If the routing data can't be read, fall back to the
+  // old behaviour (every printer gets the whole ticket) rather than lose it.
+  let routed: Map<string, KitchenTicketData["items"]> | null = null;
+  const stationIds = new Set<string>();
+  try {
+    const [links, menu] = await Promise.all([
+      invoke<{ printer_id: string; category_id: string }[]>("list_printer_categories_v3", { sessionToken: token() }),
+      invoke<{ id: string; category_id: string }[]>("list_menu_items_v3", { sessionToken: token() }),
+    ]);
+    if (links.length > 0) {
+      const byPrinter = new Map<string, string[]>();
+      for (const l of links) byPrinter.set(l.printer_id, [...(byPrinter.get(l.printer_id) ?? []), l.category_id]);
+      const categoryByItem = new Map(menu.map((m) => [m.id, m.category_id]));
+      routed = routeKitchenItems(
+        data.items,
+        printers.map((p) => ({ id: p.id, categoryIds: byPrinter.get(p.id) ?? [] })),
+        (menuItemId) => (menuItemId ? categoryByItem.get(menuItemId) : undefined)
+      );
+      for (const [id, cats] of byPrinter) if (cats.length > 0) stationIds.add(id);
+    }
+  } catch {
+    routed = null;
+  }
 
   for (const printerPartial of printers) {
     const p = printerPartial as any;
+    const items = routed ? routed.get(p.id) : data.items;
+    if (!items || items.length === 0) continue; // nothing for this station: no empty ticket
+    const ticket: KitchenTicketData = { ...data, items, ...(stationIds.has(p.id) ? { station: p.name } : {}) };
     try {
-      await sendKitchenTicketToPrinter(data, p, defaultPaperWidthK);
+      await sendKitchenTicketToPrinter(ticket, p, defaultPaperWidthK);
       anyPrinted = true;
     } catch (err) {
       failedPrinters.push({
         id: p.id,
         name: p.name,
         error: err instanceof Error ? err.message : "Kitchen print failed",
+        ticket,
       });
     }
   }
 
   for (const failed of failedPrinters) {
-    // Queue a retry scoped to THIS printer only -- retrying the whole
-    // ticket against every kitchen printer again would re-send a duplicate
-    // copy to the station(s) that already got it fine.
-    queuePrintJob(data, "kitchen", failed.id);
+    // Queue a retry scoped to THIS printer only, carrying that printer's own
+    // share of the items -- retrying the whole ticket against every kitchen
+    // printer again would re-send a duplicate copy to the station(s) that
+    // already got it fine.
+    queuePrintJob(failed.ticket, "kitchen", failed.id);
     window.dispatchEvent(
       new CustomEvent("kitchen-print-failed", {
         detail: {
@@ -825,6 +859,22 @@ export async function testPrint(printerId?: string): Promise<void> {
   const p = all.find((x) => x.id === printerId);
   if (!p) throw new Error("الطابعة غير موجودة");
   const width = p.paper_width_mm ?? cfg?.default_paper_width ?? 80;
+  if (p.printer_type === "KITCHEN") {
+    const [links, cats] = await Promise.all([
+      invoke<{ printer_id: string; category_id: string }[]>("list_printer_categories_v3", { sessionToken: token() }),
+      invoke<{ id: string; name: string }[]>("list_categories_v3", { sessionToken: token() }),
+    ]);
+    const mine = links.filter((l) => l.printer_id === p.id).map((l) => cats.find((c) => c.id === l.category_id)?.name).filter((n): n is string => !!n);
+    const ticket: KitchenTicketData = {
+      tableName: "",
+      orderNumber: "TEST-001",
+      orderType: "TAKEAWAY",
+      items: [{ name: mine.length ? mine.join("، ") : "كل الأقسام", quantity: 1 }],
+      ...(mine.length ? { station: p.name } : {}),
+    };
+    await printCanvasTo(renderKitchenTicketCanvas(ticket, width), p, "KITCHEN", width, { bell: true });
+    return;
+  }
   await printCanvasTo(renderReceiptCanvas(sample, width), p, p.printer_type, width, {
     testLine: `WENZDES TEST ${p.print_mode ?? "raster"} 1234567890`,
   });

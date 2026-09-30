@@ -101,6 +101,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_marketplace_receipt_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_loyalty_tier_name_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_printer_print_mode_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_printer_categories_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -583,6 +584,8 @@ pub fn run() {
             commands::settings::update_printer_paper_width_v3,
             commands::settings::update_printer_system_name_v3,
             commands::settings::update_printer_print_mode_v3,
+            commands::settings::set_printer_categories_v3,
+            commands::suppliers::list_printer_categories_v3,
             commands::suppliers::create_purchase_order_v3,
             commands::suppliers::create_purchase_order_and_bump_supplier_v3,
             commands::suppliers::create_purchase_order_with_items_v3,

@@ -385,6 +385,16 @@ pub fn list_printers_v3(state: State<Db>, license: State<crate::license::cloud::
     Repo::new(&conn).list_printers(&actor.scope()).map_err(|e| e.to_string())
 }
 
+/// Which menu categories each kitchen printer prints (Migration AD);
+/// `printer.ts` reads it to send every station only its own items.
+#[tauri::command]
+pub fn list_printer_categories_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::PrinterCategoryRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::UsePrinter).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_printer_categories(&actor.scope()).map_err(|e| e.to_string())
+}
+
 /// `printer.ts`'s read path (print receipt/kitchen ticket/open drawer) --
 /// Cashier+, distinct from `list_printers_v3` (Manager+, Settings' printer
 /// config tab, which also needs to see deactivated printers). Filters to

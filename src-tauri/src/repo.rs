@@ -1065,6 +1065,13 @@ pub struct PrinterRow {
     pub print_mode: String,
 }
 
+/// One printer -> menu category link (Migration AD).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PrinterCategoryRow {
+    pub printer_id: String,
+    pub category_id: String,
+}
+
 impl<'a> Repo<'a> {
     pub fn new(conn: &'a Connection) -> Self {
         Repo { conn }
@@ -3436,6 +3443,37 @@ impl<'a> Repo<'a> {
     /// enumerates what's actually installed -- needed both at creation
     /// time and later if the OS queue name ever changes (driver
     /// reinstall, printer renamed in Windows' own Printers & Scanners).
+    /// Every (printer, category) link for the printers in scope. A printer that
+    /// has none prints every item (kitchen station printing, Migration AD).
+    /// Links to a deleted category are skipped.
+    pub fn list_printer_categories(&self, scope: &Scope) -> Result<Vec<PrinterCategoryRow>, RepoError> {
+        let printer_ids: Vec<String> = self.list_printers(scope)?.into_iter().map(|p| p.id).collect();
+        let mut stmt = self.conn.prepare(
+            "SELECT category_id FROM printer_categories WHERE printer_id = ?1 AND category_id IN (SELECT id FROM categories) ORDER BY category_id",
+        )?;
+        let mut out = Vec::new();
+        for printer_id in printer_ids {
+            let rows = stmt.query_map(params![printer_id], |r| r.get::<_, String>(0))?;
+            for category_id in rows {
+                out.push(PrinterCategoryRow { printer_id: printer_id.clone(), category_id: category_id? });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Replaces the categories a printer prints. Empty = all items.
+    pub fn set_printer_categories(&self, scope: &Scope, printer_id: &str, category_ids: &[String]) -> Result<(), RepoError> {
+        self.assert_row_in_scope("printers", printer_id, scope)?;
+        self.conn.execute("DELETE FROM printer_categories WHERE printer_id = ?1", params![printer_id])?;
+        for category_id in category_ids {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO printer_categories (printer_id, category_id) SELECT ?1, id FROM categories WHERE id = ?2",
+                params![printer_id, category_id],
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn update_printer_print_mode(&self, scope: &Scope, printer_id: &str, print_mode: &str) -> Result<(), RepoError> {
         self.assert_row_in_scope("printers", printer_id, scope)?;
         self.conn.execute("UPDATE printers SET print_mode = ?1, last_modified = datetime('now') WHERE id = ?2", params![print_mode, printer_id])?;
