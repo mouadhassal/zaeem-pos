@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { BrandLockup } from "./BrandLogo";
 
 interface Props {
   onComplete: () => void;
@@ -47,12 +48,10 @@ export default function SplashScreen({ onComplete }: Props) {
       dir="rtl"
     >
       <div className="flex flex-col items-center gap-8">
-        <div className="w-16 h-16 rounded-2xl bg-saffron-600 flex items-center justify-center">
-          <span className="text-white text-3xl font-bold">W</span>
-        </div>
-
-        <div className="text-center space-y-2">
-          <h1 className="text-2xl font-bold text-ink-900">WENZDES</h1>
+        <div className="text-center space-y-3">
+          <h1 className="m-0 flex justify-center">
+            <BrandLockup height={64} />
+          </h1>
           <p className="text-sm text-ink-500 font-arabic">نقاط البيع</p>
         </div>
 

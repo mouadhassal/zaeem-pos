@@ -3,8 +3,9 @@ import { useAuthStore } from "../stores/authStore";
 import { invoke } from "../lib/invoke";
 import { realErrorText } from "../lib/errors";
 import PresetPicker from "./ui/PresetPicker";
+import { BrandLockup } from "./BrandLogo";
 import { presetToMode } from "../lib/businessPreset";
-import { IconToolsKitchen2 as UtensilsCrossed, IconAlertCircle as AlertCircle, IconEye as Eye, IconEyeOff as EyeOff, IconPhotoPlus as ImagePlus, IconX as X } from "@tabler/icons-react";
+import { IconAlertCircle as AlertCircle, IconEye as Eye, IconEyeOff as EyeOff, IconPhotoPlus as ImagePlus, IconX as X } from "@tabler/icons-react";
 
 const CURRENCIES = [
   { value: "SYP", label: "ليرة سورية (SYP)" },
@@ -123,11 +124,8 @@ export default function SetupWizard() {
         <div className="min-h-screen flex items-center justify-center p-4">
           <div className="w-full max-w-md">
             <div className="text-center mb-8">
-              <div className="inline-flex items-center justify-center w-16 h-16 rounded-lg bg-saffron-600 mb-4">
-                <UtensilsCrossed className="w-8 h-8 text-white" />
-              </div>
-              <h1 className="text-3xl font-bold text-ink-800 mb-2 tracking-tight">
-                WENZDES
+              <h1 className="m-0 mb-3 flex justify-center">
+                <BrandLockup height={56} />
               </h1>
               <p className="text-ink-400 text-sm">بيانات الفرع</p>
             </div>
@@ -244,11 +242,8 @@ export default function SetupWizard() {
         <div className="min-h-screen flex items-center justify-center p-4">
           <div className="w-full max-w-md">
             <div className="text-center mb-8">
-              <div className="inline-flex items-center justify-center w-16 h-16 rounded-lg bg-saffron-600 mb-4">
-                <UtensilsCrossed className="w-8 h-8 text-white" />
-              </div>
-              <h1 className="text-3xl font-bold text-ink-800 mb-2 tracking-tight">
-                WENZDES
+              <h1 className="m-0 mb-3 flex justify-center">
+                <BrandLockup height={56} />
               </h1>
               <p className="text-ink-400 text-sm">نوع النشاط</p>
             </div>
@@ -329,11 +324,8 @@ export default function SetupWizard() {
       <div className="min-h-screen flex items-center justify-center p-4">
         <div className="w-full max-w-md">
           <div className="text-center mb-8">
-            <div className="inline-flex items-center justify-center w-16 h-16 rounded-lg bg-saffron-600 mb-4">
-              <UtensilsCrossed className="w-8 h-8 text-white" />
-            </div>
-            <h1 className="text-3xl font-bold text-ink-800 mb-2 tracking-tight">
-              WENZDES
+            <h1 className="m-0 mb-3 flex justify-center">
+              <BrandLockup height={56} />
             </h1>
             <p className="text-ink-400 text-sm">الإعداد الأولي — إنشاء حساب المالك</p>
           </div>

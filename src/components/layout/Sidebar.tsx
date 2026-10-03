@@ -6,6 +6,7 @@ import { getBusinessMode } from "../../lib/orderService";
 import { navForMode } from "../../lib/businessPreset";
 import { openMarketplace } from "../../lib/marketplace";
 import { getCachedLicenseStatus, isPosLite } from "../../lib/license";
+import { BrandMark } from "../BrandLogo";
 import {
   IconLogout as LogOut,
   IconCashRegister, IconToolsKitchen2, IconClipboardList, IconBox,
@@ -85,12 +86,7 @@ export default function Sidebar({ active, onNavigate }: Props) {
     // an otherwise light app.
     <aside className="w-[74px] flex flex-col shrink-0 items-center" dir="rtl" data-testid="sidebar" style={{ backgroundColor: "var(--sidebar-bg)", color: "var(--sidebar-text-muted)" }}>
       <div className="h-14 flex items-center justify-center border-b shrink-0 w-full" style={{ borderColor: "rgba(255,255,255,0.12)" }}>
-        <div
-          className="w-8 h-8 rounded-[9px] flex items-center justify-center text-white text-sm font-bold shrink-0"
-          style={{ backgroundColor: "var(--accent)" }}
-        >
-          W
-        </div>
+        <BrandMark size={38} />
       </div>
 
       <nav className="flex-1 py-2 px-1.5 space-y-1 overflow-y-auto w-full flex flex-col items-center">

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { IconBell as Bell } from "@tabler/icons-react";
 import { useAuthStore } from "../../stores/authStore";
+import { BrandLockup } from "../BrandLogo";
 
 const ROLE_LABEL: Record<string, string> = {
   OWNER: "المالك", MANAGER: "المشرف", CASHIER: "الكاشير", KITCHEN: "المطبخ",
@@ -19,13 +20,15 @@ export default function TopBar() {
     <header className="h-14 bg-surface border-b border-line flex items-center justify-between px-4 shrink-0" dir="rtl">
       <div className="flex items-center gap-3">
         {logo ? (
-          <img src={logo} alt="شعار الفرع" className="w-8 h-8 rounded-lg object-cover" />
+          <>
+            <img src={logo} alt="شعار الفرع" className="w-8 h-8 rounded-lg object-cover" />
+            <h1 className="text-base font-bold text-text" style={{ fontFamily: "'Poppins', sans-serif" }}>WENZDES</h1>
+          </>
         ) : (
-          <div className="w-8 h-8 rounded-[9px] flex items-center justify-center text-white text-sm font-bold" style={{ backgroundColor: "var(--accent)" }}>
-            W
-          </div>
+          <h1 className="m-0 leading-none">
+            <BrandLockup height={28} />
+          </h1>
         )}
-        <h1 className="text-base font-bold text-text" style={{ fontFamily: "'Poppins', sans-serif" }}>WENZDES</h1>
       </div>
       <div className="flex items-center gap-3">
         <button className="w-9 h-9 rounded-[10px] flex items-center justify-center text-text-muted hover:bg-surface-alt transition-colors">

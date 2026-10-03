@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAuthStore } from "../stores/authStore";
+import { BrandLockup } from "./BrandLogo";
 
 export default function LoginPage() {
   const [pin, setPin] = useState("");
@@ -32,13 +33,9 @@ export default function LoginPage() {
     <div className="min-h-screen w-full bg-canvas flex items-center justify-center" dir="rtl">
       <div className="w-full max-w-xs flex flex-col items-center gap-8" data-testid="login-page">
         <div className="text-center">
-          <div
-            className="w-14 h-14 rounded-[13px] flex items-center justify-center text-white text-2xl font-bold mx-auto mb-4"
-            style={{ backgroundColor: "var(--accent)" }}
-          >
-            W
-          </div>
-          <h1 className="text-2xl font-bold text-text mb-1">WENZDES</h1>
+          <h1 className="m-0 mb-3 flex justify-center">
+            <BrandLockup height={52} />
+          </h1>
           <p className="text-sm text-text-3">نظام إدارة المطاعم</p>
         </div>
 
