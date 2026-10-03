@@ -832,9 +832,10 @@ export async function testPrint(printerId?: string): Promise<void> {
   // 2026-08-13 fix comment). Reads business mode the same way
   // orderService.ts already does for the real print paths.
   const mode = await invoke<{ has_tables: boolean }>("get_business_mode_v3", { sessionToken: token() }).catch(() => ({ has_tables: true }));
+  const receiptCfg = await invoke<{ branch_name?: string }>("get_receipt_config_v3", { sessionToken: token() }).catch(() => null);
   const sample: ReceiptData = {
     chainName: cfg?.chain_name ?? "منشأة التجربة",
-    branchName: "الفرع الرئيسي",
+    branchName: receiptCfg?.branch_name || "",
     currency: cfg?.currency ?? "SYP",
     orderNumber: "TEST-001",
     tableName: mode.has_tables ? "طاولة 1" : "",
