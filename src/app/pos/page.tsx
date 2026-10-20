@@ -1173,7 +1173,7 @@ export default function POSPage() {
     // are wrapped together so the table bar spans the menu column's full
     // width instead of shrinking to its own content width.
     <div className="flex h-full" dir="rtl" data-testid="pos-page">
-      <div className="w-[250px] shrink-0 h-full">
+      <div className="w-[310px] shrink-0 h-full">
         <OrderPanel
           tableLabel={tableLabel}
           emptyMessage={orderType === "DINE_IN" ? "ما في أصناف بعد. اختر طاولة لتبدأ." : "ما في أصناف بعد. أضف صنفاً لتبدأ."}

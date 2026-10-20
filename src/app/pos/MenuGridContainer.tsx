@@ -81,8 +81,10 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
   const token = useAuthStore((s) => s.token);
   const optionGroups = useOptionsStore((s) => s.groups);
   const loadOptions = useOptionsStore((s) => s.load);
+  // Always re-read on entering the till: groups the owner just created or
+  // linked in Menu must show up without restarting the app.
   useEffect(() => {
-    void loadOptions(token);
+    void loadOptions(token, true);
   }, [loadOptions, token]);
   const [picker, setPicker] = useState<{ payload: Parameters<Props["onAddItem"]>[0]; groups: OptionGroup[]; name: string } | null>(null);
 
@@ -289,6 +291,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
                     : {})}
                   categoryName={cat?.name || ""}
                   quantity={getQty(item.id)}
+                  hasOptions={!item.is_combo && groupsForItem(optionGroups, item.id, item.category_id).length > 0}
                   currencySymbol={currencySymbol}
                   onAdd={() => handleAdd(item)}
                   onRemove={() => handleRemove(item)}

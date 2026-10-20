@@ -15,11 +15,13 @@ interface Props {
   onRemove?: (() => void) | undefined;
   /** Small pill overlay, e.g. "🕐 -20%" for an active happy-hour rule. */
   badge?: string;
+  /** The item has option groups (without onion, extra cheese...): tapping opens the picker, and the card says so. */
+  hasOptions?: boolean;
 }
 
 export default function ItemCard({
   name, priceCents, originalPriceCents, categoryName, photoUrl,
-  quantity, currencySymbol, onAdd, onRemove, badge,
+  quantity, currencySymbol, onAdd, onRemove, badge, hasOptions,
 }: Props) {
   // Currency-scale-aware -- was raw cents.toLocaleString(), which silently
   // assumed scale 0 (see lib/money.ts's formatAmount doc comment).
@@ -29,8 +31,15 @@ export default function ItemCard({
   const inCart = quantity > 0;
 
   return (
+    // The whole card is the tap target (it used to be only the small "+"):
+    // a cashier taps the picture or the name, not a 34px corner button.
     <div
-      className={`bg-white rounded-lg flex flex-col overflow-hidden transition-[border-color,transform] active:scale-[0.98] relative border ${inCart ? 'border-danger' : 'border-ink-200 hover:border-saffron-400'}`}
+      role="button"
+      tabIndex={0}
+      onClick={onAdd}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onAdd(); } }}
+      data-testid="item-card"
+      className={`bg-white rounded-lg flex flex-col overflow-hidden cursor-pointer select-none transition-[border-color,transform] active:scale-[0.98] relative border ${inCart ? 'border-danger' : 'border-ink-200 hover:border-saffron-400'}`}
     >
       {badge && (
         <span
@@ -43,6 +52,14 @@ export default function ItemCard({
        * glyph on its wash gradient fills the EXACT same geometry when absent
        * (CategoryGlyph.tsx) -- zero layout shift either way. */}
       <CategoryGlyph categoryName={categoryName} photoUrl={photoUrl} />
+      {hasOptions && (
+        <span
+          className="absolute top-1.5 end-1.5 z-10 text-[10px] font-semibold rounded-full px-2 py-0.5 bg-accent-soft text-accent-text"
+          data-testid="item-card-options"
+        >
+          + إضافات
+        </span>
+      )}
       <div className="p-2 flex flex-col gap-1.5 flex-1">
         <span className="text-[13px] font-medium text-text leading-tight truncate">
           {name}

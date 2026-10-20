@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { IconPencil, IconTrash, IconX } from "@tabler/icons-react";
 import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
+import { useOptionsStore } from "../../stores/optionsStore";
 import { useToast } from "../../hooks/useToast";
 import { formatMoney, minorToInputValue, parseMoneyInput } from "../../lib/money";
 import { realErrorText } from "../../lib/errors";
@@ -53,9 +54,14 @@ export default function OptionsTab({ categories, items }: { categories: Category
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
+  const editorRef = useRef<HTMLDivElement | null>(null);
+
   const load = useCallback(async () => {
     try {
       setGroups(await invoke<OptionGroup[]>("list_option_groups_v3", { sessionToken: token, includeInactive: true }));
+      // The till keeps its own copy of the active groups; without this a group
+      // created here did nothing at the till until the app was restarted.
+      void useOptionsStore.getState().load(token, true);
     } catch (e) {
       toast.error(`تعذر تحميل الإضافات: ${realErrorText(e)}`);
     }
@@ -64,6 +70,11 @@ export default function OptionsTab({ categories, items }: { categories: Category
   useEffect(() => {
     void load();
   }, [load]);
+
+  // The editor used to open below the list, out of sight: bring it into view.
+  useEffect(() => {
+    if (draft) editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [draft === null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const targetsSummary = (g: OptionGroup) => {
     const cats = g.targets.filter((t) => t.target_type === "CATEGORY").map((t) => categories.find((c) => c.id === t.target_id)?.name).filter(Boolean);
@@ -141,53 +152,8 @@ export default function OptionsTab({ categories, items }: { categories: Category
         </button>
       </div>
 
-      {groups.length === 0 && !draft && (
-        <div className="text-center text-ink-500 font-arabic py-10">لا توجد إضافات بعد. أنشئ مجموعة مثل «إضافات الساندويش» واربطها بتصنيف.</div>
-      )}
-
-      <div className="grid gap-3 md:grid-cols-2">
-        {groups.map((g) => (
-          <div key={g.id} className={`rounded-md border border-ink-200 bg-white p-4 space-y-2 ${g.is_active ? "" : "opacity-60"}`} data-testid="option-group-card">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <div className="font-arabic font-bold text-ink-900">{g.name}</div>
-                <div className="text-xs text-ink-500 font-arabic">
-                  {g.selection === "SINGLE" ? "اختيار واحد" : "عدة خيارات"}
-                  {g.required ? " · إجباري" : ""}
-                  {g.is_active ? "" : " · متوقف"}
-                </div>
-              </div>
-              <div className="flex gap-1">
-                <button onClick={() => setDraft(toDraft(g))} className="p-2 rounded-sm text-ink-500 hover:text-saffron-600 hover:bg-saffron-50" title="تعديل">
-                  <IconPencil className="w-4 h-4" />
-                </button>
-                <button onClick={() => setConfirmDelete(g.id)} className="p-2 rounded-sm text-ink-500 hover:text-danger hover:bg-danger-soft" title="حذف">
-                  <IconTrash className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {g.choices.map((c) => (
-                <span key={c.id} className="px-2.5 py-1 rounded-full bg-ink-100 text-ink-700 text-xs font-arabic">
-                  {c.name}
-                  {c.price_cents > 0 ? ` +${formatMoney(c.price_cents)}` : ""}
-                </span>
-              ))}
-            </div>
-            <div className="text-xs text-ink-400 font-arabic">{targetsSummary(g)}</div>
-            {confirmDelete === g.id && (
-              <div className="flex items-center gap-2 pt-1">
-                <span className="text-xs text-danger font-arabic">حذف المجموعة؟ الطلبات القديمة لا تتأثر.</span>
-                <button onClick={() => remove(g.id)} className="h-8 px-3 rounded-sm bg-danger text-white text-xs font-bold">حذف</button>
-                <button onClick={() => setConfirmDelete(null)} className="h-8 px-3 rounded-sm bg-ink-100 text-ink-700 text-xs font-bold">إلغاء</button>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
       {draft && (
-        <div className="rounded-md border-2 border-saffron-600 bg-white p-5 space-y-4" data-testid="option-group-editor">
+        <div ref={editorRef} className="rounded-md border-2 border-saffron-600 bg-white p-5 space-y-4 scroll-mt-4" data-testid="option-group-editor">
           <div className="flex items-center justify-between">
             <h3 className="font-arabic font-bold text-ink-900">{draft.id ? "تعديل المجموعة" : "مجموعة جديدة"}</h3>
             <button onClick={() => setDraft(null)} className="p-1 text-ink-500 hover:text-ink-900"><IconX className="w-5 h-5" /></button>
@@ -273,6 +239,57 @@ export default function OptionsTab({ categories, items }: { categories: Category
           </div>
         </div>
       )}
+      {groups.length === 0 && !draft && (
+        <div className="text-center text-ink-500 font-arabic py-10">لا توجد إضافات بعد. أنشئ مجموعة مثل «إضافات الساندويش» واربطها بتصنيف.</div>
+      )}
+
+      <div className="grid gap-3 md:grid-cols-2">
+        {groups.map((g) => (
+          <div key={g.id} className={`rounded-md border border-ink-200 bg-white p-4 space-y-2 ${g.is_active ? "" : "opacity-60"}`} data-testid="option-group-card">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="font-arabic font-bold text-ink-900">{g.name}</div>
+                <div className="text-xs text-ink-500 font-arabic">
+                  {g.selection === "SINGLE" ? "اختيار واحد" : "عدة خيارات"}
+                  {g.required ? " · إجباري" : ""}
+                  {g.is_active ? "" : " · متوقف"}
+                </div>
+              </div>
+              <div className="flex gap-1">
+                <button onClick={() => setDraft(toDraft(g))} className="p-2 rounded-sm text-ink-500 hover:text-saffron-600 hover:bg-saffron-50" title="تعديل">
+                  <IconPencil className="w-4 h-4" />
+                </button>
+                <button onClick={() => setConfirmDelete(g.id)} className="p-2 rounded-sm text-ink-500 hover:text-danger hover:bg-danger-soft" title="حذف">
+                  <IconTrash className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {g.choices.map((c) => (
+                <span key={c.id} className="px-2.5 py-1 rounded-full bg-ink-100 text-ink-700 text-xs font-arabic">
+                  {c.name}
+                  {c.price_cents > 0 ? ` +${formatMoney(c.price_cents)}` : ""}
+                </span>
+              ))}
+            </div>
+            {g.targets.length === 0 ? (
+              <div className="text-xs font-arabic font-bold text-danger bg-danger-soft rounded-sm px-2 py-1.5" data-testid="option-group-unlinked">
+                ⚠ غير مرتبطة بأي صنف أو تصنيف — لن تظهر عند البيع. اضغط تعديل واختر التصنيف.
+              </div>
+            ) : (
+              <div className="text-xs text-ink-500 font-arabic">{targetsSummary(g)}</div>
+            )}
+            {confirmDelete === g.id && (
+              <div className="flex items-center gap-2 pt-1">
+                <span className="text-xs text-danger font-arabic">حذف المجموعة؟ الطلبات القديمة لا تتأثر.</span>
+                <button onClick={() => remove(g.id)} className="h-8 px-3 rounded-sm bg-danger text-white text-xs font-bold">حذف</button>
+                <button onClick={() => setConfirmDelete(null)} className="h-8 px-3 rounded-sm bg-ink-100 text-ink-700 text-xs font-bold">إلغاء</button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
     </div>
   );
 }

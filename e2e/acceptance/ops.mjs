@@ -190,6 +190,40 @@ try {
     ok(txt.includes("بدون بصل") && txt.includes("زيادة جبنة") && txt.includes("حار"), `details text: ${txt}`);
   });
 
+  await step("ui-layout", "cart lines never scroll sideways; edit/gift/delete are labelled; the whole item card is tappable", async () => {
+    await b.setWindowSize(1280, 720);
+    await pause(500);
+    const m = await b.execute(() => {
+      const line = document.querySelector('[data-testid="order-line"]');
+      const box = line.parentElement;
+      const pr = box.getBoundingClientRect();
+      const outside = [...document.querySelectorAll('[data-testid="order-line"] button')].filter((x) => {
+        const r = x.getBoundingClientRect();
+        return r.left < pr.left - 1 || r.right > pr.right + 1;
+      }).length;
+      const tops = ['edit','gift','void'].map((k) => Math.round(line.querySelector('[data-testid="order-line-' + k + '"]').getBoundingClientRect().top));
+      return { oneRow: new Set(tops).size === 1, sw: box.scrollWidth, cw: box.clientWidth, outside, edit: document.querySelector('[data-testid="order-line-edit"]').innerText, gift: document.querySelector('[data-testid="order-line-gift"]').innerText, del: document.querySelector('[data-testid="order-line-void"]').innerText };
+    });
+    console.log("  cart metrics:", JSON.stringify(m));
+    ok(m.sw <= m.cw + 1, `cart scrolls sideways (${m.sw} > ${m.cw})`);
+    eq(m.outside, 0, "buttons outside the cart panel");
+    ok(m.oneRow, "edit / gift / delete share one row");
+    ok(m.edit.includes("إضافات") && m.gift.includes("ضيافة") && m.del.includes("حذف"), "action labels");
+    console.log("  shot:", await reg.shot("ui-cart"));
+    // the pizza card carries the options badge, the drink does not; tapping the card (not the +) opens the picker
+    const cards = await b.$$('[data-testid="item-card"]');
+    let pizzaCard = null, colaCard = null;
+    for (const c of cards) { const t = await c.getText(); if (t.includes("بيتزا مارغريتا")) pizzaCard = c; if (t.includes("كولا")) colaCard = c; }
+    ok(pizzaCard && colaCard, "cards found");
+    ok((await pizzaCard.getText()).includes("إضافات"), "pizza card shows the options badge");
+    ok(!(await colaCard.getText()).includes("إضافات"), "cola card has no badge");
+    await (await pizzaCard.$("span")).click();
+    await byId("option-picker");
+    console.log("  shot:", await reg.shot("ui-picker"));
+    await recover();
+    await until(async () => !(await exists("option-picker")), "picker closed");
+  });
+
   await step("send-split", "send to the kitchen: one slip per station, none for stations with nothing", async () => {
     await reg.addItem("شيش طاووق");
     const before = counts();
@@ -377,6 +411,32 @@ try {
     await until(async () => (await b.$('[data-testid="gifts-report"]')).isExisting(), "gifts section");
     // The open table order is unpaid but live; the gift counts.
     await until(async () => (await b.$$('[data-testid="gift-row"]')).length >= 1, "gift row shown", 20000);
+  });
+  await step("options-live", "a group created after the till was open shows up at the till without a restart", async () => {
+    await nav("pos");
+    await pause(500);
+    await nav("menu");
+    await reg.click("الإضافات");
+    await clickId("options-add-group");
+    await (await byId("option-group-name")).setValue("مشروبات");
+    await (await byId("option-quick-input")).setValue("ثلج");
+    await clickId("option-quick-without");
+    // saving with no category: the card must warn
+    await clickId("option-group-save");
+    await until(async () => (await b.$$('[data-testid="option-group-card"]')).length === 2, "second group saved");
+    ok(await exists("option-group-unlinked"), "unlinked warning shown");
+    console.log("  shot:", await reg.shot("ui-options-tab"));
+    const cards = await b.$$('[data-testid="option-group-card"]');
+    for (const c of cards) if ((await c.getText()).includes("مشروبات")) await (await c.$('button[title="تعديل"]')).click();
+    const chips = await b.$$('[data-testid="option-target-category"]');
+    for (const c of chips) if ((await c.getText()).includes("مشروبات")) await c.click();
+    await clickId("option-group-save");
+    await until(async () => !(await exists("option-group-unlinked")), "linked");
+    await nav("pos");
+    await until(async () => {
+      for (const c of await b.$$('[data-testid="item-card"]')) { const t = await c.getText(); if (t.includes("كولا") && t.includes("إضافات")) return true; }
+      return false;
+    }, "cola card now shows the badge (live, no restart)");
   });
 } finally {
   await reg.stop();

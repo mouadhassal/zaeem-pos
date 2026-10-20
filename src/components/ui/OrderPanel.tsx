@@ -81,7 +81,7 @@ export default function OrderPanel({
       </div>
 
       {/* MIDDLE: order lines, scrolls internally */}
-      <div className="flex-1 overflow-y-auto px-4 py-2 space-y-0.5">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-1">
         {lines.map(({ sent, ...line }) => (
           <OrderLine
             key={line.id}

@@ -45,7 +45,7 @@ export default function OrderLine({
   return (
     // Two rows, not one packed row: thumbnail(34)+name+steppers(72)+total(68)+void(32)
     // all on one line doesn't fit the 226px fixed panel -- it was overlapping.
-    <div className="group flex items-start gap-2 py-2" data-testid="order-line">
+    <div className="group flex items-start gap-2 py-3 border-b border-line last:border-b-0" data-testid="order-line">
       {photoUrl ? (
         <img
           src={photoUrl}
@@ -62,7 +62,7 @@ export default function OrderLine({
       )}
       <div className="flex-1 min-w-0 flex flex-col gap-1">
         <div className="flex items-center justify-between gap-1">
-          <p className="text-sm text-text truncate" data-testid="order-line-name">{name}</p>
+          <p className="text-sm font-medium text-text min-w-0 break-words" data-testid="order-line-name">{name}</p>
           <span className="tabular text-sm font-medium text-text shrink-0 flex items-baseline gap-1">
             {comped ? (
               <>
@@ -86,71 +86,80 @@ export default function OrderLine({
             {comped && compReason && <p className="text-accent-text">{compReason}</p>}
           </div>
         )}
-        <div className="flex items-center justify-between gap-1">
-          <span className="tabular text-xs text-text-muted flex items-baseline gap-1">
-            <span dir="ltr">{fmt(unitWithOptions)}</span>
-            <span>{currencySymbol}</span>
-            <span>× {quantity}</span>
-          </span>
-          <div className="flex items-center gap-1 shrink-0">
-            {(onIncrement || onDecrement) && (
+        <div className="flex items-center justify-between gap-2">
+          <span className="tabular text-xs text-text-muted flex items-baseline gap-1 min-w-0">
+            {(quantity > 1 || !(onIncrement || onDecrement)) && (
               <>
-                <button
-                  type="button"
-                  onClick={() => onDecrement?.(id)}
-                  aria-label="إنقاص الكمية"
-                  className="w-7 h-7 rounded-[7px] bg-surface-alt text-text-2 flex items-center justify-center hover:bg-line transition-[background-color] active:scale-95"
-                >
-                  <Minus className="w-3.5 h-3.5" />
-                </button>
-                <span className="tabular text-sm text-text w-4 text-center">{quantity}</span>
-                {/* Color discipline: this is the one allowed non-logo/nav/pay
-                 * accent spot -- the "+" of an item already in the cart. */}
-                <button
-                  type="button"
-                  onClick={() => onIncrement?.(id)}
-                  aria-label="زيادة الكمية"
-                  className="w-7 h-7 rounded-[7px] bg-accent text-white flex items-center justify-center hover:opacity-90 transition-[opacity,transform] active:scale-95"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                </button>
+                <span dir="ltr">{fmt(unitWithOptions)}</span>
+                <span>{currencySymbol}</span>
+                <span>× {quantity}</span>
               </>
             )}
+          </span>
+          {(onIncrement || onDecrement) && (
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => onDecrement?.(id)}
+                aria-label="إنقاص الكمية"
+                className="w-8 h-8 rounded-[8px] bg-surface-alt text-text-2 flex items-center justify-center hover:bg-line transition-[background-color] active:scale-95"
+              >
+                <Minus className="w-4 h-4" />
+              </button>
+              <span className="tabular text-sm font-medium text-text w-6 text-center">{quantity}</span>
+              {/* Color discipline: this is the one allowed non-logo/nav/pay
+               * accent spot -- the "+" of an item already in the cart. */}
+              <button
+                type="button"
+                onClick={() => onIncrement?.(id)}
+                aria-label="زيادة الكمية"
+                className="w-8 h-8 rounded-[8px] bg-accent text-white flex items-center justify-center hover:opacity-90 transition-[opacity,transform] active:scale-95"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </div>
+        {/* Labelled actions on their own wrapping row: icon-only buttons were
+            not discoverable, and a single packed row overflowed the panel
+            sideways. These wrap instead of ever scrolling. */}
+        {(onEdit || onGift || onVoid) && (
+          <div className="grid grid-cols-3 gap-1.5 pt-0.5">
             {onEdit && (
               <button
                 type="button"
                 onClick={() => onEdit(id)}
-                aria-label="تعديل الخيارات والملاحظة"
-                className="w-7 h-7 rounded-[7px] text-text-muted flex items-center justify-center hover:bg-surface-alt hover:text-text transition-[background-color,color] active:scale-95"
+                className="h-9 px-1 rounded-[8px] justify-center bg-surface-alt text-text-2 text-xs font-medium flex items-center gap-1 hover:bg-line transition-[background-color] active:scale-95"
                 data-testid="order-line-edit"
               >
                 <Pencil className="w-3.5 h-3.5" />
+                <span>إضافات</span>
               </button>
             )}
             {onGift && (
               <button
                 type="button"
                 onClick={() => onGift(id)}
-                aria-label="ضيافة"
-                className={`w-7 h-7 rounded-[7px] flex items-center justify-center hover:bg-surface-alt transition-[background-color,color] active:scale-95 ${comped ? "text-accent-text" : "text-text-muted hover:text-text"}`}
+                className={`h-9 px-1 rounded-[8px] justify-center text-xs font-medium flex items-center gap-1 transition-[background-color] active:scale-95 ${comped ? "bg-accent-soft text-accent-text" : "bg-surface-alt text-text-2 hover:bg-line"}`}
                 data-testid="order-line-gift"
               >
                 <Gift className="w-3.5 h-3.5" />
+                <span>{comped ? "إلغاء ضيافة" : "ضيافة"}</span>
               </button>
             )}
             {onVoid && (
               <button
                 type="button"
                 onClick={() => onVoid(id)}
-                aria-label="إلغاء الصنف"
                 data-testid="order-line-void"
-                className="w-7 h-7 rounded-[7px] text-text-muted flex items-center justify-center hover:bg-surface-alt hover:text-danger transition-[background-color,color] active:scale-95"
+                className="h-9 px-1 rounded-[8px] justify-center bg-surface-alt text-text-2 text-xs font-medium flex items-center gap-1 hover:bg-danger-100 hover:text-danger-600 transition-[background-color,color] active:scale-95"
               >
                 <X className="w-3.5 h-3.5" />
+                <span>حذف</span>
               </button>
             )}
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

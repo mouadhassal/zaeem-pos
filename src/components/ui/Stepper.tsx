@@ -8,7 +8,7 @@ export default function Stepper({ quantity, onAdd, onRemove }: Props) {
   if (quantity === 0) {
     return (
       <button
-        onClick={onAdd}
+        onClick={(e) => { e.stopPropagation(); onAdd(); }}
         className="w-[34px] h-[34px] rounded-[9px] flex items-center justify-center bg-saffron-500 text-white text-lg font-medium transition-transform active:scale-95"
         aria-label="إضافة"
       >
@@ -22,7 +22,7 @@ export default function Stepper({ quantity, onAdd, onRemove }: Props) {
     // as "- qty +", per spec.
     <div className="flex items-center gap-1">
       <button
-        onClick={onAdd}
+        onClick={(e) => { e.stopPropagation(); onAdd(); }}
         className="w-[34px] h-[34px] rounded-[9px] flex items-center justify-center bg-saffron-500 text-white text-lg font-medium transition-transform active:scale-95"
         aria-label="زيادة"
       >
@@ -33,7 +33,7 @@ export default function Stepper({ quantity, onAdd, onRemove }: Props) {
       </span>
       {onRemove && (
         <button
-          onClick={onRemove}
+          onClick={(e) => { e.stopPropagation(); onRemove?.(); }}
           className="w-[34px] h-[34px] rounded-[9px] flex items-center justify-center bg-surface-alt text-text-3 text-lg font-medium transition-transform active:scale-95"
           aria-label="تقليل"
         >
