@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { TaxConfig, TaxResult } from "../lib/taxCalculator";
 import { calculateTax } from "../lib/taxCalculator";
 import type { ComboComponent } from "./menuStore";
+import { lineKey } from "../lib/itemOptions";
 
 export interface CartModifier {
   name: string;
@@ -20,6 +21,9 @@ export interface CartItem {
   comboId?: string;
   voided?: number;
   voidReason?: string;
+  /** "On the house": stays on the order at its real price but is not charged. */
+  comped?: boolean;
+  compReason?: string;
   isCombo?: boolean;
   comboOriginalPriceCents?: number;
   comboComponents?: ComboComponent[];
@@ -48,6 +52,10 @@ interface CartState {
   removeItem: (id: string) => void;
   updateQuantity: (id: string, delta: number) => void;
   voidItem: (id: string, reason: string) => void;
+  /** Replaces the options and note of one line (cashier edited it before sending). */
+  setLineOptions: (id: string, modifiers: CartModifier[], notes: string) => void;
+  /** Marks a line as a gift (or takes the gift back). */
+  setLineComp: (id: string, comped: boolean, reason: string) => void;
   setDiscount: (cents: number, reason: string) => void;
   setTable: (id: string, name: string) => void;
   setSplits: (splits: SplitItem[]) => void;
@@ -72,8 +80,9 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   addItem: (item) =>
     set((state) => {
+      // Same item with different options, note or gift status is a different line.
       const existing = state.items.find(
-        (i) => i.menuItemId === item.menuItemId && !i.comboId
+        (i) => i.menuItemId === item.menuItemId && !i.comboId && !i.voided && lineKey(i) === lineKey(item)
       );
       if (existing && !item.comboId) {
         return {
@@ -113,6 +122,20 @@ export const useCartStore = create<CartState>((set, get) => ({
       ),
     })),
 
+  setLineOptions: (id, modifiers, notes) =>
+    set((state) => ({
+      items: state.items.map((i) => (i.id === id ? { ...i, modifiers, notes } : i)),
+    })),
+
+  setLineComp: (id, comped, reason) =>
+    set((state) => ({
+      items: state.items.map((i) => {
+        if (i.id !== id) return i;
+        const { compReason: _drop, ...rest } = i;
+        return comped ? { ...rest, comped: true, compReason: reason } : { ...rest, comped: false };
+      }),
+    })),
+
   setDiscount: (cents, reason) =>
     set({ discountCents: cents, discountReason: reason }),
 
@@ -136,7 +159,7 @@ export const useCartStore = create<CartState>((set, get) => ({
   subtotal: () => {
     const { items } = get();
     return items
-      .filter((i) => !i.voided)
+      .filter((i) => !i.voided && !i.comped)
       .reduce(
         (sum, i) =>
           sum + (i.unitPriceCents + i.modifiers.reduce((m, m2) => m + m2.priceCents, 0)) * i.quantity,

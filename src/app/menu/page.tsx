@@ -9,6 +9,7 @@ import { realErrorText, friendlyDeleteErrorText } from "../../lib/errors";
 import { IconPencil, IconTrash, IconX } from "@tabler/icons-react";
 import Typeahead from "../../components/ui/Typeahead";
 import { useToast } from "../../hooks/useToast";
+import OptionsTab from "./OptionsTab";
 
 interface Category {
   id: string;
@@ -198,7 +199,7 @@ const happyHourFormSchema = z.object({
 
 const DAY_NAMES = ["الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
 
-type Tab = "items" | "categories" | "offers";
+type Tab = "items" | "categories" | "offers" | "options";
 type OfferSubTab = "combos" | "happyhour";
 
 function calcMargin(price: number, cost: number): number {
@@ -234,7 +235,7 @@ export default function MenuPage() {
       // setting off in another tab/session -- bounce back to a tab that
       // still exists rather than leave the content area stuck rendering
       // a tab the bar no longer offers a button for.
-      setTab((t) => (!m.has_kitchen && t === "offers" ? "items" : t));
+      setTab((t) => (!m.has_kitchen && (t === "offers" || t === "options") ? "items" : t));
     }).catch(() => {});
   }, []);
 
@@ -915,7 +916,7 @@ export default function MenuPage() {
 
       {/* Tabs */}
       <div className="flex gap-2 border-b border-ink-200 pb-2">
-        {(["items", "categories", ...(hasKitchen ? (["offers"] as Tab[]) : [])] as Tab[]).map((t) => (
+        {(["items", "categories", ...(hasKitchen ? (["options", "offers"] as Tab[]) : [])] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -925,7 +926,7 @@ export default function MenuPage() {
                 : "text-ink-500 hover:text-saffron-600 hover:bg-saffron-50"
             }`}
           >
-            {t === "items" ? "الأصناف" : t === "categories" ? "التصنيفات" : "العروض"}
+            {t === "items" ? "الأصناف" : t === "categories" ? "التصنيفات" : t === "options" ? "الإضافات" : "العروض"}
           </button>
         ))}
       </div>
@@ -1108,6 +1109,9 @@ export default function MenuPage() {
           </div>
         </div>
       )}
+
+      {/* TAB: Options (without onion, extra cheese...) */}
+      {tab === "options" && <OptionsTab categories={categories} items={menuItems} />}
 
       {/* TAB: Offers */}
       {tab === "offers" && (

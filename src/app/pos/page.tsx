@@ -44,6 +44,10 @@ import { retryPrintQueue, printReceipt } from "../../lib/printer";
 import type { ReceiptData } from "../../lib/printer";
 import type { SplitItem, CartItem } from "../../stores/cartStore";
 import { orderNo } from "../../lib/orderNumber";
+import OptionPickerModal from "../../components/modals/OptionPickerModal";
+import GiftModal from "../../components/modals/GiftModal";
+import { useOptionsStore } from "../../stores/optionsStore";
+import { customModifiers, groupsForItem, selectionFromModifiers } from "../../lib/itemOptions";
 
 /**
  * "Send to kitchen now, pay later" dine-in fix: `cartStore.addItem` merges
@@ -60,6 +64,11 @@ import { orderNo } from "../../lib/orderNumber";
  * right after each successful send) says is already on the real order --
  * a line with no dbItemId at all is entirely new, its full quantity counts.
  */
+/** Gift ("on the house") fields for an order line, only present when the line is a gift. */
+function compFields(i: CartItem): { comped?: boolean; compReason?: string } {
+  return i.comped ? { comped: true, compReason: i.compReason ?? "" } : {};
+}
+
 function unsentCartLines(items: CartItem[], sentQuantities: Record<string, number>): CartItem[] {
   const result: CartItem[] = [];
   for (const item of items) {
@@ -335,7 +344,7 @@ export default function POSPage() {
     try {
       await holdOrder(
         tableId ?? "", user.id, orderType,
-        items.map((i) => ({ menuItemId: i.menuItemId, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers })),
+        items.map((i) => ({ menuItemId: i.menuItemId, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers, ...compFields(i) })),
         useCartStore.getState().subtotal(),
         useCartStore.getState().tax().taxCents + useCartStore.getState().tax().secondaryTaxCents + useCartStore.getState().tax().serviceChargeCents,
         useCartStore.getState().total(),
@@ -505,7 +514,7 @@ export default function POSPage() {
       const effectiveDebtorId = orderType === "DEBT" ? (debtorId ?? useOrderTypeStore.getState().debtorId) : debtorId;
       orderId = await createOrder(
         tableId ?? "", user.id, orderType === "DEBT" ? "DINE_IN" : orderType,
-        items.map((i) => ({ menuItemId: i.menuItemId, name: i.name, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers })),
+        items.map((i) => ({ menuItemId: i.menuItemId, name: i.name, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers, ...compFields(i) })),
         state.subtotal(), t.taxCents, t.secondaryTaxCents, t.serviceChargeCents,
         state.total(), state.discountCents, state.discountReason,
         orderType !== "DINE_IN" && orderType !== "DEBT" ? customerName : undefined,
@@ -585,7 +594,7 @@ export default function POSPage() {
         const t = state.tax();
         orderId = await createOrder(
           tableId, user.id, "DINE_IN",
-          items.map((i) => ({ menuItemId: i.menuItemId, name: i.name, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers })),
+          items.map((i) => ({ menuItemId: i.menuItemId, name: i.name, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers, ...compFields(i) })),
           state.subtotal(), t.taxCents, t.secondaryTaxCents, t.serviceChargeCents,
           state.total(), state.discountCents, state.discountReason,
           undefined, undefined, undefined,
@@ -600,7 +609,7 @@ export default function POSPage() {
         if (newItems.length === 0) return;
         await addItemsToOrder(
           orderId, "DINE_IN",
-          newItems.map((i) => ({ menuItemId: i.menuItemId, name: i.name, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers })),
+          newItems.map((i) => ({ menuItemId: i.menuItemId, name: i.name, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers, ...compFields(i) })),
         );
       }
 
@@ -834,6 +843,11 @@ export default function POSPage() {
       categoryName: i.categoryName || "",
       quantity: i.quantity,
       unitPriceCents: i.unitPriceCents,
+      modifiers: i.modifiers,
+      notes: i.notes,
+      comped: !!i.comped,
+      compReason: i.compReason ?? "",
+      sent: !!i.dbItemId,
     })),
   [items, menuItemsById]);
 
@@ -882,12 +896,33 @@ export default function POSPage() {
   const handleIncrementLine = (id: string) => updateQuantity(id, 1);
   const handleDecrementLine = (id: string) => updateQuantity(id, -1);
 
+  // Edit a line's options/note, or give it away ("on the house"), before it
+  // is sent. Lines already sent to the kitchen are changed through the
+  // server-side edit flow instead (they keep their kitchen history).
+  const optionGroups = useOptionsStore((s) => s.groups);
+  const [editLineId, setEditLineId] = useState<string | null>(null);
+  const [giftLineId, setGiftLineId] = useState<string | null>(null);
+  const setLineOptions = useCartStore((s) => s.setLineOptions);
+  const setLineComp = useCartStore((s) => s.setLineComp);
+  const editLine = items.find((i) => i.id === editLineId);
+  const giftLine = items.find((i) => i.id === giftLineId);
+
+  const handleGiftClick = (id: string) => {
+    const target = items.find((i) => i.id === id);
+    if (!target) return;
+    if (target.comped) {
+      setLineComp(id, false, "");
+      return;
+    }
+    setGiftLineId(id);
+  };
+
   const handleVoidLineClick = (id: string) => {
     const target = items.find((i) => i.id === id);
     if (!target) return;
     setVoidTargetItem(id);
     setVoidTargetName(target.name);
-    setVoidTargetPrice(target.unitPriceCents * target.quantity);
+    setVoidTargetPrice((target.unitPriceCents + target.modifiers.reduce((sum, m) => sum + m.priceCents, 0)) * target.quantity);
     setShowVoid(true);
   };
 
@@ -990,6 +1025,8 @@ export default function POSPage() {
           onIncrementLine={handleIncrementLine}
           onDecrementLine={handleDecrementLine}
           onVoidLine={handleVoidLineClick}
+          onEditLine={setEditLineId}
+          onGiftLine={handleGiftClick}
           toolbar={
             <div className="grid grid-cols-4 gap-1.5">
               <button
@@ -1184,7 +1221,7 @@ export default function POSPage() {
           <MenuGridContainer
             currencySymbol={currencySymbol}
             onAddItem={(item) => {
-              addItem({ ...item, modifiers: [] });
+              addItem({ ...item, modifiers: item.modifiers ?? [] });
             }}
           />
         </div>
@@ -1207,6 +1244,40 @@ export default function POSPage() {
           imperceptible -- unlike the first-paint menu grid, nothing here is
           ever the thing a user is staring at waiting for on page load. */}
       {/* OrderTypeSelector removed — top bar handles order type selection */}
+
+      {editLine && (
+        <OptionPickerModal
+          itemName={editLine.name}
+          groups={groupsForItem(optionGroups, editLine.menuItemId, menuItemsById.find((m) => m.id === editLine.menuItemId)?.category_id)}
+          initialSelection={selectionFromModifiers(
+            groupsForItem(optionGroups, editLine.menuItemId, menuItemsById.find((m) => m.id === editLine.menuItemId)?.category_id),
+            editLine.modifiers,
+          )}
+          initialNote={editLine.notes}
+          keepModifiers={customModifiers(
+            groupsForItem(optionGroups, editLine.menuItemId, menuItemsById.find((m) => m.id === editLine.menuItemId)?.category_id),
+            editLine.modifiers,
+          )}
+          confirmLabel="حفظ"
+          onCancel={() => setEditLineId(null)}
+          onConfirm={({ modifiers, note }) => {
+            setLineOptions(editLine.id, modifiers, note);
+            setEditLineId(null);
+          }}
+        />
+      )}
+
+      {giftLine && (
+        <GiftModal
+          itemName={giftLine.name}
+          valueCents={(giftLine.unitPriceCents + giftLine.modifiers.reduce((sum, m) => sum + m.priceCents, 0)) * giftLine.quantity}
+          onCancel={() => setGiftLineId(null)}
+          onConfirm={(reason) => {
+            setLineComp(giftLine.id, true, reason);
+            setGiftLineId(null);
+          }}
+        />
+      )}
 
       {showLoyaltyScan && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">

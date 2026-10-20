@@ -322,6 +322,11 @@ pub struct PaymentInput {
 pub struct OrderModifierInput {
     pub name: String,
     pub price_cents: i64,
+    /// Set only by the server for modifiers already stored on an order, so
+    /// re-pricing an open tab keeps the price they were sold at (see
+    /// `ops::price_modifiers`). Never read from the client.
+    #[serde(skip_deserializing)]
+    pub locked: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -333,6 +338,15 @@ pub struct OrderItemInput {
     pub notes: Option<String>,
     pub combo_id: Option<String>,
     pub modifiers: Vec<OrderModifierInput>,
+    /// "On the house": the line keeps its real price for the record but the
+    /// order does not charge it. Needs a reason; `comp_by` is stamped by the
+    /// server from the logged-in user, never read from the client.
+    #[serde(default)]
+    pub comped: bool,
+    #[serde(default)]
+    pub comp_reason: Option<String>,
+    #[serde(skip_deserializing)]
+    pub comp_by: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -383,6 +397,8 @@ pub struct HeldOrderItem {
     pub unit_price_cents: i64,
     pub notes: String,
     pub modifiers: Vec<HeldOrderModifier>,
+    pub comped: bool,
+    pub comp_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -2651,6 +2667,23 @@ impl<'a> Repo<'a> {
                     reason: "menu item is not active".to_string(),
                 });
             }
+            if item.quantity <= 0 {
+                return Err(RepoError::ItemUnavailable {
+                    item_id: item.menu_item_id.clone(),
+                    branch_id: String::new(),
+                    reason: "quantity must be positive".to_string(),
+                });
+            }
+            let modifiers = crate::ops::price_modifiers(self.conn, tenant_id, &item.menu_item_id, &item.modifiers)
+                .map_err(|reason| RepoError::ItemUnavailable { item_id: item.menu_item_id.clone(), branch_id: String::new(), reason })?;
+            let comp_reason = item.comp_reason.as_deref().map(str::trim).filter(|r| !r.is_empty()).map(str::to_string);
+            if item.comped && comp_reason.is_none() {
+                return Err(RepoError::ItemUnavailable {
+                    item_id: item.menu_item_id.clone(),
+                    branch_id: String::new(),
+                    reason: "a gift (on the house) needs a reason".to_string(),
+                });
+            }
             Ok(OrderItemInput {
                 menu_item_id: item.menu_item_id.clone(),
                 name: item.name.clone(),
@@ -2658,7 +2691,10 @@ impl<'a> Repo<'a> {
                 unit_price_cents: price_cents,
                 notes: item.notes.clone(),
                 combo_id: item.combo_id.clone(),
-                modifiers: item.modifiers.clone(),
+                modifiers,
+                comped: item.comped,
+                comp_reason: if item.comped { comp_reason } else { None },
+                comp_by: if item.comped { item.comp_by.clone() } else { None },
             })
         }).collect()
     }
@@ -2672,10 +2708,39 @@ impl<'a> Repo<'a> {
     /// `taxCalculator.ts::calculateTax` separately returns under the same
     /// field name).
     pub fn sum_item_total_cents(items: &[OrderItemInput]) -> i64 {
-        items.iter().map(|item| {
-            let modifiers_total: i64 = item.modifiers.iter().map(|m| m.price_cents).sum();
-            (item.unit_price_cents + modifiers_total) * item.quantity
-        }).sum()
+        items.iter().filter(|item| !item.comped).map(Self::line_total_cents).sum()
+    }
+
+    /// What one line is worth at its menu price plus options, whether or not
+    /// it is charged (a gift keeps this as its recorded value).
+    pub fn line_total_cents(item: &OrderItemInput) -> i64 {
+        let modifiers_total: i64 = item.modifiers.iter().map(|m| m.price_cents).sum();
+        (item.unit_price_cents + modifiers_total) * item.quantity
+    }
+
+    /// The one place an order line and its options are written, so every way
+    /// of creating an order (new, held, delayed, items added to an open tab)
+    /// stores comps the same way. Returns the new line's id.
+    fn insert_order_item_row(&self, tenant_id: &str, branch_id: &str, order_id: &str, item: &OrderItemInput, now: &str) -> Result<String, RepoError> {
+        let item_id = uuid::Uuid::now_v7().to_string();
+        let comp_value = if item.comped { Self::line_total_cents(item) } else { 0 };
+        self.conn.execute(
+            "INSERT INTO order_items (id, tenant_id, branch_id, order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, voided, \
+             comped, comp_reason, comp_by, comp_value_cents, sync_version, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?12, ?13, 1, ?14, 'pending')",
+            params![
+                item_id, tenant_id, branch_id, order_id, item.menu_item_id, item.quantity, item.unit_price_cents, item.notes, item.combo_id,
+                item.comped as i64, item.comp_reason, item.comp_by, comp_value, now
+            ],
+        ).map_err(RepoError::from)?;
+        for modifier in &item.modifiers {
+            self.conn.execute(
+                "INSERT INTO order_modifiers (id, tenant_id, branch_id, order_item_id, name, price_cents, sync_version, last_modified, sync_status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 'pending')",
+                params![uuid::Uuid::now_v7().to_string(), tenant_id, branch_id, item_id, modifier.name, modifier.price_cents, now],
+            ).map_err(RepoError::from)?;
+        }
+        Ok(item_id)
     }
 
     /// The business name printed at the top of every receipt. Until
@@ -4188,7 +4253,7 @@ impl<'a> Repo<'a> {
         let sql = format!(
             "SELECT menu_items.id, menu_items.name, \
                     SUM(order_items.quantity), \
-                    SUM(order_items.quantity * menu_items.price_cents), \
+                    SUM(CASE WHEN order_items.comped = 1 THEN 0 ELSE order_items.quantity * menu_items.price_cents END), \
                     SUM(order_items.quantity * menu_items.cost_cents) \
              FROM order_items \
              INNER JOIN menu_items ON menu_items.id = order_items.menu_item_id \
@@ -4740,10 +4805,7 @@ impl<'a> Repo<'a> {
     /// happy-hour discounts (client-side only, no backend equivalent) --
     /// same still-open gaps, not silently claimed fixed here.
     fn validate_order_money_consistency(input: &FullOrderInput) -> Result<(), RepoError> {
-        let items_subtotal: i64 = input.items.iter().map(|item| {
-            let modifiers_total: i64 = item.modifiers.iter().map(|m| m.price_cents).sum();
-            (item.unit_price_cents + modifiers_total) * item.quantity
-        }).sum();
+        let items_subtotal: i64 = Self::sum_item_total_cents(&input.items);
         if items_subtotal != input.subtotal_cents {
             return Err(RepoError::PaymentAmountMismatch {
                 order_id: "(order being created)".to_string(), expected_cents: items_subtotal, got_cents: input.subtotal_cents,
@@ -4839,20 +4901,7 @@ impl<'a> Repo<'a> {
         ).map_err(RepoError::from)?;
 
         for item in &input.items {
-            let item_id = uuid::Uuid::now_v7().to_string();
-            self.conn.execute(
-                "INSERT INTO order_items (id, tenant_id, branch_id, order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, voided, sync_version, last_modified, sync_status) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 1, ?10, 'pending')",
-                params![item_id, tenant_id, branch_id, id, item.menu_item_id, item.quantity, item.unit_price_cents, item.notes, item.combo_id, now],
-            ).map_err(RepoError::from)?;
-
-            for modifier in &item.modifiers {
-                self.conn.execute(
-                    "INSERT INTO order_modifiers (id, tenant_id, branch_id, order_item_id, name, price_cents, sync_version, last_modified, sync_status) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 'pending')",
-                    params![uuid::Uuid::now_v7().to_string(), tenant_id, branch_id, item_id, modifier.name, modifier.price_cents, now],
-                ).map_err(RepoError::from)?;
-            }
+            self.insert_order_item_row(tenant_id, branch_id, &id, item, &now)?;
         }
 
         self.conn.execute(
@@ -4902,20 +4951,7 @@ impl<'a> Repo<'a> {
         ).map_err(RepoError::from)?;
 
         for item in &input.items {
-            let item_id = uuid::Uuid::now_v7().to_string();
-            self.conn.execute(
-                "INSERT INTO order_items (id, tenant_id, branch_id, order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, voided, sync_version, last_modified, sync_status) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 1, ?10, 'pending')",
-                params![item_id, tenant_id, branch_id, id, item.menu_item_id, item.quantity, item.unit_price_cents, item.notes, item.combo_id, now],
-            ).map_err(RepoError::from)?;
-
-            for modifier in &item.modifiers {
-                self.conn.execute(
-                    "INSERT INTO order_modifiers (id, tenant_id, branch_id, order_item_id, name, price_cents, sync_version, last_modified, sync_status) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 'pending')",
-                    params![uuid::Uuid::now_v7().to_string(), tenant_id, branch_id, item_id, modifier.name, modifier.price_cents, now],
-                ).map_err(RepoError::from)?;
-            }
+            self.insert_order_item_row(tenant_id, branch_id, &id, item, &now)?;
         }
 
         self.conn.execute(
@@ -4970,15 +5006,15 @@ impl<'a> Repo<'a> {
     /// query shape, only the caller's status filter on `orders` differs.
     fn fetch_order_items_for_retrieval(&self, order_id: &str) -> Result<Vec<HeldOrderItem>, RepoError> {
         let mut items_stmt = self.conn.prepare(
-            "SELECT id, menu_item_id, quantity, unit_price_cents, notes FROM order_items WHERE order_id = ?1 AND voided = 0"
+            "SELECT id, menu_item_id, quantity, unit_price_cents, notes, comped, comp_reason FROM order_items WHERE order_id = ?1 AND voided = 0"
         )?;
-        let raw_items: Vec<(String, String, i64, i64, Option<String>)> = items_stmt.query_map(params![order_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        let raw_items: Vec<(String, String, i64, i64, Option<String>, i64, Option<String>)> = items_stmt.query_map(params![order_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
         })?.filter_map(|r| r.ok()).collect();
         drop(items_stmt);
 
         let mut items = Vec::with_capacity(raw_items.len());
-        for (db_item_id, menu_item_id, quantity, unit_price_cents, notes) in raw_items {
+        for (db_item_id, menu_item_id, quantity, unit_price_cents, notes, comped, comp_reason) in raw_items {
             let name: String = self.conn.query_row(
                 "SELECT name FROM menu_items WHERE id = ?1", params![menu_item_id], |r| r.get(0)
             ).unwrap_or_default();
@@ -4994,6 +5030,7 @@ impl<'a> Repo<'a> {
             items.push(HeldOrderItem {
                 db_item_id, menu_item_id, name, quantity, unit_price_cents,
                 notes: notes.unwrap_or_default(), modifiers,
+                comped: comped != 0, comp_reason,
             });
         }
         Ok(items)
@@ -5045,22 +5082,22 @@ impl<'a> Repo<'a> {
     /// tax/total never drift from a real, authoritative recompute.
     pub fn list_order_items_as_input(&self, order_id: &str) -> Result<Vec<OrderItemInput>, RepoError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, menu_item_id, quantity, unit_price_cents, notes, combo_id FROM order_items WHERE order_id = ?1 AND voided = 0"
+            "SELECT id, menu_item_id, quantity, unit_price_cents, notes, combo_id, comped, comp_reason, comp_by FROM order_items WHERE order_id = ?1 AND voided = 0"
         )?;
         #[allow(clippy::type_complexity)]
-        let rows: Vec<(String, String, i64, i64, Option<String>, Option<String>)> = stmt.query_map(params![order_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+        let rows: Vec<(String, String, i64, i64, Option<String>, Option<String>, i64, Option<String>, Option<String>)> = stmt.query_map(params![order_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?))
         })?.filter_map(|r| r.ok()).collect();
         drop(stmt);
 
         let mut items = Vec::with_capacity(rows.len());
-        for (item_id, menu_item_id, quantity, unit_price_cents, notes, combo_id) in rows {
+        for (item_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, comped, comp_reason, comp_by) in rows {
             let mut mod_stmt = self.conn.prepare("SELECT name, price_cents FROM order_modifiers WHERE order_item_id = ?1")?;
             let modifiers: Vec<OrderModifierInput> = mod_stmt.query_map(params![item_id], |r| {
-                Ok(OrderModifierInput { name: r.get(0)?, price_cents: r.get(1)? })
+                Ok(OrderModifierInput { name: r.get(0)?, price_cents: r.get(1)?, locked: true })
             })?.filter_map(|r| r.ok()).collect();
             drop(mod_stmt);
-            items.push(OrderItemInput { menu_item_id, name: None, quantity, unit_price_cents, notes, combo_id, modifiers });
+            items.push(OrderItemInput { menu_item_id, name: None, quantity, unit_price_cents, notes, combo_id, modifiers, comped: comped != 0, comp_reason, comp_by });
         }
         Ok(items)
     }
@@ -5088,20 +5125,7 @@ impl<'a> Repo<'a> {
         let now = chrono::Utc::now().to_rfc3339();
         let mut inserted_ids = Vec::with_capacity(new_items.len());
         for item in new_items {
-            let item_id = uuid::Uuid::now_v7().to_string();
-            self.conn.execute(
-                "INSERT INTO order_items (id, tenant_id, branch_id, order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, voided, sync_version, last_modified, sync_status) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 1, ?10, 'pending')",
-                params![item_id, tenant_id, branch_id, order_id, item.menu_item_id, item.quantity, item.unit_price_cents, item.notes, item.combo_id, now],
-            ).map_err(RepoError::from)?;
-
-            for modifier in &item.modifiers {
-                self.conn.execute(
-                    "INSERT INTO order_modifiers (id, tenant_id, branch_id, order_item_id, name, price_cents, sync_version, last_modified, sync_status) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 'pending')",
-                    params![uuid::Uuid::now_v7().to_string(), tenant_id, branch_id, item_id, modifier.name, modifier.price_cents, now],
-                ).map_err(RepoError::from)?;
-            }
+            let item_id = self.insert_order_item_row(tenant_id, branch_id, order_id, item, &now)?;
             inserted_ids.push(item_id);
         }
         Ok(inserted_ids)
@@ -5150,15 +5174,15 @@ impl<'a> Repo<'a> {
         let mut result = Vec::with_capacity(rows.len());
         for (order_id, total_cents) in rows {
             let mut items_stmt = self.conn.prepare(
-                "SELECT id, menu_item_id, quantity, unit_price_cents, notes FROM order_items WHERE order_id = ?1 AND voided = 0"
+                "SELECT id, menu_item_id, quantity, unit_price_cents, notes, comped, comp_reason FROM order_items WHERE order_id = ?1 AND voided = 0"
             )?;
-            let raw_items: Vec<(String, String, i64, i64, Option<String>)> = items_stmt.query_map(params![order_id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            let raw_items: Vec<(String, String, i64, i64, Option<String>, i64, Option<String>)> = items_stmt.query_map(params![order_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
             })?.filter_map(|r| r.ok()).collect();
             drop(items_stmt);
 
             let mut items = Vec::with_capacity(raw_items.len());
-            for (db_item_id, menu_item_id, quantity, unit_price_cents, notes) in raw_items {
+            for (db_item_id, menu_item_id, quantity, unit_price_cents, notes, comped, comp_reason) in raw_items {
                 let name: String = self.conn.query_row(
                     "SELECT name FROM menu_items WHERE id = ?1", params![menu_item_id], |r| r.get(0)
                 ).unwrap_or_default();
@@ -5174,6 +5198,7 @@ impl<'a> Repo<'a> {
                 items.push(HeldOrderItem {
                     db_item_id, menu_item_id, name, quantity, unit_price_cents,
                     notes: notes.unwrap_or_default(), modifiers,
+                    comped: comped != 0, comp_reason,
                 });
             }
             result.push(PendingOrderSummary { id: order_id, total_cents, items });
@@ -5620,20 +5645,7 @@ impl<'a> Repo<'a> {
         ).map_err(RepoError::from)?;
 
         for item in &input.items {
-            let item_id = uuid::Uuid::now_v7().to_string();
-            self.conn.execute(
-                "INSERT INTO order_items (id, tenant_id, branch_id, order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, voided, sync_version, last_modified, sync_status) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 1, ?10, 'pending')",
-                params![item_id, tenant_id, branch_id, id, item.menu_item_id, item.quantity, item.unit_price_cents, item.notes, item.combo_id, now],
-            ).map_err(RepoError::from)?;
-
-            for modifier in &item.modifiers {
-                self.conn.execute(
-                    "INSERT INTO order_modifiers (id, tenant_id, branch_id, order_item_id, name, price_cents, sync_version, last_modified, sync_status) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 'pending')",
-                    params![uuid::Uuid::now_v7().to_string(), tenant_id, branch_id, item_id, modifier.name, modifier.price_cents, now],
-                ).map_err(RepoError::from)?;
-            }
+            self.insert_order_item_row(tenant_id, branch_id, &id, item, &now)?;
         }
 
         self.conn.execute(
@@ -6077,6 +6089,7 @@ mod tests {
         migrate_v3::run_backup_settings_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_restaurant_ops_migration(&mut conn, &db_path).unwrap();
         db_path
     }
 
@@ -6304,7 +6317,7 @@ mod tests {
             subtotal_cents: 1500, tax_cents: 0, total_cents: 1500, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
             delivery_fee_cents: 0, shift_id: None,
-            items: vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 3, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![] }],
+            items: vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 3, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
         }).unwrap();
         repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CASH", 1500, 0, None, &actor_id, None, None).unwrap();
         conn.execute("UPDATE orders SET closed_at = '2026-01-15T12:00:00Z' WHERE id = ?1", params![order_id]).unwrap();

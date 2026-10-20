@@ -1,4 +1,5 @@
 use crate::audit;
+use crate::ops;
 use crate::repo::{NewOrder, OrderRow, Repo, FullOrderInput, SplitBillInput, TableInfo, HeldOrderResult, ReceiptConfig, LoyaltyCardLookup};
 use crate::security::{authorize, authorize_scope, Actor, Permission, Scope};
 use crate::Db;
@@ -610,7 +611,7 @@ pub(crate) fn create_full_order_v3_impl(
     session_token: String,
     table_id: String,
     order_type: String,
-    items: Vec<crate::repo::OrderItemInput>,
+    mut items: Vec<crate::repo::OrderItemInput>,
     // No longer trusted -- the command recomputes its own authoritative
     // subtotal/tax/total via `price_order_authoritatively` below. Kept as
     // parameters so the Tauri command signature (and every existing
@@ -634,6 +635,7 @@ pub(crate) fn create_full_order_v3_impl(
     crate::lan::reject_if_local_kitchen_satellite("create_full_order_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    ops::stamp_comps(&mut items, &actor.id);
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         resolve_operating_branch(&conn, &actor, license, None)?
@@ -811,7 +813,7 @@ pub(crate) fn hold_order_v3_impl(
     session_token: String,
     table_id: String,
     order_type: String,
-    items: Vec<crate::repo::OrderItemInput>,
+    mut items: Vec<crate::repo::OrderItemInput>,
     // No longer trusted -- see `price_order_authoritatively`. A held DRAFT
     // should show the cashier real prices when retrieved, same as a live
     // order; there's no reason a hold gets a weaker guarantee than a sale.
@@ -822,6 +824,7 @@ pub(crate) fn hold_order_v3_impl(
 ) -> Result<String, String> {
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    ops::stamp_comps(&mut items, &actor.id);
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         resolve_operating_branch(&conn, &actor, license, None)?
@@ -913,11 +916,12 @@ pub(crate) fn add_items_to_order_v3_impl(
     license: &crate::license::cloud::CloudLicenseState,
     session_token: String,
     order_id: String,
-    items: Vec<crate::repo::OrderItemInput>,
+    mut items: Vec<crate::repo::OrderItemInput>,
 ) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("add_items_to_order_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    ops::stamp_comps(&mut items, &actor.id);
     let scope = actor.scope();
     if items.is_empty() {
         return Ok(());
@@ -1202,7 +1206,7 @@ pub(crate) fn schedule_delayed_order_v3_impl(
     session_token: String,
     table_id: String,
     order_type: String,
-    items: Vec<crate::repo::OrderItemInput>,
+    mut items: Vec<crate::repo::OrderItemInput>,
     // No longer trusted -- see `price_order_authoritatively`.
     _subtotal_cents: i64,
     _tax_cents: i64,
@@ -1211,6 +1215,7 @@ pub(crate) fn schedule_delayed_order_v3_impl(
 ) -> Result<String, String> {
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    ops::stamp_comps(&mut items, &actor.id);
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         resolve_operating_branch(&conn, &actor, license, None)?

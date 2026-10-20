@@ -18,6 +18,8 @@ interface OrderItemInput {
   notes?: string | null;
   combo_id?: string | null;
   modifiers: { name: string; price_cents: number }[];
+  comped?: boolean;
+  comp_reason?: string | null;
 }
 
 interface HeldOrderModifier {
@@ -33,6 +35,8 @@ interface HeldOrderItem {
   unit_price_cents: number;
   notes: string;
   modifiers: HeldOrderModifier[];
+  comped?: boolean;
+  comp_reason?: string | null;
 }
 
 export interface HeldOrderResult {
@@ -130,6 +134,8 @@ export async function createOrder(
     notes?: string;
     comboId?: string;
     modifiers?: { name: string; priceCents: number }[];
+    comped?: boolean;
+    compReason?: string;
   }[],
   subtotalCents: number,
   taxCents: number,
@@ -160,6 +166,8 @@ export async function createOrder(
     notes: i.notes ?? null,
     combo_id: i.comboId ?? null,
     modifiers: (i.modifiers ?? []).map((m) => ({ name: m.name, price_cents: m.priceCents })),
+    comped: i.comped ?? false,
+    comp_reason: i.compReason ?? null,
   }));
 
   const orderId = await invoke<string>("create_full_order_v3", {
@@ -284,6 +292,8 @@ export async function holdOrder(
     unitPriceCents: number;
     notes?: string;
     modifiers?: { name: string; priceCents: number }[];
+    comped?: boolean;
+    compReason?: string;
   }[],
   subtotalCents: number,
   taxCents: number,
@@ -298,6 +308,8 @@ export async function holdOrder(
     notes: i.notes ?? null,
     combo_id: null,
     modifiers: (i.modifiers ?? []).map((m) => ({ name: m.name, price_cents: m.priceCents })),
+    comped: i.comped ?? false,
+    comp_reason: i.compReason ?? null,
   }));
 
   return invoke<string>("hold_order_v3", {
@@ -323,6 +335,8 @@ export async function retrieveHeldOrder(
     unitPriceCents: number;
     notes: string;
     modifiers: { name: string; priceCents: number }[];
+    comped: boolean;
+    compReason: string;
   }[];
   customerName?: string;
   customerPhone?: string;
@@ -344,6 +358,8 @@ export async function retrieveHeldOrder(
       unitPriceCents: i.unit_price_cents,
       notes: i.notes,
       modifiers: i.modifiers.map((m) => ({ name: m.name, priceCents: m.price_cents })),
+      comped: !!i.comped,
+      compReason: i.comp_reason ?? "",
     })),
     ...(result.customer_name ? { customerName: result.customer_name } : {}),
     ...(result.customer_phone ? { customerPhone: result.customer_phone } : {}),
@@ -365,7 +381,7 @@ interface PendingOrderSummary {
 export async function listPendingOrdersForTable(tableId: string): Promise<{
   id: string;
   totalCents: number;
-  items: { name: string; quantity: number; priceCents: number; modifiers: { name: string; priceCents: number }[] }[];
+  items: { name: string; quantity: number; priceCents: number; modifiers: { name: string; priceCents: number }[]; comped: boolean; compReason: string }[];
 }[]> {
   const rows = await invoke<PendingOrderSummary[]>("list_pending_orders_for_table_v3", {
     sessionToken: token(),
@@ -379,6 +395,8 @@ export async function listPendingOrdersForTable(tableId: string): Promise<{
       quantity: i.quantity,
       priceCents: i.unit_price_cents,
       modifiers: i.modifiers.map((m) => ({ name: m.name, priceCents: m.price_cents })),
+      comped: !!i.comped,
+      compReason: i.comp_reason ?? "",
     })),
   }));
 }
@@ -403,6 +421,8 @@ export interface OpenOrderResult {
     unitPriceCents: number;
     notes: string;
     modifiers: { name: string; priceCents: number }[];
+    comped: boolean;
+    compReason: string;
   }[];
   customerName?: string;
   customerPhone?: string;
@@ -439,6 +459,8 @@ export async function retrieveOpenOrder(orderId: string): Promise<OpenOrderResul
       unitPriceCents: i.unit_price_cents,
       notes: i.notes,
       modifiers: i.modifiers.map((m) => ({ name: m.name, priceCents: m.price_cents })),
+      comped: !!i.comped,
+      compReason: i.comp_reason ?? "",
     })),
     ...(result.customer_name ? { customerName: result.customer_name } : {}),
     ...(result.customer_phone ? { customerPhone: result.customer_phone } : {}),
@@ -468,6 +490,8 @@ export async function addItemsToOrder(
     notes?: string;
     comboId?: string;
     modifiers?: { name: string; priceCents: number }[];
+    comped?: boolean;
+    compReason?: string;
   }[]
 ): Promise<void> {
   if (items.length === 0) return;
@@ -480,6 +504,8 @@ export async function addItemsToOrder(
     notes: i.notes ?? null,
     combo_id: i.comboId ?? null,
     modifiers: (i.modifiers ?? []).map((m) => ({ name: m.name, price_cents: m.priceCents })),
+    comped: i.comped ?? false,
+    comp_reason: i.compReason ?? null,
   }));
 
   await invoke<void>("add_items_to_order_v3", {
@@ -599,6 +625,8 @@ export async function scheduleDelayedOrder(
     unitPriceCents: number;
     notes?: string;
     modifiers?: { name: string; priceCents: number }[];
+    comped?: boolean;
+    compReason?: string;
   }[],
   subtotalCents: number,
   taxCents: number,
@@ -613,6 +641,8 @@ export async function scheduleDelayedOrder(
     notes: i.notes ?? null,
     combo_id: null,
     modifiers: (i.modifiers ?? []).map((m) => ({ name: m.name, price_cents: m.priceCents })),
+    comped: i.comped ?? false,
+    comp_reason: i.compReason ?? null,
   }));
 
   return invoke<string>("schedule_delayed_order_v3", {

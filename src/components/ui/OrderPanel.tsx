@@ -11,6 +11,12 @@ interface LineItem {
   categoryName: string;
   quantity: number;
   unitPriceCents: number;
+  modifiers?: { name: string; priceCents: number }[];
+  notes?: string;
+  comped?: boolean;
+  compReason?: string;
+  /** Already sent to the kitchen: changed through the order-edit flow, not by editing the cart line. */
+  sent?: boolean;
 }
 
 interface Props {
@@ -35,12 +41,14 @@ interface Props {
   onIncrementLine?: (id: string) => void;
   onDecrementLine?: (id: string) => void;
   onVoidLine?: (id: string) => void;
+  onEditLine?: (id: string) => void;
+  onGiftLine?: (id: string) => void;
 }
 
 export default function OrderPanel({
   tableLabel, lines, subtotalCents, discountCents,
   totalCents, currencySymbol, onEditOrder, orderTypeIcon, orderTypeLabel, children, toolbar,
-  onIncrementLine, onDecrementLine, onVoidLine, emptyMessage,
+  onIncrementLine, onDecrementLine, onVoidLine, onEditLine, onGiftLine, emptyMessage,
 }: Props) {
   // Currency-scale-aware -- was raw cents.toLocaleString(), which silently
   // assumed scale 0 (see lib/money.ts's formatAmount doc comment).
@@ -72,7 +80,7 @@ export default function OrderPanel({
 
       {/* MIDDLE: order lines, scrolls internally */}
       <div className="flex-1 overflow-y-auto px-4 py-2 space-y-0.5">
-        {lines.map((line) => (
+        {lines.map(({ sent, ...line }) => (
           <OrderLine
             key={line.id}
             {...line}
@@ -80,6 +88,8 @@ export default function OrderPanel({
             onIncrement={onIncrementLine}
             onDecrement={onDecrementLine}
             onVoid={onVoidLine}
+            onEdit={sent ? undefined : onEditLine}
+            onGift={sent ? undefined : onGiftLine}
           />
         ))}
         {lines.length === 0 && (

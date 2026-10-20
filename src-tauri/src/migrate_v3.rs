@@ -2698,6 +2698,110 @@ pub fn run_printer_categories_migration(conn: &mut Connection, _db_path: &Path) 
     Ok(())
 }
 
+pub const MIGRATION_AE_VERSION: i64 = 37;
+
+/// Migration AE (2026-10-20): restaurant operations.
+///   * item options ("without onion", "extra cheese +2000"): option_groups /
+///     option_choices / option_group_targets (a group applies to chosen menu
+///     items and/or whole categories);
+///   * comps ("on the house"): order_items.comped / comp_reason / comp_by /
+///     comp_value_cents -- the line keeps its real price for the record, the
+///     order total just does not charge it;
+///   * edits: order_items.replaces_item_id links a replacement line to the
+///     line it replaced (the old line is voided, never deleted);
+///   * delivery: delivery_drivers, order_deliveries (one row per delivery
+///     order), delivery_settlements (paying a driver / taking his cash).
+/// Everything is additive; an install that never uses these behaves exactly
+/// as before.
+pub fn run_restaurant_ops_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AE_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS option_groups (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            selection TEXT NOT NULL DEFAULT 'MULTI' CHECK (selection IN ('MULTI', 'SINGLE')),
+            required INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE TABLE IF NOT EXISTS option_choices (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            price_cents INTEGER NOT NULL DEFAULT 0 CHECK (price_cents >= 0),
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_option_choices_group ON option_choices (group_id);
+        CREATE TABLE IF NOT EXISTS option_group_targets (
+            group_id TEXT NOT NULL,
+            target_type TEXT NOT NULL CHECK (target_type IN ('ITEM', 'CATEGORY')),
+            target_id TEXT NOT NULL,
+            PRIMARY KEY (group_id, target_type, target_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_option_targets_target ON option_group_targets (target_type, target_id);
+
+        CREATE TABLE IF NOT EXISTS delivery_drivers (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            phone TEXT,
+            pay_value INTEGER,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS order_deliveries (
+            order_id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            branch_id TEXT,
+            driver_id TEXT,
+            status TEXT NOT NULL DEFAULT 'NEW' CHECK (status IN ('NEW', 'ASSIGNED', 'OUT', 'DELIVERED', 'FAILED')),
+            assigned_at TEXT,
+            out_at TEXT,
+            delivered_at TEXT,
+            pay_cents INTEGER NOT NULL DEFAULT 0,
+            cash_due_cents INTEGER NOT NULL DEFAULT 0,
+            pay_settled INTEGER NOT NULL DEFAULT 0,
+            cash_settled INTEGER NOT NULL DEFAULT 0,
+            note TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_order_deliveries_driver ON order_deliveries (driver_id, status);
+        CREATE TABLE IF NOT EXISTS delivery_settlements (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            branch_id TEXT,
+            driver_id TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            created_by TEXT,
+            deliveries_count INTEGER NOT NULL DEFAULT 0,
+            pay_cents INTEGER NOT NULL DEFAULT 0,
+            cash_cents INTEGER NOT NULL DEFAULT 0,
+            note TEXT
+        );",
+    )?;
+    add_column_if_missing(&tx, "order_items", "comped", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(&tx, "order_items", "comp_reason", "TEXT")?;
+    add_column_if_missing(&tx, "order_items", "comp_by", "TEXT")?;
+    add_column_if_missing(&tx, "order_items", "comp_value_cents", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(&tx, "order_items", "replaces_item_id", "TEXT")?;
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AE_VERSION, "0037_restaurant_ops", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

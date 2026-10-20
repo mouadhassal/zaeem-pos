@@ -10,6 +10,9 @@ import Typeahead from "../../components/ui/Typeahead";
 import CategoryChip from "../../components/ui/CategoryChip";
 import ItemCard from "../../components/ui/ItemCard";
 import { formatAmount } from "../../lib/money";
+import { useOptionsStore } from "../../stores/optionsStore";
+import { groupsForItem, type OptionGroup } from "../../lib/itemOptions";
+import OptionPickerModal from "../../components/modals/OptionPickerModal";
 
 // list_menu_items_v3 returns "HAS_PHOTO" (not a real path/URL, see its
 // P0-fix doc comment) when an item has a photo, null otherwise -- this
@@ -37,6 +40,7 @@ interface Props {
     comboComponents?: any[];
     savingsCents?: number;
     comboId?: string;
+    modifiers?: { name: string; priceCents: number }[];
   }) => void;
 }
 
@@ -72,6 +76,16 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
 
   const combos = useComboStore((s) => s.combos);
 
+  // Item options ("without onion", "extra cheese"): tapping an item that has
+  // option groups opens a picker first; items without any add straight away.
+  const token = useAuthStore((s) => s.token);
+  const optionGroups = useOptionsStore((s) => s.groups);
+  const loadOptions = useOptionsStore((s) => s.load);
+  useEffect(() => {
+    void loadOptions(token);
+  }, [loadOptions, token]);
+  const [picker, setPicker] = useState<{ payload: Parameters<Props["onAddItem"]>[0]; groups: OptionGroup[]; name: string } | null>(null);
+
   useEffect(() => {
     fetchMenu();
   }, [fetchMenu]);
@@ -86,7 +100,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
     // discount baked in, so the difference vs. price_cents is exactly what
     // the customer is saving on this item right now.
     const happyHourSavings = item.price_cents - item.effectivePriceCents;
-    onAddItem({
+    const payload = {
       menuItemId: item.id,
       name: item.name,
       categoryName: cat?.name || "",
@@ -99,7 +113,10 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
         : {}),
       comboComponents: item.combo_components,
       savingsCents: comboSavings + happyHourSavings,
-    });
+    };
+    const groups = item.is_combo ? [] : groupsForItem(optionGroups, item.id, item.category_id);
+    if (groups.length > 0) setPicker({ payload, groups, name: item.name });
+    else onAddItem(payload);
   };
 
   // A combo bundle (built in Menu Management, e.g. "3 for the price of 1")
@@ -154,6 +171,17 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
 
   return (
     <div className="flex flex-col h-full">
+      {picker && (
+        <OptionPickerModal
+          itemName={picker.name}
+          groups={picker.groups}
+          onCancel={() => setPicker(null)}
+          onConfirm={({ modifiers, note }) => {
+            onAddItem({ ...picker.payload, notes: note, modifiers });
+            setPicker(null);
+          }}
+        />
+      )}
       <div className="h-12 shrink-0 flex items-center gap-2 px-3 border-b border-line">
         <button
           onClick={() => setShowSearch((v) => !v)}

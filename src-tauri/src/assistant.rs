@@ -81,7 +81,7 @@ pub fn build_snapshot(
     // actually respected.
     let pred_items = pred.replace("tenant_id", "orders.tenant_id").replace("branch_id", "orders.branch_id");
     let sql_items = format!(
-        "SELECT menu_items.name, SUM(order_items.quantity), SUM(order_items.unit_price_cents * order_items.quantity) \
+        "SELECT menu_items.name, SUM(order_items.quantity), SUM(CASE WHEN order_items.comped = 1 THEN 0 ELSE order_items.unit_price_cents * order_items.quantity END) \
          FROM order_items \
          INNER JOIN orders ON orders.id = order_items.order_id \
          INNER JOIN menu_items ON menu_items.id = order_items.menu_item_id \
