@@ -5625,6 +5625,31 @@ impl<'a> Repo<'a> {
         Ok(new_id)
     }
 
+    /// Cancels an order that is still open (sent to the kitchen, not paid):
+    /// every line is voided with the reason, the order becomes CANCELLED and
+    /// leaves the kitchen queue. Nothing was charged, so nothing is refunded.
+    pub fn cancel_open_order(&self, scope: &Scope, order_id: &str, reason: &str, actor_id: &str, device_id: &str) -> Result<(), RepoError> {
+        self.assert_order_in_scope(order_id, scope)?;
+        let (tenant_id, branch_id, status): (String, String, String) = self.conn.query_row(
+            "SELECT tenant_id, branch_id, status FROM orders WHERE id = ?1", params![order_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        if !matches!(status.as_str(), "PENDING" | "PREPARING" | "READY" | "SERVED") {
+            return Err(RepoError::OrderNotOpenForAdditions { order_id: order_id.to_string(), status });
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE order_items SET voided = 1, void_reason = ?1, last_modified = ?2, sync_status = 'pending' WHERE order_id = ?3 AND voided = 0",
+            params![reason, now, order_id],
+        )?;
+        self.conn.execute(
+            "UPDATE orders SET status = 'CANCELLED', last_modified = ?1, sync_status = 'pending' WHERE id = ?2",
+            params![now, order_id],
+        )?;
+        self.append_order_status_event(&tenant_id, &branch_id, order_id, "CANCELLED", actor_id, device_id)?;
+        self.rebuild_order_current(order_id)?;
+        Ok(())
+    }
+
     /// Marks a line of an OPEN order as a gift ("on the house") or takes the
     /// gift back. Records who and why; the order total is re-priced by the caller.
     pub fn set_order_item_comp(&self, scope: &Scope, item_id: &str, comped: bool, reason: Option<&str>, actor_id: &str) -> Result<OrderItemInfo, RepoError> {

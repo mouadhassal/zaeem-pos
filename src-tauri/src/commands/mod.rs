@@ -24,3 +24,4 @@ pub mod license;
 pub mod lan_rpc;
 pub mod marketplace;
 pub mod restaurant;
+pub mod delivery;

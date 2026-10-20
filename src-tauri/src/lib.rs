@@ -12,6 +12,7 @@ mod pricing;
 mod security;
 mod repo;
 mod ops;
+mod delivery;
 mod audit;
 mod commands_v3;
 mod commands;
@@ -593,6 +594,16 @@ pub fn run() {
             commands::restaurant::delete_option_group_v3,
             commands::restaurant::edit_order_item_v3,
             commands::restaurant::set_order_item_comp_v3,
+            commands::delivery::get_delivery_settings_v3,
+            commands::delivery::update_delivery_settings_v3,
+            commands::delivery::list_delivery_drivers_v3,
+            commands::delivery::save_delivery_driver_v3,
+            commands::delivery::list_deliveries_v3,
+            commands::delivery::assign_delivery_driver_v3,
+            commands::delivery::set_delivery_status_v3,
+            commands::delivery::get_driver_statement_v3,
+            commands::delivery::list_driver_settlements_v3,
+            commands::delivery::settle_driver_v3,
             commands::suppliers::create_purchase_order_v3,
             commands::suppliers::create_purchase_order_and_bump_supplier_v3,
             commands::suppliers::create_purchase_order_with_items_v3,

@@ -643,6 +643,12 @@ pub(crate) fn create_full_order_v3_impl(
     if discount_cents < 0 || delivery_fee_cents < 0 {
         return Err("negative amounts are not valid".to_string());
     }
+    if order_type == "DELIVERY" {
+        let has = |v: &Option<String>| v.as_deref().map(str::trim).is_some_and(|s| !s.is_empty());
+        if !has(&delivery_address) || !has(&customer_phone) {
+            return Err("طلب التوصيل يحتاج عنوان العميل ورقم هاتفه".to_string());
+        }
+    }
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     // 2026-08-02 client walkthrough finding: nothing previously stopped a
@@ -670,6 +676,9 @@ pub(crate) fn create_full_order_v3_impl(
     };
     let order_id = Repo::new(&tx).create_full_order(&scope, &tenant_id, &branch_id, input)
         .map_err(|e| e.to_string())?;
+    if order_type == "DELIVERY" {
+        crate::delivery::ensure_delivery_row(&tx, &tenant_id, &branch_id, &order_id)?;
+    }
 
     Repo::new(&tx).append_order_status_event(&tenant_id, &branch_id, &order_id, "PENDING", &actor.id, &actor.device_id)
         .map_err(|e| e.to_string())?;

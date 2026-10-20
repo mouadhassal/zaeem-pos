@@ -71,6 +71,7 @@ mod tests {
             include_str!("commands/lan_rpc.rs"),
             include_str!("commands/marketplace.rs"),
             include_str!("commands/restaurant.rs"),
+            include_str!("commands/delivery.rs"),
         ].join("\n")
     }
 
@@ -6940,6 +6941,7 @@ mod tests {
             "get_legacy_branch_v3", "save_legacy_branch_v3", "set_printer_active_v3",
             "update_printer_paper_width_v3", "update_printer_system_name_v3", "update_printer_print_mode_v3", "set_printer_categories_v3", "create_printer_v3", "list_printers_v3",
             "save_option_group_v3", "delete_option_group_v3",
+            "update_delivery_settings_v3", "save_delivery_driver_v3",
             "create_customer_v3", "list_customers_v3", "update_customer_v3", "delete_customer_v3",
             "get_customer_detail_v3",
             "list_loyalty_cards_v3", "issue_loyalty_card_v3", "list_loyalty_transactions_v3",
@@ -6984,6 +6986,8 @@ mod tests {
             "retrieve_open_order_v3", "add_items_to_order_v3",
             "split_bill_v3", "merge_tables_v3", "unmerge_tables_v3", "void_order_item_v3",
             "edit_order_item_v3", "set_order_item_comp_v3",
+            "get_delivery_settings_v3", "list_delivery_drivers_v3", "list_deliveries_v3", "assign_delivery_driver_v3",
+            "set_delivery_status_v3", "get_driver_statement_v3", "list_driver_settlements_v3", "settle_driver_v3",
             "transfer_order_v3", "schedule_delayed_order_v3", "activate_delayed_orders_v3",
             "finalize_order_with_payment_v3", "list_tables_v3",
             "list_categories_v3", "list_menu_items_v3", "get_menu_item_photo_v3", "get_category_photo_v3",
@@ -7753,6 +7757,143 @@ mod tests {
             use crate::commands::restaurant::set_order_item_comp_v3_impl as comp;
             take_payment_v3_impl(&db, &license, f.session.clone(), order_id.clone(), "CASH".to_string(), 10_000, 0, None).unwrap();
             assert!(comp(&db, &license, f.session.clone(), id, true, Some("متأخر".to_string())).is_err(), "no gifts after the bill is paid");
+            let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+        }
+        // ---- delivery ----
+
+        fn create_delivery(f: &Fixture, items: Vec<OrderItemInput>, phone: Option<&str>, address: Option<&str>, fee: i64) -> Result<String, String> {
+            let db = real_db(&f.db_path);
+            let license = never_checked_license(&f.db_path);
+            create_full_order_v3_impl(
+                &db, &license, f.session.clone(), String::new(), "DELIVERY".to_string(), items, 0, 0, 0, 0, None,
+                Some("أحمد".to_string()), phone.map(str::to_string), address.map(str::to_string), fee, None, None,
+            )
+        }
+
+        fn make_driver(f: &Fixture, name: &str) -> String {
+            let conn = Connection::open(&f.db_path).unwrap();
+            crate::delivery::save_driver(&conn, &f.tenant_id, &crate::delivery::DriverInput { id: None, name: name.to_string(), phone: None, pay_value: None, is_active: true }).unwrap()
+        }
+
+        fn order_status(f: &Fixture, order_id: &str) -> String {
+            let conn = Connection::open(&f.db_path).unwrap();
+            conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap()
+        }
+
+        #[test]
+        fn a_delivery_order_needs_a_phone_and_an_address_and_appears_in_the_delivery_list() {
+            let f = fixture("ops_delivery_create");
+            let items = || vec![item(&f.sandwich_id, 1, 10_000, vec![])];
+            assert!(create_delivery(&f, items(), None, Some("المزة"), 5_000).is_err(), "no phone");
+            assert!(create_delivery(&f, items(), Some("0933000000"), None, 5_000).is_err(), "no address");
+            assert!(create_delivery(&f, items(), Some("0933000000"), Some("   "), 5_000).is_err(), "blank address");
+
+            let order_id = create_delivery(&f, items(), Some("0933000000"), Some("المزة - شارع الجلاء"), 5_000).unwrap();
+            assert_eq!(order_total(&f, &order_id), 15_000, "the fee is part of what the customer pays");
+            let conn = Connection::open(&f.db_path).unwrap();
+            let rows = crate::delivery::list_deliveries(&conn, &f.tenant_id, &Default::default()).unwrap();
+            assert_eq!(rows.len(), 1, "failed attempts must not leave delivery rows behind");
+            assert_eq!((rows[0].order_id.as_str(), rows[0].status.as_str()), (order_id.as_str(), "NEW"));
+            assert_eq!(rows[0].address.as_deref(), Some("المزة - شارع الجلاء"));
+            assert_eq!(rows[0].fee_cents, 5_000);
+            let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn a_dine_in_order_never_gets_a_delivery_row() {
+            let f = fixture("ops_delivery_none");
+            create(&f, vec![item(&f.sandwich_id, 1, 10_000, vec![])]).unwrap();
+            let conn = Connection::open(&f.db_path).unwrap();
+            assert!(crate::delivery::list_deliveries(&conn, &f.tenant_id, &Default::default()).unwrap().is_empty());
+            let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn settling_with_a_driver_takes_the_cash_marks_the_orders_paid_and_clears_his_balance() {
+            let f = fixture("ops_delivery_settle");
+            { let conn = Connection::open(&f.db_path).unwrap(); crate::delivery::set_settings(&conn, "PER_DELIVERY", 5_000).unwrap(); }
+            let ali = make_driver(&f, "علي");
+            let o1 = create_delivery(&f, vec![item(&f.sandwich_id, 1, 10_000, vec![])], Some("0933"), Some("المزة"), 5_000).unwrap(); // 15,000
+            let o2 = create_delivery(&f, vec![item(&f.sandwich_id, 2, 10_000, vec![])], Some("0944"), Some("كفرسوسة"), 5_000).unwrap(); // 25,000
+
+            let db = real_db(&f.db_path);
+            let license = never_checked_license(&f.db_path);
+            use crate::commands::delivery::{set_delivery_status_v3_impl as set_status, settle_driver_v3_impl as settle};
+            for o in [&o1, &o2] {
+                {
+                    let conn = Connection::open(&f.db_path).unwrap();
+                    crate::delivery::assign_driver(&conn, &f.tenant_id, o, Some(&ali)).unwrap();
+                }
+                set_status(&db, f.session.clone(), o.clone(), "OUT".to_string(), None).unwrap();
+                let d = set_status(&db, f.session.clone(), o.clone(), "DELIVERED".to_string(), None).unwrap();
+                assert_eq!(d.pay_cents, 5_000);
+            }
+            { // before settling: unpaid orders, cash in his pocket
+                let conn = Connection::open(&f.db_path).unwrap();
+                let st = crate::delivery::driver_statement(&conn, &f.tenant_id, &ali, None, None).unwrap();
+                assert_eq!((st.totals.cash_unsettled_cents, st.totals.pay_unsettled_cents), (40_000, 10_000));
+            }
+            assert_ne!(order_status(&f, &o1), "PAID");
+
+            let rec = settle(&db, &license, f.session.clone(), ali.clone(), vec![o1.clone(), o2.clone()], Some("نهاية اليوم".to_string())).unwrap();
+            assert_eq!((rec.deliveries_count, rec.pay_cents, rec.cash_cents), (2, 10_000, 40_000));
+            assert_eq!(order_status(&f, &o1), "PAID");
+            assert_eq!(order_status(&f, &o2), "PAID");
+
+            let conn = Connection::open(&f.db_path).unwrap();
+            let paid: i64 = conn.query_row("SELECT COALESCE(SUM(amount_cents), 0) FROM payments WHERE order_id IN (?1, ?2)", params![o1, o2], |r| r.get(0)).unwrap();
+            assert_eq!(paid, 40_000, "the till really received the order totals");
+            let st = crate::delivery::driver_statement(&conn, &f.tenant_id, &ali, None, None).unwrap();
+            assert_eq!((st.totals.cash_unsettled_cents, st.totals.pay_unsettled_cents), (0, 0));
+
+            // Settling again changes nothing and cannot double-charge.
+            assert!(settle(&db, &license, f.session.clone(), ali, vec![o1], None).is_err());
+            let still: i64 = conn.query_row("SELECT COUNT(*) FROM payments WHERE order_id IN (SELECT order_id FROM order_deliveries)", [], |r| r.get(0)).unwrap();
+            assert_eq!(still, 2);
+            let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn a_prepaid_delivery_pays_the_driver_but_takes_no_cash() {
+            let f = fixture("ops_delivery_prepaid");
+            { let conn = Connection::open(&f.db_path).unwrap(); crate::delivery::set_settings(&conn, "PERCENT_OF_FEE", 50).unwrap(); }
+            let ali = make_driver(&f, "علي");
+            let o1 = create_delivery(&f, vec![item(&f.sandwich_id, 1, 10_000, vec![])], Some("0933"), Some("المزة"), 6_000).unwrap(); // 16,000
+            let db = real_db(&f.db_path);
+            let license = never_checked_license(&f.db_path);
+            take_payment_v3_impl(&db, &license, f.session.clone(), o1.clone(), "CARD".to_string(), 16_000, 0, None).unwrap();
+            use crate::commands::delivery::{set_delivery_status_v3_impl as set_status, settle_driver_v3_impl as settle};
+            { let conn = Connection::open(&f.db_path).unwrap(); crate::delivery::assign_driver(&conn, &f.tenant_id, &o1, Some(&ali)).unwrap(); }
+            let d = set_status(&db, f.session.clone(), o1.clone(), "DELIVERED".to_string(), None).unwrap();
+            assert_eq!((d.pay_cents, d.cash_due_cents), (3_000, 0), "half of the 6,000 fee, and no cash because the card already paid");
+            let rec = settle(&db, &license, f.session.clone(), ali, vec![o1.clone()], None).unwrap();
+            assert_eq!((rec.pay_cents, rec.cash_cents), (3_000, 0));
+            let conn = Connection::open(&f.db_path).unwrap();
+            let payments: i64 = conn.query_row("SELECT COUNT(*) FROM payments WHERE order_id = ?1", params![o1], |r| r.get(0)).unwrap();
+            assert_eq!(payments, 1, "settling must not charge the customer a second time");
+            let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn a_failed_unpaid_delivery_cancels_the_order_and_a_failed_paid_one_keeps_its_payment() {
+            let f = fixture("ops_delivery_failed");
+            let ali = make_driver(&f, "علي");
+            let unpaid = create_delivery(&f, vec![item(&f.sandwich_id, 1, 10_000, vec![])], Some("0933"), Some("المزة"), 0).unwrap();
+            let paid = create_delivery(&f, vec![item(&f.sandwich_id, 1, 10_000, vec![])], Some("0944"), Some("المزة"), 0).unwrap();
+            let db = real_db(&f.db_path);
+            let license = never_checked_license(&f.db_path);
+            take_payment_v3_impl(&db, &license, f.session.clone(), paid.clone(), "CASH".to_string(), 10_000, 0, None).unwrap();
+            use crate::commands::delivery::set_delivery_status_v3_impl as set_status;
+            for o in [&unpaid, &paid] {
+                let conn = Connection::open(&f.db_path).unwrap();
+                crate::delivery::assign_driver(&conn, &f.tenant_id, o, Some(&ali)).unwrap();
+            }
+            assert!(set_status(&db, f.session.clone(), unpaid.clone(), "FAILED".to_string(), None).is_err(), "a reason is required");
+            assert_ne!(order_status(&f, &unpaid), "CANCELLED", "a refused failure must not cancel anything");
+            set_status(&db, f.session.clone(), unpaid.clone(), "FAILED".to_string(), Some("العميل لم يرد".to_string())).unwrap();
+            set_status(&db, f.session.clone(), paid.clone(), "FAILED".to_string(), Some("عنوان خاطئ".to_string())).unwrap();
+            assert_eq!(order_status(&f, &unpaid), "CANCELLED");
+            assert_eq!(order_status(&f, &paid), "PAID", "money already taken is refunded through the refund flow, not lost here");
             let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
         }
     }
