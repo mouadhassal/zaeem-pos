@@ -6910,7 +6910,7 @@ mod tests {
         /// admin, purchase orders/suppliers, and order analytics (AI page).
         /// Every one of these must be BLOCKED when back-office is locked.
         const GATED: &[&str] = &[
-            "list_staff_v3", "get_sales_report_v3", "ask_assistant_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
+            "list_staff_v3", "get_sales_report_v3", "gifts_report_v3", "ask_assistant_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
             "create_branch_v3", "create_staff_v3", "update_staff_v3", "update_staff_profile_v3",
             "set_staff_active_v3", "list_branches_v3", "list_shifts_v3", "force_close_shift_v3",
             "list_attendance_v3",
@@ -7894,6 +7894,54 @@ mod tests {
             set_status(&db, f.session.clone(), paid.clone(), "FAILED".to_string(), Some("عنوان خاطئ".to_string())).unwrap();
             assert_eq!(order_status(&f, &unpaid), "CANCELLED");
             assert_eq!(order_status(&f, &paid), "PAID", "money already taken is refunded through the refund flow, not lost here");
+            let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+        }
+        // ---- gifts report ----
+
+        #[test]
+        fn the_gifts_report_lists_what_was_given_why_and_by_whom_and_skips_cancelled_lines() {
+            let f = fixture("ops_gifts_report");
+            let mut gift = item(&f.cola_id, 2, 3_000, vec![]);
+            gift.comped = true;
+            gift.comp_reason = Some("ضيافة من المطعم".to_string());
+            let kept = create(&f, vec![item(&f.sandwich_id, 1, 10_000, vec![]), gift.clone()]).unwrap();
+            let voided_order = create(&f, vec![item(&f.sandwich_id, 1, 10_000, vec![]), gift.clone()]).unwrap();
+            // The second order's gift is later taken off the bill entirely.
+            let gift_line = first_item_id(&f, &voided_order, &f.cola_id);
+            { let conn = Connection::open(&f.db_path).unwrap(); conn.execute("UPDATE order_items SET voided = 1 WHERE id = ?1", params![gift_line]).unwrap(); }
+
+            let conn = Connection::open(&f.db_path).unwrap();
+            let scope = crate::security::Scope::Tenant { tenant_id: f.tenant_id.clone() };
+            let rows = Repo::new(&conn).gifts_report(&scope, "2000-01-01T00:00:00Z", None).unwrap();
+            assert_eq!(rows.len(), 1, "only the live gift counts");
+            let r = &rows[0];
+            assert_eq!((r.order_id.as_str(), r.item_name.as_str(), r.quantity, r.value_cents), (kept.as_str(), "Cola", 2, 6_000));
+            assert_eq!(r.reason.as_deref(), Some("ضيافة من المطعم"));
+            assert_eq!(r.given_by.as_deref(), Some("Cashier"));
+
+            // Outside the period: nothing.
+            assert!(Repo::new(&conn).gifts_report(&scope, "2999-01-01T00:00:00Z", None).unwrap().is_empty());
+            // Another tenant sees nothing.
+            let other = crate::security::Scope::Tenant { tenant_id: "someone-else".to_string() };
+            assert!(Repo::new(&conn).gifts_report(&other, "2000-01-01T00:00:00Z", None).unwrap().is_empty());
+            let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn gift_value_does_not_count_as_revenue_in_the_margin_report() {
+            let f = fixture("ops_gifts_margin");
+            let mut gift = item(&f.cola_id, 3, 3_000, vec![]);
+            gift.comped = true;
+            gift.comp_reason = Some("ضيف".to_string());
+            let order_id = create(&f, vec![gift, item(&f.cola_id, 1, 3_000, vec![])]).unwrap();
+            let db = real_db(&f.db_path);
+            let license = never_checked_license(&f.db_path);
+            take_payment_v3_impl(&db, &license, f.session.clone(), order_id, "CASH".to_string(), 3_000, 0, None).unwrap();
+            let conn = Connection::open(&f.db_path).unwrap();
+            let revenue: i64 = conn.query_row(
+                "SELECT SUM(CASE WHEN order_items.comped = 1 THEN 0 ELSE order_items.quantity * menu_items.price_cents END) FROM order_items JOIN menu_items ON menu_items.id = order_items.menu_item_id",
+                [], |r| r.get(0)).unwrap();
+            assert_eq!(revenue, 3_000, "four colas left the building but only one was sold");
             let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
         }
     }

@@ -384,6 +384,19 @@ pub struct TableInfo {
     pub current_order_id: Option<String>,
 }
 
+/// One gift line in the gifts report (see `Repo::gifts_report`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GiftRow {
+    pub order_id: String,
+    pub created_at: String,
+    pub item_name: String,
+    pub quantity: i64,
+    pub value_cents: i64,
+    pub reason: Option<String>,
+    pub given_by: Option<String>,
+    pub order_type: String,
+}
+
 /// One order line as an edit sees it (see `Repo::open_order_item_info`).
 #[derive(Debug, Clone)]
 pub struct OrderItemInfo {
@@ -5623,6 +5636,36 @@ impl<'a> Repo<'a> {
         let new_id = self.insert_order_item_row(&tenant_id, &branch_id, &info.order_id, new_item, &now)?;
         self.conn.execute("UPDATE order_items SET replaces_item_id = ?1 WHERE id = ?2", params![item_id, new_id])?;
         Ok(new_id)
+    }
+
+    /// Everything given away ("on the house") in a period: what, how much it was
+    /// worth, why, and who gave it. Cancelled orders and voided lines are not counted.
+    pub fn gifts_report(&self, scope: &Scope, start_iso: &str, end_iso: Option<&str>) -> Result<Vec<GiftRow>, RepoError> {
+        let (pred, binds) = Self::scope_predicate(scope);
+        let pred = pred.replace("tenant_id", "o.tenant_id").replace("branch_id", "o.branch_id");
+        let a = binds.len() + 1;
+        let sql = format!(
+            "SELECT oi.order_id, o.created_at, mi.name, oi.quantity, oi.comp_value_cents, oi.comp_reason, s.name, o.order_type \
+             FROM order_items oi \
+             JOIN orders o ON o.id = oi.order_id \
+             JOIN menu_items mi ON mi.id = oi.menu_item_id \
+             LEFT JOIN staff s ON s.id = oi.comp_by \
+             WHERE oi.comped = 1 AND oi.voided = 0 AND o.status NOT IN ('CANCELLED', 'VOIDED') AND {pred} \
+               AND o.created_at >= ?{a} AND (?{b} IS NULL OR o.created_at <= ?{b}) \
+             ORDER BY o.created_at DESC",
+            b = a + 1,
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut all: Vec<Option<String>> = binds.into_iter().map(Some).collect();
+        all.push(Some(start_iso.to_string()));
+        all.push(end_iso.map(str::to_string));
+        let rows = stmt.query_map(rusqlite::params_from_iter(all.iter()), |r| {
+            Ok(GiftRow {
+                order_id: r.get(0)?, created_at: r.get(1)?, item_name: r.get(2)?, quantity: r.get(3)?,
+                value_cents: r.get(4)?, reason: r.get(5)?, given_by: r.get(6)?, order_type: r.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
 
     /// Cancels an order that is still open (sent to the kitchen, not paid):

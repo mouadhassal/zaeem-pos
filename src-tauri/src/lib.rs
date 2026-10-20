@@ -562,6 +562,7 @@ pub fn run() {
             commands::reports::create_invoice_v3,
             commands::reports::mark_invoice_paid_v3,
             commands::reports::get_sales_report_v3,
+            commands::reports::gifts_report_v3,
             commands::reports::ask_assistant_v3,
             commands::reports::detect_anomalies_v3,
             commands::reports::forecast_demand_v3,

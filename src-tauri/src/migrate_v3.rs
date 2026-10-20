@@ -3794,6 +3794,41 @@ mod tests {
     /// intact.
     /// Migration AB: loyalty_cards.tier accepts owner-named tiers after the
     /// rebuild, while existing cards, their transactions' FK, the named
+    /// Migration AE: the restaurant-ops tables and columns exist, the migration is
+    /// idempotent, and orders that were already in the database come through
+    /// untouched (not gifts, not deliveries, no replaced lines).
+    #[test]
+    fn test_restaurant_ops_migration() {
+        let db_path = fresh_db_path("restaurant_ops_migration");
+        build_base_fixture(&db_path);
+        {
+            let mut conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+            run_expand_migration(&mut conn, &db_path).expect("Migration A failed");
+            let before: i64 = conn.query_row("SELECT COUNT(*) FROM order_items", [], |r| r.get(0)).unwrap();
+            run_restaurant_ops_migration(&mut conn, &db_path).expect("Migration AE failed (first run)");
+            run_restaurant_ops_migration(&mut conn, &db_path).expect("Migration AE failed (second run -- must be idempotent)");
+            let after: i64 = conn.query_row("SELECT COUNT(*) FROM order_items", [], |r| r.get(0)).unwrap();
+            assert_eq!(before, after, "no existing line may be lost");
+        }
+        let conn = Connection::open(&db_path).unwrap();
+        for table in ["option_groups", "option_choices", "option_group_targets", "delivery_drivers", "order_deliveries", "delivery_settlements"] {
+            let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap_or_else(|e| panic!("{table} missing: {e}"));
+            assert_eq!(n, 0, "{table} starts empty");
+        }
+        let cols: Vec<String> = conn.prepare("PRAGMA table_info(order_items)").unwrap().query_map([], |r| r.get::<_, String>(1)).unwrap().map(|r| r.unwrap()).collect();
+        for c in ["comped", "comp_reason", "comp_by", "comp_value_cents", "replaces_item_id"] {
+            assert!(cols.iter().any(|x| x == c), "order_items.{c} missing");
+        }
+        // Old lines are not gifts; a negative option price and an unknown delivery status are refused.
+        let gifts: i64 = conn.query_row("SELECT COUNT(*) FROM order_items WHERE comped != 0", [], |r| r.get(0)).unwrap();
+        assert_eq!(gifts, 0);
+        assert!(conn.execute("INSERT INTO option_choices (id, group_id, name, price_cents) VALUES ('c1', 'g1', 'x', -1)", []).is_err());
+        assert!(conn.execute("INSERT INTO order_deliveries (order_id, tenant_id, status) VALUES ('o1', 't1', 'TELEPORTED')", []).is_err());
+        let version: i64 = conn.query_row("SELECT COUNT(*) FROM schema_migrations WHERE version = ?1", params![MIGRATION_AE_VERSION], |r| r.get(0)).unwrap();
+        assert_eq!(version, 1);
+    }
+
     /// Migration AD: the printer->category table exists, is idempotent, keeps
     /// one row per (printer, category) and leaves an unassigned printer empty.
     #[test]

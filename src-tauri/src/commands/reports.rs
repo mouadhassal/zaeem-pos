@@ -122,6 +122,17 @@ pub fn mark_invoice_paid_v3(state: State<Db>, license: State<crate::license::clo
 /// `range_end_iso` is optional (`None` = "up to now") so the existing
 /// "today so far" call site keeps working unchanged; the Reports page's
 /// new date-range picker passes a real closed window.
+/// Gifts ("on the house") in a period: what was given, its value, why, and by whom.
+#[tauri::command]
+pub fn gifts_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: Option<String>) -> Result<Vec<crate::repo::GiftRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).gifts_report(&actor.scope(), &start_iso, end_iso.as_deref()).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_sales_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, today_start_iso: String, range_end_iso: Option<String>) -> Result<crate::repo::SalesReportRow, String> {
     let actor = authenticate_actor(&state, &session_token)?;

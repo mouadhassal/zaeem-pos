@@ -6,6 +6,7 @@ import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 import DatePicker from "../../components/ui/DatePicker";
 import { toLocalDateStr, parseLocalDateStr, formatArabicDate, formatArabicDateTime } from "../../lib/dateLocal";
 import { orderNo } from "../../lib/orderNumber";
+import GiftsReport from "./GiftsReport";
 
 interface SalesSummary {
   totalSales: number;
@@ -608,6 +609,11 @@ export default function ReportsPage() {
           </div>
         ))}
       </div>
+
+      <GiftsReport
+        startIso={rangeStart(dateRange, customStart).toISOString()}
+        endIso={rangeEnd(dateRange, customEnd)?.toISOString() ?? null}
+      />
 
       {/* 2026-08-15: anomaly detection, demand forecasting, and order
           reconciliation used to just appear one after another with no
