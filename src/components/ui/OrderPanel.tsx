@@ -24,6 +24,8 @@ interface Props {
   lines: LineItem[];
   subtotalCents: number;
   discountCents: number;
+  /** DELIVERY: fee included in the total. */
+  deliveryFeeCents?: number;
   totalCents: number;
   currencySymbol: string;
   /** 2026-08-22 QA re-audit: was a bare hardcoded "اختر طاولة لتبدأ" (choose
@@ -46,7 +48,7 @@ interface Props {
 }
 
 export default function OrderPanel({
-  tableLabel, lines, subtotalCents, discountCents,
+  tableLabel, lines, subtotalCents, discountCents, deliveryFeeCents = 0,
   totalCents, currencySymbol, onEditOrder, orderTypeIcon, orderTypeLabel, children, toolbar,
   onIncrementLine, onDecrementLine, onVoidLine, onEditLine, onGiftLine, emptyMessage,
 }: Props) {
@@ -111,6 +113,15 @@ export default function OrderPanel({
               <span className="text-text-muted text-xs">{currencySymbol}</span>
             </span>
           </div>
+          {deliveryFeeCents > 0 && (
+            <div className="flex justify-between text-sm" data-testid="order-delivery-fee">
+              <span className="text-text-2">رسوم التوصيل</span>
+              <span className="tabular text-text flex items-baseline gap-1">
+                <span dir="ltr">{fmt(deliveryFeeCents)}</span>
+                <span className="text-text-muted text-xs">{currencySymbol}</span>
+              </span>
+            </div>
+          )}
           {discountCents > 0 && (
             <div className="flex justify-between text-sm">
               <span className="text-text-2">الخصم</span>

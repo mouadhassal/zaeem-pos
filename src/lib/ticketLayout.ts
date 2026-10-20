@@ -292,3 +292,128 @@ export function rowsText(rows: readonly Row[]): string[] {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Delivery: the slip the driver carries, and the driver's statement.
+// ---------------------------------------------------------------------------
+
+export interface DeliverySlip {
+  chainName: string;
+  branchName: string;
+  orderNumber: string;
+  createdAt?: string;
+  customerName?: string;
+  customerPhone?: string;
+  address: string;
+  items: { name: string; quantity: number; modifiers?: string[]; notes?: string }[];
+  totalCents: number;
+  feeCents: number;
+  /** Already paid at the till: the driver collects nothing. */
+  paid: boolean;
+  driverName?: string;
+}
+
+export function deliverySlipRows(d: DeliverySlip, now: Date = new Date()): Row[] {
+  const fmt = formatMoney;
+  const rows: Row[] = [];
+  rows.push({ t: "line", text: d.chainName, size: 36, bold: true, align: "center" });
+  rows.push({ t: "line", text: "*** توصيل ***", size: 34, bold: true, align: "center" });
+  rows.push({ t: "rule" });
+  rows.push({ t: "two", right: "رقم الطلب", left: d.orderNumber, bold: true });
+  rows.push({ t: "two", right: "وقت الطلب", left: dateTime(parse(d.createdAt, now)) });
+  if (d.driverName) rows.push({ t: "two", right: "السائق", left: d.driverName });
+  rows.push({ t: "rule" });
+  if (d.customerName) rows.push({ t: "two", right: "العميل", left: d.customerName, bold: true });
+  if (d.customerPhone) rows.push({ t: "two", right: "الهاتف", left: d.customerPhone, bold: true });
+  rows.push({ t: "line", text: "العنوان:", size: 24 });
+  rows.push({ t: "line", text: d.address, size: 30, bold: true });
+  rows.push({ t: "rule" });
+  for (const i of d.items) {
+    rows.push({ t: "line", text: `${i.quantity} × ${i.name}`, size: 24, bold: true });
+    for (const m of i.modifiers ?? []) rows.push({ t: "line", text: `  ◂ ${m}`, size: 20 });
+    if (i.notes) rows.push({ t: "line", text: `  ملاحظة: ${i.notes}`, size: 20 });
+  }
+  rows.push({ t: "rule" });
+  if (d.feeCents > 0) rows.push({ t: "two", right: "رسوم التوصيل", left: fmt(d.feeCents) });
+  rows.push({ t: "two", right: "إجمالي الطلب", left: fmt(d.totalCents), size: 30, bold: true });
+  rows.push(
+    d.paid
+      ? { t: "line", text: "مدفوع مسبقاً - لا تحصيل", size: 30, bold: true, align: "center" }
+      : { t: "line", text: `المطلوب تحصيله: ${fmt(d.totalCents)}`, size: 32, bold: true, align: "center" },
+  );
+  rows.push({ t: "gap", h: 24 });
+  return rows;
+}
+
+export interface StatementLine {
+  order_id: string;
+  created_at: string;
+  status: string;
+  address: string | null;
+  total_cents: number;
+  fee_cents: number;
+  pay_cents: number;
+  cash_due_cents: number;
+  pay_settled: boolean;
+  cash_settled: boolean;
+}
+
+export interface StatementTotals {
+  deliveries: number;
+  delivered: number;
+  failed: number;
+  orders_total_cents: number;
+  fees_cents: number;
+  pay_cents: number;
+  pay_unsettled_cents: number;
+  cash_unsettled_cents: number;
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  NEW: "جديد",
+  ASSIGNED: "معيّن",
+  OUT: "في الطريق",
+  DELIVERED: "تم التسليم",
+  FAILED: "فشل",
+};
+export const deliveryStatusLabel = (s: string) => STATUS_LABELS[s] ?? s;
+
+/** The part of the driver statement that goes on a receipt-printer slip. */
+export function driverStatementRows(
+  chainName: string,
+  driverName: string,
+  range: { from?: string; to?: string },
+  lines: readonly StatementLine[],
+  totals: StatementTotals,
+  shortOrderNo: (orderId: string) => string,
+  now: Date = new Date(),
+): Row[] {
+  const fmt = formatMoney;
+  const rows: Row[] = [];
+  rows.push({ t: "line", text: chainName, size: 34, bold: true, align: "center" });
+  rows.push({ t: "line", text: "كشف حساب سائق", size: 30, bold: true, align: "center" });
+  rows.push({ t: "rule" });
+  rows.push({ t: "two", right: "السائق", left: driverName, bold: true });
+  rows.push({ t: "two", right: "الفترة", left: `${range.from ?? "—"} → ${range.to ?? "—"}` });
+  rows.push({ t: "two", right: "طُبع", left: dateTime(now) });
+  rows.push({ t: "rule" });
+  for (const l of lines) {
+    const when = formatArabicTime(new Date(l.created_at));
+    rows.push({ t: "two", right: `#${shortOrderNo(l.order_id)} ${when}`, left: deliveryStatusLabel(l.status), size: 22, bold: true });
+    if (l.address) rows.push({ t: "line", text: `  ${l.address}`, size: 20 });
+    if (l.status === "DELIVERED") {
+      rows.push({ t: "two", right: `  الطلب ${fmt(l.total_cents)}`, left: `أجرته ${fmt(l.pay_cents)}${l.pay_settled ? " ✓" : ""}`, size: 20 });
+    }
+  }
+  rows.push({ t: "rule" });
+  rows.push({ t: "two", right: "عدد التوصيلات المسلَّمة", left: String(totals.delivered), size: 24 });
+  if (totals.failed > 0) rows.push({ t: "two", right: "فاشلة", left: String(totals.failed), size: 24 });
+  rows.push({ t: "two", right: "إجمالي أجرته", left: fmt(totals.pay_cents), size: 24 });
+  rows.push({ t: "two", right: "المستحق له", left: fmt(totals.pay_unsettled_cents), size: 28, bold: true });
+  rows.push({ t: "two", right: "النقد الذي معه", left: fmt(totals.cash_unsettled_cents), size: 28, bold: true });
+  rows.push({ t: "two", right: "الصافي (نقد - أجرة)", left: fmt(totals.cash_unsettled_cents - totals.pay_unsettled_cents), size: 28, bold: true });
+  rows.push({ t: "gap", h: 40 });
+  rows.push({ t: "line", text: "توقيع السائق: ____________", size: 24 });
+  rows.push({ t: "gap", h: 24 });
+  return rows;
+}

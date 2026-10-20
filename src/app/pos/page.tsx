@@ -26,7 +26,7 @@ import {
   IconAward as Award,
   IconArrowsSplit2 as Split, IconArrowsLeftRight as ArrowLeftRight,
   IconPrinter as Printer, IconTrash as Trash2,
-  IconToolsKitchen2, IconShoppingBag, IconWallet, IconX,
+  IconToolsKitchen2, IconShoppingBag, IconWallet, IconX, IconTruckDelivery,
 } from "@tabler/icons-react";
 import { useCartStore } from "../../stores/cartStore";
 import { useAuthStore } from "../../stores/authStore";
@@ -44,6 +44,7 @@ import { retryPrintQueue, printReceipt } from "../../lib/printer";
 import type { ReceiptData, ReceiptItem } from "../../lib/printer";
 import type { SplitItem, CartItem } from "../../stores/cartStore";
 import { orderNo } from "../../lib/orderNumber";
+import { assignDriver, listDrivers, type Driver } from "../../lib/deliveryService";
 import OptionPickerModal from "../../components/modals/OptionPickerModal";
 import GiftModal from "../../components/modals/GiftModal";
 import { useOptionsStore } from "../../stores/optionsStore";
@@ -192,7 +193,11 @@ export default function POSPage() {
   const [hasTables, setHasTables] = useState(true);
 
   const { items, tableId, tableName, setTable, addItem, clearCart, voidItem, updateQuantity } = useCartStore();
-  const { orderType, setOrderType, customerName, customerPhone, debtorId, debtorName, resetOrderInfo } = useOrderTypeStore();
+  const { orderType, setOrderType, customerName, customerPhone, deliveryAddress, driverId, debtorId, debtorName, resetOrderInfo } = useOrderTypeStore();
+  const deliveryFeeCents = useCartStore((s) => s.deliveryFeeCents);
+  const setDeliveryFee = useCartStore((s) => s.setDeliveryFee);
+  const [feeInput, setFeeInput] = useState("");
+  const [drivers, setDrivers] = useState<Driver[]>([]);
   const user = useAuthStore((s) => s.user);
   const shiftId = useShiftStore((s) => s.activeShiftId);
   const setActiveShiftId = useShiftStore((s) => s.setActiveShiftId);
@@ -538,11 +543,16 @@ export default function POSPage() {
         state.total(), state.discountCents, state.discountReason,
         orderType !== "DINE_IN" && orderType !== "DEBT" ? customerName : undefined,
         orderType !== "DINE_IN" && orderType !== "DEBT" ? customerPhone : undefined,
-        undefined,
+        orderType === "DELIVERY" ? deliveryAddress.trim() : undefined,
         state.savings(), shiftId ?? undefined,
         discountOverridePin ?? undefined,
+        orderType === "DELIVERY" ? state.deliveryFeeCents : 0,
       );
       setDiscountOverridePin(null);
+      if (orderType === "DELIVERY" && driverId) {
+        // The sale is already recorded; a failed assignment is fixed on the Delivery page.
+        await assignDriver(orderId, driverId).catch(() => flash("تم البيع لكن تعذر تعيين السائق، عيّنه من صفحة التوصيل"));
+      }
 
       const cfg = await getReceiptConfig();
       const receipt: ReceiptData = {
@@ -556,6 +566,7 @@ export default function POSPage() {
         ...(orderType !== "DINE_IN" && orderType !== "DEBT" && customerName ? { customerName } : {}),
         ...(orderType !== "DINE_IN" && orderType !== "DEBT" && customerPhone ? { customerPhone } : {}),
         ...(referenceCode ? { referenceCode } : {}),
+        ...(orderType === "DELIVERY" ? { deliveryAddress: deliveryAddress.trim(), deliveryFeeCents: state.deliveryFeeCents } : {}),
       };
       let pointsEarned: number | null = null;
       try {
@@ -901,10 +912,10 @@ export default function POSPage() {
   const unsentLines = openOrderId ? unsentCartLines(items, sentQuantities) : [];
 
   const ORDER_TYPE_LABELS: Record<string, string> = {
-    DINE_IN: "صالة", TAKEAWAY: "سفري", DEBT: "دين",
+    DINE_IN: "صالة", TAKEAWAY: "سفري", DEBT: "دين", DELIVERY: "توصيل",
   };
   const ORDER_TYPE_ICONS: Record<string, typeof IconToolsKitchen2> = {
-    DINE_IN: IconToolsKitchen2, TAKEAWAY: IconShoppingBag, DEBT: IconWallet,
+    DINE_IN: IconToolsKitchen2, TAKEAWAY: IconShoppingBag, DEBT: IconWallet, DELIVERY: IconTruckDelivery,
   };
   const OrderTypeIconComponent = ORDER_TYPE_ICONS[orderType] || IconToolsKitchen2;
   // 2026-08-03 "next phase": with tables off, `tableId` is always the
@@ -917,6 +928,54 @@ export default function POSPage() {
     : orderType === "DINE_IN"
     ? "اختر طاولة"
     : orderTag;
+
+  useEffect(() => {
+    if (orderType !== "DELIVERY") {
+      setFeeInput("");
+      return;
+    }
+    listDrivers(false).then(setDrivers).catch(() => setDrivers([]));
+  }, [orderType]);
+
+  // A delivery needs somewhere to go and someone to call; refused before anything is sent or paid.
+  const deliveryProblem = (): string | null => {
+    if (orderType !== "DELIVERY") return null;
+    if (!deliveryAddress.trim()) return "اكتب عنوان التوصيل";
+    if (!customerPhone.trim()) return "اكتب رقم هاتف العميل";
+    return null;
+  };
+
+  // Delivery orders are usually paid to the driver at the door: this sends the
+  // order to the kitchen and into the delivery list unpaid; the cash is taken
+  // when the driver settles. (Paying now at the till uses the normal Pay button.)
+  const handleSendDelivery = async () => {
+    if (!user || orderType !== "DELIVERY" || items.length === 0) return;
+    if (!shiftId) { setShowOpenShift(true); return; }
+    const problem = deliveryProblem();
+    if (problem) { flash(problem); return; }
+    try {
+      const state = useCartStore.getState();
+      const t = state.tax();
+      const orderId = await createOrder(
+        "", user.id, "DELIVERY",
+        items.map((i) => ({ menuItemId: i.menuItemId, name: i.name, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers, ...compFields(i) })),
+        state.subtotal(), t.taxCents, t.secondaryTaxCents, t.serviceChargeCents,
+        state.total(), state.discountCents, state.discountReason,
+        customerName, customerPhone, deliveryAddress.trim(),
+        state.savings(), shiftId ?? undefined, discountOverridePin ?? undefined, state.deliveryFeeCents,
+      );
+      setDiscountOverridePin(null);
+      if (driverId) await assignDriver(orderId, driverId).catch(() => flash("أُرسل الطلب لكن تعذر تعيين السائق، عيّنه من صفحة التوصيل"));
+      clearCart();
+      resetOrderInfo();
+      setLoyaltyCard(null);
+      setFeeInput("");
+      flash("أُرسل الطلب للمطبخ وأُضيف إلى قائمة التوصيل ✓", 3500);
+    } catch (err) {
+      if (isNoOpenShiftError(err)) setShowOpenShift(true);
+      flash(`تعذر إرسال الطلب: ${realErrorText(err)}`);
+    }
+  };
 
   const handleIncrementLine = (id: string) => updateQuantity(id, 1);
   const handleDecrementLine = (id: string) => updateQuantity(id, -1);
@@ -1076,6 +1135,8 @@ export default function POSPage() {
   useKeyboardShortcuts({
     F1: () => {
       if (items.length === 0 || (!tableId && orderType === "DINE_IN")) return;
+      const deliveryIssue = deliveryProblem();
+      if (deliveryIssue) { flash(deliveryIssue); return; }
       if (!shiftId) { setShowOpenShift(true); return; }
       const cartSubtotal = useCartStore.getState().subtotal();
       const discountPercent = cartSubtotal > 0
@@ -1117,6 +1178,7 @@ export default function POSPage() {
           lines={orderLines}
           subtotalCents={subtotalCents}
           discountCents={discountCents}
+          deliveryFeeCents={orderType === "DELIVERY" ? deliveryFeeCents : 0}
           totalCents={totalCents}
           currencySymbol={currencySymbol}
           onEditOrder={() => {}} /* order type now set via top bar */
@@ -1203,6 +1265,8 @@ export default function POSPage() {
               (!!openOrderId && unsentLines.length > 0)
             }
             onClick={() => {
+              const deliveryIssue = deliveryProblem();
+              if (deliveryIssue) { flash(deliveryIssue); return; }
               if (!shiftId) { setShowOpenShift(true); return; }
               if (openOrderId) {
                 // Discount cap was already enforced at order-creation time
@@ -1234,6 +1298,12 @@ export default function POSPage() {
                   sendToKitchenDisabled: items.length === 0 || (!!openOrderId && unsentLines.length === 0),
                   sendToKitchenLabel: openOrderId ? "إرسال الإضافة للمطبخ" : "إرسال للمطبخ",
                 }
+              : orderType === "DELIVERY"
+              ? {
+                  onSendToKitchen: shiftId ? handleSendDelivery : () => setShowOpenShift(true),
+                  sendToKitchenDisabled: items.length === 0,
+                  sendToKitchenLabel: "إرسال للتوصيل (الدفع للسائق)",
+                }
               : {})}
           />
         </OrderPanel>
@@ -1242,7 +1312,7 @@ export default function POSPage() {
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Prominent Order Type Bar - always visible for fast switching */}
         <div className="h-11 shrink-0 bg-surface border-b border-line flex items-center gap-1 px-2" dir="rtl">
-          {(["DINE_IN", "TAKEAWAY", "DEBT"] as const)
+          {(["DINE_IN", "TAKEAWAY", "DELIVERY", "DEBT"] as const)
             // 2026-08-03 "next phase": DINE_IN implies a dining room --
             // meaningless once tables are off.
             .filter((t) => hasTables || t !== "DINE_IN")
@@ -1254,6 +1324,7 @@ export default function POSPage() {
                 key={t}
                 onClick={() => {
                   setOrderType(t);
+                  if (t !== "DELIVERY") { setDeliveryFee(0); setFeeInput(""); }
                   if (t === "DEBT") {
                     setShowDebtSelect(true);
                   } else if (t === "DINE_IN") {
@@ -1316,6 +1387,36 @@ export default function POSPage() {
             </div>
           )}
         </div>
+
+        {orderType === "DELIVERY" && (
+          <div className="h-12 shrink-0 bg-surface-alt border-b border-line flex items-center gap-2 px-2" dir="rtl" data-testid="delivery-fields">
+            <input
+              value={deliveryAddress}
+              onChange={(e) => useOrderTypeStore.getState().setDeliveryAddress(e.target.value)}
+              placeholder="عنوان التوصيل (الحي، الشارع، البناء)"
+              className="h-8 px-2 rounded-[7px] border border-line text-xs flex-1 min-w-0 bg-surface focus:outline-none focus:border-accent font-arabic"
+              data-testid="delivery-address"
+            />
+            <input
+              value={feeInput}
+              onChange={(e) => { setFeeInput(e.target.value); setDeliveryFee(parseMoneyInput(e.target.value)); }}
+              placeholder="رسوم التوصيل"
+              inputMode="decimal"
+              className="h-8 px-2 rounded-[7px] border border-line text-xs w-28 bg-surface focus:outline-none focus:border-accent font-mono"
+              dir="ltr"
+              data-testid="delivery-fee"
+            />
+            <select
+              value={driverId}
+              onChange={(e) => useOrderTypeStore.getState().setDriverId(e.target.value)}
+              className="h-8 px-2 rounded-[7px] border border-line text-xs w-36 bg-surface focus:outline-none focus:border-accent font-arabic"
+              data-testid="delivery-driver"
+            >
+              <option value="">السائق (لاحقاً)</option>
+              {drivers.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </div>
+        )}
 
         <div className="flex-1 overflow-hidden">
           <MenuGridContainer

@@ -490,6 +490,27 @@ export async function printReceipt(data: ReceiptData): Promise<void> {
   }
 }
 
+/** Prints any set of content rows (a delivery slip, a driver statement) on the receipt printer, same failover as a receipt. */
+export async function printRows(rows: readonly Row[]): Promise<void> {
+  const allPrinters = await invoke<PrinterRowV3[]>("list_active_printers_v3", { sessionToken: token() });
+  const printers = allPrinters
+    .filter((p) => p.printer_type === "RECEIPT")
+    .sort((a, b) => (b.is_primary - a.is_primary) || (b.is_secondary - a.is_secondary));
+  const chain = await invoke<ChainConfigV3>("get_chain_config_v3", { sessionToken: token() });
+  const defaultPaperWidth = chain?.default_paper_width ?? 80;
+  let lastError: string | null = null;
+  for (const p of printers.slice(0, 2)) {
+    try {
+      const width = p.paper_width_mm ?? defaultPaperWidth;
+      await printCanvasTo(drawRows(rows, width), p, "RECEIPT", width);
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : "Print failed";
+    }
+  }
+  throw new Error(lastError ?? "لا توجد طابعة إيصالات");
+}
+
 async function sendKitchenTicketToPrinter(
   data: KitchenTicketData,
   p: any,

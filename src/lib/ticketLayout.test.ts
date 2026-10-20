@@ -199,3 +199,66 @@ describe("receipt", () => {
     expect(t).not.toContain("رسوم التوصيل");
   });
 });
+
+import { deliverySlipRows, driverStatementRows, type StatementLine, type StatementTotals } from "./ticketLayout";
+
+describe("delivery slip", () => {
+  const slip = (over = {}) => ({
+    chainName: "مطعم الشام", branchName: "الرئيسي", orderNumber: "D9", customerName: "أحمد", customerPhone: "0933000000",
+    address: "المزة - شارع الجلاء - بناء 4", items: [{ name: "شاورما", quantity: 2, modifiers: ["بدون بصل"], notes: "حار" }],
+    totalCents: 25_000, feeCents: 5_000, paid: false, driverName: "علي", ...over,
+  });
+  const txt = (s: ReturnType<typeof slip>) => rowsText(deliverySlipRows(s, NOW)).join("\n");
+
+  it("gives the driver everything he needs at the door", () => {
+    const t = txt(slip());
+    expect(t).toContain("*** توصيل ***");
+    expect(t).toContain("رقم الطلب | D9");
+    expect(t).toContain("السائق | علي");
+    expect(t).toContain("العميل | أحمد");
+    expect(t).toContain("الهاتف | 0933000000");
+    expect(t).toContain("المزة - شارع الجلاء - بناء 4");
+    expect(t).toContain("2 × شاورما");
+    expect(t).toContain("◂ بدون بصل");
+  });
+
+  it("tells him how much to collect, or that nothing is due", () => {
+    expect(txt(slip())).toContain("المطلوب تحصيله");
+    const paid = txt(slip({ paid: true }));
+    expect(paid).toContain("مدفوع مسبقاً - لا تحصيل");
+    expect(paid).not.toContain("المطلوب تحصيله");
+  });
+});
+
+describe("driver statement slip", () => {
+  const line = (over: Partial<StatementLine> = {}): StatementLine => ({
+    order_id: "o1", created_at: "2026-10-20T12:10:00Z", status: "DELIVERED", address: "المزة", total_cents: 20_000, fee_cents: 2_000,
+    pay_cents: 5_000, cash_due_cents: 20_000, pay_settled: false, cash_settled: false, ...over,
+  });
+  const totals: StatementTotals = { deliveries: 3, delivered: 2, failed: 1, orders_total_cents: 40_000, fees_cents: 4_000, pay_cents: 10_000, pay_unsettled_cents: 5_000, cash_unsettled_cents: 20_000 };
+  const text = rowsText(driverStatementRows("مطعم الشام", "علي", { from: "2026-10-20", to: "2026-10-20" }, [
+    line(), line({ order_id: "o2", pay_settled: true, cash_settled: true }), line({ order_id: "o3", status: "FAILED", pay_cents: 0, cash_due_cents: 0 }),
+  ], totals, (id) => id.toUpperCase(), NOW)).join("\n");
+
+  it("lists each delivery with its status, address and pay", () => {
+    expect(text).toContain("كشف حساب سائق");
+    expect(text).toContain("السائق | علي");
+    expect(text).toContain("#O1");
+    expect(text).toContain("تم التسليم");
+    expect(text).toContain("فشل");
+    expect(text).toContain("المزة");
+  });
+
+  it("shows what he earned, what is still owed, the cash he carries and the net", () => {
+    expect(text).toContain("عدد التوصيلات المسلَّمة | 2");
+    expect(text).toContain("فاشلة | 1");
+    expect(text).toContain("المستحق له");
+    expect(text).toContain("النقد الذي معه");
+    expect(text).toContain("الصافي (نقد - أجرة)");
+  });
+
+  it("marks settled lines and leaves room for a signature", () => {
+    expect(text).toContain("✓");
+    expect(text).toContain("توقيع السائق");
+  });
+});

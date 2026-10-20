@@ -47,6 +47,8 @@ interface CartState {
   discountReason: string;
   taxConfig: TaxConfig | undefined;
   splits: SplitItem[];
+  /** DELIVERY only: the fee charged on top of the food (untaxed). */
+  deliveryFeeCents: number;
 
   addItem: (item: Omit<CartItem, "id">) => void;
   removeItem: (id: string) => void;
@@ -59,6 +61,7 @@ interface CartState {
   setDiscount: (cents: number, reason: string) => void;
   setTable: (id: string, name: string) => void;
   setSplits: (splits: SplitItem[]) => void;
+  setDeliveryFee: (cents: number) => void;
   setTaxConfig: (config: TaxConfig) => void;
   clearCart: () => void;
   subtotal: () => number;
@@ -77,6 +80,7 @@ export const useCartStore = create<CartState>((set, get) => ({
   discountReason: "",
   taxConfig: { mode: "exclusive", taxRateCents: 1500, secondaryTaxRateCents: 0, serviceChargeRateCents: 0 },
   splits: [],
+  deliveryFeeCents: 0,
 
   addItem: (item) =>
     set((state) => {
@@ -144,6 +148,8 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   setSplits: (splits) => set({ splits }),
 
+  setDeliveryFee: (cents) => set({ deliveryFeeCents: Math.max(0, Math.round(cents || 0)) }),
+
   setTaxConfig: (config) => set({ taxConfig: config }),
 
   clearCart: () =>
@@ -154,6 +160,7 @@ export const useCartStore = create<CartState>((set, get) => ({
       discountCents: 0,
       discountReason: "",
       splits: [],
+      deliveryFeeCents: 0,
       taxConfig: undefined,
     }),
 
@@ -184,6 +191,6 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   total: () => {
     const t = get().tax();
-    return t.totalCents;
+    return t.totalCents + get().deliveryFeeCents;
   },
 }));

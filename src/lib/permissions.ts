@@ -11,12 +11,14 @@ export interface SidebarNavItem {
 const CASHIER_NAV: SidebarNavItem[] = [
   { id: "pos", label: "نقاط البيع", icon: "calculator", allowed: true },
   { id: "shift", label: "الوردية", icon: "clock", allowed: true },
+  { id: "delivery", label: "التوصيل", icon: "truck", allowed: true },
   { id: "debt", label: "الديون", icon: "wallet", allowed: true, readOnly: true },
 ];
 
 const MANAGER_NAV: SidebarNavItem[] = [
   { id: "pos", label: "نقاط البيع", icon: "calculator", allowed: true },
   { id: "shift", label: "الوردية", icon: "clock", allowed: true },
+  { id: "delivery", label: "التوصيل", icon: "truck", allowed: true },
   { id: "debt", label: "الديون", icon: "wallet", allowed: true },
   { id: "customers", label: "العملاء", icon: "users", allowed: true },
   { id: "menu", label: "القائمة", icon: "book-open", allowed: true },
@@ -42,6 +44,7 @@ const OWNER_NAV: SidebarNavItem[] = [
   { id: "dashboard", label: "لوحة التحكم", icon: "layout-dashboard", allowed: true },
   { id: "pos", label: "نقاط البيع", icon: "calculator", allowed: true },
   { id: "shift", label: "الوردية", icon: "clock", allowed: true },
+  { id: "delivery", label: "التوصيل", icon: "truck", allowed: true },
   { id: "debt", label: "الديون", icon: "wallet", allowed: true },
   { id: "customers", label: "العملاء", icon: "users", allowed: true },
   { id: "menu", label: "القائمة", icon: "book-open", allowed: true },
