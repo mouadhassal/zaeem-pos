@@ -120,3 +120,56 @@ describe("printKitchenTicket with stations", () => {
     expect(queue[0]!.data.station).toBe("الشواية");
   });
 });
+
+describe("one order across several stations", () => {
+  const LINKS = [
+    { printer_id: "grill", category_id: "c-grill" },
+    { printer_id: "fryer", category_id: "c-fry" },
+  ];
+
+  it("prints one slip per station, same order number, each saying where the rest went", async () => {
+    const out = setup(LINKS);
+    await printKitchenTicket({ ...TICKET, orderNumber: "A77", cashier: "ليلى" });
+    const grill = texts(out, "Q-grill")!.join("|"), fryer = texts(out, "Q-fryer")!.join("|"), expo = texts(out, "Q-expo")!.join("|");
+    for (const slip of [grill, fryer, expo]) expect(slip).toContain("A77");
+    expect(grill).toContain("قسم 1 من 2");
+    expect(fryer).toContain("قسم 2 من 2");
+    expect(grill).toContain("القلاية (2)");
+    expect(fryer).toContain("الشواية (1)");
+    // The pass printer holds the whole order and is not one of the numbered stations.
+    expect(expo).not.toContain("قسم");
+    expect(expo).not.toContain("يُرسل الباقي");
+  });
+
+  it("an order that only touches one station has no split lines", async () => {
+    const out = setup(LINKS);
+    await printKitchenTicket({ ...TICKET, items: [{ name: "برغر", quantity: 2, menuItemId: "m-burger" }] });
+    expect(texts(out, "Q-grill")!.join("|")).not.toContain("قسم");
+    expect(texts(out, "Q-fryer")).toBeNull();
+  });
+
+  it("a cancellation reaches only the station that was making the item", async () => {
+    const out = setup(LINKS);
+    await printKitchenTicket({
+      ...TICKET, kind: "CANCEL", cancelReason: "العميل غير راغب",
+      items: [{ name: "بطاطا", quantity: 2, menuItemId: "m-fries" }],
+    });
+    expect(texts(out, "Q-fryer")!.join("|")).toContain("*** إلغاء ***");
+    expect(texts(out, "Q-fryer")!.join("|")).toContain("✗ 2 × بطاطا");
+    expect(texts(out, "Q-grill")).toBeNull();
+  });
+
+  it("an edit goes to the station that owns the line, showing before and after", async () => {
+    const out = setup(LINKS);
+    await printKitchenTicket({
+      ...TICKET, kind: "EDIT",
+      replaces: [{ name: "برغر", quantity: 1, menuItemId: "m-burger", modifiers: ["بدون بصل"] }],
+      items: [{ name: "برغر", quantity: 1, menuItemId: "m-burger", modifiers: ["بدون جبنة"] }],
+    });
+    const grill = texts(out, "Q-grill")!.join("|");
+    expect(grill).toContain("*** تعديل ***");
+    expect(grill).toContain("بدون بصل");
+    expect(grill).toContain("بدون جبنة");
+    expect(texts(out, "Q-fryer")).toBeNull();
+  });
+});

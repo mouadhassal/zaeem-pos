@@ -143,7 +143,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
   };
 
   const handleRemove = (item: (typeof allItems)[0]) => {
-    const existing = cartItems.find((i) => i.menuItemId === item.id);
+    const existing = cartItems.find((i) => i.menuItemId === item.id && !i.dbItemId);
     if (existing) {
       useCartStore.getState().updateQuantity(existing.id, -1);
     }

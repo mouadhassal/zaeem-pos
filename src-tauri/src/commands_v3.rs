@@ -6983,6 +6983,7 @@ mod tests {
             // that must never be interrupted by a lapsed back-office license.
             "retrieve_open_order_v3", "add_items_to_order_v3",
             "split_bill_v3", "merge_tables_v3", "unmerge_tables_v3", "void_order_item_v3",
+            "edit_order_item_v3", "set_order_item_comp_v3",
             "transfer_order_v3", "schedule_delayed_order_v3", "activate_delayed_orders_v3",
             "finalize_order_with_payment_v3", "list_tables_v3",
             "list_categories_v3", "list_menu_items_v3", "get_menu_item_photo_v3", "get_category_photo_v3",
@@ -7579,7 +7580,181 @@ mod tests {
             assert!(create(&f, vec![item(&f.sandwich_id, -2, 10_000, vec![])]).is_err());
             let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
         }
+        // ---- editing and gifting lines of an open order ----
+
+        fn first_item_id(f: &Fixture, order_id: &str, menu_item_id: &str) -> String {
+            let conn = Connection::open(&f.db_path).unwrap();
+            conn.query_row(
+                "SELECT id FROM order_items WHERE order_id = ?1 AND menu_item_id = ?2 AND voided = 0",
+                params![order_id, menu_item_id], |r| r.get(0),
+            ).unwrap()
+        }
+
+        fn edit(f: &Fixture, item_id: &str, qty: i64, mods: Vec<OrderModifierInput>, notes: Option<&str>, reason: &str, pin: Option<&str>)
+            -> Result<crate::commands::restaurant::EditedItem, String> {
+            let db = real_db(&f.db_path);
+            let license = never_checked_license(&f.db_path);
+            crate::commands::restaurant::edit_order_item_v3_impl(
+                &db, &license, f.session.clone(), item_id.to_string(), qty, mods, notes.map(str::to_string), reason.to_string(), pin.map(str::to_string),
+            )
+        }
+
+        #[test]
+        fn editing_a_sent_line_voids_the_old_one_links_the_new_one_and_reprices() {
+            let f = fixture("ops_edit");
+            { let conn = Connection::open(&f.db_path).unwrap(); Repo::new(&conn).update_manager_thresholds(&f.tenant_id, 7_777_777, 7_777_777).unwrap(); }
+            cheese_option(&f);
+            let order_id = create(&f, vec![item(&f.sandwich_id, 2, 10_000, vec![modifier("زيادة جبنة", 2_000)])]).unwrap();
+            assert_eq!(order_total(&f, &order_id), 24_000);
+            let old_id = first_item_id(&f, &order_id, &f.sandwich_id);
+
+            // Customer changes their mind: one sandwich, no cheese, without onion, spicy.
+            let edited = edit(&f, &old_id, 1, vec![modifier("بدون بصل", 0)], Some("حار"), "طلب العميل", None).unwrap();
+            assert_eq!(edited.order_total_cents, 10_000);
+            assert_eq!(order_total(&f, &order_id), 10_000);
+
+            let conn = Connection::open(&f.db_path).unwrap();
+            let (voided, void_reason): (i64, Option<String>) = conn.query_row(
+                "SELECT voided, void_reason FROM order_items WHERE id = ?1", params![old_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            assert_eq!(voided, 1, "the old line is kept as history, not deleted");
+            assert!(void_reason.unwrap().contains("تعديل"));
+            let (qty, notes, replaces): (i64, Option<String>, Option<String>) = conn.query_row(
+                "SELECT quantity, notes, replaces_item_id FROM order_items WHERE id = ?1", params![edited.new_item_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+            assert_eq!((qty, notes.as_deref(), replaces.as_deref()), (1, Some("حار"), Some(old_id.as_str())));
+            let mods: Vec<String> = conn.prepare("SELECT name FROM order_modifiers WHERE order_item_id = ?1").unwrap()
+                .query_map(params![edited.new_item_id], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+            assert_eq!(mods, vec!["بدون بصل".to_string()]);
+            let audited: i64 = conn.query_row("SELECT COUNT(*) FROM audit_log WHERE entity_id = ?1", params![edited.new_item_id], |r| r.get(0)).unwrap();
+            assert!(audited >= 1, "the edit must be in the audit log");
+            let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn an_edit_needs_a_reason_and_a_positive_quantity() {
+            let f = fixture("ops_edit_validation");
+            let order_id = create(&f, vec![item(&f.sandwich_id, 1, 10_000, vec![])]).unwrap();
+            let id = first_item_id(&f, &order_id, &f.sandwich_id);
+            assert!(edit(&f, &id, 1, vec![], None, "  ", None).is_err(), "no reason, no edit");
+            assert!(edit(&f, &id, 0, vec![], None, "سبب", None).is_err(), "zero quantity is a cancellation, not an edit");
+            assert!(edit(&f, &id, -1, vec![], None, "سبب", None).is_err());
+            assert_eq!(order_total(&f, &order_id), 10_000, "failed edits change nothing");
+            let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn an_already_sold_option_keeps_its_price_through_an_edit() {
+            let f = fixture("ops_edit_locked");
+            let group_id = cheese_option(&f);
+            let order_id = create(&f, vec![item(&f.sandwich_id, 1, 10_000, vec![modifier("زيادة جبنة", 2_000)])]).unwrap();
+            { let conn = Connection::open(&f.db_path).unwrap(); ops::delete_option_group(&conn, &f.tenant_id, &group_id).unwrap(); }
+            let id = first_item_id(&f, &order_id, &f.sandwich_id);
+            // Same cheese, now two sandwiches: the cheese is still 2,000 each, though it left the menu.
+            edit(&f, &id, 2, vec![modifier("زيادة جبنة", 0)], None, "زيادة الكمية", None).unwrap();
+            assert_eq!(order_total(&f, &order_id), 24_000);
+            let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn taking_a_lot_of_value_off_a_sent_order_needs_a_manager_pin() {
+            let f = fixture("ops_edit_threshold");
+            {
+                let conn = Connection::open(&f.db_path).unwrap();
+                Repo::new(&conn).update_manager_thresholds(&f.tenant_id, 5_000, 7_777_777).unwrap();
+                let (branch_id,): (String,) = conn.query_row("SELECT id FROM branch LIMIT 1", [], |r| Ok((r.get(0)?,))).unwrap();
+                let pin = bcrypt::hash("4321", bcrypt::DEFAULT_COST).unwrap();
+                Repo::new(&conn).create_staff(&f.tenant_id, Some(&branch_id), Some(&branch_id), "MANAGER", Role::Manager.rank(), "Boss", Some(&pin), None).unwrap();
+            }
+            let order_id = create(&f, vec![item(&f.sandwich_id, 3, 10_000, vec![])]).unwrap();
+            let id = first_item_id(&f, &order_id, &f.sandwich_id);
+
+            // 3 -> 1 takes 20,000 off, above the 5,000 threshold.
+            assert!(edit(&f, &id, 1, vec![], None, "العميل غير راغب", None).is_err(), "no PIN");
+            assert!(edit(&f, &id, 1, vec![], None, "العميل غير راغب", Some("0000")).is_err(), "wrong PIN");
+            assert_eq!(order_total(&f, &order_id), 30_000);
+            edit(&f, &id, 1, vec![], None, "العميل غير راغب", Some("4321")).expect("the manager PIN approves it");
+            assert_eq!(order_total(&f, &order_id), 10_000);
+
+            // Adding value never needs approval.
+            let id2 = first_item_id(&f, &order_id, &f.sandwich_id);
+            edit(&f, &id2, 2, vec![], None, "زيادة", None).unwrap();
+            assert_eq!(order_total(&f, &order_id), 20_000);
+            let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn a_paid_order_cannot_be_edited() {
+            let f = fixture("ops_edit_paid");
+            let order_id = create(&f, vec![item(&f.sandwich_id, 1, 10_000, vec![])]).unwrap();
+            let id = first_item_id(&f, &order_id, &f.sandwich_id);
+            let db = real_db(&f.db_path);
+            let license = never_checked_license(&f.db_path);
+            take_payment_v3_impl(&db, &license, f.session.clone(), order_id.clone(), "CASH".to_string(), 10_000, 0, None).unwrap();
+            assert!(edit(&f, &id, 2, vec![], None, "سبب", None).is_err(), "a paid order is final; use a refund");
+            let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn another_branchs_order_cannot_be_edited() {
+            let f = fixture("ops_edit_scope");
+            let order_id = create(&f, vec![item(&f.sandwich_id, 1, 10_000, vec![])]).unwrap();
+            let id = first_item_id(&f, &order_id, &f.sandwich_id);
+            // A cashier of a different branch.
+            let other_session = {
+                let conn = Connection::open(&f.db_path).unwrap();
+                let other_branch = Repo::new(&conn).create_branch(&f.tenant_id, "Other", "SYP").unwrap();
+                let other = seed_staff(&conn, &f.tenant_id, Some(&other_branch), Role::Cashier, "Other cashier");
+                security::create_session(&conn, &other, "device-2").unwrap()
+            };
+            let db = real_db(&f.db_path);
+            let license = never_checked_license(&f.db_path);
+            let res = crate::commands::restaurant::edit_order_item_v3_impl(&db, &license, other_session, id, 2, vec![], None, "x".to_string(), None);
+            assert!(res.is_err(), "an edit must not cross branches");
+            assert_eq!(order_total(&f, &order_id), 10_000);
+            let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn a_sent_line_can_be_given_away_and_taken_back() {
+            let f = fixture("ops_comp_open");
+            let order_id = create(&f, vec![item(&f.sandwich_id, 1, 10_000, vec![]), item(&f.cola_id, 2, 3_000, vec![])]).unwrap();
+            let cola = first_item_id(&f, &order_id, &f.cola_id);
+            let db = real_db(&f.db_path);
+            let license = never_checked_license(&f.db_path);
+            use crate::commands::restaurant::set_order_item_comp_v3_impl as comp;
+
+            assert!(comp(&db, &license, f.session.clone(), cola.clone(), true, None).is_err(), "a gift needs a reason");
+            assert!(comp(&db, &license, f.session.clone(), cola.clone(), true, Some("   ".to_string())).is_err());
+            assert_eq!(order_total(&f, &order_id), 16_000);
+
+            let total = comp(&db, &license, f.session.clone(), cola.clone(), true, Some("ضيافة من المطعم".to_string())).unwrap();
+            assert_eq!(total, 10_000);
+            assert_eq!(order_total(&f, &order_id), 10_000);
+            { // the giver and the value are on record
+                let conn = Connection::open(&f.db_path).unwrap();
+                let (by, value): (String, i64) = conn.query_row("SELECT comp_by, comp_value_cents FROM order_items WHERE id = ?1", params![cola], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+                assert_eq!((by.as_str(), value), (f.cashier_id.as_str(), 6_000));
+            }
+
+            let total = comp(&db, &license, f.session.clone(), cola.clone(), false, None).unwrap();
+            assert_eq!(total, 16_000, "taking the gift back charges the line again");
+            { let conn = Connection::open(&f.db_path).unwrap();
+              let (comped, by): (i64, Option<String>) = conn.query_row("SELECT comped, comp_by FROM order_items WHERE id = ?1", params![cola], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+              assert_eq!((comped, by), (0, None)); }
+            let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn a_voided_or_paid_line_cannot_be_given_away() {
+            let f = fixture("ops_comp_closed");
+            let order_id = create(&f, vec![item(&f.sandwich_id, 1, 10_000, vec![])]).unwrap();
+            let id = first_item_id(&f, &order_id, &f.sandwich_id);
+            let db = real_db(&f.db_path);
+            let license = never_checked_license(&f.db_path);
+            use crate::commands::restaurant::set_order_item_comp_v3_impl as comp;
+            take_payment_v3_impl(&db, &license, f.session.clone(), order_id.clone(), "CASH".to_string(), 10_000, 0, None).unwrap();
+            assert!(comp(&db, &license, f.session.clone(), id, true, Some("متأخر".to_string())).is_err(), "no gifts after the bill is paid");
+            let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+        }
     }
 
 }
-

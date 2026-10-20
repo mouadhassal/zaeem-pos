@@ -12,6 +12,7 @@ interface KDSItem {
   name: string;
   quantity: number;
   notes: string | null;
+  modifiers: string[];
 }
 
 interface KDSOrder {
@@ -236,17 +237,26 @@ export default function KDSPage() {
 
                   <div className="space-y-1.5">
                     {order.items.map((item, idx) => (
-                      <div key={idx} className="flex items-center justify-between bg-surface rounded-lg px-3 py-2">
-                        <div className="flex items-center gap-2">
-                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-surface-alt text-ink-700 text-xs font-bold font-mono">
-                            {item.quantity}
-                          </span>
-                          <span className="font-arabic text-sm text-ink-900">{item.name}</span>
+                      <div key={idx} className="bg-surface rounded-lg px-3 py-2" data-testid="kds-item">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-surface-alt text-ink-700 text-xs font-bold font-mono">
+                              {item.quantity}
+                            </span>
+                            <span className="font-arabic text-sm text-ink-900">{item.name}</span>
+                          </div>
+                          {item.notes && (
+                            <span className="text-[10px] text-warn font-arabic bg-surface-alt px-1.5 py-0.5 rounded">
+                              {item.notes}
+                            </span>
+                          )}
                         </div>
-                        {item.notes && (
-                          <span className="text-[10px] text-warn font-arabic bg-surface-alt px-1.5 py-0.5 rounded">
-                            {item.notes}
-                          </span>
+                        {item.modifiers?.length > 0 && (
+                          <ul className="mt-1 pe-8 space-y-0.5" data-testid="kds-item-options">
+                            {item.modifiers.map((m) => (
+                              <li key={m} className={`font-arabic text-xs ${m.startsWith("بدون") ? "text-danger font-bold" : "text-ink-600"}`}>◂ {m}</li>
+                            ))}
+                          </ul>
                         )}
                       </div>
                     ))}

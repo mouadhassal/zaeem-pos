@@ -275,6 +275,8 @@ pub struct KdsOrderItemRow {
     pub name: String,
     pub quantity: i64,
     pub notes: Option<String>,
+    /// Options picked for this line, in the order they were stored.
+    pub modifiers: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -380,6 +382,23 @@ pub struct TableInfo {
     pub name: String,
     pub status: String,
     pub current_order_id: Option<String>,
+}
+
+/// One order line as an edit sees it (see `Repo::open_order_item_info`).
+#[derive(Debug, Clone)]
+pub struct OrderItemInfo {
+    pub order_id: String,
+    pub menu_item_id: String,
+    pub quantity: i64,
+    pub unit_price_cents: i64,
+    pub notes: Option<String>,
+    pub combo_id: Option<String>,
+    pub comped: bool,
+    pub comp_reason: Option<String>,
+    pub comp_by: Option<String>,
+    pub voided: bool,
+    pub order_status: String,
+    pub modifiers: Vec<OrderModifierInput>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1247,7 +1266,8 @@ impl<'a> Repo<'a> {
 
         let pred_items = pred.replace("tenant_id", "orders.tenant_id").replace("branch_id", "orders.branch_id");
         let items_sql = format!(
-            "SELECT order_items.order_id, menu_items.name, order_items.quantity, order_items.notes \
+            "SELECT order_items.order_id, menu_items.name, order_items.quantity, order_items.notes, \
+                    (SELECT group_concat(name, char(31)) FROM order_modifiers WHERE order_item_id = order_items.id) \
              FROM order_items \
              INNER JOIN orders ON orders.id = order_items.order_id \
              INNER JOIN menu_items ON menu_items.id = order_items.menu_item_id \
@@ -1257,7 +1277,12 @@ impl<'a> Repo<'a> {
         let mut items_stmt = self.conn.prepare(&items_sql)?;
         let item_bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
         let item_rows: Vec<(String, KdsOrderItemRow)> = items_stmt.query_map(item_bind_refs.as_slice(), |r| {
-            Ok((r.get::<_, String>(0)?, KdsOrderItemRow { name: r.get(1)?, quantity: r.get(2)?, notes: r.get(3)? }))
+            Ok((r.get::<_, String>(0)?, KdsOrderItemRow {
+                name: r.get(1)?,
+                quantity: r.get(2)?,
+                notes: r.get(3)?,
+                modifiers: r.get::<_, Option<String>>(4)?.map(|m| m.split('\u{1f}').map(str::to_string).collect()).unwrap_or_default(),
+            }))
         })?.collect::<Result<Vec<_>, _>>()?;
 
         for (order_id, item) in item_rows {
@@ -5562,6 +5587,70 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
+    /// Everything an edit needs to know about one order line: where it
+    /// lives, what it is, and whether the order is still open.
+    pub fn open_order_item_info(&self, scope: &Scope, item_id: &str) -> Result<OrderItemInfo, RepoError> {
+        self.assert_order_item_in_scope(item_id, scope)?;
+        let (order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, comped, comp_reason, comp_by, voided, status): (
+            String, String, i64, i64, Option<String>, Option<String>, i64, Option<String>, Option<String>, i64, String,
+        ) = self.conn.query_row(
+            "SELECT i.order_id, i.menu_item_id, i.quantity, i.unit_price_cents, i.notes, i.combo_id, i.comped, i.comp_reason, i.comp_by, i.voided, o.status \
+             FROM order_items i JOIN orders o ON o.id = i.order_id WHERE i.id = ?1",
+            params![item_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?)),
+        )?;
+        let mut stmt = self.conn.prepare("SELECT name, price_cents FROM order_modifiers WHERE order_item_id = ?1")?;
+        let modifiers: Vec<OrderModifierInput> = stmt
+            .query_map(params![item_id], |r| Ok(OrderModifierInput { name: r.get(0)?, price_cents: r.get(1)?, locked: true }))?
+            .collect::<Result<_, _>>()?;
+        Ok(OrderItemInfo { order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, comped: comped != 0, comp_reason, comp_by, voided: voided != 0, order_status: status, modifiers })
+    }
+
+    /// Replaces one line of an OPEN order with a changed copy (quantity,
+    /// options, note). The old line is voided -- never deleted -- and the new
+    /// one points back at it, so the history of who changed what stays.
+    /// `new_item` must already be authoritatively priced. Returns the new line's id.
+    pub fn replace_order_item(&self, scope: &Scope, item_id: &str, new_item: &OrderItemInput, reason: &str, actor_id: &str) -> Result<String, RepoError> {
+        let info = self.open_order_item_info(scope, item_id)?;
+        if !matches!(info.order_status.as_str(), "PENDING" | "PREPARING" | "READY" | "SERVED") {
+            return Err(RepoError::OrderNotOpenForAdditions { order_id: info.order_id, status: info.order_status });
+        }
+        self.void_order_item(scope, item_id, reason, actor_id)?;
+        let (tenant_id, branch_id): (String, String) = self.conn.query_row(
+            "SELECT tenant_id, branch_id FROM order_items WHERE id = ?1", params![item_id], |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let new_id = self.insert_order_item_row(&tenant_id, &branch_id, &info.order_id, new_item, &now)?;
+        self.conn.execute("UPDATE order_items SET replaces_item_id = ?1 WHERE id = ?2", params![item_id, new_id])?;
+        Ok(new_id)
+    }
+
+    /// Marks a line of an OPEN order as a gift ("on the house") or takes the
+    /// gift back. Records who and why; the order total is re-priced by the caller.
+    pub fn set_order_item_comp(&self, scope: &Scope, item_id: &str, comped: bool, reason: Option<&str>, actor_id: &str) -> Result<OrderItemInfo, RepoError> {
+        let info = self.open_order_item_info(scope, item_id)?;
+        if info.voided || !matches!(info.order_status.as_str(), "PENDING" | "PREPARING" | "READY" | "SERVED") {
+            return Err(RepoError::OrderNotOpenForAdditions { order_id: info.order_id, status: info.order_status });
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        if comped {
+            let value = Self::line_total_cents(&OrderItemInput {
+                menu_item_id: info.menu_item_id.clone(), name: None, quantity: info.quantity, unit_price_cents: info.unit_price_cents,
+                notes: None, combo_id: None, modifiers: info.modifiers.clone(), comped: false, comp_reason: None, comp_by: None,
+            });
+            self.conn.execute(
+                "UPDATE order_items SET comped = 1, comp_reason = ?1, comp_by = ?2, comp_value_cents = ?3, last_modified = ?4, sync_status = 'pending' WHERE id = ?5",
+                params![reason, actor_id, value, now, item_id],
+            )?;
+        } else {
+            self.conn.execute(
+                "UPDATE order_items SET comped = 0, comp_reason = NULL, comp_by = NULL, comp_value_cents = 0, last_modified = ?1, sync_status = 'pending' WHERE id = ?2",
+                params![now, item_id],
+            )?;
+        }
+        Ok(info)
+    }
+
     /// WENZDES audit C5/H5: the 2000-cent manager-PIN threshold for voiding
     /// a line lived ONLY in `VoidItemModal.tsx` -- `void_order_item_v3`
     /// itself had no threshold check at all, so a cashier calling the
@@ -5571,12 +5660,14 @@ impl<'a> Repo<'a> {
     /// probe another tenant/branch's prices either.
     pub fn order_item_line_total_cents(&self, scope: &Scope, item_id: &str) -> Result<i64, RepoError> {
         self.assert_order_item_in_scope(item_id, scope)?;
-        let (unit_price_cents, quantity): (i64, i64) = self.conn.query_row(
-            "SELECT unit_price_cents, quantity FROM order_items WHERE id = ?1",
+        let (unit_price_cents, quantity, options_cents): (i64, i64, i64) = self.conn.query_row(
+            "SELECT unit_price_cents, quantity, \r
+                    (SELECT COALESCE(SUM(price_cents), 0) FROM order_modifiers WHERE order_item_id = order_items.id) \r
+             FROM order_items WHERE id = ?1",
             params![item_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
-        Ok(unit_price_cents * quantity)
+        Ok((unit_price_cents + options_cents) * quantity)
     }
 
     /// Transfer an order from one table to another: update order.table_id,

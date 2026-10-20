@@ -1,6 +1,7 @@
 import { invoke } from "./invoke";
 import { useAuthStore } from "../stores/authStore";
 import { printReceipt, printKitchenTicket, queuePrintJob } from "./printer";
+import type { KitchenTicketData } from "./ticketLayout";
 import { logger } from "./logger";
 import type { ReceiptData } from "./printer";
 import type { OrderType as OrderTypeEnum } from "../stores/orderTypeStore";
@@ -122,6 +123,12 @@ export async function redeemLoyaltyReward(cardNumber: string, rewardId: string):
   return invoke<LoyaltyRewardOption>("redeem_loyalty_reward_v3", { sessionToken: token(), cardNumber, rewardId });
 }
 
+/** Who is logged in, for the "served by" line on kitchen slips and receipts. */
+function cashierField(): { cashier?: string } {
+  const name = useAuthStore.getState().user?.name;
+  return name ? { cashier: name } : {};
+}
+
 export async function createOrder(
   tableId: string,
   _userId: string,
@@ -214,6 +221,8 @@ export async function createOrder(
       orderNumber: orderNo(orderId),
       orderType,
       items: kitchenItems,
+      ...cashierField(),
+      ...(customerName ? { customerName } : {}),
     });
   } catch (err) {
     // 2026-08-02: this used to fail completely silently -- logged only to
@@ -535,11 +544,13 @@ export async function addItemsToOrder(
       orderNumber: orderNo(orderId),
       orderType,
       items: kitchenItems,
+      kind: "ADDITION",
+      ...cashierField(),
     });
   } catch (err) {
     logger.error("Kitchen print failed (addition to open order), queued for retry", { error: String(err) });
     queuePrintJob(
-      { tableName, orderNumber: orderNo(orderId), orderType, items: kitchenItems },
+      { tableName, orderNumber: orderNo(orderId), orderType, items: kitchenItems, kind: "ADDITION", ...cashierField() },
       "kitchen"
     );
     window.dispatchEvent(
@@ -587,6 +598,63 @@ export async function unmergeTables(mergeGroupId: string): Promise<void> {
     sessionToken: token(),
     mergeGroupId,
   });
+}
+
+/**
+ * Changes one line of an order that is already open: quantity, options and
+ * kitchen note. The server voids the old line and adds the changed one, and
+ * asks for a manager PIN when the change takes a lot of value off the bill.
+ */
+export async function editOrderItem(args: {
+  itemId: string;
+  quantity: number;
+  modifiers: { name: string; priceCents: number }[];
+  notes: string;
+  reason: string;
+  managerOverridePin?: string;
+}): Promise<{ newItemId: string; orderTotalCents: number }> {
+  const r = await invoke<{ new_item_id: string; order_total_cents: number }>("edit_order_item_v3", {
+    sessionToken: token(),
+    itemId: args.itemId,
+    quantity: args.quantity,
+    modifiers: args.modifiers.map((m) => ({ name: m.name, price_cents: m.priceCents })),
+    notes: args.notes || null,
+    reason: args.reason,
+    managerOverridePin: args.managerOverridePin ?? null,
+  });
+  return { newItemId: r.new_item_id, orderTotalCents: r.order_total_cents };
+}
+
+/** Gives a line of an open order away ("on the house"), or takes the gift back. Returns the new order total. */
+export async function setOrderItemComp(itemId: string, comped: boolean, reason?: string): Promise<number> {
+  return invoke<number>("set_order_item_comp_v3", {
+    sessionToken: token(),
+    itemId,
+    comped,
+    reason: reason ?? null,
+  });
+}
+
+/**
+ * Tells the kitchen about a change to an order it already has (a cancelled
+ * line, an edited line). Same failure handling as a new ticket: queued for
+ * retry and announced, never silently dropped.
+ */
+export async function printKitchenChange(ticket: KitchenTicketData): Promise<void> {
+  const { has_kitchen } = await getBusinessMode();
+  if (!has_kitchen) return;
+  const data: KitchenTicketData = { ...ticket, ...cashierField() };
+  try {
+    await printKitchenTicket(data);
+  } catch (err) {
+    logger.error("Kitchen print failed (change to open order), queued for retry", { error: String(err) });
+    queuePrintJob(data, "kitchen");
+    window.dispatchEvent(
+      new CustomEvent("kitchen-print-failed", {
+        detail: { tableName: data.tableName, orderNumber: data.orderNumber, error: err instanceof Error ? err.message : String(err) },
+      })
+    );
+  }
 }
 
 export async function voidOrderItem(
@@ -679,7 +747,13 @@ export async function activateDelayedOrders(): Promise<void> {
           tableName,
           orderNumber: orderNo(orderId),
           orderType: "DINE_IN",
-          items: held.items.map((i) => ({ name: i.name, quantity: i.quantity, ...(i.menuItemId ? { menuItemId: i.menuItemId } : {}), ...(i.notes ? { notes: i.notes } : {}) })),
+          items: held.items.map((i) => ({
+            name: i.name, quantity: i.quantity,
+            ...(i.menuItemId ? { menuItemId: i.menuItemId } : {}),
+            ...(i.notes ? { notes: i.notes } : {}),
+            ...(i.modifiers.length ? { modifiers: i.modifiers.map((m) => m.name) } : {}),
+          })),
+          ...cashierField(),
         });
       } catch (err) {
         // A scheduled order that just came due and silently never reached

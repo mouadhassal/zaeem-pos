@@ -80,9 +80,10 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   addItem: (item) =>
     set((state) => {
-      // Same item with different options, note or gift status is a different line.
+      // Same item with different options, note or gift status is a different line,
+      // and a line that already exists on the server is never merged into or out of.
       const existing = state.items.find(
-        (i) => i.menuItemId === item.menuItemId && !i.comboId && !i.voided && lineKey(i) === lineKey(item)
+        (i) => i.menuItemId === item.menuItemId && !i.comboId && !i.voided && !i.dbItemId && !item.dbItemId && lineKey(i) === lineKey(item)
       );
       if (existing && !item.comboId) {
         return {

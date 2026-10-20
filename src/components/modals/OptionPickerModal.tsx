@@ -1,7 +1,18 @@
 import { useMemo, useState } from "react";
-import { IconX } from "@tabler/icons-react";
+import { IconMinus, IconPlus, IconX } from "@tabler/icons-react";
 import { useCurrency } from "../../hooks/useCurrency";
 import { missingRequired, selectionToModifiers, toggleChoice, type Modifier, type OptionGroup, type Selection } from "../../lib/itemOptions";
+
+export interface PickerResult {
+  modifiers: Modifier[];
+  note: string;
+  /** Only when `askQuantity` is on. */
+  quantity: number;
+  /** Only when `askReason` is on. */
+  reason: string;
+  /** Only when `needsPin` is on. */
+  pin: string;
+}
 
 interface Props {
   itemName: string;
@@ -11,32 +22,56 @@ interface Props {
   /** Modifiers the line already has that no longer belong to any group; kept when confirming. */
   keepModifiers?: Modifier[];
   confirmLabel?: string;
-  onConfirm: (result: { modifiers: Modifier[]; note: string }) => void;
+  /** Editing a line already sent to the kitchen: change the quantity too. */
+  askQuantity?: boolean;
+  initialQuantity?: number;
+  /** Editing a line already sent to the kitchen: say why (it is recorded and printed). */
+  askReason?: boolean;
+  /** The server wants a manager PIN for this change. */
+  needsPin?: boolean;
+  /** Message from a failed attempt (shown under the form). */
+  error?: string | null;
+  busy?: boolean;
+  onConfirm: (result: PickerResult) => void;
   onCancel: () => void;
 }
+
+const REASONS = ["طلب العميل", "خطأ في الطلب", "خطأ في التحضير", "أخرى"];
 
 /**
  * Shown when a cashier taps an item that has options ("without onion",
  * "extra cheese +2,000") and when they edit a line already in the cart. Also
- * carries a free-text note for the kitchen. Prices shown here are for the
- * cashier's eyes only; the server re-prices every option from the menu.
+ * carries a free-text note for the kitchen. For a line already sent to the
+ * kitchen it also asks the new quantity and the reason. Prices shown here are
+ * for the cashier's eyes only; the server re-prices every option from the menu.
  */
-export default function OptionPickerModal({ itemName, groups, initialSelection, initialNote, keepModifiers, confirmLabel, onConfirm, onCancel }: Props) {
+export default function OptionPickerModal({
+  itemName, groups, initialSelection, initialNote, keepModifiers, confirmLabel,
+  askQuantity, initialQuantity, askReason, needsPin, error, busy, onConfirm, onCancel,
+}: Props) {
   const { fmt } = useCurrency();
   const [selection, setSelection] = useState<Selection>(initialSelection ?? {});
   const [note, setNote] = useState(initialNote ?? "");
+  const [quantity, setQuantity] = useState(initialQuantity ?? 1);
+  const [reason, setReason] = useState("");
+  const [customReason, setCustomReason] = useState("");
+  const [pin, setPin] = useState("");
   const [showMissing, setShowMissing] = useState(false);
 
   const missing = useMemo(() => missingRequired(groups, selection), [groups, selection]);
   const modifiers = useMemo(() => selectionToModifiers(groups, selection), [groups, selection]);
   const extraCents = modifiers.reduce((s, m) => s + m.priceCents, 0);
+  const finalReason = reason === "أخرى" ? customReason.trim() : reason;
+  const reasonMissing = !!askReason && !finalReason;
+  const pinMissing = !!needsPin && !pin;
 
   const confirm = () => {
     if (missing.length > 0) {
       setShowMissing(true);
       return;
     }
-    onConfirm({ modifiers: [...modifiers, ...(keepModifiers ?? [])], note: note.trim() });
+    if (reasonMissing || pinMissing) return;
+    onConfirm({ modifiers: [...modifiers, ...(keepModifiers ?? [])], note: note.trim(), quantity, reason: finalReason, pin });
   };
 
   return (
@@ -50,6 +85,19 @@ export default function OptionPickerModal({ itemName, groups, initialSelection, 
         </div>
 
         <div className="p-6 space-y-5 overflow-y-auto">
+          {askQuantity && (
+            <div className="flex items-center gap-3">
+              <span className="font-arabic text-sm font-bold text-ink-700">الكمية</span>
+              <button type="button" onClick={() => setQuantity((q) => Math.max(1, q - 1))} className="w-11 h-11 rounded-[9px] bg-surface-alt flex items-center justify-center" aria-label="إنقاص" data-testid="edit-qty-minus">
+                <IconMinus className="w-4 h-4" />
+              </button>
+              <span className="tabular w-8 text-center font-bold" data-testid="edit-qty">{quantity}</span>
+              <button type="button" onClick={() => setQuantity((q) => q + 1)} className="w-11 h-11 rounded-[9px] bg-accent text-white flex items-center justify-center" aria-label="زيادة" data-testid="edit-qty-plus">
+                <IconPlus className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
           {groups.map((g) => (
             <div key={g.id} className="space-y-2" data-testid="option-picker-group">
               <div className="flex items-center gap-2">
@@ -91,15 +139,64 @@ export default function OptionPickerModal({ itemName, groups, initialSelection, 
             />
           </div>
 
+          {askReason && (
+            <div className="space-y-2">
+              <label className="font-arabic text-sm text-ink-500 block">سبب التعديل *</label>
+              <div className="flex flex-wrap gap-2">
+                {REASONS.map((r) => (
+                  <button
+                    key={r}
+                    type="button"
+                    onClick={() => setReason(r)}
+                    className={`min-h-[44px] px-4 rounded-full font-arabic text-sm ${reason === r ? "bg-saffron-600 text-white" : "bg-surface-alt text-ink-700 hover:bg-ink-200"}`}
+                    data-testid="edit-reason"
+                  >
+                    {r}
+                  </button>
+                ))}
+              </div>
+              {reason === "أخرى" && (
+                <input
+                  type="text"
+                  value={customReason}
+                  onChange={(e) => setCustomReason(e.target.value)}
+                  placeholder="اكتب السبب..."
+                  className="w-full h-12 rounded-sm border-2 border-ink-200 px-4 font-arabic text-sm outline-none focus:border-saffron-600"
+                  data-testid="edit-custom-reason"
+                />
+              )}
+            </div>
+          )}
+
+          {needsPin && (
+            <div className="space-y-1.5">
+              <label className="font-arabic text-sm text-ink-500 block">هذا التعديل يحتاج موافقة المدير: رمز المدير</label>
+              <input
+                type="password"
+                value={pin}
+                onChange={(e) => setPin(e.target.value)}
+                className="w-full h-12 rounded-sm border-2 border-ink-200 px-4 font-mono text-sm outline-none focus:border-saffron-600"
+                data-testid="edit-pin"
+                autoFocus
+              />
+            </div>
+          )}
+
           {showMissing && missing.length > 0 && (
             <p className="font-arabic text-sm text-danger" data-testid="option-missing">اختر من: {missing.join("، ")}</p>
           )}
+          {error && <p className="font-arabic text-sm text-danger" data-testid="option-error">{error}</p>}
         </div>
 
         <div className="px-6 py-4 border-t border-ink-200 flex gap-3 items-center">
           <button onClick={onCancel} className="h-12 px-5 rounded-xl bg-surface-alt text-ink-900 font-arabic font-bold hover:bg-ink-200">رجوع</button>
-          <button onClick={confirm} className="flex-1 h-12 rounded-xl bg-saffron-600 text-white font-arabic font-bold hover:bg-saffron-700" data-testid="option-confirm">
-            {confirmLabel ?? "إضافة"}
+          <button
+            onClick={confirm}
+            disabled={busy || reasonMissing || pinMissing}
+            className="flex-1 h-12 rounded-xl bg-saffron-600 text-white font-arabic font-bold hover:bg-saffron-700 disabled:opacity-50"
+            data-testid="option-confirm"
+          >
+            {busy ? "..." : (confirmLabel ?? "إضافة")}
             {extraCents > 0 && <span className="ms-2 opacity-90">(+{fmt(extraCents)})</span>}
           </button>
         </div>

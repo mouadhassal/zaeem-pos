@@ -85,11 +85,11 @@ export default function OrderPanel({
             key={line.id}
             {...line}
             currencySymbol={currencySymbol}
-            onIncrement={onIncrementLine}
-            onDecrement={onDecrementLine}
+            onIncrement={sent ? undefined : onIncrementLine}
+            onDecrement={sent ? undefined : onDecrementLine}
             onVoid={onVoidLine}
-            onEdit={sent ? undefined : onEditLine}
-            onGift={sent ? undefined : onGiftLine}
+            onEdit={onEditLine}
+            onGift={onGiftLine}
           />
         ))}
         {lines.length === 0 && (

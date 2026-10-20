@@ -591,6 +591,8 @@ pub fn run() {
             commands::restaurant::list_option_groups_v3,
             commands::restaurant::save_option_group_v3,
             commands::restaurant::delete_option_group_v3,
+            commands::restaurant::edit_order_item_v3,
+            commands::restaurant::set_order_item_comp_v3,
             commands::suppliers::create_purchase_order_v3,
             commands::suppliers::create_purchase_order_and_bump_supplier_v3,
             commands::suppliers::create_purchase_order_with_items_v3,

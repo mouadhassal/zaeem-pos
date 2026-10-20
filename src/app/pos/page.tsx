@@ -37,11 +37,11 @@ import { CURRENCY_SYMBOLS } from "../../hooks/useCurrency";
 import { setCurrency, parseMoneyInput } from "../../lib/money";
 import { useDiscountCap } from "../../hooks/useDiscountCap";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
-import { createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, retrieveOpenOrder, addItemsToOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, lookupLoyaltyCard, listActiveLoyaltyRewards, redeemLoyaltyReward, getBusinessMode, listPendingOrdersForTable } from "../../lib/orderService";
+import { editOrderItem, setOrderItemComp, printKitchenChange, createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, retrieveOpenOrder, addItemsToOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, lookupLoyaltyCard, listActiveLoyaltyRewards, redeemLoyaltyReward, getBusinessMode, listPendingOrdersForTable } from "../../lib/orderService";
 import type { LoyaltyRewardOption } from "../../lib/orderService";
 import { enableBarcodeScanner, disableBarcodeScanner } from "../../lib/barcodeScanner";
 import { retryPrintQueue, printReceipt } from "../../lib/printer";
-import type { ReceiptData } from "../../lib/printer";
+import type { ReceiptData, ReceiptItem } from "../../lib/printer";
 import type { SplitItem, CartItem } from "../../stores/cartStore";
 import { orderNo } from "../../lib/orderNumber";
 import OptionPickerModal from "../../components/modals/OptionPickerModal";
@@ -64,6 +64,25 @@ import { customModifiers, groupsForItem, selectionFromModifiers } from "../../li
  * right after each successful send) says is already on the real order --
  * a line with no dbItemId at all is entirely new, its full quantity counts.
  */
+/** The order's lines as the receipt prints them: options, kitchen note, gift status. */
+function receiptLines(items: CartItem[]): ReceiptItem[] {
+  return items.filter((i) => !i.voided).map((i) => ({
+    name: i.name,
+    quantity: i.quantity,
+    priceCents: i.unitPriceCents,
+    modifiers: i.modifiers,
+    ...(i.notes ? { notes: i.notes } : {}),
+    ...(i.comped ? { comped: true, compReason: i.compReason ?? "" } : {}),
+    ...(i.comboId ? { comboId: i.comboId } : {}),
+  }));
+}
+
+/** Lines the cashier cancelled before payment, so the receipt can say they were not charged. */
+function cancelledField(items: CartItem[]): { cancelledItems?: { name: string; quantity: number; reason?: string }[] } {
+  const cancelled = items.filter((i) => i.voided).map((i) => ({ name: i.name, quantity: i.quantity, ...(i.voidReason ? { reason: i.voidReason } : {}) }));
+  return cancelled.length > 0 ? { cancelledItems: cancelled } : {};
+}
+
 /** Gift ("on the house") fields for an order line, only present when the line is a gift. */
 function compFields(i: CartItem): { comped?: boolean; compReason?: string } {
   return i.comped ? { comped: true, compReason: i.compReason ?? "" } : {};
@@ -530,7 +549,7 @@ export default function POSPage() {
         chainName: cfg.chain_name, branchName: cfg.branch_name,
         currency: cfg.currency, orderNumber: orderNo(orderId),
         tableName: tableName ?? "", orderType: orderType === "DEBT" ? "DINE_IN" : orderType,
-        items: items.filter((i) => !i.voided).map((i) => ({ name: i.name, quantity: i.quantity, priceCents: i.unitPriceCents, modifiers: i.modifiers, ...(i.comboId ? { comboId: i.comboId } : {}) })),
+        items: receiptLines(items), ...cancelledField(items), ...(user?.name ? { cashier: user.name } : {}),
         subtotalCents: state.subtotal(), taxCents: t.taxCents, secondaryTaxCents: t.secondaryTaxCents,
         serviceChargeCents: t.serviceChargeCents, discountCents: state.discountCents,
         savingsCents: state.savings(), totalCents: state.total(), paymentMethod: method, changeCents,
@@ -652,7 +671,7 @@ export default function POSPage() {
         chainName: cfg.chain_name, branchName: cfg.branch_name,
         currency: cfg.currency, orderNumber: orderNo(openOrderId),
         tableName: tableName ?? "", orderType: "DINE_IN",
-        items: items.filter((i) => !i.voided).map((i) => ({ name: i.name, quantity: i.quantity, priceCents: i.unitPriceCents, modifiers: i.modifiers, ...(i.comboId ? { comboId: i.comboId } : {}) })),
+        items: receiptLines(items), ...cancelledField(items), ...(user?.name ? { cashier: user.name } : {}),
         subtotalCents: openOrderTotals?.subtotalCents ?? 0,
         taxCents: openOrderTotals?.taxCents ?? 0, secondaryTaxCents: 0, serviceChargeCents: 0,
         discountCents: openOrderTotals?.discountCents ?? 0,
@@ -790,6 +809,12 @@ export default function POSPage() {
       if (target.dbItemId) {
         try {
           await voidOrderItem(target.dbItemId, reason, managerOverridePin);
+          if (openOrderId) {
+            await printKitchenChange({
+              kind: "CANCEL", tableName: tableName ?? "", orderNumber: orderNo(openOrderId), orderType: ticketOrderType,
+              items: [slipItem(target)], cancelReason: reason,
+            });
+          }
           // The void re-prices the open tab in Rust -- show that total,
           // not the stale pre-void one (which is what the table was
           // being asked to pay).
@@ -906,15 +931,90 @@ export default function POSPage() {
   const setLineComp = useCartStore((s) => s.setLineComp);
   const editLine = items.find((i) => i.id === editLineId);
   const giftLine = items.find((i) => i.id === giftLineId);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editNeedsPin, setEditNeedsPin] = useState(false);
+
+  const flash = (msg: string, ms = 4000) => {
+    setSuccessMsg(msg);
+    setTimeout(() => setSuccessMsg(null), ms);
+  };
+
+  // Re-reads the open order from the server and rebuilds the cart from it, so
+  // the cart always shows exactly what is stored (after an edit, a gift, ...).
+  const reloadOpenOrder = async (orderId: string) => {
+    const open = await retrieveOpenOrder(orderId);
+    if (!open || !tableId) return;
+    clearCart();
+    setTable(tableId, tableName ?? "");
+    for (const item of open.items) addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
+    if (open.customerName) useOrderTypeStore.getState().setCustomerName(open.customerName);
+    setOpenOrderId(orderId);
+    setOpenOrderTotals({
+      subtotalCents: open.subtotalCents, taxCents: open.taxCents,
+      discountCents: open.discountCents, totalCents: open.totalCents,
+    });
+    setSentQuantities(Object.fromEntries(open.items.map((i) => [i.dbItemId, i.quantity])));
+  };
+
+  const ticketOrderType = orderType === "DEBT" ? "DINE_IN" : orderType;
+  const slipItem = (i: CartItem, quantity = i.quantity) => ({
+    name: i.name, quantity, menuItemId: i.menuItemId,
+    ...(i.modifiers.length ? { modifiers: i.modifiers.map((m) => m.name) } : {}),
+    ...(i.notes ? { notes: i.notes } : {}),
+  });
+
+  const applySentGift = async (dbItemId: string, comped: boolean, reason?: string) => {
+    try {
+      await setOrderItemComp(dbItemId, comped, reason);
+      if (openOrderId) await reloadOpenOrder(openOrderId);
+      flash(comped ? "تم تسجيل الضيافة ✓" : "أُلغيت الضيافة ✓", 2500);
+    } catch (err) {
+      flash(`تعذر تسجيل الضيافة: ${realErrorText(err)}`);
+    }
+  };
 
   const handleGiftClick = (id: string) => {
     const target = items.find((i) => i.id === id);
     if (!target) return;
     if (target.comped) {
-      setLineComp(id, false, "");
+      if (target.dbItemId) void applySentGift(target.dbItemId, false);
+      else setLineComp(id, false, "");
       return;
     }
     setGiftLineId(id);
+  };
+
+  const confirmSentEdit = async (r: { modifiers: { name: string; priceCents: number }[]; note: string; quantity: number; reason: string; pin: string }) => {
+    if (!editLine?.dbItemId || !openOrderId) return;
+    setEditBusy(true);
+    setEditError(null);
+    try {
+      await editOrderItem({
+        itemId: editLine.dbItemId, quantity: r.quantity, modifiers: r.modifiers, notes: r.note, reason: r.reason,
+        ...(r.pin ? { managerOverridePin: r.pin } : {}),
+      });
+      // The kitchen is told what changed: the line as it was, and as it is now.
+      await printKitchenChange({
+        kind: "EDIT", tableName: tableName ?? "", orderNumber: orderNo(openOrderId), orderType: ticketOrderType,
+        items: [{
+          name: editLine.name, quantity: r.quantity, menuItemId: editLine.menuItemId,
+          ...(r.modifiers.length ? { modifiers: r.modifiers.map((m) => m.name) } : {}),
+          ...(r.note ? { notes: r.note } : {}),
+        }],
+        replaces: [slipItem(editLine)],
+      });
+      await reloadOpenOrder(openOrderId);
+      setEditLineId(null);
+      setEditNeedsPin(false);
+      flash("تم تعديل الصنف ✓", 2500);
+    } catch (err) {
+      const msg = realErrorText(err);
+      if (msg.includes("رمز المدير")) setEditNeedsPin(true);
+      setEditError(msg);
+    } finally {
+      setEditBusy(false);
+    }
   };
 
   const handleVoidLineClick = (id: string) => {
@@ -935,7 +1035,7 @@ export default function POSPage() {
       chainName: cfg.chain_name, branchName: cfg.branch_name,
       currency: cfg.currency, orderNumber,
       tableName: tableName ?? "", orderType,
-      items: items.filter((i) => !i.voided).map((i) => ({ name: i.name, quantity: i.quantity, priceCents: i.unitPriceCents, modifiers: i.modifiers, ...(i.comboId ? { comboId: i.comboId } : {}) })),
+      items: receiptLines(items), ...cancelledField(items), ...(user?.name ? { cashier: user.name } : {}),
       subtotalCents: state.subtotal(), taxCents: t.taxCents, secondaryTaxCents: t.secondaryTaxCents,
       serviceChargeCents: t.serviceChargeCents, discountCents: state.discountCents,
       savingsCents: state.savings(), totalCents: state.total(), paymentMethod: "", changeCents: 0,
@@ -1259,9 +1359,19 @@ export default function POSPage() {
             editLine.modifiers,
           )}
           confirmLabel="حفظ"
-          onCancel={() => setEditLineId(null)}
-          onConfirm={({ modifiers, note }) => {
-            setLineOptions(editLine.id, modifiers, note);
+          askQuantity={!!editLine.dbItemId}
+          initialQuantity={editLine.quantity}
+          askReason={!!editLine.dbItemId}
+          needsPin={editNeedsPin}
+          error={editError}
+          busy={editBusy}
+          onCancel={() => { setEditLineId(null); setEditError(null); setEditNeedsPin(false); }}
+          onConfirm={(r) => {
+            if (editLine.dbItemId) {
+              void confirmSentEdit(r);
+              return;
+            }
+            setLineOptions(editLine.id, r.modifiers, r.note);
             setEditLineId(null);
           }}
         />
@@ -1273,7 +1383,8 @@ export default function POSPage() {
           valueCents={(giftLine.unitPriceCents + giftLine.modifiers.reduce((sum, m) => sum + m.priceCents, 0)) * giftLine.quantity}
           onCancel={() => setGiftLineId(null)}
           onConfirm={(reason) => {
-            setLineComp(giftLine.id, true, reason);
+            if (giftLine.dbItemId) void applySentGift(giftLine.dbItemId, true, reason);
+            else setLineComp(giftLine.id, true, reason);
             setGiftLineId(null);
           }}
         />

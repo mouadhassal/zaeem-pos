@@ -467,7 +467,7 @@ pub(crate) fn enforce_discount_cap(
 /// function's authoritative subtotal, not whatever stale subtotal the
 /// caller sent) and `delivery_fee_cents` (added on top, untaxed, matching
 /// `orderService.ts`'s own convention).
-fn price_order_authoritatively(
+pub(crate) fn price_order_authoritatively(
     conn: &rusqlite::Connection,
     tenant_id: &str,
     items: &[crate::repo::OrderItemInput],
@@ -705,7 +705,7 @@ pub(crate) fn create_full_order_v3_impl(
 /// filled them in) and queues the row's current snapshot. Called at
 /// creation (rev 1) and again whenever the order's status changes to a
 /// terminal state (rev 2+, see `finalize_order_with_payment_v3`).
-fn sync_enqueue_order(
+pub(crate) fn sync_enqueue_order(
     tx: &rusqlite::Transaction,
     tenant_id: &str,
     branch_id: &str,
@@ -759,7 +759,7 @@ fn sync_enqueue_order_items(
 /// item's current snapshot -- `menu_item_name` is denormalized in
 /// (looked up now, not stored by reference) so a later menu rename can never
 /// rewrite this historical fact.
-fn sync_enqueue_single_order_item(
+pub(crate) fn sync_enqueue_single_order_item(
     tx: &rusqlite::Transaction,
     tenant_id: &str,
     branch_id: &str,

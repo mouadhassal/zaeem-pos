@@ -1,8 +1,7 @@
 import { invoke } from "./invoke";
 import { useAuthStore } from "../stores/authStore";
-import { formatMoney } from "./money";
-import { formatArabicDate, formatArabicTime } from "./dateLocal";
 import { routeKitchenItems } from "./kitchenRouting";
+import { kitchenTicketRows, receiptRows, type KitchenTicketData, type ReceiptData, type ReceiptItem, type Row } from "./ticketLayout";
 
 function token() {
   return useAuthStore.getState().token ?? "";
@@ -191,53 +190,8 @@ function asciiLine(text: string): number[] {
   return [...Array.from(text, (ch) => ch.charCodeAt(0) & 0x7f), 0x0a];
 }
 
-export interface ReceiptItem {
-  name: string;
-  quantity: number;
-  priceCents: number;
-  modifiers?: { name: string; priceCents: number }[];
-  comboId?: string;
-}
-
-export interface ReceiptData {
-  chainName: string;
-  branchName: string;
-  orderNumber: string;
-  tableName: string;
-  orderType: string;
-  items: ReceiptItem[];
-  subtotalCents: number;
-  taxCents: number;
-  secondaryTaxCents: number;
-  serviceChargeCents: number;
-  discountCents: number;
-  savingsCents: number;
-  totalCents: number;
-  paymentMethod: string;
-  changeCents: number;
-  currency?: string;
-  customerName?: string;
-  customerPhone?: string;
-  deliveryAddress?: string;
-  /**
-   * 2026-09-13 audit fix: the cashier-entered terminal/wallet approval code
-   * for CARD/WALLET payments (required in PaymentModal.tsx before
-   * "Confirm" is enabled -- see that file's own comment). Shown on the
-   * receipt as the one natural, already-payment-time place to surface it;
-   * absent for CASH/CREDIT, which never collect one.
-   */
-  referenceCode?: string;
-}
-
-export interface KitchenTicketData {
-  tableName: string;
-  orderNumber: string;
-  orderType: string;
-  items: { name: string; quantity: number; notes?: string; modifiers?: string[]; menuItemId?: string }[];
-  scheduledAt?: string;
-  /** Station name printed under the title when this copy is for one kitchen station only. */
-  station?: string;
-}
+// Receipt / kitchen-ticket content and its types live in ticketLayout.ts.
+export type { ReceiptData, ReceiptItem, KitchenTicketData };
 
 interface PrinterRowV3 {
   id: string;
@@ -396,115 +350,24 @@ function createEscPosCommandBuffer(): {
   };
 }
 
-function renderReceiptCanvas(data: ReceiptData, paperWidthMm: number): HTMLCanvasElement {
-  const W = paperWidthDots(paperWidthMm);
-  const b = newCanvasBuilder(W);
-  const fmt = formatMoney;
-
-  drawLine(b, data.chainName, { size: 42, bold: true, align: "center" });
-  drawLine(b, data.branchName, { size: 24, align: "center" });
-  b.y += 6;
-  drawRule(b);
-
-  drawTwoCol(b, "التاريخ", formatArabicDate(new Date()));
-  drawTwoCol(b, "الوقت", formatArabicTime(new Date()));
-  drawTwoCol(b, "رقم الطلب", data.orderNumber);
-  // 2026-08-13 generalization fix: was drawn unconditionally -- a takeaway/
-  // delivery order (tableName = "") or ANY order from a has_tables=false
-  // business printed a "طاولة" row with nothing next to it, on every
-  // single receipt for a non-table business.
-  if (isSeatedTable(data.tableName)) drawTwoCol(b, "طاولة", data.tableName);
-
-  const typeLabels: Record<string, string> = {
-    DINE_IN: "داخلي", TAKEAWAY: "سفري", ONLINE: "أونلاين",
-  };
-  drawTwoCol(b, "النوع", typeLabels[data.orderType] ?? data.orderType);
-
-  if (data.customerName) drawTwoCol(b, "العميل", data.customerName);
-  if (data.deliveryAddress) drawTwoCol(b, "العنوان", data.deliveryAddress);
-
-  drawRule(b);
-
-  for (const item of data.items) {
-    drawTwoCol(b, `${item.quantity} × ${item.name}`, fmt(item.priceCents * item.quantity), { bold: true });
-    if (item.modifiers) {
-      for (const mod of item.modifiers) {
-        drawTwoCol(b, `  + ${mod.name}`, fmt(mod.priceCents), { size: 20 });
-      }
-    }
+/** Draws content rows (see ticketLayout.ts) onto a fresh canvas for the given paper. */
+function drawRows(rows: readonly Row[], paperWidthMm: number): HTMLCanvasElement {
+  const b = newCanvasBuilder(paperWidthDots(paperWidthMm));
+  for (const r of rows) {
+    if (r.t === "line") drawLine(b, r.text, { ...(r.size ? { size: r.size } : {}), ...(r.bold ? { bold: true } : {}), ...(r.align ? { align: r.align } : {}) });
+    else if (r.t === "two") drawTwoCol(b, r.right, r.left, { ...(r.size ? { size: r.size } : {}), ...(r.bold ? { bold: true } : {}) });
+    else if (r.t === "rule") drawRule(b, !!r.dashed);
+    else b.y += r.h;
   }
-
-  drawRule(b);
-  drawTwoCol(b, "المجموع الفرعي", fmt(data.subtotalCents));
-  if (data.serviceChargeCents > 0) drawTwoCol(b, "خدمة", fmt(data.serviceChargeCents));
-  drawTwoCol(b, "الضريبة", fmt(data.taxCents));
-  if (data.secondaryTaxCents > 0) drawTwoCol(b, "ضريبة إضافية", fmt(data.secondaryTaxCents));
-  if (data.discountCents > 0) drawTwoCol(b, "الخصم", `-${fmt(data.discountCents)}`);
-  if (data.savingsCents > 0) drawTwoCol(b, "وفرتم", fmt(data.savingsCents), { bold: true });
-
-  drawRule(b);
-  drawTwoCol(b, "الإجمالي", fmt(data.totalCents), { size: 34, bold: true });
-  drawRule(b);
-
-  if (data.changeCents > 0) drawTwoCol(b, "الباقي", fmt(data.changeCents));
-  if (data.referenceCode) drawTwoCol(b, "رقم المرجع", data.referenceCode, { size: 20 });
-
-  b.y += 10;
-  drawLine(b, "شكراً لزيارتكم", { align: "center", size: 26 });
-  drawLine(b, "نتمنى لكم يوماً سعيداً", { align: "center", size: 22 });
-  b.y += 24;
-
   return finalizeCanvas(b);
+}
+
+function renderReceiptCanvas(data: ReceiptData, paperWidthMm: number): HTMLCanvasElement {
+  return drawRows(receiptRows(data), paperWidthMm);
 }
 
 function renderKitchenTicketCanvas(data: KitchenTicketData, paperWidthMm: number): HTMLCanvasElement {
-  const W = paperWidthDots(paperWidthMm);
-  const b = newCanvasBuilder(W);
-
-  drawLine(b, "*** المطبخ ***", { size: 38, bold: true, align: "center" });
-  if (data.station) drawLine(b, data.station, { size: 34, bold: true, align: "center" });
-  b.y += 6;
-  drawRule(b);
-
-  const typeLabels: Record<string, string> = {
-    DINE_IN: "داخلي", TAKEAWAY: "سفري", ONLINE: "أونلاين",
-  };
-  if (isSeatedTable(data.tableName)) drawTwoCol(b, "طاولة", data.tableName);
-  drawTwoCol(b, "رقم", data.orderNumber);
-  drawTwoCol(b, "النوع", typeLabels[data.orderType] ?? data.orderType);
-  drawTwoCol(b, "التاريخ", formatArabicDate(new Date()));
-  drawTwoCol(b, "الوقت", formatArabicTime(new Date()));
-
-  if (data.scheduledAt) {
-    drawTwoCol(b, "مجدول", formatArabicTime(new Date(data.scheduledAt)), { bold: true });
-  }
-
-  drawRule(b);
-
-  for (const item of data.items) {
-    drawLine(b, `${item.quantity} × ${item.name}`, { bold: true, size: 28 });
-    if (item.modifiers) {
-      for (const mod of item.modifiers) {
-        drawLine(b, `  + ${mod}`, { size: 22 });
-      }
-    }
-    if (item.notes) {
-      drawLine(b, `  ملاحظة: ${item.notes}`, { size: 22 });
-    }
-    b.y += 6;
-  }
-
-  drawRule(b);
-  b.y += 16;
-
-  return finalizeCanvas(b);
-}
-
-// The implicit counter table ("المنضدة") carries takeaway and every sale in
-// a shop with no tables -- printing "طاولة: المنضدة" on those receipts
-// and kitchen tickets read as if the customer sat at a table.
-function isSeatedTable(name: string | undefined): name is string {
-  return !!name && name !== "المنضدة";
+  return drawRows(kitchenTicketRows(data), paperWidthMm);
 }
 
 export async function printToDevice(data: Uint8Array, printer: PrinterConfig): Promise<void> {
@@ -665,7 +528,8 @@ export async function printKitchenTicket(data: KitchenTicketData): Promise<void>
   // Station printing (Migration AD): each kitchen printer with categories
   // gets only its items. If the routing data can't be read, fall back to the
   // old behaviour (every printer gets the whole ticket) rather than lose it.
-  let routed: Map<string, KitchenTicketData["items"]> | null = null;
+  type Router = (items: KitchenTicketData["items"]) => Map<string, KitchenTicketData["items"]>;
+  let route: Router | null = null;
   const stationIds = new Set<string>();
   try {
     const [links, menu] = await Promise.all([
@@ -676,22 +540,52 @@ export async function printKitchenTicket(data: KitchenTicketData): Promise<void>
       const byPrinter = new Map<string, string[]>();
       for (const l of links) byPrinter.set(l.printer_id, [...(byPrinter.get(l.printer_id) ?? []), l.category_id]);
       const categoryByItem = new Map(menu.map((m) => [m.id, m.category_id]));
-      routed = routeKitchenItems(
-        data.items,
-        printers.map((p) => ({ id: p.id, categoryIds: byPrinter.get(p.id) ?? [] })),
-        (menuItemId) => (menuItemId ? categoryByItem.get(menuItemId) : undefined)
-      );
+      const routePrinters = printers.map((p) => ({ id: p.id, categoryIds: byPrinter.get(p.id) ?? [] }));
+      route = (list) => routeKitchenItems(list, routePrinters, (menuItemId) => (menuItemId ? categoryByItem.get(menuItemId) : undefined));
       for (const [id, cats] of byPrinter) if (cats.length > 0) stationIds.add(id);
     }
   } catch {
-    routed = null;
+    route = null;
   }
 
+  // Each station's share of this ticket. An EDIT carries two lists (the lines
+  // as they were and as they are now); both are routed so the station that
+  // made the old line sees its replacement.
+  const routedNew = route ? route(data.items) : null;
+  const routedOld = route && data.replaces ? route(data.replaces) : null;
+  const shares: { p: any; items: KitchenTicketData["items"]; replaces?: KitchenTicketData["items"] }[] = [];
   for (const printerPartial of printers) {
     const p = printerPartial as any;
-    const items = routed ? routed.get(p.id) : data.items;
-    if (!items || items.length === 0) continue; // nothing for this station: no empty ticket
-    const ticket: KitchenTicketData = { ...data, items, ...(stationIds.has(p.id) ? { station: p.name } : {}) };
+    const items = (routedNew ? routedNew.get(p.id) : data.items) ?? [];
+    const replaces = data.replaces ? (routedOld ? routedOld.get(p.id) : data.replaces) ?? [] : undefined;
+    if (items.length === 0 && (replaces?.length ?? 0) === 0) continue; // nothing for this station: no empty ticket
+    shares.push({ p, items, ...(replaces ? { replaces } : {}) });
+  }
+  // When the order is split across stations, every station slip says so:
+  // which station it is, and what the other stations got. A printer with no
+  // categories (pass / expo) already prints everything and is left out.
+  const stationShares = shares.filter((sh) => stationIds.has(sh.p.id));
+  const split = stationShares.length > 1;
+  const count = (list: KitchenTicketData["items"]) => list.reduce((n, i) => n + i.quantity, 0);
+
+  for (const share of shares) {
+    const { p, items } = share;
+    const stationIdx = stationShares.indexOf(share);
+    const ticket: KitchenTicketData = {
+      ...data,
+      items,
+      ...(share.replaces ? { replaces: share.replaces } : {}),
+      ...(stationIds.has(p.id) ? { station: p.name } : {}),
+      ...(split && stationIdx >= 0
+        ? {
+            stationNo: stationIdx + 1,
+            stationOf: stationShares.length,
+            alsoSentTo: stationShares
+              .filter((o) => o !== share)
+              .map((o) => ({ name: o.p.name as string, count: count(o.items.length > 0 ? o.items : o.replaces ?? []) })),
+          }
+        : {}),
+    };
     try {
       await sendKitchenTicketToPrinter(ticket, p, defaultPaperWidthK);
       anyPrinted = true;
@@ -776,46 +670,21 @@ function escapeHtml(value: string): string {
 }
 
 export function generateOnScreenReceiptHTML(data: ReceiptData): string {
-  const fmtCent = formatMoney;
-
-  let itemsHtml = "";
-  for (const item of data.items) {
-    itemsHtml += `<tr><td>${item.quantity}× ${escapeHtml(item.name)}</td><td style="text-align:left">${fmtCent(item.priceCents * item.quantity)}</td></tr>`;
-    if (item.modifiers) {
-      for (const mod of item.modifiers) {
-        itemsHtml += `<tr style="color:#999"><td style="padding-right:16px">+ ${escapeHtml(mod.name)}</td><td style="text-align:left">${fmtCent(mod.priceCents)}</td></tr>`;
+  // Same rows the printer draws, so the screen copy can never differ from the paper one.
+  const px = (size?: number) => Math.round((size ?? 26) * 0.55);
+  const body = receiptRows(data)
+    .map((r) => {
+      if (r.t === "line") {
+        return `<div style="text-align:${r.align ?? "right"};font-size:${px(r.size)}px;${r.bold ? "font-weight:bold;" : ""}">${escapeHtml(r.text)}</div>`;
       }
-    }
-  }
-
-  return `
-    <div dir="rtl" style="font-family:'Arabic Typesetting',Arial,sans-serif;padding:24px;max-width:320px;margin:0 auto;direction:rtl">
-      <h2 style="text-align:center;margin:0">${escapeHtml(data.chainName)}</h2>
-      <p style="text-align:center;color:#666;margin:4px 0">${escapeHtml(data.branchName)}</p>
-      <hr/>
-      <table style="width:100%;font-size:14px">
-        <tr><td>التاريخ</td><td style="text-align:left">${formatArabicDate(new Date())}</td></tr>
-        <tr><td>الوقت</td><td style="text-align:left">${formatArabicTime(new Date())}</td></tr>
-        <tr><td>رقم الطلب</td><td style="text-align:left">${escapeHtml(data.orderNumber)}</td></tr>
-        ${isSeatedTable(data.tableName) ? `<tr><td>طاولة</td><td style="text-align:left">${escapeHtml(data.tableName)}</td></tr>` : ""}
-      </table>
-      <hr/>
-      <table style="width:100%;font-size:14px">
-        <thead><tr style="font-weight:bold"><th style="text-align:right">الصنف</th><th style="text-align:left">السعر</th></tr></thead>
-        <tbody>${itemsHtml}</tbody>
-      </table>
-      <hr/>
-      <table style="width:100%;font-size:14px">
-        <tr><td>المجموع الفرعي</td><td style="text-align:left">${fmtCent(data.subtotalCents)}</td></tr>
-        <tr><td>الضريبة</td><td style="text-align:left">${fmtCent(data.taxCents)}</td></tr>
-        ${data.discountCents > 0 ? `<tr><td>الخصم</td><td style="text-align:left;color:red">-${fmtCent(data.discountCents)}</td></tr>` : ""}
-        <tr style="font-weight:bold;font-size:18px"><td>الإجمالي</td><td style="text-align:left">${fmtCent(data.totalCents)}</td></tr>
-        ${data.referenceCode ? `<tr style="color:#666;font-size:12px"><td>رقم المرجع</td><td style="text-align:left">${escapeHtml(data.referenceCode)}</td></tr>` : ""}
-      </table>
-      <hr/>
-      <p style="text-align:center;font-size:16px">شكراً لزيارتكم</p>
-    </div>
-  `;
+      if (r.t === "two") {
+        return `<div style="display:flex;justify-content:space-between;gap:8px;font-size:${px(r.size)}px;${r.bold ? "font-weight:bold;" : ""}"><span>${escapeHtml(r.right)}</span><span dir="ltr">${escapeHtml(r.left)}</span></div>`;
+      }
+      if (r.t === "rule") return `<hr style="border:0;border-top:1px ${r.dashed ? "dashed" : "solid"} #999;margin:6px 0"/>`;
+      return `<div style="height:${Math.round(r.h / 2)}px"></div>`;
+    })
+    .join("");
+  return `<div dir="rtl" style="font-family:'Arabic Typesetting',Arial,sans-serif;padding:24px;max-width:340px;margin:0 auto;direction:rtl">${body}</div>`;
 }
 
 /** Test print from a printer's own card in Settings. Prints a sample
