@@ -20,6 +20,7 @@ export default function PayKey({ disabled, onClick, onHold, holdDisabled, onSend
         <button
           onClick={onSendToKitchen}
           disabled={sendToKitchenDisabled}
+          data-testid="pay-send-kitchen"
           className="h-11 rounded-[12px] bg-ink-800 text-white text-sm font-bold transition-[transform,opacity] active:scale-[0.98] disabled:opacity-40"
         >
           {sendToKitchenLabel ?? "إرسال للمطبخ"}
@@ -29,6 +30,7 @@ export default function PayKey({ disabled, onClick, onHold, holdDisabled, onSend
         <button
           onClick={onClick}
           disabled={disabled}
+          data-testid="pay-key"
           className="flex-1 bg-saffron-500 text-white font-bold text-base rounded-[12px] transition-[transform,opacity] active:scale-[0.98] disabled:opacity-40"
           style={{ height: 52, minHeight: 52 }}
         >

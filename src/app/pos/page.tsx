@@ -940,6 +940,8 @@ export default function POSPage() {
   // A delivery needs somewhere to go and someone to call; refused before anything is sent or paid.
   const deliveryProblem = (): string | null => {
     if (orderType !== "DELIVERY") return null;
+    // The cart still holds a table's open tab: sending it as a delivery would create a second, duplicate order.
+    if (openOrderId || items.some((i) => i.dbItemId)) return "السلة تحمل طلب طاولة مفتوحاً -- أفرغها وابدأ طلب توصيل جديداً";
     if (!deliveryAddress.trim()) return "اكتب عنوان التوصيل";
     if (!customerPhone.trim()) return "اكتب رقم هاتف العميل";
     return null;
@@ -1322,6 +1324,7 @@ export default function POSPage() {
             return (
               <button
                 key={t}
+                data-testid={`order-type-${t}`}
                 onClick={() => {
                   setOrderType(t);
                   if (t !== "DELIVERY") { setDeliveryFee(0); setFeeInput(""); }

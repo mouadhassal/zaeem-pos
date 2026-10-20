@@ -45,7 +45,7 @@ export default function OrderLine({
   return (
     // Two rows, not one packed row: thumbnail(34)+name+steppers(72)+total(68)+void(32)
     // all on one line doesn't fit the 226px fixed panel -- it was overlapping.
-    <div className="group flex items-start gap-2 py-2">
+    <div className="group flex items-start gap-2 py-2" data-testid="order-line">
       {photoUrl ? (
         <img
           src={photoUrl}
@@ -62,7 +62,7 @@ export default function OrderLine({
       )}
       <div className="flex-1 min-w-0 flex flex-col gap-1">
         <div className="flex items-center justify-between gap-1">
-          <p className="text-sm text-text truncate">{name}</p>
+          <p className="text-sm text-text truncate" data-testid="order-line-name">{name}</p>
           <span className="tabular text-sm font-medium text-text shrink-0 flex items-baseline gap-1">
             {comped ? (
               <>
@@ -143,6 +143,7 @@ export default function OrderLine({
                 type="button"
                 onClick={() => onVoid(id)}
                 aria-label="إلغاء الصنف"
+                data-testid="order-line-void"
                 className="w-7 h-7 rounded-[7px] text-text-muted flex items-center justify-center hover:bg-surface-alt hover:text-danger transition-[background-color,color] active:scale-95"
               >
                 <X className="w-3.5 h-3.5" />
