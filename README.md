@@ -47,7 +47,13 @@ Amounts are integers in the currency's minor unit (`*_cents` columns). `money.rs
 - **Sync**: facts go into `sync_outbox` in the same transaction and a 30 s background worker pushes them to the `sync-pos` Edge Function. Selling never waits on the network.
 - **Marketplace goods received**: pulls `pos_list_pending_receipts`, applies stock locally, and queues `pos_mark_order_received` (idempotent, retried) — `goods_receipt.rs`.
 - **Updates**: Tauri updater with signed artifacts.
-- **LAN**: one terminal can be the branch Hub; satellites and KDS screens relay order commands to it.
+- **LAN**: one terminal can be the branch Hub; satellites relay the selling path to it (shared menu incl. photos, tables, open tabs,
+  hold/retrieve, add/edit/gift, split/merge/transfer, delayed orders, payment, shifts, manager override, tax/currency/receipt config reads, debtors, loyalty, delivery), so a second
+  till sells from the Hub's data (`LAN_REDIRECT_COMMANDS` in `src/lib/lan.ts` <-> `dispatch_lan_rpc` in `commands/lan_rpc.rs`, kept in sync by
+  `lan.test.ts`). KDS (kitchen-role) screens are limited to a read-mostly subset. Kitchen slips rung up on a satellite go to the **Hub's**
+  kitchen **network** printers with the Hub's category routing; receipts print on the satellite's own printers. Not forwarded: reports, staff,
+  inventory, finance, menu/settings editing (do these on the Hub), per-device settings (printers, license, backups), and USB
+  kitchen printers (plugged into the Hub machine, unreachable from a satellite).
 - **Backups**: manual and scheduled SQLite backups with an optional secondary destination.
 
 ## 5. Development
