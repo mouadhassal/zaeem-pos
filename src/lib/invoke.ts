@@ -1,6 +1,6 @@
 import { invoke as tauriInvoke, type InvokeArgs, type InvokeOptions } from "@tauri-apps/api/core";
 import { useSessionStore } from "../stores/sessionStore";
-import { LAN_REDIRECT_COMMANDS, relayIfSatellite } from "./lan";
+import { HUB_ONLY_WRITE_ERROR, HUB_ONLY_WRITES, LAN_REDIRECT_COMMANDS, isSatellite, relayIfSatellite } from "./lan";
 
 /**
  * Drop-in replacement for `@tauri-apps/api/core`'s `invoke` -- same
@@ -35,6 +35,7 @@ import { LAN_REDIRECT_COMMANDS, relayIfSatellite } from "./lan";
  */
 export async function invoke<T>(cmd: string, args?: InvokeArgs, options?: InvokeOptions): Promise<T> {
   try {
+    if (HUB_ONLY_WRITES.has(cmd) && (await isSatellite())) throw new Error(HUB_ONLY_WRITE_ERROR);
     if (LAN_REDIRECT_COMMANDS.has(cmd)) {
       const relayed = await relayIfSatellite<T>(cmd, args as Record<string, unknown> | undefined);
       if (relayed.redirected) {

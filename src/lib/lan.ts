@@ -97,6 +97,43 @@ export const LAN_REDIRECT_COMMANDS = new Set([
  */
 export const HUB_ONLY_HELPERS = new Set(["list_active_printers_v3", "list_printer_categories_v3"]);
 
+/**
+ * Menu and kitchen-routing edits refused on a Satellite. Its menu screens
+ * read the Hub's menu (redirected above) but these writes would land in
+ * this terminal's own unused copy and silently vanish, so the manager is
+ * told to make them on the Hub instead.
+ */
+export const HUB_ONLY_WRITES = new Set([
+  "create_menu_item_v3",
+  "update_menu_item_v3",
+  "delete_menu_item_v3",
+  "set_menu_item_active_v3",
+  "upload_menu_item_photo_v3",
+  "delete_menu_item_photo_v3",
+  "create_category_v3",
+  "update_category_v3",
+  "delete_category_v3",
+  "upload_category_photo_v3",
+  "delete_category_photo_v3",
+  "save_option_group_v3",
+  "delete_option_group_v3",
+  "create_combo_meal_v3",
+  "update_combo_meal_v3",
+  "delete_combo_meal_v3",
+  "create_happy_hour_rule_v3",
+  "update_happy_hour_rule_v3",
+  "delete_happy_hour_rule_v3",
+  "set_happy_hour_rule_active_v3",
+  "set_printer_categories_v3",
+]);
+
+export const HUB_ONLY_WRITE_ERROR = "تعديل القائمة يتم من الجهاز الرئيسي فقط";
+
+/** True when this terminal is a paired Satellite (cached; see `invalidateLanTargetCache`). */
+export async function isSatellite(): Promise<boolean> {
+  return (await getHubAddr()) !== null;
+}
+
 
 interface LanRelayResult<T> {
   redirected: boolean;
