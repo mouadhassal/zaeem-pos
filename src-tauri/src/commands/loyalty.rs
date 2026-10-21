@@ -118,9 +118,13 @@ pub fn delete_loyalty_tier_v3(state: State<Db>, license: State<crate::license::c
 
 #[tauri::command]
 pub fn list_loyalty_rewards_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::LoyaltyRewardRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    list_loyalty_rewards_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_loyalty_rewards_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<crate::repo::LoyaltyRewardRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_loyalty_rewards(&actor.tenant_id).map_err(|e| e.to_string())
@@ -184,11 +188,21 @@ pub fn delete_loyalty_reward_v3(state: State<Db>, license: State<crate::license:
 /// discount, so it gets the same audit rigor, non-negotiably.
 #[tauri::command]
 pub fn redeem_loyalty_reward_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, card_number: String, reward_id: String) -> Result<crate::repo::LoyaltyRewardRow, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    redeem_loyalty_reward_v3_impl(&state, &license, session_token, card_number, reward_id)
+}
+
+pub(crate) fn redeem_loyalty_reward_v3_impl(
+    state: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
+    session_token: String,
+    card_number: String,
+    reward_id: String,
+) -> Result<crate::repo::LoyaltyRewardRow, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     let (_, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;

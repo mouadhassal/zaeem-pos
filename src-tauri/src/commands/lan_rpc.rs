@@ -3,6 +3,14 @@ use super::shared::*;
 use super::auth::{login_pin_v3_impl, logout_v3_impl};
 use super::orders::{list_tables_v3_impl, list_kitchen_orders_v3_impl, update_order_status_v3_impl, create_full_order_v3_impl, void_order_item_v3_impl, take_payment_v3_impl};
 use super::shifts::{get_active_shift_v3_impl, clock_in_v3_impl, clock_out_v3_impl, open_shift_v3_impl, close_shift_v3_impl, get_shift_stats_v3_impl};
+use super::debt::{create_debtor_v3_impl, list_debtors_v3_impl};
+use super::delivery::{assign_delivery_driver_v3_impl, get_delivery_settings_v3_impl, get_driver_statement_v3_impl, list_deliveries_v3_impl, list_delivery_drivers_v3_impl, list_driver_settlements_v3_impl, set_delivery_status_v3_impl, settle_driver_v3_impl};
+use super::loyalty::{list_loyalty_rewards_v3_impl, redeem_loyalty_reward_v3_impl};
+use super::menu::{get_menu_item_photo_v3_impl, list_categories_v3_impl, list_combo_components_v3_impl, list_combo_meal_items_v3_impl, list_combo_meals_v3_impl, list_happy_hour_rules_v3_impl, list_menu_items_v3_impl, toggle_menu_item_availability_v3_impl};
+use super::orders::{activate_delayed_orders_v3_impl, add_items_to_order_v3_impl, create_table_v3_impl, delete_table_v3_impl, finalize_order_with_payment_v3_impl, hold_order_v3_impl, list_pending_orders_for_table_v3_impl, lookup_loyalty_card_v3_impl, merge_tables_v3_impl, rename_table_v3_impl, retrieve_held_order_v3_impl, retrieve_open_order_v3_impl, schedule_delayed_order_v3_impl, split_bill_v3_impl, transfer_order_v3_impl, unmerge_tables_v3_impl, verify_manager_override_v3_impl};
+use super::restaurant::{edit_order_item_v3_impl, list_option_groups_v3_impl, set_order_item_comp_v3_impl};
+use super::settings::{get_business_mode_v3_impl, get_discount_caps_v3_impl, get_manager_thresholds_v3_impl};
+use super::suppliers::{list_active_printers_v3_impl, list_printer_categories_v3_impl};
 
 // T3.0 LAN hub/satellite: Phase 1 RPC dispatch allowlist. See `lan.rs`'s
 // module doc for the full design. Every arm here calls the SAME, real,
@@ -36,6 +44,18 @@ pub fn lan_rpc_mutates_orders(command: &str) -> bool {
             | "split_bill_v3"
             | "merge_tables_v3"
             | "unmerge_tables_v3"
+            | "add_items_to_order_v3"
+            | "edit_order_item_v3"
+            | "set_order_item_comp_v3"
+            | "schedule_delayed_order_v3"
+            | "activate_delayed_orders_v3"
+            | "assign_delivery_driver_v3"
+            | "set_delivery_status_v3"
+            | "settle_driver_v3"
+            | "create_table_v3"
+            | "rename_table_v3"
+            | "delete_table_v3"
+            | "toggle_menu_item_availability_v3"
     )
 }
 
@@ -183,6 +203,321 @@ pub fn dispatch_lan_rpc(
             let session_token: String = lan_arg(&args, "sessionToken")?;
             let shift_id: String = lan_arg(&args, "shiftId")?;
             let r = get_shift_stats_v3_impl(db, session_token, shift_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        // ---- Second-till (register satellite) forwarding -------------------
+        // Everything below is the rest of the selling path: the shared menu,
+        // open tables/tabs, hold/retrieve, split/merge/transfer, line edits
+        // and gifts, payment, debtors, loyalty, delivery. Each arm parses
+        // the SAME camelCase keys the frontend's `invoke(...)` call sends
+        // and calls the SAME `_impl` the local `#[tauri::command]` wraps, so
+        // authn/authz, license gates and audit entries are the Hub's own.
+        // `list_active_printers_v3` is a Hub-only helper (NOT on the
+        // frontend redirect set): a satellite asks for the Hub's printers
+        // via `invokeOnHub` so kitchen slips reach the Hub's network
+        // kitchen printers; receipts keep using the local printer list.
+        "list_menu_items_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = list_menu_items_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_categories_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = list_categories_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_option_groups_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let include_inactive: Option<bool> = lan_arg(&args, "includeInactive")?;
+            let r = list_option_groups_v3_impl(db, session_token, include_inactive)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_combo_meals_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = list_combo_meals_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_combo_meal_items_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = list_combo_meal_items_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_happy_hour_rules_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = list_happy_hour_rules_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_combo_components_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let menu_item_id: String = lan_arg(&args, "menuItemId")?;
+            let r = list_combo_components_v3_impl(db, session_token, menu_item_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_menu_item_photo_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let item_id: String = lan_arg(&args, "itemId")?;
+            let r = get_menu_item_photo_v3_impl(db, session_token, item_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "toggle_menu_item_availability_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let item_id: String = lan_arg(&args, "itemId")?;
+            let is_active: bool = lan_arg(&args, "isActive")?;
+            toggle_menu_item_availability_v3_impl(db, session_token, item_id, is_active)?;
+            serde_json::Value::Null
+        }
+        "list_pending_orders_for_table_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let table_id: String = lan_arg(&args, "tableId")?;
+            let r = list_pending_orders_for_table_v3_impl(db, session_token, table_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "retrieve_open_order_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            let r = retrieve_open_order_v3_impl(db, session_token, order_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "add_items_to_order_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            let items: Vec<crate::repo::OrderItemInput> = lan_arg(&args, "items")?;
+            add_items_to_order_v3_impl(db, license, session_token, order_id, items)?;
+            serde_json::Value::Null
+        }
+        "finalize_order_with_payment_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            let method: String = lan_arg(&args, "method")?;
+            let amount_cents: i64 = lan_arg(&args, "amountCents")?;
+            let change_cents: i64 = lan_arg(&args, "changeCents")?;
+            let debtor_id: Option<String> = lan_arg(&args, "debtorId")?;
+            let card_number: Option<String> = lan_arg(&args, "cardNumber")?;
+            let reference_code: Option<String> = lan_arg(&args, "referenceCode")?;
+            let r = finalize_order_with_payment_v3_impl(db, license, session_token, order_id, method, amount_cents, change_cents, debtor_id, card_number, reference_code)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "hold_order_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let table_id: String = lan_arg(&args, "tableId")?;
+            let order_type: String = lan_arg(&args, "orderType")?;
+            let items: Vec<crate::repo::OrderItemInput> = lan_arg(&args, "items")?;
+            let subtotal_cents: i64 = lan_arg(&args, "subtotalCents")?;
+            let tax_cents: i64 = lan_arg(&args, "taxCents")?;
+            let total_cents: i64 = lan_arg(&args, "totalCents")?;
+            let shift_id: Option<String> = lan_arg(&args, "shiftId")?;
+            let r = hold_order_v3_impl(db, license, session_token, table_id, order_type, items, subtotal_cents, tax_cents, total_cents, shift_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "retrieve_held_order_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            let r = retrieve_held_order_v3_impl(db, session_token, order_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "transfer_order_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            let from_table_id: String = lan_arg(&args, "fromTableId")?;
+            let to_table_id: String = lan_arg(&args, "toTableId")?;
+            transfer_order_v3_impl(db, session_token, order_id, from_table_id, to_table_id)?;
+            serde_json::Value::Null
+        }
+        "split_bill_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            let splits: Vec<crate::repo::SplitBillInput> = lan_arg(&args, "splits")?;
+            let table_id: String = lan_arg(&args, "tableId")?;
+            let r = split_bill_v3_impl(db, session_token, order_id, splits, table_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "merge_tables_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let source_table_ids: Vec<String> = lan_arg(&args, "sourceTableIds")?;
+            let target_table_id: String = lan_arg(&args, "targetTableId")?;
+            let r = merge_tables_v3_impl(db, session_token, source_table_ids, target_table_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "unmerge_tables_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let merge_group_id: String = lan_arg(&args, "mergeGroupId")?;
+            unmerge_tables_v3_impl(db, session_token, merge_group_id)?;
+            serde_json::Value::Null
+        }
+        "edit_order_item_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let item_id: String = lan_arg(&args, "itemId")?;
+            let quantity: i64 = lan_arg(&args, "quantity")?;
+            let modifiers: Vec<crate::repo::OrderModifierInput> = lan_arg(&args, "modifiers")?;
+            let notes: Option<String> = lan_arg(&args, "notes")?;
+            let reason: String = lan_arg(&args, "reason")?;
+            let manager_override_pin: Option<String> = lan_arg(&args, "managerOverridePin")?;
+            let r = edit_order_item_v3_impl(db, license, session_token, item_id, quantity, modifiers, notes, reason, manager_override_pin)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "set_order_item_comp_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let item_id: String = lan_arg(&args, "itemId")?;
+            let comped: bool = lan_arg(&args, "comped")?;
+            let reason: Option<String> = lan_arg(&args, "reason")?;
+            let r = set_order_item_comp_v3_impl(db, license, session_token, item_id, comped, reason)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "schedule_delayed_order_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let table_id: String = lan_arg(&args, "tableId")?;
+            let order_type: String = lan_arg(&args, "orderType")?;
+            let items: Vec<crate::repo::OrderItemInput> = lan_arg(&args, "items")?;
+            let subtotal_cents: i64 = lan_arg(&args, "subtotalCents")?;
+            let tax_cents: i64 = lan_arg(&args, "taxCents")?;
+            let total_cents: i64 = lan_arg(&args, "totalCents")?;
+            let scheduled_at: String = lan_arg(&args, "scheduledAt")?;
+            let r = schedule_delayed_order_v3_impl(db, license, session_token, table_id, order_type, items, subtotal_cents, tax_cents, total_cents, scheduled_at)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "activate_delayed_orders_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = activate_delayed_orders_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "create_table_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let name: String = lan_arg(&args, "name")?;
+            let branch_id: Option<String> = lan_arg(&args, "branchId")?;
+            let r = create_table_v3_impl(db, license, session_token, name, branch_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "rename_table_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let table_id: String = lan_arg(&args, "tableId")?;
+            let name: String = lan_arg(&args, "name")?;
+            rename_table_v3_impl(db, license, session_token, table_id, name)?;
+            serde_json::Value::Null
+        }
+        "delete_table_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let table_id: String = lan_arg(&args, "tableId")?;
+            delete_table_v3_impl(db, license, session_token, table_id)?;
+            serde_json::Value::Null
+        }
+        "verify_manager_override_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let password_or_pin: String = lan_arg(&args, "passwordOrPin")?;
+            let r = verify_manager_override_v3_impl(db, session_token, password_or_pin)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_manager_thresholds_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = get_manager_thresholds_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_business_mode_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = get_business_mode_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_discount_caps_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = get_discount_caps_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_debtors_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = list_debtors_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "create_debtor_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let name: String = lan_arg(&args, "name")?;
+            let phone: Option<String> = lan_arg(&args, "phone")?;
+            let email: Option<String> = lan_arg(&args, "email")?;
+            let address: Option<String> = lan_arg(&args, "address")?;
+            let notes: Option<String> = lan_arg(&args, "notes")?;
+            let initial_debt_cents: Option<i64> = lan_arg(&args, "initialDebtCents")?;
+            let credit_limit_cents: Option<i64> = lan_arg(&args, "creditLimitCents")?;
+            let r = create_debtor_v3_impl(db, license, session_token, name, phone, email, address, notes, initial_debt_cents, credit_limit_cents)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "lookup_loyalty_card_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let card_number: String = lan_arg(&args, "cardNumber")?;
+            let r = lookup_loyalty_card_v3_impl(db, session_token, card_number)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_loyalty_rewards_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = list_loyalty_rewards_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "redeem_loyalty_reward_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let card_number: String = lan_arg(&args, "cardNumber")?;
+            let reward_id: String = lan_arg(&args, "rewardId")?;
+            let r = redeem_loyalty_reward_v3_impl(db, license, session_token, card_number, reward_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_delivery_drivers_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let include_inactive: Option<bool> = lan_arg(&args, "includeInactive")?;
+            let r = list_delivery_drivers_v3_impl(db, session_token, include_inactive)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_deliveries_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let filter: Option<crate::delivery::DeliveryFilter> = lan_arg(&args, "filter")?;
+            let r = list_deliveries_v3_impl(db, session_token, filter)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "assign_delivery_driver_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            let driver_id: Option<String> = lan_arg(&args, "driverId")?;
+            let r = assign_delivery_driver_v3_impl(db, session_token, order_id, driver_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "set_delivery_status_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            let new_status: String = lan_arg(&args, "newStatus")?;
+            let note: Option<String> = lan_arg(&args, "note")?;
+            let r = set_delivery_status_v3_impl(db, session_token, order_id, new_status, note)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_delivery_settings_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = get_delivery_settings_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "settle_driver_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let driver_id: String = lan_arg(&args, "driverId")?;
+            let order_ids: Vec<String> = lan_arg(&args, "orderIds")?;
+            let note: Option<String> = lan_arg(&args, "note")?;
+            let r = settle_driver_v3_impl(db, license, session_token, driver_id, order_ids, note)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_driver_statement_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let driver_id: String = lan_arg(&args, "driverId")?;
+            let from: Option<String> = lan_arg(&args, "from")?;
+            let to: Option<String> = lan_arg(&args, "to")?;
+            let r = get_driver_statement_v3_impl(db, session_token, driver_id, from, to)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_driver_settlements_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let driver_id: String = lan_arg(&args, "driverId")?;
+            let r = list_driver_settlements_v3_impl(db, session_token, driver_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_printer_categories_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = list_printer_categories_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_active_printers_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = list_active_printers_v3_impl(db, session_token)?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
         // Resolves a session token that only exists in the Hub's own

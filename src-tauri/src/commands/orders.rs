@@ -318,7 +318,11 @@ const MANAGER_OVERRIDE_LOCKED_UNTIL_KEY: &str = "manager_pin_locked_until";
 /// clearing local state) now lives here too, enforced server-side.
 #[tauri::command]
 pub fn verify_manager_override_v3(state: State<Db>, session_token: String, password_or_pin: String) -> Result<bool, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    verify_manager_override_v3_impl(&state, session_token, password_or_pin)
+}
+
+pub(crate) fn verify_manager_override_v3_impl(state: &Db, session_token: String, password_or_pin: String) -> Result<bool, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     verify_manager_override_impl(&mut conn, &actor, &password_or_pin)
 }
@@ -521,12 +525,22 @@ pub(crate) fn list_tables_v3_impl(state: &Db, session_token: String) -> Result<V
 /// their own tenant's branches.
 #[tauri::command]
 pub fn create_table_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, branch_id: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    create_table_v3_impl(&state, &license, session_token, name, branch_id)
+}
+
+pub(crate) fn create_table_v3_impl(
+    state: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
+    session_token: String,
+    name: String,
+    branch_id: Option<String>,
+) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     // Setup-window exemption: the first-run wizard seeds the starter
     // tables before any license can have been activated.
     {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        require_license_not_locked_or_initial_setup(&license, &conn)?;
+        require_license_not_locked_or_initial_setup(license, &conn)?;
     }
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     if name.trim().is_empty() {
@@ -546,7 +560,7 @@ pub fn create_table_v3(state: State<Db>, license: State<crate::license::cloud::C
     // single-branch install, not just an edge case.
     let (tenant_id, resolved_branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, branch_id)?
+        resolve_operating_branch(&conn, &actor, license, branch_id)?
     };
 
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -555,8 +569,18 @@ pub fn create_table_v3(state: State<Db>, license: State<crate::license::cloud::C
 
 #[tauri::command]
 pub fn rename_table_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, table_id: String, name: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    rename_table_v3_impl(&state, &license, session_token, table_id, name)
+}
+
+pub(crate) fn rename_table_v3_impl(
+    state: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
+    session_token: String,
+    table_id: String,
+    name: String,
+) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     if name.trim().is_empty() {
         return Err("table name cannot be empty".to_string());
@@ -567,8 +591,17 @@ pub fn rename_table_v3(state: State<Db>, license: State<crate::license::cloud::C
 
 #[tauri::command]
 pub fn delete_table_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, table_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    delete_table_v3_impl(&state, &license, session_token, table_id)
+}
+
+pub(crate) fn delete_table_v3_impl(
+    state: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
+    session_token: String,
+    table_id: String,
+) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).delete_table(&actor.scope(), &table_id).map_err(|e| e.to_string())
@@ -868,7 +901,11 @@ pub(crate) fn hold_order_v3_impl(
 /// Returns null if no DRAFT order with that ID exists.
 #[tauri::command]
 pub fn retrieve_held_order_v3(state: State<Db>, _session_token: String, order_id: String) -> Result<Option<HeldOrderResult>, String> {
-    let actor = authenticate_actor(&state, &_session_token)?;
+    retrieve_held_order_v3_impl(&state, _session_token, order_id)
+}
+
+pub(crate) fn retrieve_held_order_v3_impl(state: &Db, _session_token: String, order_id: String) -> Result<Option<HeldOrderResult>, String> {
+    let actor = authenticate_actor(state, &_session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).retrieve_held_order(&actor.scope(), &order_id).map_err(|e| e.to_string())
 }
@@ -880,7 +917,11 @@ pub fn retrieve_held_order_v3(state: State<Db>, _session_token: String, order_id
 /// since `tables.current_order_id` only ever points at the first split.
 #[tauri::command]
 pub fn list_pending_orders_for_table_v3(state: State<Db>, session_token: String, table_id: String) -> Result<Vec<crate::repo::PendingOrderSummary>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_pending_orders_for_table_v3_impl(&state, session_token, table_id)
+}
+
+pub(crate) fn list_pending_orders_for_table_v3_impl(state: &Db, session_token: String, table_id: String) -> Result<Vec<crate::repo::PendingOrderSummary>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_pending_orders_for_table(&actor.scope(), &table_id).map_err(|e| e.to_string())
 }
@@ -893,7 +934,11 @@ pub fn list_pending_orders_for_table_v3(state: State<Db>, session_token: String,
 /// the DRAFT case and treats null-from-both as "nothing to load."
 #[tauri::command]
 pub fn retrieve_open_order_v3(state: State<Db>, session_token: String, order_id: String) -> Result<Option<crate::repo::OpenOrderResult>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    retrieve_open_order_v3_impl(&state, session_token, order_id)
+}
+
+pub(crate) fn retrieve_open_order_v3_impl(state: &Db, session_token: String, order_id: String) -> Result<Option<crate::repo::OpenOrderResult>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).retrieve_open_order(&actor.scope(), &order_id).map_err(|e| e.to_string())
 }
@@ -1053,7 +1098,11 @@ pub(crate) fn merge_tables_v3_impl(
 /// Unmerge all tables in a merge group back to FREE.
 #[tauri::command]
 pub fn unmerge_tables_v3(state: State<Db>, session_token: String, merge_group_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    unmerge_tables_v3_impl(&state, session_token, merge_group_id)
+}
+
+pub(crate) fn unmerge_tables_v3_impl(state: &Db, session_token: String, merge_group_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let scope = actor.scope();
 
@@ -1258,7 +1307,11 @@ pub(crate) fn schedule_delayed_order_v3_impl(
 /// Activate all delayed orders where scheduled_at <= now.
 #[tauri::command]
 pub fn activate_delayed_orders_v3(state: State<Db>, _session_token: String) -> Result<Vec<String>, String> {
-    let _actor = authenticate_actor(&state, &_session_token)?;
+    activate_delayed_orders_v3_impl(&state, _session_token)
+}
+
+pub(crate) fn activate_delayed_orders_v3_impl(state: &Db, _session_token: String) -> Result<Vec<String>, String> {
+    let _actor = authenticate_actor(state, &_session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).activate_delayed_orders().map_err(|e| e.to_string())
 }
@@ -1278,7 +1331,11 @@ pub fn get_receipt_config_v3(state: State<Db>, license: State<crate::license::cl
 /// Look up a loyalty card by card_number.
 #[tauri::command]
 pub fn lookup_loyalty_card_v3(state: State<Db>, _session_token: String, card_number: String) -> Result<Option<LoyaltyCardLookup>, String> {
-    let actor = authenticate_actor(&state, &_session_token)?;
+    lookup_loyalty_card_v3_impl(&state, _session_token, card_number)
+}
+
+pub(crate) fn lookup_loyalty_card_v3_impl(state: &Db, _session_token: String, card_number: String) -> Result<Option<LoyaltyCardLookup>, String> {
+    let actor = authenticate_actor(state, &_session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).lookup_loyalty_card(&actor.tenant_id, &card_number).map_err(|e| e.to_string())
 }

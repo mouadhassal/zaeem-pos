@@ -77,7 +77,11 @@ pub struct DiscountCapsResponse {
 /// only, Rust enforces regardless of what this returns).
 #[tauri::command]
 pub fn get_discount_caps_v3(state: State<Db>, session_token: String) -> Result<DiscountCapsResponse, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    get_discount_caps_v3_impl(&state, session_token)
+}
+
+pub(crate) fn get_discount_caps_v3_impl(state: &Db, session_token: String) -> Result<DiscountCapsResponse, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let caps = Repo::new(&conn).get_discount_caps(&actor.tenant_id).map_err(|e| e.to_string())?;
     let your_cap_percent = caps.for_role(actor.role);
@@ -113,7 +117,11 @@ pub fn update_discount_caps_v3(state: State<Db>, license: State<crate::license::
 /// actual gate server-side regardless of what the frontend does with this.
 #[tauri::command]
 pub fn get_manager_thresholds_v3(state: State<Db>, session_token: String) -> Result<crate::pricing::ManagerThresholds, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    get_manager_thresholds_v3_impl(&state, session_token)
+}
+
+pub(crate) fn get_manager_thresholds_v3_impl(state: &Db, session_token: String) -> Result<crate::pricing::ManagerThresholds, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).get_manager_thresholds(&actor.tenant_id).map_err(|e| e.to_string())
 }
@@ -148,7 +156,11 @@ pub fn update_manager_thresholds_v3(state: State<Db>, license: State<crate::lice
 /// licensing). See nextphase.md §2 for the full plan this implements.
 #[tauri::command]
 pub fn get_business_mode_v3(state: State<Db>, session_token: String) -> Result<crate::repo::BusinessMode, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    get_business_mode_v3_impl(&state, session_token)
+}
+
+pub(crate) fn get_business_mode_v3_impl(state: &Db, session_token: String) -> Result<crate::repo::BusinessMode, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).get_business_mode(&actor.tenant_id).map_err(|e| e.to_string())
 }

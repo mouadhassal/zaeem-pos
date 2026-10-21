@@ -368,6 +368,12 @@ pub fn kitchen_role_may_call(command: &str) -> bool {
     matches!(
         command,
         "login_pin_v3" | "logout_v3" | "list_kitchen_orders_v3" | "update_order_status_v3" | "__resolve_actor_v3"
+            // KDS screen needs: `authStore.checkSession` probes the stored session with
+            // `list_categories_v3` (a kitchen screen would otherwise be logged out on every
+            // restart once that read is forwarded), the out-of-stock panel lists the menu and
+            // 86's an item, and the sidebar reads the business mode. All read-only except the
+            // availability toggle, which is floor work and not license- or cash-related.
+            | "list_categories_v3" | "list_menu_items_v3" | "toggle_menu_item_availability_v3" | "get_business_mode_v3"
     )
 }
 
@@ -1125,7 +1131,10 @@ mod tests {
     /// test, not a silent revenue-model hole.
     #[test]
     fn kitchen_role_is_restricted_to_the_read_mostly_kds_safe_subset() {
-        for allowed in ["login_pin_v3", "logout_v3", "list_kitchen_orders_v3", "update_order_status_v3", "__resolve_actor_v3"] {
+        for allowed in [
+            "login_pin_v3", "logout_v3", "list_kitchen_orders_v3", "update_order_status_v3", "__resolve_actor_v3",
+            "list_categories_v3", "list_menu_items_v3", "toggle_menu_item_availability_v3", "get_business_mode_v3",
+        ] {
             assert!(kitchen_role_may_call(allowed), "{allowed} must be allowed for a kitchen-role satellite");
         }
         for forbidden in [
@@ -1139,6 +1148,22 @@ mod tests {
             "clock_in_v3",
             "clock_out_v3",
             "list_tables_v3",
+            // Second-till forwarding: none of the register-shaped commands may open up to a free
+            // kitchen screen just because they now have a dispatch arm.
+            "add_items_to_order_v3",
+            "finalize_order_with_payment_v3",
+            "hold_order_v3",
+            "retrieve_open_order_v3",
+            "edit_order_item_v3",
+            "set_order_item_comp_v3",
+            "verify_manager_override_v3",
+            "create_table_v3",
+            "list_debtors_v3",
+            "redeem_loyalty_reward_v3",
+            "set_delivery_status_v3",
+            "settle_driver_v3",
+            "list_active_printers_v3",
+            "get_menu_item_photo_v3",
         ] {
             assert!(!kitchen_role_may_call(forbidden), "{forbidden} must be forbidden for a free kitchen-role satellite -- it's a cash-register-shaped command");
         }
