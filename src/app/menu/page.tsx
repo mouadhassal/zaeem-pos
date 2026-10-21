@@ -1267,7 +1267,7 @@ export default function MenuPage() {
                             <IconPencil className="w-4 h-4" />
                           </button>
                           <button
-                            onClick={() => deleteHappyHour(rule.id)}
+                            onClick={() => { if (window.confirm("حذف قاعدة الساعة السعيدة؟")) void deleteHappyHour(rule.id); }}
                             className="p-1.5 rounded-sm text-xs text-danger hover:bg-danger-soft transition-colors"
                             title="حذف"
                           >
