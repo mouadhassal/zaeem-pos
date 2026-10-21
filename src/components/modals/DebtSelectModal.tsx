@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
+import { formatAmount } from "../../lib/money";
 import { useAuthStore } from "../../stores/authStore";
 import { IconSearch, IconUserPlus, IconX } from "@tabler/icons-react";
 
@@ -112,7 +113,8 @@ export default function DebtSelectModal({ onClose, onSelect }: Props) {
                   <div className="text-left">
                     <p className="text-xs font-arabic text-text-muted">المتبقي</p>
                     <p className={`font-mono font-bold text-sm ${d.balance_cents > 0 ? "text-danger" : "text-ok"}`}>
-                      {d.balance_cents > 0 ? `-${d.balance_cents.toLocaleString()}` : "0"}
+                      {/* Currency-scale aware, like every other amount (was raw toLocaleString). */}
+                      {d.balance_cents > 0 ? `-${formatAmount(d.balance_cents)}` : formatAmount(0)}
                     </p>
                   </div>
                 </div>
