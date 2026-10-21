@@ -473,6 +473,62 @@ try {
     await b.setWindowSize(1280, 720);
     ok(problems.length === 0, `screens to check: ${problems.join(", ")}`);
   });
+  // Dialog tour: open each screen's main "add" dialog (and the till's pay /
+  // close-shift dialogs) on a 1024x768 till and check it fits: its buttons
+  // must be reachable, either on screen or inside a scrolling dialog body.
+  await step("dialogs", "every main dialog fits a 1024x768 till", async () => {
+    await b.setWindowSize(1024, 768);
+    await pause(400);
+    const problems = [];
+    const check = async (label) => {
+      await pause(700);
+      const m = await b.execute(() => {
+        const vh = window.innerHeight, vw = document.documentElement.clientWidth;
+        const overlays = [...document.querySelectorAll(".fixed.inset-0")].filter((o) => o.getBoundingClientRect().height > 0);
+        if (!overlays.length) return { open: false };
+        const o = overlays[overlays.length - 1];
+        const btns = [...o.querySelectorAll("button")].filter((x) => x.offsetParent !== null);
+        const unreachable = btns.filter((x) => {
+          const r = x.getBoundingClientRect();
+          if (r.bottom <= vh + 1 && r.top >= -1 && r.left >= -1 && r.right <= vw + 1) return false;
+          let p = x.parentElement;
+          while (p && p !== o) { const st = getComputedStyle(p); if (["auto", "scroll"].includes(st.overflowY) && p.scrollHeight > p.clientHeight) return false; p = p.parentElement; }
+          return true;
+        }).map((x) => x.innerText.trim().slice(0, 20));
+        return { open: true, unreachable };
+      });
+      const shot = await reg.shot(`dialog-${label}`);
+      console.log(`  ${label}: ${JSON.stringify(m)} ${shot}`);
+      if (!m.open) problems.push(`${label}: did not open`);
+      else if (m.unreachable.length) problems.push(`${label}: unreachable ${m.unreachable.join("/")}`);
+      await recover();
+      await b.keys("Escape");
+      await pause(300);
+    };
+    const clickText = async (re) => b.execute((src) => {
+      const r = new RegExp(src);
+      const el = [...document.querySelectorAll("button")].find((x) => x.offsetParent !== null && r.test(x.innerText.trim()));
+      if (el) { el.click(); return true; }
+      return false;
+    }, re);
+    for (const [page, re] of [["menu", "إضافة صنف"], ["staff", "إضافة موظف"], ["inventory", "إضافة مادة"], ["customers", "إضافة|عميل جديد"], ["loyalty", "إصدار بطاقة"], ["branches", "إضافة فرع"]]) {
+      await nav(page);
+      await pause(800);
+      if (await clickText(re)) await check(page);
+      else problems.push(`${page}: no add button matching ${re}`);
+    }
+    // the till: pay dialog with an item in the cart, then close shift
+    await nav("pos");
+    await clickId("order-type-TAKEAWAY").catch(() => {});
+    await pause(400);
+    await reg.addItem("شيش طاووق");
+    await pause(300);
+    if (await clickText("^دفع$")) await check("pay"); else problems.push("pay: no button");
+    await nav("shift");
+    if (await clickText("إغلاق الوردية")) await check("close-shift"); else problems.push("close-shift: no button");
+    await b.setWindowSize(1280, 720);
+    ok(problems.length === 0, problems.join(" | "));
+  });
 } finally {
   await reg.stop();
   for (const f of fakes) f.kill();

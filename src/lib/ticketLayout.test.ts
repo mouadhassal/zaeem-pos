@@ -46,7 +46,7 @@ describe("kitchen ticket", () => {
   it("carries order number, type, table, cashier and both times", () => {
     const t = text(ticket({ cashier: "ليلى", createdAt: EARLIER }));
     expect(t).toContain("رقم الطلب | A17");
-    expect(t).toContain("النوع | داخلي");
+    expect(t).toContain("النوع | صالة");
     expect(t).toContain("طاولة | 5");
     expect(t).toContain("الكاشير | ليلى");
     expect(t).toContain("وقت الطلب");
@@ -134,6 +134,11 @@ const receipt = (over: Partial<ReceiptData> = {}): ReceiptData => ({
 const rtext = (r: ReceiptData) => rowsText(receiptRows(r, NOW)).join("\n");
 
 describe("receipt", () => {
+  it("prints the branch name once when the shop has no name of its own", () => {
+    const lines = rowsText(receiptRows(receipt({ chainName: "الفرع الرئيسي" }), NOW));
+    expect(lines.filter((l) => l === "الفرع الرئيسي")).toHaveLength(1);
+    expect(rowsText(receiptRows(receipt(), NOW))).toContain("الفرع الرئيسي");
+  });
   it("charges options and not gifts, and the lines add up to the subtotal", () => {
     const r = receipt();
     expect(receiptLineCents(r.items[0]!)).toBe(24_000); // 2 x (10,000 + 2,000)

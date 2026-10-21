@@ -98,10 +98,12 @@ export interface KitchenTicketData {
   isCopy?: boolean;
 }
 
+// Same words as the till's order-type bar.
 const ORDER_TYPE_LABELS: Record<string, string> = {
-  DINE_IN: "داخلي",
+  DINE_IN: "صالة",
   TAKEAWAY: "سفري",
   DELIVERY: "توصيل",
+  DEBT: "دين",
   ONLINE: "أونلاين",
 };
 
@@ -212,7 +214,8 @@ export function receiptRows(data: ReceiptData, now: Date = new Date()): Row[] {
   const rows: Row[] = [];
 
   rows.push({ t: "line", text: data.chainName, size: 42, bold: true, align: "center" });
-  rows.push({ t: "line", text: data.branchName, size: 24, align: "center" });
+  // When the shop has no name of its own the title already is the branch name.
+  if (data.branchName && data.branchName !== data.chainName) rows.push({ t: "line", text: data.branchName, size: 24, align: "center" });
   rows.push({ t: "gap", h: 6 });
   rows.push({ t: "rule" });
 
