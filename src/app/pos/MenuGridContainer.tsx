@@ -13,6 +13,7 @@ import { formatAmount } from "../../lib/money";
 import { useOptionsStore } from "../../stores/optionsStore";
 import { groupsForItem, type OptionGroup } from "../../lib/itemOptions";
 import OptionPickerModal from "../../components/modals/OptionPickerModal";
+import { navigateTo } from "../../lib/appNav";
 
 // list_menu_items_v3 returns "HAS_PHOTO" (not a real path/URL, see its
 // P0-fix doc comment) when an item has a photo, null otherwise -- this
@@ -272,8 +273,24 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
             ))}
           </div>
         ) : isEmpty ? (
-          <div className="flex items-center justify-center h-full text-text-muted text-sm">
-            {searchValue ? "ما في أصناف تطابق البحث" : "ما في أصناف متاحة"}
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-center text-text-muted text-sm">
+            {searchValue ? (
+              "ما في أصناف تطابق البحث"
+            ) : (
+              // A new install lands here first: say what to do, not just "empty".
+              <>
+                <p className="text-base font-medium text-text">القائمة فارغة</p>
+                <p className="max-w-xs">أضف أصنافك من صفحة القائمة، أو صوّر قائمتك الورقية ودع الذكاء الاصطناعي يجهّزها.</p>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => navigateTo("menu")} className="h-10 px-4 rounded-[10px] bg-accent text-white text-sm font-medium active:scale-[0.98]">
+                    إضافة أصناف
+                  </button>
+                  <button type="button" onClick={() => navigateTo("ai-onboarding")} className="h-10 px-4 rounded-[10px] bg-surface-alt text-text text-sm font-medium active:scale-[0.98]">
+                    من صورة القائمة
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         ) : (
           <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}>

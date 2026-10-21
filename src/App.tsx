@@ -1,5 +1,6 @@
 import { useState, lazy, Suspense, useEffect } from "react";
 import { useAuthStore } from "./stores/authStore";
+import { APP_NAVIGATE_EVENT } from "./lib/appNav";
 import LoginPage from "./components/LoginPage";
 import SetupWizard from "./components/SetupWizard";
 import SessionExpiredOverlay from "./components/SessionExpiredOverlay";
@@ -81,6 +82,13 @@ function PosLayout({ children }: { children: React.ReactNode }) {
       setActiveView(id);
     }
   };
+
+  // Screens can ask to open another screen (e.g. the empty till -> Menu).
+  useEffect(() => {
+    const onNav = (e: Event) => handleNavigate((e as CustomEvent<string>).detail);
+    window.addEventListener(APP_NAVIGATE_EVENT, onNav);
+    return () => window.removeEventListener(APP_NAVIGATE_EVENT, onNav);
+  });
 
   // POS never locks, regardless of license status -- a dinner service is
   // never interrupted. Every other screen (back-office/reports) locks once
