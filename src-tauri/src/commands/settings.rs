@@ -13,7 +13,11 @@ use super::shared::*;
 
 #[tauri::command]
 pub fn get_chain_config_v3(state: State<Db>, session_token: String) -> Result<crate::repo::ChainConfigRow, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    get_chain_config_v3_impl(&state, session_token)
+}
+
+pub(crate) fn get_chain_config_v3_impl(state: &Db, session_token: String) -> Result<crate::repo::ChainConfigRow, String>{
+    let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).get_chain_config(&actor.tenant_id).map_err(|e| e.to_string())
 }

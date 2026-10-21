@@ -7,9 +7,9 @@ use super::debt::{create_debtor_v3_impl, list_debtors_v3_impl};
 use super::delivery::{assign_delivery_driver_v3_impl, get_delivery_settings_v3_impl, get_driver_statement_v3_impl, list_deliveries_v3_impl, list_delivery_drivers_v3_impl, list_driver_settlements_v3_impl, set_delivery_status_v3_impl, settle_driver_v3_impl};
 use super::loyalty::{list_loyalty_rewards_v3_impl, redeem_loyalty_reward_v3_impl};
 use super::menu::{get_menu_item_photo_v3_impl, list_categories_v3_impl, list_combo_components_v3_impl, list_combo_meal_items_v3_impl, list_combo_meals_v3_impl, list_happy_hour_rules_v3_impl, list_menu_items_v3_impl, toggle_menu_item_availability_v3_impl};
-use super::orders::{activate_delayed_orders_v3_impl, add_items_to_order_v3_impl, create_table_v3_impl, delete_table_v3_impl, finalize_order_with_payment_v3_impl, hold_order_v3_impl, list_pending_orders_for_table_v3_impl, lookup_loyalty_card_v3_impl, merge_tables_v3_impl, rename_table_v3_impl, retrieve_held_order_v3_impl, retrieve_open_order_v3_impl, schedule_delayed_order_v3_impl, split_bill_v3_impl, transfer_order_v3_impl, unmerge_tables_v3_impl, verify_manager_override_v3_impl};
+use super::orders::{get_receipt_config_v3_impl, activate_delayed_orders_v3_impl, add_items_to_order_v3_impl, create_table_v3_impl, delete_table_v3_impl, finalize_order_with_payment_v3_impl, hold_order_v3_impl, list_pending_orders_for_table_v3_impl, lookup_loyalty_card_v3_impl, merge_tables_v3_impl, rename_table_v3_impl, retrieve_held_order_v3_impl, retrieve_open_order_v3_impl, schedule_delayed_order_v3_impl, split_bill_v3_impl, transfer_order_v3_impl, unmerge_tables_v3_impl, verify_manager_override_v3_impl};
 use super::restaurant::{edit_order_item_v3_impl, list_option_groups_v3_impl, set_order_item_comp_v3_impl};
-use super::settings::{get_business_mode_v3_impl, get_discount_caps_v3_impl, get_manager_thresholds_v3_impl};
+use super::settings::{get_chain_config_v3_impl, get_business_mode_v3_impl, get_discount_caps_v3_impl, get_manager_thresholds_v3_impl};
 use super::suppliers::{list_active_printers_v3_impl, list_printer_categories_v3_impl};
 
 // T3.0 LAN hub/satellite: Phase 1 RPC dispatch allowlist. See `lan.rs`'s
@@ -17,11 +17,15 @@ use super::suppliers::{list_active_printers_v3_impl, list_printer_categories_v3_
 // unmodified `#[tauri::command]` function a local/standalone terminal
 // would call -- there is no parallel business-logic path, only a second
 // way to reach the existing one. Deliberately a curated allowlist, not
-// "every command": commands not listed here simply aren't available to a
-// Satellite in Phase 1 (menu/inventory/supplier/finance management, for
-// example) -- those still need to be done from the Hub terminal itself
-// for now. Growing this list is safe and additive; it never changes what
-// a Hub or standalone terminal does.
+// "every command": the selling path (shared menu, tables, open tabs,
+// hold/retrieve, add/edit/gift, split/merge/transfer, payment, debtors,
+// loyalty, delivery) is forwarded so a second till sells from the Hub's
+// data; back-office work (reports, staff, inventory, finance, menu and
+// settings editing) and per-device things (printers, license, backups, LAN
+// config) are NOT, and run on the terminal they are done on. Growing this
+// list is safe and additive; it never changes what a Hub or standalone
+// terminal does. `src/lib/lan.ts` `LAN_REDIRECT_COMMANDS` must name exactly
+// the arms below (`src/lib/lan.test.ts` reads this file to enforce it).
 // ---------------------------------------------------------------------------
 
 /// True for any command whose success means an order/table/kitchen-queue
@@ -518,6 +522,20 @@ pub fn dispatch_lan_rpc(
         "list_active_printers_v3" => {
             let session_token: String = lan_arg(&args, "sessionToken")?;
             let r = list_active_printers_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        // The branch's tax/currency/receipt header. A satellite's own database has no
+        // chain_config for the Hub's tenant, so reading its own copy fails for an owner
+        // ("select a branch first") and silently defaults the tax for a cashier -- both
+        // are read-only and shared branch data, so they come from the Hub.
+        "get_chain_config_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = get_chain_config_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_receipt_config_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = get_receipt_config_v3_impl(db, license, session_token)?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
         // Resolves a session token that only exists in the Hub's own

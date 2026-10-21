@@ -1319,10 +1319,14 @@ pub(crate) fn activate_delayed_orders_v3_impl(state: &Db, _session_token: String
 /// Get receipt config: chain_name, currency from chain_config + branch name.
 #[tauri::command]
 pub fn get_receipt_config_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<ReceiptConfig, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    get_receipt_config_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn get_receipt_config_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<ReceiptConfig, String>{
+    let actor = authenticate_actor(state, &session_token)?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).get_receipt_config(&tenant_id, &branch_id).map_err(|e| e.to_string())

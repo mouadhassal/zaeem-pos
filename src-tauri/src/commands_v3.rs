@@ -2424,6 +2424,8 @@ mod tests {
                 ("list_combo_components_v3", serde_json::json!({ "sessionToken": session, "menuItemId": item_id })),
                 ("list_tables_v3", serde_json::json!({ "sessionToken": session })),
                 ("get_business_mode_v3", serde_json::json!({ "sessionToken": session })),
+                ("get_chain_config_v3", serde_json::json!({ "sessionToken": session })),
+                ("get_receipt_config_v3", serde_json::json!({ "sessionToken": session })),
                 ("get_discount_caps_v3", serde_json::json!({ "sessionToken": session })),
                 ("get_manager_thresholds_v3", serde_json::json!({ "sessionToken": session })),
             ] {

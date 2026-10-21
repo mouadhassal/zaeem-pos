@@ -9,7 +9,7 @@ import { invoke } from "./invoke";
  * (`lan.test.ts` fails if the two drift apart). A command NOT in this set
  * always runs against this terminal's own local SQLite, even on a
  * Satellite: that is deliberate for per-device things (printers, settings,
- * license, backups, LAN config, device id, receipt/chain config) and for
+ * license, backups, LAN config, device id) and for
  * back-office work (reports, staff, inventory, menu editing), which is done
  * on the Hub terminal.
  *
@@ -17,7 +17,8 @@ import { invoke } from "./invoke";
  * data: the shared menu (items, categories, options, combos, happy hours,
  * photos), tables, open tabs, hold/retrieve, add-to-order, edit/gift of a
  * line, split/merge/transfer, delayed orders, payment, shifts, manager
- * override, debtors, loyalty, and delivery.
+ * override, the branch's tax/currency/receipt header, debtors, loyalty, and
+ * delivery.
  */
 export const LAN_REDIRECT_COMMANDS = new Set([
   // session + shift
@@ -33,6 +34,8 @@ export const LAN_REDIRECT_COMMANDS = new Set([
   "get_manager_thresholds_v3",
   "get_discount_caps_v3",
   "get_business_mode_v3",
+  "get_chain_config_v3",
+  "get_receipt_config_v3",
   // shared menu (the Hub owns item ids, prices, availability)
   "list_menu_items_v3",
   "list_categories_v3",
