@@ -1,4 +1,5 @@
 import { invoke } from "./invoke";
+import { invokeOnHub } from "./lan";
 import { useAuthStore } from "../stores/authStore";
 import { routeKitchenItems } from "./kitchenRouting";
 import { kitchenTicketRows, receiptRows, type KitchenTicketData, type ReceiptData, type ReceiptItem, type Row } from "./ticketLayout";
@@ -520,9 +521,24 @@ async function sendKitchenTicketToPrinter(
   await printCanvasTo(renderKitchenTicketCanvas(data, width), p, "KITCHEN", width, { bell: true });
 }
 
+/**
+ * The kitchen printers this terminal should send slips to. Kitchen printers
+ * and their category routing belong to the branch, so they are read from the
+ * Hub when this terminal is a Satellite (a second till has no printers of its
+ * own configured). Only NETWORK printers are usable from there: a USB or
+ * Windows-driver kitchen printer is plugged into the Hub machine and this
+ * terminal cannot reach it. Receipts never come through here -- they keep
+ * using this terminal's own printer list.
+ */
+async function listKitchenPrinters(): Promise<PrinterRowV3[]> {
+  const { data, viaHub } = await invokeOnHub<PrinterRowV3[]>("list_active_printers_v3", { sessionToken: token() });
+  return data.filter(
+    (p) => p.printer_type === "KITCHEN" && (!viaHub || (p.interface === "NETWORK" && !!p.ip_address && p.print_mode !== "driver"))
+  );
+}
+
 export async function printKitchenTicket(data: KitchenTicketData): Promise<void> {
-  const allPrinters = await invoke<PrinterRowV3[]>("list_active_printers_v3", { sessionToken: token() });
-  const printers = allPrinters.filter((p) => p.printer_type === "KITCHEN");
+  const printers = await listKitchenPrinters();
 
   const chainK = await invoke<ChainConfigV3>("get_chain_config_v3", { sessionToken: token() });
   const defaultPaperWidthK = chainK?.default_paper_width ?? 80;
@@ -554,7 +570,8 @@ export async function printKitchenTicket(data: KitchenTicketData): Promise<void>
   const stationIds = new Set<string>();
   try {
     const [links, menu] = await Promise.all([
-      invoke<{ printer_id: string; category_id: string }[]>("list_printer_categories_v3", { sessionToken: token() }),
+      invokeOnHub<{ printer_id: string; category_id: string }[]>("list_printer_categories_v3", { sessionToken: token() }).then((r) => r.data),
+      // Redirected to the Hub on a Satellite already (item ids are the Hub's).
       invoke<{ id: string; category_id: string }[]>("list_menu_items_v3", { sessionToken: token() }),
     ]);
     if (links.length > 0) {
@@ -798,8 +815,8 @@ export function clearPrintQueue(): void {
 // specific station that failed, so a retry doesn't re-send a duplicate
 // copy to stations that already printed it fine the first time.
 async function retryKitchenTicketToPrinter(data: KitchenTicketData, printerId: string): Promise<void> {
-  const allPrinters = await invoke<PrinterRowV3[]>("list_active_printers_v3", { sessionToken: token() });
-  const printer = allPrinters.find((p) => p.id === printerId && p.printer_type === "KITCHEN");
+  const printers = await listKitchenPrinters();
+  const printer = printers.find((p) => p.id === printerId);
   if (!printer) throw new Error("طابعة المطبخ غير موجودة");
 
   const chainK = await invoke<ChainConfigV3>("get_chain_config_v3", { sessionToken: token() });

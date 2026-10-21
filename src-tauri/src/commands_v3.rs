@@ -2332,6 +2332,357 @@ mod tests {
         }
 
         // ---------------------------------------------------------------
+        // Second till (register satellite) forwarding. Every call below
+        // goes through `dispatch_lan_rpc` with the JSON a Satellite's
+        // `invoke(cmd, args)` forwards: camelCase top-level keys exactly
+        // as the frontend call sites write them, snake_case inside the
+        // `items` / `modifiers` struct arguments (Tauri's camelCase
+        // conversion only applies to a command's own parameter names).
+        // ---------------------------------------------------------------
+
+        /// A license that is installed, signed and in date, so the
+        /// back-office-gated commands (create_table, create_debtor, ...) can
+        /// be exercised past their gate. `never_checked_license` has no file
+        /// at all, i.e. back-office LOCKED -- the right fixture for proving
+        /// the selling path stays open and the gate still bites.
+        fn unlocked_license(db_path: &std::path::Path) -> crate::license::cloud::CloudLicenseState {
+            struct NeverCalledTransport;
+            #[async_trait::async_trait]
+            impl crate::license::cloud::CloudTransport for NeverCalledTransport {
+                async fn check(&self, _license_id: &str, _device_token: &str) -> crate::license::cloud::CloudCheckOutcome {
+                    panic!("sale-path commands must never call the cloud transport");
+                }
+            }
+            let license_dir = db_path.parent().unwrap().join("unlocked-license");
+            fs::create_dir_all(&license_dir).unwrap();
+            let key = license_core::signed::test_support::test_keypair();
+            let offline = crate::license::store::LicenseState::init(license_dir.clone(), key.verifying_key());
+            let now = chrono::Utc::now().timestamp_millis();
+            let payload = license_core::signed::test_support::sample_payload(
+                crate::license::fingerprint::current(), now - 1000, now + 30 * 86_400_000,
+            );
+            offline.accept_renewal(license_core::signed::test_support::mint(&key, &payload)).unwrap();
+            crate::license::cloud::CloudLicenseState::new(offline, license_dir, None, Box::new(NeverCalledTransport))
+        }
+
+        fn rpc(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: serde_json::Value) -> serde_json::Value {
+            dispatch_lan_rpc(db, license, command, args).unwrap_or_else(|e| panic!("{command} over LAN RPC failed: {e}"))
+        }
+
+        /// Hub DB with a cashier session, one category + item priced 1500,
+        /// and the cashier's shift opened -- the state a second till finds
+        /// when it logs in against a Hub that already has a menu.
+        fn second_till_fixture(tag: &str) -> (PathBuf, Db, crate::license::cloud::CloudLicenseState, String, String, String) {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db(tag);
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Till 2");
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Mains", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Hub-only burger", &category_id, 1500, 700, None, None).unwrap();
+                // The Hub's own option group: option prices are looked up here, never trusted from the till.
+                crate::ops::save_option_group(&conn, &tenant_id, &crate::ops::OptionGroupInput {
+                    id: None, name: "Extras".to_string(), selection: "MULTI".to_string(), required: false, sort_order: 0, is_active: true,
+                    choices: vec![crate::ops::OptionChoiceInput { name: "جبنة".to_string(), price_cents: 200 }],
+                    targets: vec![crate::ops::OptionTarget { target_type: "CATEGORY".to_string(), target_id: category_id.clone() }],
+                }).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "till-2").unwrap()
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            rpc(&db, &license, "open_shift_v3", serde_json::json!({ "sessionToken": session, "startingCashCents": 10000, "branchId": null }));
+            (db_path, db, license, session, table_id, item_id)
+        }
+
+        fn line(menu_item_id: &str, qty: i64, price: i64) -> serde_json::Value {
+            serde_json::json!({
+                "menu_item_id": menu_item_id, "name": null, "quantity": qty, "unit_price_cents": price,
+                "notes": null, "combo_id": null, "modifiers": [], "comped": false, "comp_reason": null,
+            })
+        }
+
+        #[test]
+        fn second_till_menu_reads_come_from_the_hub_database() {
+            let (db_path, db, license, session, _table_id, item_id) = second_till_fixture("lan_menu");
+            let items = rpc(&db, &license, "list_menu_items_v3", serde_json::json!({ "sessionToken": session }));
+            assert!(
+                items.as_array().unwrap().iter().any(|i| i["id"] == item_id.as_str() && i["name"] == "Hub-only burger"),
+                "an item that exists only in the Hub's database must come back through list_menu_items_v3"
+            );
+            let cats = rpc(&db, &license, "list_categories_v3", serde_json::json!({ "sessionToken": session }));
+            assert!(cats.as_array().unwrap().iter().any(|c| c["name"] == "Mains"));
+            // Same call shapes menuStore/optionsStore make.
+            for (cmd, args) in [
+                ("list_option_groups_v3", serde_json::json!({ "sessionToken": session, "includeInactive": false })),
+                ("list_combo_meals_v3", serde_json::json!({ "sessionToken": session })),
+                ("list_combo_meal_items_v3", serde_json::json!({ "sessionToken": session })),
+                ("list_happy_hour_rules_v3", serde_json::json!({ "sessionToken": session })),
+                ("list_combo_components_v3", serde_json::json!({ "sessionToken": session, "menuItemId": item_id })),
+                ("list_tables_v3", serde_json::json!({ "sessionToken": session })),
+                ("get_business_mode_v3", serde_json::json!({ "sessionToken": session })),
+                ("get_chain_config_v3", serde_json::json!({ "sessionToken": session })),
+                ("get_receipt_config_v3", serde_json::json!({ "sessionToken": session })),
+                ("get_discount_caps_v3", serde_json::json!({ "sessionToken": session })),
+                ("get_manager_thresholds_v3", serde_json::json!({ "sessionToken": session })),
+            ] {
+                let v = rpc(&db, &license, cmd, args);
+                assert!(!v.is_null(), "{cmd} must return the Hub's data");
+            }
+            // No photo on the item: the lazy photo read answers null (the
+            // grid keeps its glyph), it does not error.
+            let photo = rpc(&db, &license, "get_menu_item_photo_v3", serde_json::json!({ "sessionToken": session, "itemId": item_id }));
+            assert!(photo.is_null());
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn second_till_runs_an_open_tab_from_first_order_to_payment() {
+            let (db_path, db, license, session, table_id, item_id) = second_till_fixture("lan_tab");
+
+            // 1. Ring a dine-in order on the table: 2 x 1500.
+            let order_id = rpc(&db, &license, "create_full_order_v3", serde_json::json!({
+                "sessionToken": session, "tableId": table_id, "orderType": "DINE_IN",
+                "items": [line(&item_id, 2, 1500)],
+                "subtotalCents": 3000, "taxCents": 0, "totalCents": 3000, "discountCents": 0,
+                "discountReason": null, "customerName": null, "customerPhone": null, "deliveryAddress": null,
+                "deliveryFeeCents": 0, "shiftId": null, "managerOverridePin": null,
+            })).as_str().unwrap().to_string();
+
+            // 2. Re-selecting the table finds the open order and its pending list.
+            let pending = rpc(&db, &license, "list_pending_orders_for_table_v3", serde_json::json!({ "sessionToken": session, "tableId": table_id }));
+            assert!(pending.as_array().unwrap().iter().any(|o| o["id"] == order_id.as_str()));
+            let open = rpc(&db, &license, "retrieve_open_order_v3", serde_json::json!({ "sessionToken": session, "orderId": order_id }));
+            let base_total = open["total_cents"].as_i64().unwrap();
+            assert_eq!(open["items"].as_array().unwrap().len(), 1);
+
+            // 3. Add 1 more to the open tab (the "running tab" mutation).
+            let r = dispatch_lan_rpc(&db, &license, "add_items_to_order_v3", serde_json::json!({
+                "sessionToken": session, "orderId": order_id, "items": [line(&item_id, 1, 1500)],
+            })).expect("add_items_to_order_v3 over LAN RPC");
+            assert!(r.is_null());
+            let open = rpc(&db, &license, "retrieve_open_order_v3", serde_json::json!({ "sessionToken": session, "orderId": order_id }));
+            let total_after_add = open["total_cents"].as_i64().unwrap();
+            assert!(total_after_add > base_total, "adding an item must raise the order total ({base_total} -> {total_after_add})");
+            let items = open["items"].as_array().unwrap();
+            assert_eq!(items.iter().map(|i| i["quantity"].as_i64().unwrap()).sum::<i64>(), 3);
+            let first_line = items[0]["db_item_id"].as_str().unwrap().to_string();
+            let second_line = items.iter().find(|i| i["db_item_id"] != first_line.as_str()).unwrap()["db_item_id"].as_str().unwrap().to_string();
+
+            // 4. Edit a line: add an option worth 200 (إضافات).
+            let edited = rpc(&db, &license, "edit_order_item_v3", serde_json::json!({
+                "sessionToken": session, "itemId": first_line, "quantity": 2,
+                "modifiers": [{ "name": "جبنة", "price_cents": 200 }], "notes": "بدون بصل",
+                "reason": "طلب الزبون", "managerOverridePin": null,
+            }));
+            let total_after_edit = edited["order_total_cents"].as_i64().unwrap();
+            assert!(total_after_edit > total_after_add, "an option with a price raises the total ({total_after_add} -> {total_after_edit})");
+            let new_first_line = edited["new_item_id"].as_str().unwrap().to_string();
+
+            // 5. Gift (ضيافة) the other line: it comes off the bill.
+            let total_after_gift = rpc(&db, &license, "set_order_item_comp_v3", serde_json::json!({
+                "sessionToken": session, "itemId": second_line, "comped": true, "reason": "ضيافة",
+            })).as_i64().unwrap();
+            assert!(total_after_gift < total_after_edit, "a gifted 1500 line comes off the total ({total_after_edit} -> {total_after_gift})");
+            // A gift needs a reason: the empty one is refused through RPC exactly as locally.
+            assert!(dispatch_lan_rpc(&db, &license, "set_order_item_comp_v3", serde_json::json!({
+                "sessionToken": session, "itemId": new_first_line, "comped": true, "reason": null,
+            })).is_err());
+
+            // 6. Pay the exact remaining total in cash.
+            let open = rpc(&db, &license, "retrieve_open_order_v3", serde_json::json!({ "sessionToken": session, "orderId": order_id }));
+            let to_pay = open["total_cents"].as_i64().unwrap();
+            assert_eq!(to_pay, total_after_gift);
+            let paid = rpc(&db, &license, "finalize_order_with_payment_v3", serde_json::json!({
+                "sessionToken": session, "orderId": order_id, "method": "CASH", "amountCents": to_pay,
+                "changeCents": 0, "debtorId": null, "cardNumber": null, "referenceCode": null,
+            }));
+            assert!(paid["payment_id"].as_str().is_some());
+
+            // The rows are in the Hub's own database with the right totals.
+            let conn = Connection::open(&db_path).unwrap();
+            let (status, total): (String, i64) = conn.query_row("SELECT status, total_cents FROM orders WHERE id = ?1", params![order_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            assert_eq!(status, "PAID");
+            assert_eq!(total, to_pay);
+            let paid_sum: i64 = conn.query_row("SELECT COALESCE(SUM(amount_cents),0) FROM payments WHERE order_id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(paid_sum, to_pay, "the cash payment recorded on the Hub equals the order total");
+            let comped: i64 = conn.query_row("SELECT COUNT(*) FROM order_items WHERE order_id = ?1 AND comped = 1 AND voided = 0", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(comped, 1, "the gifted line is recorded as a comp on the Hub");
+            let tbl_status: String = conn.query_row("SELECT status FROM tables WHERE id = ?1", params![table_id], |r| r.get(0)).unwrap();
+            assert_eq!(tbl_status, "FREE", "paying frees the table");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn second_till_hold_and_retrieve_and_split_and_transfer_parse_the_frontend_keys() {
+            let (db_path, db, license, session, table_id, item_id) = second_till_fixture("lan_hold");
+            let table2 = {
+                let conn = Connection::open(&db_path).unwrap();
+                let (t, b): (String, String) = conn.query_row("SELECT tenant_id, branch_id FROM tables WHERE id = ?1", params![table_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+                conn.execute("INSERT INTO tables (id, tenant_id, branch_id, name) VALUES ('tbl-2', ?1, ?2, 'Table 2')", params![t, b]).unwrap();
+                "tbl-2".to_string()
+            };
+
+            let held_id = rpc(&db, &license, "hold_order_v3", serde_json::json!({
+                "sessionToken": session, "tableId": table_id, "orderType": "DINE_IN",
+                "items": [line(&item_id, 2, 1500)], "subtotalCents": 3000, "taxCents": 0, "totalCents": 3000, "shiftId": null,
+            })).as_str().unwrap().to_string();
+            let held = rpc(&db, &license, "retrieve_held_order_v3", serde_json::json!({ "sessionToken": session, "orderId": held_id }));
+            assert_eq!(held["items"].as_array().unwrap().len(), 1);
+            assert_eq!(held["items"][0]["quantity"], 2);
+            // A DRAFT is not an "open tab" yet.
+            assert!(rpc(&db, &license, "retrieve_open_order_v3", serde_json::json!({ "sessionToken": session, "orderId": held_id })).is_null());
+
+            // A delayed order parses its own keys and activation is a no-op until due.
+            let delayed = rpc(&db, &license, "schedule_delayed_order_v3", serde_json::json!({
+                "sessionToken": session, "tableId": table2, "orderType": "DINE_IN",
+                "items": [line(&item_id, 1, 1500)], "subtotalCents": 1500, "taxCents": 0, "totalCents": 1500,
+                "scheduledAt": "2099-01-01T12:00:00.000Z",
+            }));
+            assert!(delayed.as_str().is_some());
+            let activated = rpc(&db, &license, "activate_delayed_orders_v3", serde_json::json!({ "sessionToken": session }));
+            assert_eq!(activated, serde_json::json!([]));
+
+            // A live two-line order on table 1: transfer it to table 2, then split the bill by line.
+            let live = rpc(&db, &license, "create_full_order_v3", serde_json::json!({
+                "sessionToken": session, "tableId": table_id, "orderType": "DINE_IN",
+                "items": [line(&item_id, 1, 1500), line(&item_id, 1, 1500)],
+                "subtotalCents": 3000, "taxCents": 0, "totalCents": 3000, "discountCents": 0,
+            })).as_str().unwrap().to_string();
+            let r = rpc(&db, &license, "transfer_order_v3", serde_json::json!({
+                "sessionToken": session, "orderId": live, "fromTableId": table_id, "toTableId": table2,
+            }));
+            assert!(r.is_null());
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                let current: Option<String> = conn.query_row("SELECT current_order_id FROM tables WHERE id = ?1", params![table2], |r| r.get(0)).unwrap();
+                assert_eq!(current.as_deref(), Some(live.as_str()), "the order moved to table 2 on the Hub");
+            }
+            let open = rpc(&db, &license, "retrieve_open_order_v3", serde_json::json!({ "sessionToken": session, "orderId": live }));
+            let ids: Vec<String> = open["items"].as_array().unwrap().iter().map(|i| i["db_item_id"].as_str().unwrap().to_string()).collect();
+            assert_eq!(ids.len(), 2);
+            let children = rpc(&db, &license, "split_bill_v3", serde_json::json!({
+                "sessionToken": session, "orderId": live, "tableId": table2,
+                "splits": [
+                    { "item_ids": [ids[0]], "amount_cents": 1500, "label": "A" },
+                    { "item_ids": [ids[1]], "amount_cents": 1500, "label": "B" },
+                ],
+            }));
+            assert_eq!(children.as_array().unwrap().len(), 2, "split_bill_v3 over RPC returns one child order per split");
+            // The split orders are what the frontend's "resume unpaid splits" lists.
+            let pending = rpc(&db, &license, "list_pending_orders_for_table_v3", serde_json::json!({ "sessionToken": session, "tableId": table2 }));
+            assert!(pending.as_array().unwrap().len() >= 2);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn second_till_delivery_order_shows_in_the_hub_delivery_list_and_status_moves() {
+            let (db_path, db, license, session, _table_id, item_id) = second_till_fixture("lan_delivery");
+            let order_id = rpc(&db, &license, "create_full_order_v3", serde_json::json!({
+                "sessionToken": session, "tableId": "", "orderType": "DELIVERY",
+                "items": [line(&item_id, 1, 1500)],
+                "subtotalCents": 1500, "taxCents": 0, "totalCents": 2000, "discountCents": 0,
+                "discountReason": null, "customerName": "أحمد", "customerPhone": "0999", "deliveryAddress": "شارع الثورة",
+                "deliveryFeeCents": 500, "shiftId": null, "managerOverridePin": null,
+            })).as_str().unwrap().to_string();
+
+            let list = rpc(&db, &license, "list_deliveries_v3", serde_json::json!({ "sessionToken": session, "filter": null }));
+            let row = list.as_array().unwrap().iter().find(|d| d["order_id"] == order_id.as_str()).expect("the delivery order is in the Hub's delivery list");
+            assert_eq!(row["status"], "NEW");
+            assert_eq!(row["customer_name"], "أحمد");
+            assert_eq!(row["fee_cents"], 500);
+            assert_eq!(row["total_cents"], 2000);
+
+            let settings = rpc(&db, &license, "get_delivery_settings_v3", serde_json::json!({ "sessionToken": session }));
+            assert!(settings.is_object());
+            let drivers = rpc(&db, &license, "list_delivery_drivers_v3", serde_json::json!({ "sessionToken": session, "includeInactive": false }));
+            assert_eq!(drivers, serde_json::json!([]));
+
+            // A failed delivery needs its reason (checked by the Hub), and cancels the unpaid order.
+            assert!(dispatch_lan_rpc(&db, &license, "set_delivery_status_v3", serde_json::json!({
+                "sessionToken": session, "orderId": order_id, "newStatus": "FAILED", "note": null,
+            })).is_err());
+            let failed = rpc(&db, &license, "set_delivery_status_v3", serde_json::json!({
+                "sessionToken": session, "orderId": order_id, "newStatus": "FAILED", "note": "الزبون لم يرد",
+            }));
+            assert_eq!(failed["status"], "FAILED");
+            let conn = Connection::open(&db_path).unwrap();
+            let st: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(st, "CANCELLED");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn second_till_back_office_gates_still_bite_over_rpc_and_the_selling_path_stays_open() {
+            let (db_path, db, locked, session, _table_id, _item_id) = second_till_fixture("lan_gates");
+            // `never_checked_license` has no license installed: back-office is locked.
+            for (cmd, args) in [
+                ("create_table_v3", serde_json::json!({ "sessionToken": session, "name": "T9", "branchId": null })),
+                ("rename_table_v3", serde_json::json!({ "sessionToken": session, "tableId": "tbl-1", "name": "T1" })),
+                ("delete_table_v3", serde_json::json!({ "sessionToken": session, "tableId": "tbl-1" })),
+                ("create_debtor_v3", serde_json::json!({ "sessionToken": session, "name": "علي", "phone": "09", "email": null, "address": null, "notes": null, "initialDebtCents": null, "creditLimitCents": null })),
+                ("list_loyalty_rewards_v3", serde_json::json!({ "sessionToken": session })),
+            ] {
+                let err = dispatch_lan_rpc(&db, &locked, cmd, args).unwrap_err();
+                assert!(err.contains("back-office access is locked"), "{cmd} must keep its license gate over RPC, got: {err}");
+            }
+            // Selling path reads are not gated.
+            for cmd in ["list_menu_items_v3", "list_categories_v3", "list_tables_v3", "list_combo_meals_v3"] {
+                rpc(&db, &locked, cmd, serde_json::json!({ "sessionToken": session }));
+            }
+
+            // With a valid license the same commands go through (debtor needs the Cashier's ManageDebt, so only tables here).
+            let unlocked = unlocked_license(&db_path);
+            // Cashiers cannot manage tables: authorization still applies on the Hub.
+            let err = dispatch_lan_rpc(&db, &unlocked, "create_table_v3", serde_json::json!({ "sessionToken": session, "name": "T9", "branchId": null })).unwrap_err();
+            assert!(!err.contains("back-office access is locked"), "{err}");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Every command the frontend redirects (and the Hub-only printer
+        /// helpers) has an arm, and each arm parses `sessionToken` first, so
+        /// "arm missing" (UNKNOWN_COMMAND) can never hide behind a different
+        /// error. The TS side pins the other direction (lan.test.ts).
+        #[test]
+        fn every_second_till_command_has_an_arm_that_reads_the_session_token_first() {
+            let (db_path, db, license, _session, _table_id, _item_id) = second_till_fixture("lan_arms");
+            let source = include_str!("commands/lan_rpc.rs");
+            let mut checked = 0;
+            let arms: Vec<&str> = source
+                .lines()
+                .filter_map(|l| l.trim().strip_prefix('"').and_then(|r| r.split_once("\" => {")).map(|(name, _)| name))
+                .collect();
+            for cmd in arms {
+                if cmd == "login_pin_v3" { continue; } // takes pin/deviceId, no session yet
+                let err = dispatch_lan_rpc(&db, &license, cmd, serde_json::json!({})).unwrap_err();
+                assert_ne!(err, "UNKNOWN_COMMAND", "{cmd} is named in lan_rpc.rs but has no dispatch arm");
+                assert!(err.contains("sessionToken"), "{cmd}: expected the first parse error to be sessionToken, got: {err}");
+                checked += 1;
+            }
+            assert!(checked >= 50, "expected to check every arm, only saw {checked}");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn order_mutating_second_till_commands_wake_the_other_terminals() {
+            use crate::commands::lan_rpc::lan_rpc_mutates_orders;
+            for c in [
+                "add_items_to_order_v3", "edit_order_item_v3", "set_order_item_comp_v3", "schedule_delayed_order_v3",
+                "activate_delayed_orders_v3", "assign_delivery_driver_v3", "set_delivery_status_v3", "settle_driver_v3",
+                "finalize_order_with_payment_v3", "hold_order_v3", "transfer_order_v3", "split_bill_v3", "merge_tables_v3",
+                "unmerge_tables_v3", "create_table_v3", "rename_table_v3", "delete_table_v3", "toggle_menu_item_availability_v3",
+            ] {
+                assert!(lan_rpc_mutates_orders(c), "{c} changes shared order/table state and must broadcast orders_changed");
+            }
+            for c in ["list_menu_items_v3", "retrieve_open_order_v3", "list_deliveries_v3", "verify_manager_override_v3"] {
+                assert!(!lan_rpc_mutates_orders(c), "{c} is a read and must not broadcast");
+            }
+        }
+
+        // ---------------------------------------------------------------
         // anomaly.rs (2026-08-02): built on real order/void/shift/payment
         // data through the same command wrappers everything else here
         // goes through, not hand-rolled INSERTs -- these prove the
@@ -7045,12 +7396,27 @@ mod tests {
             source[sig_start..=brace_end].to_string()
         }
 
+        /// The command's own body plus, when it is a thin wrapper over a
+        /// `{name}_impl` (the shape every command that the LAN hub also
+        /// dispatches now has), that impl's body. The gate lives in the
+        /// impl so the local command and the Hub's `dispatch_lan_rpc` arm
+        /// share one gate; scanning the wrapper alone would miss it.
+        fn wrapper_and_impl_body(source: &str, name: &str) -> String {
+            let mut body = function_body(source, name);
+            let impl_name = format!("{name}_impl");
+            if body.contains(&format!("{impl_name}(")) {
+                body.push('\n');
+                body.push_str(&function_body(source, &impl_name));
+            }
+            body
+        }
+
         #[test]
         fn every_back_office_command_calls_the_license_gate() {
             let source = super::all_commands_source(); let source = source.as_str();
             let mut missing = Vec::new();
             for name in GATED {
-                let body = function_body(source, name);
+                let body = wrapper_and_impl_body(source, name);
                 let has_param = body.contains("license: State<crate::license::cloud::CloudLicenseState>");
                 // update_chain_currency_v3/save_legacy_branch_v3/
                 // update_business_mode_v3 call the initial-setup-exempt
@@ -7063,7 +7429,9 @@ mod tests {
                 // still real, permanent enforcement -- just not the raw
                 // call string.
                 let has_call = body.contains("require_license_not_locked(&license)?;")
-                    || body.contains("require_license_not_locked_or_initial_setup(&license, &conn)?;");
+                    || body.contains("require_license_not_locked(license)?;")
+                    || body.contains("require_license_not_locked_or_initial_setup(&license, &conn)?;")
+                    || body.contains("require_license_not_locked_or_initial_setup(license, &conn)?;");
                 if !has_param || !has_call {
                     missing.push(*name);
                 }
@@ -7077,13 +7445,13 @@ mod tests {
             let source = super::all_commands_source(); let source = source.as_str();
             let mut wrongly_gated = Vec::new();
             for name in NOT_GATED {
-                let body = function_body(source, name);
+                let body = wrapper_and_impl_body(source, name);
                 // The 3 license commands themselves (get_cached_license_status_v3
                 // etc.) legitimately take a `license: State<LicenseState>` param
                 // -- that IS their function. What none of them may ever do is
                 // call the BLOCKING gate on themselves or any other selling-path
                 // command; that's the actual invariant this proves.
-                if body.contains("require_license_not_locked(&license)?;") {
+                if body.contains("require_license_not_locked(&license)?;") || body.contains("require_license_not_locked(license)?;") {
                     wrongly_gated.push(*name);
                 }
             }

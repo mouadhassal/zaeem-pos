@@ -389,7 +389,11 @@ pub fn list_printers_v3(state: State<Db>, license: State<crate::license::cloud::
 /// `printer.ts` reads it to send every station only its own items.
 #[tauri::command]
 pub fn list_printer_categories_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::PrinterCategoryRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_printer_categories_v3_impl(&state, session_token)
+}
+
+pub(crate) fn list_printer_categories_v3_impl(state: &Db, session_token: String) -> Result<Vec<crate::repo::PrinterCategoryRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::UsePrinter).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_printer_categories(&actor.scope()).map_err(|e| e.to_string())
@@ -401,7 +405,11 @@ pub fn list_printer_categories_v3(state: State<Db>, session_token: String) -> Re
 /// `is_active = 1` server-side, matching the old frontend's own filter.
 #[tauri::command]
 pub fn list_active_printers_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::PrinterRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_active_printers_v3_impl(&state, session_token)
+}
+
+pub(crate) fn list_active_printers_v3_impl(state: &Db, session_token: String) -> Result<Vec<crate::repo::PrinterRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::UsePrinter).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Ok(Repo::new(&conn).list_printers(&actor.scope()).map_err(|e| e.to_string())?

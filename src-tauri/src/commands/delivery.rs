@@ -15,7 +15,11 @@ use super::shared::*;
 
 #[tauri::command]
 pub fn get_delivery_settings_v3(state: State<Db>, session_token: String) -> Result<DeliverySettings, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    get_delivery_settings_v3_impl(&state, session_token)
+}
+
+pub(crate) fn get_delivery_settings_v3_impl(state: &Db, session_token: String) -> Result<DeliverySettings, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Ok(delivery::get_settings(&conn))
@@ -42,7 +46,11 @@ pub fn update_delivery_settings_v3(
 
 #[tauri::command]
 pub fn list_delivery_drivers_v3(state: State<Db>, session_token: String, include_inactive: Option<bool>) -> Result<Vec<Driver>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_delivery_drivers_v3_impl(&state, session_token, include_inactive)
+}
+
+pub(crate) fn list_delivery_drivers_v3_impl(state: &Db, session_token: String, include_inactive: Option<bool>) -> Result<Vec<Driver>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     delivery::list_drivers(&conn, &actor.tenant_id, include_inactive.unwrap_or(false))
@@ -70,7 +78,11 @@ pub fn save_delivery_driver_v3(
 
 #[tauri::command]
 pub fn list_deliveries_v3(state: State<Db>, session_token: String, filter: Option<DeliveryFilter>) -> Result<Vec<DeliveryRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_deliveries_v3_impl(&state, session_token, filter)
+}
+
+pub(crate) fn list_deliveries_v3_impl(state: &Db, session_token: String, filter: Option<DeliveryFilter>) -> Result<Vec<DeliveryRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     delivery::list_deliveries(&conn, &actor.tenant_id, &filter.unwrap_or_default())
@@ -78,7 +90,16 @@ pub fn list_deliveries_v3(state: State<Db>, session_token: String, filter: Optio
 
 #[tauri::command]
 pub fn assign_delivery_driver_v3(state: State<Db>, session_token: String, order_id: String, driver_id: Option<String>) -> Result<DeliveryRow, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    assign_delivery_driver_v3_impl(&state, session_token, order_id, driver_id)
+}
+
+pub(crate) fn assign_delivery_driver_v3_impl(
+    state: &Db,
+    session_token: String,
+    order_id: String,
+    driver_id: Option<String>,
+) -> Result<DeliveryRow, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -118,7 +139,17 @@ pub fn set_delivery_status_v3(state: State<Db>, session_token: String, order_id:
 
 #[tauri::command]
 pub fn get_driver_statement_v3(state: State<Db>, session_token: String, driver_id: String, from: Option<String>, to: Option<String>) -> Result<Statement, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    get_driver_statement_v3_impl(&state, session_token, driver_id, from, to)
+}
+
+pub(crate) fn get_driver_statement_v3_impl(
+    state: &Db,
+    session_token: String,
+    driver_id: String,
+    from: Option<String>,
+    to: Option<String>,
+) -> Result<Statement, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     delivery::driver_statement(&conn, &actor.tenant_id, &driver_id, from.as_deref(), to.as_deref())
@@ -126,7 +157,11 @@ pub fn get_driver_statement_v3(state: State<Db>, session_token: String, driver_i
 
 #[tauri::command]
 pub fn list_driver_settlements_v3(state: State<Db>, session_token: String, driver_id: String) -> Result<Vec<SettlementRecord>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_driver_settlements_v3_impl(&state, session_token, driver_id)
+}
+
+pub(crate) fn list_driver_settlements_v3_impl(state: &Db, session_token: String, driver_id: String) -> Result<Vec<SettlementRecord>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     delivery::list_settlements(&conn, &actor.tenant_id, &driver_id, 50)

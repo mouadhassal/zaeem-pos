@@ -12,7 +12,11 @@ use super::shared::*;
 
 #[tauri::command]
 pub fn list_debtors_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::DebtorRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_debtors_v3_impl(&state, session_token)
+}
+
+pub(crate) fn list_debtors_v3_impl(state: &Db, session_token: String) -> Result<Vec<crate::repo::DebtorRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_debtors(&actor.scope()).map_err(|e| e.to_string())
@@ -29,9 +33,25 @@ pub fn list_debtors_v3(state: State<Db>, session_token: String) -> Result<Vec<cr
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>, initial_debt_cents: Option<i64>, credit_limit_cents: Option<i64>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    create_debtor_v3_impl(&state, &license, session_token, name, phone, email, address, notes, initial_debt_cents, credit_limit_cents)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_debtor_v3_impl(
+    state: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
+    session_token: String,
+    name: String,
+    phone: Option<String>,
+    email: Option<String>,
+    address: Option<String>,
+    notes: Option<String>,
+    initial_debt_cents: Option<i64>,
+    credit_limit_cents: Option<i64>,
+) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
     let phone = phone.filter(|p| !p.trim().is_empty());
     let email = email.filter(|e| !e.trim().is_empty());
@@ -49,7 +69,7 @@ pub fn create_debtor_v3(state: State<Db>, license: State<crate::license::cloud::
     }
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;

@@ -13,7 +13,11 @@ use super::shared::*;
 
 #[tauri::command]
 pub fn list_categories_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::CategoryRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_categories_v3_impl(&state, session_token)
+}
+
+pub(crate) fn list_categories_v3_impl(state: &Db, session_token: String) -> Result<Vec<crate::repo::CategoryRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_categories(&actor.tenant_id).map_err(|e| e.to_string())
 }
@@ -110,7 +114,11 @@ pub fn get_category_photo_v3(state: State<Db>, session_token: String, category_i
 
 #[tauri::command]
 pub fn list_menu_items_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::MenuItemRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_menu_items_v3_impl(&state, session_token)
+}
+
+pub(crate) fn list_menu_items_v3_impl(state: &Db, session_token: String) -> Result<Vec<crate::repo::MenuItemRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let mut items = Repo::new(&conn).list_menu_items(&actor.tenant_id).map_err(|e| e.to_string())?;
     // P0 fix (2026-07-18): this used to resolve EVERY item's photo to a
@@ -148,7 +156,11 @@ pub fn list_menu_items_v3(state: State<Db>, session_token: String) -> Result<Vec
 /// treats as "show the category glyph", identical to today's fallback.
 #[tauri::command]
 pub fn get_menu_item_photo_v3(state: State<Db>, session_token: String, item_id: String) -> Result<Option<String>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    get_menu_item_photo_v3_impl(&state, session_token, item_id)
+}
+
+pub(crate) fn get_menu_item_photo_v3_impl(state: &Db, session_token: String, item_id: String) -> Result<Option<String>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let path = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         Repo::new(&conn).get_menu_item_photo_path(&actor.tenant_id, &item_id).map_err(|e| e.to_string())?
@@ -231,7 +243,11 @@ pub fn export_pdf_v3(app: tauri::AppHandle, state: State<Db>, session_token: Str
 
 #[tauri::command]
 pub fn list_combo_components_v3(state: State<Db>, session_token: String, menu_item_id: String) -> Result<Vec<crate::repo::ComboComponentRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_combo_components_v3_impl(&state, session_token, menu_item_id)
+}
+
+pub(crate) fn list_combo_components_v3_impl(state: &Db, session_token: String, menu_item_id: String) -> Result<Vec<crate::repo::ComboComponentRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_combo_components(&actor.tenant_id, &menu_item_id).map_err(|e| e.to_string())
 }
@@ -310,7 +326,16 @@ pub fn set_menu_item_active_v3(state: State<Db>, license: State<crate::license::
 /// pulling a sold-out item off the grid before someone orders it.
 #[tauri::command]
 pub fn toggle_menu_item_availability_v3(state: State<Db>, session_token: String, item_id: String, is_active: bool) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    toggle_menu_item_availability_v3_impl(&state, session_token, item_id, is_active)
+}
+
+pub(crate) fn toggle_menu_item_availability_v3_impl(
+    state: &Db,
+    session_token: String,
+    item_id: String,
+    is_active: bool,
+) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ToggleItemAvailability).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -338,7 +363,11 @@ pub fn toggle_menu_item_availability_v3(state: State<Db>, session_token: String,
 // combo_meal_v3, below) correctly keeps the gate -- editing what's on the
 // menu is a real back-office task; reading it to sell it is not.
 pub fn list_combo_meals_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::ComboMealRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_combo_meals_v3_impl(&state, session_token)
+}
+
+pub(crate) fn list_combo_meals_v3_impl(state: &Db, session_token: String) -> Result<Vec<crate::repo::ComboMealRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_combo_meals(&actor.tenant_id).map_err(|e| e.to_string())
 }
@@ -346,7 +375,11 @@ pub fn list_combo_meals_v3(state: State<Db>, session_token: String) -> Result<Ve
 #[tauri::command]
 // Same fix, same reasoning as list_combo_meals_v3 immediately above.
 pub fn list_combo_meal_items_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::ComboItemJoinRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_combo_meal_items_v3_impl(&state, session_token)
+}
+
+pub(crate) fn list_combo_meal_items_v3_impl(state: &Db, session_token: String) -> Result<Vec<crate::repo::ComboItemJoinRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_combo_meal_items(&actor.tenant_id).map_err(|e| e.to_string())
 }
@@ -396,7 +429,11 @@ pub fn delete_combo_meal_v3(state: State<Db>, license: State<crate::license::clo
 // order correctly, not a back-office-only concern. Write side (create/
 // update/delete_happy_hour_rule_v3, below) correctly keeps the gate.
 pub fn list_happy_hour_rules_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::HappyHourRuleRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_happy_hour_rules_v3_impl(&state, session_token)
+}
+
+pub(crate) fn list_happy_hour_rules_v3_impl(state: &Db, session_token: String) -> Result<Vec<crate::repo::HappyHourRuleRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_happy_hour_rules(&actor.tenant_id).map_err(|e| e.to_string())
 }

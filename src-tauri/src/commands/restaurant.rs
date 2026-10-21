@@ -14,7 +14,11 @@ use super::shared::*;
 /// every role that can take an order, and never license-gated.
 #[tauri::command]
 pub fn list_option_groups_v3(state: State<Db>, session_token: String, include_inactive: Option<bool>) -> Result<Vec<ops::OptionGroup>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_option_groups_v3_impl(&state, session_token, include_inactive)
+}
+
+pub(crate) fn list_option_groups_v3_impl(state: &Db, session_token: String, include_inactive: Option<bool>) -> Result<Vec<ops::OptionGroup>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     ops::list_option_groups(&conn, &actor.tenant_id, !include_inactive.unwrap_or(false))
