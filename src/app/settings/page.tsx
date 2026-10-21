@@ -14,7 +14,7 @@ import PresetPicker from "../../components/ui/PresetPicker";
 import { presetToMode } from "../../lib/businessPreset";
 import { formatArabicDate, formatArabicDateTime } from "../../lib/dateLocal";
 
-type SettingsTab = "general" | "printer" | "tax" | "branch" | "license" | "network" | "backup" | "about";
+export type SettingsTab = "general" | "printer" | "tax" | "branch" | "license" | "network" | "backup" | "about";
 
 interface ChainConfig {
   currency: string;
@@ -132,8 +132,8 @@ function formatExpiry(expiresAtMs: number): string {
   return formatArabicDate(new Date(expiresAtMs), { year: "numeric", month: "long", day: "numeric" });
 }
 
-export default function SettingsPage() {
-  const [tab, setTab] = useState<SettingsTab>("general");
+export default function SettingsPage({ initialTab = "general" }: { initialTab?: SettingsTab } = {}) {
+  const [tab, setTab] = useState<SettingsTab>(initialTab);
   const user = useAuthStore((s) => s.user);
   const token = useAuthStore((s) => s.token);
   const isOwner = user?.role === "OWNER";
@@ -348,6 +348,9 @@ export default function SettingsPage() {
         setBranchPhone(branchRow.phone ?? "");
       }
     } catch (err) {
+      // Without a licence the back-office reads are refused by design; the
+      // page already says it's locked, so don't also flash an error.
+      if (/^license expired/i.test(String(err))) return;
       showMsg(`حدث خطأ في تحميل الإعدادات: ${realErrorText(err)}`);
     }
   }, [token]);
@@ -681,7 +684,7 @@ export default function SettingsPage() {
       <div className="flex-1 p-6 space-y-6 overflow-y-auto">
         {tab !== "license" && settingsLocked ? (
           <div className="flex flex-col items-center justify-center h-full text-center gap-3 px-6">
-            <p className="text-base font-medium text-ink-900 font-arabic">هذه الشاشة مقفلة — الترخيص منتهي</p>
+            <p className="text-base font-medium text-ink-900 font-arabic">هذه الشاشة مقفلة حتى تفعيل الترخيص</p>
             <p className="text-sm text-ink-500 font-arabic max-w-sm">
               نقطة البيع تعمل بشكل طبيعي. اذهب إلى تبويب &quot;الترخيص&quot; على اليمين لتفعيل مفتاح جديد.
             </p>

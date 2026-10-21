@@ -40,7 +40,7 @@ const ICON_BY_ID: Record<string, Icon> = {
 };
 
 const roleLabels: Record<string, string> = {
-  OWNER: "المدير",
+  OWNER: "المالك",
   MANAGER: "المشرف",
   CASHIER: "الكاشير",
   KITCHEN: "المطبخ",

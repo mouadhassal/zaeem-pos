@@ -57,6 +57,8 @@ function PosLayout({ children }: { children: React.ReactNode }) {
   // Verified live: an owner clicking the same "المطبخ" nav item correctly
   // reaches the real KDS screen -- only the KITCHEN role's own initial
   // landing view was wrong, not the KDS page/route itself.
+  // Lets the locked screen's "activate" button open Settings on the licence tab.
+  const [settingsInitialTab, setSettingsInitialTab] = useState<"general" | "license">("general");
   const [activeView, setActiveView] = useState(() => {
     const role = useAuthStore.getState().user?.role;
     if (role === "OWNER") return "dashboard";
@@ -75,6 +77,7 @@ function PosLayout({ children }: { children: React.ReactNode }) {
     }
     const item = navItems.find((n) => n.id === id);
     if (item && item.allowed) {
+      if (id === "settings") setSettingsInitialTab("general");
       setActiveView(id);
     }
   };
@@ -93,10 +96,22 @@ function PosLayout({ children }: { children: React.ReactNode }) {
       return (
         <div className="flex flex-col items-center justify-center h-full text-center gap-3 px-6">
           <IconLock className="w-10 h-10 text-text-muted" stroke={1.5} />
-          <p className="text-base font-medium text-text">هذه الشاشة مقفلة — الترخيص منتهي</p>
-          <p className="text-sm text-text-muted max-w-sm">
-            نقطة البيع تعمل بشكل طبيعي. لإعادة فتح الإدارة والتقارير، جدّد الترخيص من المالك أو المندوب.
+          {/* A brand-new install has no licence at all -- "expired" was wrong
+              there, and the screen was a dead end with no way forward. */}
+          <p className="text-base font-medium text-text">
+            {licenseStatus?.kind === "Invalid" ? "هذه الشاشة مقفلة — لا يوجد ترخيص مفعّل" : "هذه الشاشة مقفلة — الترخيص منتهي"}
           </p>
+          <p className="text-sm text-text-muted max-w-sm">
+            نقطة البيع تعمل بشكل طبيعي. لفتح الإدارة والتقارير، فعّل مفتاح الترخيص من الإعدادات.
+          </p>
+          <button
+            type="button"
+            onClick={() => { setSettingsInitialTab("license"); setActiveView("settings"); }}
+            className="mt-2 h-10 px-5 rounded-[10px] bg-accent text-white text-sm font-medium hover:opacity-90 transition-opacity active:scale-[0.98]"
+            data-testid="locked-activate"
+          >
+            تفعيل الترخيص
+          </button>
         </div>
       );
     }
@@ -118,7 +133,7 @@ function PosLayout({ children }: { children: React.ReactNode }) {
       case "loyalty": return <LoyaltyPage />;
       case "ai": return <AIPage />;
       case "ai-onboarding": return <AiOnboardingPage />;
-      case "settings": return <SettingsPage />;
+      case "settings": return <SettingsPage initialTab={settingsInitialTab} />;
       case "debug": return DebugPage ? <DebugPage /> : null;
       default: return children;
     }
