@@ -64,7 +64,7 @@ const ROLE_COLORS: Partial<Record<UserRole, string>> = {
   OWNER: "bg-purple-100 text-purple-700",
   MANAGER: "bg-blue-100 text-blue-700",
   CASHIER: "bg-saffron-100 text-saffron-600",
-  KITCHEN: "bg-white text-ink-900",
+  KITCHEN: "bg-orange-100 text-orange-700",
 };
 
 const ROLE_NAMES: Partial<Record<UserRole, string>> = {
@@ -176,6 +176,7 @@ export default function StaffPage() {
 
   const [suspendEmployeeId, setSuspendEmployeeId] = useState<string | null>(null);
   const [qrDataUrls, setQrDataUrls] = useState<Record<string, string>>({});
+  const [qrOpenId, setQrOpenId] = useState<string | null>(null);
 
   const [shiftDateFrom, setShiftDateFrom] = useState(() => {
     const d = new Date();
@@ -517,9 +518,10 @@ export default function StaffPage() {
                       </span>
                     </td>
                     <td className="p-3 text-center">
-                      <span
-                        className={`inline-block w-2 h-2 rounded-full ${emp.is_active ? "bg-saffron-600" : "bg-danger"}`}
-                      />
+                      <span className={`inline-flex items-center gap-1.5 text-xs font-arabic ${emp.is_active ? "text-ok" : "text-danger"}`}>
+                        <span className={`inline-block w-2 h-2 rounded-full ${emp.is_active ? "bg-ok" : "bg-danger"}`} />
+                        {emp.is_active ? "نشط" : "معلّق"}
+                      </span>
                     </td>
                     <td className="p-3 font-arabic text-ink-400 text-xs">
                       {formatDate(emp.created_at)}
@@ -528,10 +530,16 @@ export default function StaffPage() {
                       <div className="flex items-center justify-center gap-2">
                         {qrDataUrls[emp.id] && (
                           <div className="relative group">
-                            <button className="p-1.5 rounded-sm text-ink-500 hover:text-purple-600 hover:bg-purple-50 transition-colors" title="QR">
+                            {/* Tap to show (touch tills have no hover); hover still works with a mouse. */}
+                            <button
+                              onClick={() => setQrOpenId((cur) => (cur === emp.id ? null : emp.id))}
+                              className="p-1.5 rounded-sm text-ink-500 hover:text-purple-600 hover:bg-purple-50 transition-colors"
+                              title="رمز QR لدخول الموظف"
+                              aria-expanded={qrOpenId === emp.id}
+                            >
                               <IconDeviceMobile className="w-4 h-4" />
                             </button>
-                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-50">
+                            <div className={`absolute bottom-full left-1/2 -translate-x-1/2 mb-2 group-hover:block z-50 ${qrOpenId === emp.id ? "block" : "hidden"}`}>
                               <div className="bg-white p-2 rounded-sm shadow-xl border border-ink-200">
                                 <img src={qrDataUrls[emp.id]} alt="QR" className="w-32 h-32" />
                               </div>
@@ -1008,7 +1016,7 @@ export default function StaffPage() {
               {editEmployeeId && (
                 <div className="flex items-center gap-3">
                   <label className="text-sm font-arabic text-ink-900">نشط</label>
-                  <button
+                  <button dir="ltr"
                     onClick={() =>
                       setEmployeeForm((p) => ({ ...p, is_active: !p.is_active }))
                     }

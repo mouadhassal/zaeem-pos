@@ -37,9 +37,9 @@ interface Printer {
 
 // Print modes, in the order to try them when a test print comes out wrong.
 const PRINT_MODES = [
-  { value: "driver", label: "تعريف ويندوز (الموصى به)", hint: "يطبع عبر تعريف الطابعة نفسه -- يعمل مع أي طابعة تطبع من ويندوز" },
-  { value: "raster", label: "مباشر", hint: "أوامر ESC/POS مباشرة -- لطابعات الشبكة" },
-  { value: "bitimage", label: "مباشر متوافق", hint: "أوامر ESC/POS القديمة -- لطابعات شبكة أقدم" },
+  { value: "driver", label: "تعريف ويندوز (الموصى به)", hint: "يطبع عبر تعريف الطابعة نفسه — يعمل مع أي طابعة تطبع من ويندوز" },
+  { value: "raster", label: "مباشر", hint: "أوامر ESC/POS مباشرة — لطابعات الشبكة" },
+  { value: "bitimage", label: "مباشر متوافق", hint: "أوامر ESC/POS القديمة — لطابعات شبكة أقدم" },
 ] as const;
 
 interface Branch {
@@ -611,7 +611,7 @@ export default function SettingsPage() {
   const updatePrintMode = async (printer: Printer, printMode: string) => {
     try {
       await invoke("update_printer_print_mode_v3", { sessionToken: token, printerId: printer.id, printMode });
-      showMsg("تم تغيير طريقة الطباعة -- اضغط اختبار الطباعة للتأكد");
+      showMsg("تم تغيير طريقة الطباعة — اضغط اختبار الطباعة للتأكد");
       fetchData();
     } catch {
       showMsg("حدث خطأ في تغيير طريقة الطباعة");
@@ -730,14 +730,14 @@ export default function SettingsPage() {
                 onPick={(p) => { const m = presetToMode(p); saveBusinessMode(m.has_tables, m.has_kitchen); }}
               />
               <p className="text-xs text-ink-400 font-arabic">
-                اختر نوع نشاطك أو عدّل الخيارات أدناه يدوياً -- مقهى بدون طاولات، متجر بدون مطبخ، أو الاثنين معاً
+                اختر نوع نشاطك أو عدّل الخيارات أدناه يدوياً — مقهى بدون طاولات، متجر بدون مطبخ، أو الاثنين معاً
               </p>
               <div className="flex items-center justify-between">
                 <div>
                   <span className="text-sm font-arabic text-ink-900 block">لدينا طاولات</span>
                   <span className="text-xs font-arabic text-ink-400">إدارة الطاولات، الدمج، والتقسيم</span>
                 </div>
-                <button
+                <button dir="ltr"
                   onClick={() => saveBusinessMode(!hasTables, hasKitchen)}
                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${hasTables ? "bg-saffron-600" : "bg-ink-300"}`}
                 >
@@ -749,7 +749,7 @@ export default function SettingsPage() {
                   <span className="text-sm font-arabic text-ink-900 block">لدينا مطبخ</span>
                   <span className="text-xs font-arabic text-ink-400">طباعة تذاكر المطبخ وشاشة عرض المطبخ (KDS)</span>
                 </div>
-                <button
+                <button dir="ltr"
                   onClick={() => saveBusinessMode(hasTables, !hasKitchen)}
                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${hasKitchen ? "bg-saffron-600" : "bg-ink-300"}`}
                 >
@@ -812,7 +812,7 @@ export default function SettingsPage() {
                     </select>
                     {systemPrinters.length === 0 && (
                       <p className="text-xs text-warn font-arabic mt-1">
-                        لم يتم العثور على أي طابعة مثبتة على هذا الجهاز -- تأكد من توصيل الطابعة وتثبيت تعريفها في نظام التشغيل أولاً.
+                        لم يتم العثور على أي طابعة مثبتة على هذا الجهاز — تأكد من توصيل الطابعة وتثبيت تعريفها في نظام التشغيل أولاً.
                       </p>
                     )}
                   </div>
@@ -857,7 +857,7 @@ export default function SettingsPage() {
               <div key={printer.id} className="bg-white rounded-md p-5 border border-ink-200 space-y-3">
                 <div className="flex items-center justify-between">
                   <h3 className="font-arabic font-bold text-ink-900">{printer.name}</h3>
-                  <button
+                  <button dir="ltr"
                     onClick={() => togglePrinterActive(printer)}
                     className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
                       printer.is_active ? "bg-saffron-600" : "bg-ink-300"
@@ -875,7 +875,7 @@ export default function SettingsPage() {
                   <div className={`${printer.system_printer_name ? "" : "bg-warn-soft border border-warn-soft p-3"} rounded-sm space-y-2`}>
                     {!printer.system_printer_name && (
                       <p className="text-xs font-arabic text-warn">
-                        هذه الطابعة غير مرتبطة بطابعة حقيقية على هذا الجهاز -- لن تطبع حتى يتم الاختيار.
+                        هذه الطابعة غير مرتبطة بطابعة حقيقية على هذا الجهاز — لن تطبع حتى يتم الاختيار.
                       </p>
                     )}
                     <div className="flex items-center gap-3">
@@ -1169,7 +1169,7 @@ export default function SettingsPage() {
             <h2 className="text-lg font-bold text-ink-900 font-arabic">الطاولات</h2>
             <div className="bg-white rounded-md p-5 border border-ink-200 space-y-3">
               <p className="text-xs text-ink-400 font-arabic">
-                أضف أو أعد تسمية أو احذف أي عدد من الطاولات -- لا يوجد حد أدنى أو أقصى (يمكن أن يكون صفر، واحدة، أو عشرين).
+                أضف أو أعد تسمية أو احذف أي عدد من الطاولات — لا يوجد حد أدنى أو أقصى (يمكن أن يكون صفر، واحدة، أو عشرين).
               </p>
               {tableError && <p className="text-xs text-danger font-arabic">{tableError}</p>}
               <div className="flex gap-2">
@@ -1421,7 +1421,7 @@ export default function SettingsPage() {
               <div>
                 <span className="text-sm font-bold font-arabic text-ink-900 block mb-1">الجدولة التلقائية</span>
                 <p className="text-xs font-arabic text-ink-400">
-                  تعمل في الخلفية داخل التطبيق نفسه (وليست مرتبطة بفتح هذه الصفحة) -- تُنشئ نسخة احتياطية تلقائياً كل فترة محددة، طالما التطبيق يعمل.
+                  تعمل في الخلفية داخل التطبيق نفسه (وليست مرتبطة بفتح هذه الصفحة) — تُنشئ نسخة احتياطية تلقائياً كل فترة محددة، طالما التطبيق يعمل.
                 </p>
               </div>
               <div className="flex justify-between items-center">
@@ -1461,7 +1461,7 @@ export default function SettingsPage() {
                   dir="ltr"
                 />
                 <span className="text-xs font-arabic text-ink-400 mt-1 block">
-                  اتركه فارغاً للاحتفاظ بالنسخ على هذا الجهاز فقط. أي مسار يمكن للجهاز الكتابة إليه يصلح -- قرص شبكة (network share) أو قرص USB خارجي، فهذا هو الخيار الحقيقي لحماية بياناتك في حال تعطّل هذا الجهاز.
+                  اتركه فارغاً للاحتفاظ بالنسخ على هذا الجهاز فقط. أي مسار يمكن للجهاز الكتابة إليه يصلح — قرص شبكة (network share) أو قرص USB خارجي، فهذا هو الخيار الحقيقي لحماية بياناتك في حال تعطّل هذا الجهاز.
                 </span>
               </div>
               <button
@@ -1525,7 +1525,7 @@ export default function SettingsPage() {
                   {diagnosticsSending ? "جاري الإرسال..." : "إرسال تقرير تشخيصي"}
                 </button>
                 <p className="text-xs font-arabic text-ink-400">
-                  يرسل آخر سجل أخطاء من هذا الجهاز لفريق الدعم للمساعدة في حل مشكلة تواجهها -- لا يتم إرسال أي شيء تلقائياً
+                  يرسل آخر سجل أخطاء من هذا الجهاز لفريق الدعم للمساعدة في حل مشكلة تواجهها — لا يتم إرسال أي شيء تلقائياً
                 </p>
                 {diagnosticsResult && (
                   <p className="text-sm font-arabic text-ink-700">{diagnosticsResult}</p>

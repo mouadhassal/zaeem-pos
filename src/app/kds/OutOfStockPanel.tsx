@@ -89,7 +89,7 @@ export function OutOfStockPanel({ token, onClose }: { token: string | null; onCl
               }`}
             >
               <span>{item.name}</span>
-              <span className="text-xs font-medium">{item.is_active ? "متوفر" : "نفد -- اضغط للإعادة"}</span>
+              <span className="text-xs font-medium">{item.is_active ? "متوفر" : "نفد — اضغط للإعادة"}</span>
             </button>
           ))}
         </div>

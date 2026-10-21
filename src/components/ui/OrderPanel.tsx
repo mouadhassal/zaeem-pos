@@ -63,7 +63,7 @@ export default function OrderPanel({
       {/* TOP: table header, fixed */}
       <div className="h-14 shrink-0 flex items-center justify-between gap-2 px-4 border-b border-line">
         <span className="text-sm font-medium text-text truncate">{tableLabel}</span>
-        {onEditOrder && (
+        {onEditOrder ? (
           // A labeled, colored pill -- not a bare pencil icon -- so it reads
           // immediately as "this order's type, tap to change" instead of a
           // generic unlabeled "edit" affordance nobody notices.
@@ -77,7 +77,13 @@ export default function OrderPanel({
             <span>{orderTypeLabel}</span>
             <IconChevronDown className="w-3.5 h-3.5" stroke={2} />
           </button>
-        )}
+        ) : orderTypeLabel ? (
+          // Read-only: the order type is changed from the bar above the menu.
+          <span className="h-8 px-2.5 rounded-full flex items-center gap-1 bg-accent-soft text-accent-text shrink-0 text-xs font-medium">
+            {orderTypeIcon}
+            <span>{orderTypeLabel}</span>
+          </span>
+        ) : null}
       </div>
 
       {/* MIDDLE: order lines, scrolls internally */}

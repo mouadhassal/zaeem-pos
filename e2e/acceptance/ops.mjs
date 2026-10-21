@@ -438,6 +438,41 @@ try {
       return false;
     }, "cola card now shows the badge (live, no restart)");
   });
+  // Visual tour: every sidebar screen at two common till sizes, screenshot +
+  // anything wider than the window (the page must never scroll sideways).
+  await step("tour", "every screen fits the window at 1366 and 1024 wide", async () => {
+    const problems = [];
+    for (const [w, h] of [[1366, 768], [1024, 768]]) {
+      await b.setWindowSize(w, h);
+      await pause(400);
+      const navIds = await b.execute(() => [...document.querySelectorAll('[data-testid^="sidebar-nav-"]')].map((e) => e.getAttribute("data-testid").replace("sidebar-nav-", "")));
+      for (const id of navIds) {
+        await nav(id);
+        await pause(1200);
+        const m = await b.execute(() => {
+          const vw = document.documentElement.clientWidth;
+          const wide = [];
+          for (const el of document.querySelectorAll("body *")) {
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            if (r.right <= vw + 2 && r.left >= -2) continue;
+            let p = el.parentElement, clipped = false;
+            while (p && p !== document.body) { const ov = getComputedStyle(p).overflowX; if (ov !== "visible") { clipped = true; break; } p = p.parentElement; }
+            if (!clipped) wide.push(`${el.tagName.toLowerCase()}.${String(el.className).slice(0, 50)} [${Math.round(r.left)},${Math.round(r.right)}]`);
+          }
+          const scrollers = [...document.querySelectorAll("*")].filter((e) => e.scrollWidth > e.clientWidth + 2 && ["auto", "scroll"].includes(getComputedStyle(e).overflowX) && e.clientWidth > 0).map((e) => `${e.tagName.toLowerCase()}.${String(e.className).slice(0, 40)} ${e.scrollWidth}>${e.clientWidth}`);
+          const errorText = /Error|undefined|NaN|\[object Object\]|تعذر/.test(document.body.innerText) ? (document.body.innerText.match(/.{0,40}(Error|undefined|NaN|\[object Object\]|تعذر).{0,60}/) || [""])[0] : "";
+          return { docW: document.documentElement.scrollWidth, vw, wide: wide.slice(0, 5), scrollers: scrollers.slice(0, 5), errorText };
+        });
+        const shot = await reg.shot(`tour-${w}-${id}`);
+        const bad = m.docW > m.vw + 2 || m.wide.length > 0 || m.errorText;
+        console.log(`  ${w} ${id}: ${bad ? "CHECK" : "ok"} ${JSON.stringify({ docW: m.docW, wide: m.wide, scrollers: m.scrollers, errorText: m.errorText })} ${shot}`);
+        if (bad) problems.push(`${w}/${id}`);
+      }
+    }
+    await b.setWindowSize(1280, 720);
+    ok(problems.length === 0, `screens to check: ${problems.join(", ")}`);
+  });
 } finally {
   await reg.stop();
   for (const f of fakes) f.kill();

@@ -95,7 +95,7 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
         <div className="p-6 space-y-4">
           {thresholdLoadFailed && (
             <p className="font-arabic text-xs text-warn bg-warn/10 rounded-sm px-3 py-2">
-              تعذر تحميل حد الموافقة -- سيتم طلب تصريح المدير احتياطياً
+              تعذر تحميل حد الموافقة — سيتم طلب تصريح المدير احتياطياً
             </p>
           )}
           <div>

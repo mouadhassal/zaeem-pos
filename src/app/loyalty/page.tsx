@@ -41,11 +41,14 @@ function formatDateTime(iso: string): string {
 // the 4 default seeded names; an unrecognized/custom tier name still works,
 // it just gets the neutral fallback style below.
 const TIER_STYLE: Record<string, { color: string; icon: string }> = {
-  BRONZE: { color: "text-warn-700 bg-warn-50 border-warn-200", icon: "B" },
-  SILVER: { color: "text-ink-600 bg-ink-100 border-ink-300", icon: "S" },
-  GOLD: { color: "text-saffron-600 bg-saffron-50 border-saffron-300", icon: "G" },
-  PLATINUM: { color: "text-ink-600 bg-ink-50 border-ink-300", icon: "P" },
+  BRONZE: { color: "text-warn-700 bg-warn-50 border-warn-200", icon: "ب" },
+  SILVER: { color: "text-ink-600 bg-ink-100 border-ink-300", icon: "ف" },
+  GOLD: { color: "text-saffron-600 bg-saffron-50 border-saffron-300", icon: "ذ" },
+  PLATINUM: { color: "text-ink-600 bg-ink-50 border-ink-300", icon: "★" },
 };
+// Arabic names for the 4 seeded tiers (stored in English); custom names show as typed.
+const TIER_NAME_AR: Record<string, string> = { BRONZE: "برونزي", SILVER: "فضي", GOLD: "ذهبي", PLATINUM: "بلاتيني" };
+const tierLabel = (name: string) => TIER_NAME_AR[name] ?? name;
 const DEFAULT_TIER_STYLE = { color: "text-saffron-700 bg-saffron-50 border-saffron-200", icon: "•" };
 
 const REWARD_TYPE_OPTIONS = [
@@ -360,7 +363,7 @@ export default function LoyaltyPage() {
             <div key={t.id} className={`bg-white rounded-md p-4 border ${style.color} border-opacity-30`}>
               <div className="flex items-center justify-between">
                 <span className="w-8 h-8 rounded-lg bg-current/10 flex items-center justify-center text-sm font-bold font-mono">{style.icon}</span>
-                <span className="text-sm font-bold text-ink-900">{t.name}</span>
+                <span className="text-sm font-bold text-ink-900">{tierLabel(t.name)}</span>
               </div>
               <p className="text-xs text-ink-400 mt-2">من {t.min_points} نقطة</p>
               <p className="text-xs text-ink-400">مضاعف: x{t.points_multiplier}</p>
@@ -369,7 +372,7 @@ export default function LoyaltyPage() {
         })}
         {sortedTiers.length === 0 && (
           <div className="col-span-full text-center py-6 text-ink-500 font-arabic zc-card">
-            لا توجد درجات ولاء بعد -- أضف واحدة من تبويب "الدرجات"
+            لا توجد درجات ولاء بعد — أضف واحدة من تبويب "الدرجات"
           </div>
         )}
       </div>
@@ -406,7 +409,7 @@ export default function LoyaltyPage() {
                     <p className="text-lg font-bold mt-3">{card.customer_name}</p>
                     <div className="flex items-center gap-2 mt-2">
                       <span className="w-6 h-6 rounded-md bg-white/20 flex items-center justify-center text-xs font-bold font-mono">{style.icon}</span>
-                      <span className="text-sm">{tier?.name ?? card.tier}</span>
+                      <span className="text-sm">{tierLabel(tier?.name ?? card.tier)}</span>
                     </div>
                   </div>
                   <div className="p-4 space-y-2">
@@ -430,7 +433,7 @@ export default function LoyaltyPage() {
                     )}
                     {next && (
                       <div className="bg-warn-50 text-warn-700 text-xs p-2 rounded-lg font-arabic text-center">
-                        يحتاج {next.min_points - card.points} نقطة للوصول لدرجة {next.name}
+                        يحتاج {next.min_points - card.points} نقطة للوصول لدرجة {tierLabel(next.name)}
                       </div>
                     )}
                   </div>
@@ -581,7 +584,7 @@ export default function LoyaltyPage() {
               <tbody>
                 {sortedTiers.map((t) => (
                   <tr key={t.id} className="border-b border-ink-200 hover:bg-saffron-50">
-                    <td className="p-3 font-arabic text-ink-900 font-medium">{t.name}</td>
+                    <td className="p-3 font-arabic text-ink-900 font-medium">{tierLabel(t.name)}</td>
                     <td className="p-3 font-mono text-ink-900">{t.min_points}</td>
                     <td className="p-3 font-mono text-ink-900">x{t.points_multiplier}</td>
                     <td className="p-3 text-center">
@@ -697,7 +700,7 @@ export default function LoyaltyPage() {
                 dir="ltr"
               />
               <p className="text-xs text-ink-400 mt-1 font-arabic">
-                الماسح يعمل كلوحة مفاتيح -- امسح البطاقة وسيُملأ الحقل تلقائياً، أو اكتب الرقم يدوياً
+                الماسح يعمل كلوحة مفاتيح — امسح البطاقة وسيُملأ الحقل تلقائياً، أو اكتب الرقم يدوياً
               </p>
               {issueError && <p className="text-xs text-danger-600 mt-1 font-arabic">{issueError}</p>}
             </div>

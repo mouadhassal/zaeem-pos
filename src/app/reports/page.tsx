@@ -7,6 +7,7 @@ import DatePicker from "../../components/ui/DatePicker";
 import { toLocalDateStr, parseLocalDateStr, formatArabicDate, formatArabicDateTime } from "../../lib/dateLocal";
 import { orderNo } from "../../lib/orderNumber";
 import GiftsReport from "./GiftsReport";
+import { orderStatusLabel } from "../../lib/orderStatus";
 
 interface SalesSummary {
   totalSales: number;
@@ -173,7 +174,7 @@ interface RefundableOrder {
 }
 
 const ORDER_TYPE_LABEL: Record<string, string> = {
-  DINE_IN: "داخلي", TAKEAWAY: "سفري", ONLINE: "أونلاين",
+  DINE_IN: "صالة", TAKEAWAY: "سفري", DELIVERY: "توصيل", DEBT: "دين", ONLINE: "أونلاين",
 };
 
 // Mirrors repo.rs's CogsVarianceRow -- see Repo::compute_cogs_variance's
@@ -594,6 +595,9 @@ export default function ReportsPage() {
 
       <div className="zc-card p-4 space-y-3">
         <h2 className="font-bold text-ink-900 font-arabic">حالة المخزون</h2>
+        {summary.inventoryStatus.length === 0 && (
+          <p className="text-sm text-ink-400 font-arabic">لا توجد مواد مخزون مسجّلة بعد. أضفها من صفحة المخزون لتتابع الكميات هنا.</p>
+        )}
         {summary.inventoryStatus.map((inv, i) => (
           <div key={i} className="flex justify-between text-sm">
             <span className="text-ink-900">{inv.name}</span>
@@ -625,7 +629,7 @@ export default function ReportsPage() {
           bolted onto the page over time. */}
       <div className="pt-2">
         <h2 className="text-xs font-bold tracking-[0.15em] text-ink-400 font-arabic uppercase">الرؤى</h2>
-        <p className="text-xs text-ink-300 font-arabic mt-0.5">فحوصات إحصائية محلية بالكامل -- بدون ذكاء اصطناعي</p>
+        <p className="text-xs text-ink-300 font-arabic mt-0.5">فحوصات إحصائية محلية بالكامل — بدون ذكاء اصطناعي</p>
       </div>
 
       <div className="zc-card p-4 space-y-3">
@@ -633,7 +637,7 @@ export default function ReportsPage() {
           <div>
             <h2 className="font-bold text-ink-900 font-arabic">فحص الحالات غير الطبيعية</h2>
             <p className="text-xs text-ink-400 font-arabic mt-0.5">
-              فحص إحصائي محلي بالكامل (بدون ذكاء اصطناعي) لآخر 30 يوم -- معدل الإلغاء، العجز النقدي، ونمط الإلغاء ثم البيع
+              فحص إحصائي محلي بالكامل (بدون ذكاء اصطناعي) لآخر 30 يوم — معدل الإلغاء، العجز النقدي، ونمط الإلغاء ثم البيع
             </p>
           </div>
           <button
@@ -833,7 +837,7 @@ export default function ReportsPage() {
               <div key={o.order_id} className="flex items-center justify-between text-sm border border-warn-soft bg-warn-soft rounded-sm p-2">
                 <div>
                   <span className="text-ink-900 font-arabic">{o.table_name || `#${orderNo(o.order_id)}`}</span>
-                  <span className="text-ink-400 text-xs font-arabic mr-2">({o.status})</span>
+                  <span className="text-ink-400 text-xs font-arabic ms-2">({orderStatusLabel(o.status)})</span>
                 </div>
                 <span className="text-ink-400 font-mono">{fmt(o.total_cents)}</span>
               </div>
@@ -847,7 +851,7 @@ export default function ReportsPage() {
           <div>
             <h2 className="font-bold text-ink-900 font-arabic">تباين المخزون (النظري مقابل الفعلي)</h2>
             <p className="text-xs text-ink-400 font-arabic mt-0.5">
-              استهلاك الوصفات المتوقع مقابل انخفاض المخزون الفعلي، للفترة المحددة أعلاه -- يحتاج جرد فعلي مسجل ليكون دقيقًا
+              استهلاك الوصفات المتوقع مقابل انخفاض المخزون الفعلي، للفترة المحددة أعلاه — يحتاج جرد فعلي مسجل ليكون دقيقًا
             </p>
           </div>
           <button
@@ -884,7 +888,7 @@ export default function ReportsPage() {
                       <span className="font-bold text-ink-900">{row.ingredient_name}</span>
                       {isEstimated && (
                         <span className="text-[10px] font-arabic text-ink-400 border border-ink-200 rounded-sm px-1.5 py-0.5">
-                          بدون جرد فعلي -- تقديري
+                          بدون جرد فعلي — تقديري
                         </span>
                       )}
                     </div>
@@ -919,7 +923,7 @@ export default function ReportsPage() {
           <div>
             <h2 className="font-bold text-ink-900 font-arabic">هامش الأصناف</h2>
             <p className="text-xs text-ink-400 font-arabic mt-0.5">
-              السعر ناقص تكلفة المكونات لكل صنف، للفترة المحددة أعلاه -- الأسوأ هامشًا أولًا
+              السعر ناقص تكلفة المكونات لكل صنف، للفترة المحددة أعلاه — الأسوأ هامشًا أولًا
             </p>
           </div>
           <button
@@ -963,7 +967,7 @@ export default function ReportsPage() {
       {countModalIngredient && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" dir="rtl">
           <div className="zc-card bg-white p-5 space-y-4 w-full max-w-sm">
-            <h2 className="font-bold text-ink-900 font-arabic">تسجيل جرد -- {countModalIngredient.ingredient_name}</h2>
+            <h2 className="font-bold text-ink-900 font-arabic">تسجيل جرد — {countModalIngredient.ingredient_name}</h2>
             <div className="space-y-1">
               <label className="text-xs text-ink-400 font-arabic">الكمية المعدودة ({countModalIngredient.unit})</label>
               <input
@@ -1013,7 +1017,7 @@ export default function ReportsPage() {
         <div>
           <h2 className="font-bold text-ink-900 font-arabic">الطلبات المدفوعة (استرداد)</h2>
           <p className="text-xs text-ink-400 font-arabic mt-0.5">
-            آخر 50 طلب مدفوع -- الاسترداد يعيد المخزون ونقاط الولاء والدين المرتبطين بالطلب تلقائياً
+            آخر 50 طلب مدفوع — الاسترداد يعيد المخزون ونقاط الولاء والدين المرتبطين بالطلب تلقائياً
           </p>
         </div>
 

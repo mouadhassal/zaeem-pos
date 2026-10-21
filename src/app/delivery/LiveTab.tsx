@@ -106,7 +106,7 @@ export default function LiveTab() {
           <div key={d.order_id} className="rounded-md border border-ink-200 bg-white p-4 space-y-3" data-testid="delivery-card" data-status={d.status}>
             <div className="flex items-start justify-between gap-2">
               <div>
-                <div className="font-arabic font-bold text-ink-900">#{orderNo(d.order_id)} · {d.customer_name || "—"}</div>
+                <div className="font-arabic font-bold text-ink-900"><span dir="ltr">#{orderNo(d.order_id)}</span> · {d.customer_name || "—"}</div>
                 <div className="text-xs text-ink-500 font-mono" dir="ltr">{d.customer_phone}</div>
               </div>
               <span className={`px-2.5 py-1 rounded-full text-xs font-arabic font-bold ${STATUS_STYLE[d.status]}`}>{deliveryStatusLabel(d.status)}</span>
@@ -167,7 +167,7 @@ export default function LiveTab() {
               <tbody>
                 {done.map((d) => (
                   <tr key={d.order_id} className="border-t border-ink-100" data-testid="delivery-done-row">
-                    <td className="p-2">#{orderNo(d.order_id)}</td>
+                    <td className="p-2"><span dir="ltr">#{orderNo(d.order_id)}</span></td>
                     <td className="p-2">{d.address}</td>
                     <td className="p-2">{d.driver_name ?? "—"}</td>
                     <td className="p-2"><span className={`px-2 py-0.5 rounded-full text-xs font-bold ${STATUS_STYLE[d.status]}`}>{deliveryStatusLabel(d.status)}</span></td>

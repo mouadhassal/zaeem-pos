@@ -51,7 +51,7 @@ function friendlyRosterError(err: unknown): string {
   const raw = realErrorText(err);
   const lower = raw.toLowerCase();
   if (lower.includes("overlap") || raw.includes("تعارض") || raw.includes("متداخل") || raw.includes("تداخل")) {
-    return "هذا الموظف لديه دوام آخر يتعارض مع هذا التوقيت -- عدّل الوقت أو احذف الدوام المتعارض أولاً.";
+    return "هذا الموظف لديه دوام آخر يتعارض مع هذا التوقيت — عدّل الوقت أو احذف الدوام المتعارض أولاً.";
   }
   return raw;
 }
@@ -289,9 +289,9 @@ export default function SchedulePage() {
           <table className="w-full text-sm border-collapse">
             <thead>
               <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
-                <th className="text-right p-3 font-medium sticky right-0 bg-surface-alt min-w-[140px]">الموظف</th>
+                <th className="text-right p-3 font-medium sticky right-0 bg-surface-alt min-w-[110px]">الموظف</th>
                 {days.map((d, i) => (
-                  <th key={i} className="text-center p-2 font-medium min-w-[120px]">
+                  <th key={i} className="text-center p-2 font-medium min-w-[104px]">
                     <div>{DAY_NAMES[i]}</div>
                     <div className="text-[11px] text-ink-400 font-normal">{formatArabicDate(d, { day: "numeric", month: "numeric" })}</div>
                   </th>

@@ -62,7 +62,7 @@ export default function GiftsReport({ startIso, endIso }: { startIso: string; en
               <tbody>
                 {rows.map((r, i) => (
                   <tr key={`${r.order_id}-${i}`} className="border-t border-ink-100" data-testid="gift-row">
-                    <td className="p-2">#{orderNo(r.order_id)}</td>
+                    <td className="p-2"><span dir="ltr">#{orderNo(r.order_id)}</span></td>
                     <td className="p-2 whitespace-nowrap">{formatArabicDateTime(new Date(r.created_at))}</td>
                     <td className="p-2">{r.item_name}</td>
                     <td className="p-2">{r.quantity}</td>

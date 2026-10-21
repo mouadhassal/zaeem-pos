@@ -46,8 +46,10 @@ const STATUS_BG: Record<string, string> = {
 };
 
 const ORDER_TYPE_LABELS: Record<string, string> = {
-  DINE_IN: "داخلي",
-  TAKEAWAY: "طلبات خارجية",
+  DINE_IN: "صالة",
+  TAKEAWAY: "سفري",
+  DELIVERY: "توصيل",
+  DEBT: "دين",
   ONLINE: "أونلاين",
 };
 
@@ -211,7 +213,9 @@ export default function KDSPage() {
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <span className="text-lg font-bold text-ink-900 font-arabic">
-                        {order.table_name || `#${orderNo(order.id)}`}
+                        {/* Takeaway/delivery orders sit on the hidden counter
+                            table; its name means nothing to the cook. */}
+                        {order.order_type === "DINE_IN" && order.table_name ? order.table_name : <span dir="ltr">#{orderNo(order.id)}</span>}
                       </span>
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-arabic bg-surface text-ink-500">
                         {ORDER_TYPE_LABELS[order.order_type] || order.order_type}

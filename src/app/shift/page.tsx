@@ -9,6 +9,7 @@ import { useShiftStore } from "../../stores/shiftStore";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { realErrorText } from "../../lib/errors";
 import { orderNo } from "../../lib/orderNumber";
+import { orderStatusLabel } from "../../lib/orderStatus";
 
 // 2026-08-02: was a hardcoded 5000 assuming small everyday prices -- wrong
 // by orders of magnitude for a currency whose real menu prices run in the
@@ -398,7 +399,7 @@ export default function ShiftPage() {
                 <div className="flex items-center gap-3">
                   <span className="font-mono text-xs text-text-muted">{orderNo(o.id)}</span>
                   <span className="text-sm text-text">
-                    {o.status === "PAID" ? "مدفوع" : o.status === "CANCELLED" ? "ملغي" : o.status}
+                    {orderStatusLabel(o.status)}
                   </span>
                 </div>
                 <span className="font-mono text-sm text-text tabular" dir="ltr">{formatMoney(o.total_cents)}</span>
@@ -451,7 +452,7 @@ export default function ShiftPage() {
                 <div className="space-y-2 rounded-xl p-3" style={{ background: "var(--danger-soft)" }}>
                   <div className="flex items-center gap-1.5 text-sm font-medium" style={{ color: "var(--danger)" }}>
                     <IconAlertTriangle className="w-4 h-4" stroke={1.75} />
-                    الفرق كبير -- يتطلب كلمة مرور المدير
+                    الفرق كبير — يتطلب كلمة مرور المدير
                   </div>
                   <input
                     type="password"

@@ -160,7 +160,7 @@ export default function StatementTab({ canManage }: { canManage: boolean }) {
                 {st.rows.length === 0 && <tr><td colSpan={10} className="p-6 text-center text-ink-500">لا توجد توصيلات في هذه الفترة</td></tr>}
                 {st.rows.map((r) => (
                   <tr key={r.order_id} className="border-t border-ink-100" data-testid="statement-row">
-                    <td className="p-2">#{orderNo(r.order_id)}</td>
+                    <td className="p-2"><span dir="ltr">#{orderNo(r.order_id)}</span></td>
                     <td className="p-2 whitespace-nowrap">{formatArabicDateTime(new Date(r.created_at))}</td>
                     <td className="p-2">{r.address}</td>
                     <td className="p-2">{r.customer_name}</td>

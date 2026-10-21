@@ -513,7 +513,7 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
         >
           <span className="flex items-center gap-2 text-sm text-warn font-medium">
             <IconAlertTriangle className="w-4 h-4" />
-            {lowStockCount} مادة عند الحد الأدنى أو أقل -- اضغط لاستلام بضاعة جديدة
+            {lowStockCount} مادة عند الحد الأدنى أو أقل — اضغط لاستلام بضاعة جديدة
           </span>
           <IconPackageImport className="w-4 h-4 text-warn" />
         </button>
@@ -669,13 +669,13 @@ function AddStockModal({
   };
 
   return (
-    <Modal open={!!target} onClose={onClose} title="تعديل يدوي -- إضافة كمية">
+    <Modal open={!!target} onClose={onClose} title="تعديل يدوي — إضافة كمية">
       <div className="space-y-3">
         <p className="text-sm text-ink-900">
           المادة: <span className="font-bold">{target.name}</span>
         </p>
         <p className="text-xs text-ink-500 bg-warn-soft border border-warn-soft rounded-sm p-2">
-          هذا تعديل يدوي للمخزون فقط -- لا يرتبط بمورد ولا يسجّل تكلفة شراء. لاستلام بضاعة فعلية من مورد استخدم زر "استلام بضاعة" أعلى الصفحة.
+          هذا تعديل يدوي للمخزون فقط — لا يرتبط بمورد ولا يسجّل تكلفة شراء. لاستلام بضاعة فعلية من مورد استخدم زر "استلام بضاعة" أعلى الصفحة.
         </p>
         <input
           type="number"
@@ -2289,7 +2289,7 @@ function MarketplaceReceiptsTab({ onReceived }: { onReceived: () => void }) {
           <div className="flex items-center justify-between">
             <div>
               <h3 className="font-bold text-ink-900">{order.supplier_name ?? "مورد السوق"}</h3>
-              <p className="text-xs text-ink-400 font-mono">#{orderNo(order.order_id)} · {order.delivered_at?.slice(0, 10) ?? ""}</p>
+              <p className="text-xs text-ink-400 font-mono"><span dir="ltr">#{orderNo(order.order_id)}</span> · {order.delivered_at?.slice(0, 10) ?? ""}</p>
             </div>
             <span className="font-mono font-bold text-saffron-600">{formatCurrency(order.total_cents)}</span>
           </div>

@@ -487,7 +487,7 @@ export default function MenuPage() {
       setMenuItems(items);
       setItemPhoto(freshPhoto);
     } catch {
-      setPhotoError("فشل رفع الصورة -- تأكد أنها JPEG أو PNG أو WEBP");
+      setPhotoError("فشل رفع الصورة — تأكد أنها JPEG أو PNG أو WEBP");
     } finally {
       setUploadingPhoto(false);
     }
@@ -623,7 +623,7 @@ export default function MenuPage() {
       setCategoryPhoto(freshPhoto);
       await fetchAll();
     } catch {
-      setCategoryPhotoError("فشل رفع الصورة -- تأكد أنها JPEG أو PNG أو WEBP");
+      setCategoryPhotoError("فشل رفع الصورة — تأكد أنها JPEG أو PNG أو WEBP");
     } finally {
       setUploadingCategoryPhoto(false);
     }

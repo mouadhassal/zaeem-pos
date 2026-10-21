@@ -379,7 +379,7 @@ export async function printToDevice(data: Uint8Array, printer: PrinterConfig): P
   // ESC/POS bytes as a RAW job straight to the device's own driver queue.
   if (printer.interface === "USB") {
     if (!printer.systemPrinterName) {
-      throw new Error("لم يتم اختيار طابعة من قائمة النظام لهذا الجهاز -- اذهب إلى الإعدادات واختر الطابعة الفعلية");
+      throw new Error("لم يتم اختيار طابعة من قائمة النظام لهذا الجهاز — اذهب إلى الإعدادات واختر الطابعة الفعلية");
     }
     await invoke("print_raw_bytes_v3", { printerName: printer.systemPrinterName, data: Array.from(data) });
     return;
@@ -438,7 +438,7 @@ async function printCanvasTo(
 
   if (mode === "driver") {
     if (p.interface !== "USB" || !p.system_printer_name) {
-      throw new Error("وضع \"تعريف ويندوز\" يعمل فقط مع طابعة مثبتة على هذا الجهاز -- اختر الطابعة من القائمة");
+      throw new Error("وضع \"تعريف ويندوز\" يعمل فقط مع طابعة مثبتة على هذا الجهاز — اختر الطابعة من القائمة");
     }
     await invoke("print_image_driver_v3", {
       printerName: p.system_printer_name,

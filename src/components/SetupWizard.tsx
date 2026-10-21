@@ -145,7 +145,7 @@ export default function SetupWizard() {
                     type="text"
                     value={chainName}
                     onChange={(e) => setChainName(e.target.value)}
-                    placeholder="يُطبع أعلى كل إيصال -- مثال: مطعم الشام"
+                    placeholder="يُطبع أعلى كل إيصال — مثال: مطعم الشام"
                     maxLength={60}
                     className="w-full h-11 px-4 rounded-sm border border-ink-300 text-ink-800 placeholder:text-ink-400 text-right outline-none focus:border-saffron-500 focus:ring-1 focus:ring-saffron-500/20 transition-colors"
                     dir="rtl"
@@ -270,7 +270,7 @@ export default function SetupWizard() {
                     <span className="text-sm font-arabic text-ink-900 block">لدينا طاولات</span>
                     <span className="text-xs font-arabic text-ink-400">إدارة الطاولات، الدمج، والتقسيم</span>
                   </div>
-                  <button
+                  <button dir="ltr"
                     type="button"
                     onClick={() => setHasTables(!hasTables)}
                     className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${hasTables ? "bg-saffron-600" : "bg-ink-300"}`}
@@ -284,7 +284,7 @@ export default function SetupWizard() {
                     <span className="text-sm font-arabic text-ink-900 block">لدينا مطبخ</span>
                     <span className="text-xs font-arabic text-ink-400">طباعة تذاكر المطبخ وشاشة عرض المطبخ (KDS)</span>
                   </div>
-                  <button
+                  <button dir="ltr"
                     type="button"
                     onClick={() => setHasKitchen(!hasKitchen)}
                     className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${hasKitchen ? "bg-saffron-600" : "bg-ink-300"}`}

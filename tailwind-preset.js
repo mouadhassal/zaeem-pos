@@ -84,7 +84,10 @@ const preset = {
         sans: ["Manrope", "Cairo", "system-ui", "sans-serif"],
         arabic: ["Cairo", "sans-serif"],
         heading: ["Poppins", "Cairo", "system-ui", "sans-serif"],
-        mono: ["IBM Plex Mono", "monospace"],
+        // Cairo after the mono face: IBM Plex Mono has no Arabic, so the
+        // currency "ل.س" next to a number fell to the system monospace and
+        // rendered as "ل • س".
+        mono: ["IBM Plex Mono", "Cairo", "monospace"],
       },
       borderRadius: {
         sm: "4px",

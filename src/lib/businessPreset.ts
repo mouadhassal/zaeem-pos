@@ -10,7 +10,7 @@ export interface ModeFlags {
 
 export const PRESETS: { id: BusinessPreset; label: string; hint: string }[] = [
   { id: "restaurant", label: "مطعم / مقهى", hint: "طاولات، تذاكر مطبخ، إضافات على الأصناف" },
-  { id: "retail", label: "بقالة / متجر", hint: "باركود أولاً، دفع سريع، دفتر ديون -- بدون طاولات أو شاشة مطبخ" },
+  { id: "retail", label: "بقالة / متجر", hint: "باركود أولاً، دفع سريع، دفتر ديون — بدون طاولات أو شاشة مطبخ" },
 ];
 
 export function presetToMode(preset: BusinessPreset): ModeFlags {

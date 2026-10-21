@@ -73,7 +73,7 @@ export default function SessionExpiredOverlay() {
             W
           </div>
           <h1 className="text-xl font-bold text-text mb-1">انتهت الجلسة</h1>
-          <p className="text-sm text-text-3">أدخل الرمز السري للمتابعة -- عملك الحالي محفوظ</p>
+          <p className="text-sm text-text-3">أدخل الرمز السري للمتابعة — عملك الحالي محفوظ</p>
         </div>
 
         {error && (

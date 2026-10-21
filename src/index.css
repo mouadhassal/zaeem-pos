@@ -135,7 +135,8 @@ h1, h2, h3, h4, h5, h6, .font-heading {
 /* §6: numerals stay LTR mono even inside RTL text -- always IBM Plex
    Mono tabular, per §2's "All numerals" row. */
 .tabular {
-  font-family: 'IBM Plex Mono', monospace;
+  /* Cairo catches the Arabic currency label (Plex Mono has no Arabic). */
+  font-family: 'IBM Plex Mono', 'Cairo', monospace;
   font-variant-numeric: tabular-nums;
 }
 

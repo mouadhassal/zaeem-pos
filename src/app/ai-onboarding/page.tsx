@@ -470,7 +470,7 @@ export default function AiOnboardingPage() {
 
                 {typicalPrice >= 5000 && !applyResult && (
                   <div className="px-4 py-3 rounded-lg bg-warn-100 text-warn-700 text-sm font-arabic flex items-center justify-between gap-3">
-                    <span>الأسعار كبيرة -- هل القائمة مطبوعة بالليرة القديمة؟ الأسعار منقولة كما هي بالصورة.</span>
+                    <span>الأسعار كبيرة — هل القائمة مطبوعة بالليرة القديمة؟ الأسعار منقولة كما هي بالصورة.</span>
                     <button onClick={convertOldLira} className="shrink-0 h-8 px-3 rounded-md bg-white border border-warn-600 text-warn-700 text-xs font-bold">
                       نعم، حوّلها للجديدة (÷100)
                     </button>

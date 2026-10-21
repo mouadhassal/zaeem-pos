@@ -585,7 +585,7 @@ export default function CustomersPage() {
               if (!card) return null;
               return (
                 <p className="text-sm font-arabic text-danger bg-danger-soft rounded-sm p-3">
-                  هذا العميل لديه بطاقة ولاء برصيد {card.points} نقطة -- حذف العميل سيجعل هذا السجل وتاريخ النقاط غير قابل للوصول نهائياً.
+                  هذا العميل لديه بطاقة ولاء برصيد {card.points} نقطة — حذف العميل سيجعل هذا السجل وتاريخ النقاط غير قابل للوصول نهائياً.
                 </p>
               );
             })()}

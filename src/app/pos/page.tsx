@@ -316,7 +316,7 @@ export default function POSPage() {
     // needs a cashier to actually read and act on it, not just glance.
     const handleKitchenPrintFailed = (e: Event) => {
       const detail = (e as CustomEvent).detail as { tableName?: string } | undefined;
-      setSuccessMsg(`⚠️ لم تصل الطلبية للمطبخ (${detail?.tableName ?? ""}) -- أبلغ المطبخ يدوياً، ستتم إعادة المحاولة تلقائياً`);
+      setSuccessMsg(`⚠️ لم تصل الطلبية للمطبخ (${detail?.tableName ?? ""}) — أبلغ المطبخ يدوياً، ستتم إعادة المحاولة تلقائياً`);
       setTimeout(() => setSuccessMsg(null), 8000);
     };
     const handleBarcodeScanned = (e: Event) => {
@@ -449,7 +449,7 @@ export default function POSPage() {
       } else if (current.tableId) {
         await handleHold();
       } else if (table.status === "OCCUPIED" && table.current_order_id) {
-        setSuccessMsg("لا يمكن تبديل الطاولة الآن -- أفرغ السلة الحالية أولاً أو علّقها");
+        setSuccessMsg("لا يمكن تبديل الطاولة الآن — أفرغ السلة الحالية أولاً أو علّقها");
         setTimeout(() => setSuccessMsg(null), 4000);
         return;
       }
@@ -941,7 +941,7 @@ export default function POSPage() {
   const deliveryProblem = (): string | null => {
     if (orderType !== "DELIVERY") return null;
     // The cart still holds a table's open tab: sending it as a delivery would create a second, duplicate order.
-    if (openOrderId || items.some((i) => i.dbItemId)) return "السلة تحمل طلب طاولة مفتوحاً -- أفرغها وابدأ طلب توصيل جديداً";
+    if (openOrderId || items.some((i) => i.dbItemId)) return "السلة تحمل طلب طاولة مفتوحاً — أفرغها وابدأ طلب توصيل جديداً";
     if (!deliveryAddress.trim()) return "اكتب عنوان التوصيل";
     if (!customerPhone.trim()) return "اكتب رقم هاتف العميل";
     return null;
@@ -1183,7 +1183,6 @@ export default function POSPage() {
           deliveryFeeCents={orderType === "DELIVERY" ? deliveryFeeCents : 0}
           totalCents={totalCents}
           currencySymbol={currencySymbol}
-          onEditOrder={() => {}} /* order type now set via top bar */
           orderTypeIcon={<OrderTypeIconComponent className="w-3.5 h-3.5" stroke={2} />}
           orderTypeLabel={ORDER_TYPE_LABELS[orderType] || orderType}
           onIncrementLine={handleIncrementLine}
@@ -1545,7 +1544,7 @@ export default function POSPage() {
             ) : (
               <>
                 <h2 className="text-lg font-bold text-text">{loyaltyCard.customer_name}</h2>
-                <p className="text-sm text-text-3">الرصيد: <span className="font-bold text-accent-text">{loyaltyCard.points}</span> نقطة -- {loyaltyCard.tier}</p>
+                <p className="text-sm text-text-3">الرصيد: <span className="font-bold text-accent-text">{loyaltyCard.points}</span> نقطة — {loyaltyCard.tier}</p>
                 {redeemError && <p className="text-xs text-danger">{redeemError}</p>}
                 <div className="space-y-2 max-h-64 overflow-y-auto">
                   {loyaltyRewards.length === 0 && (
@@ -1734,13 +1733,13 @@ export default function POSPage() {
       {/* 2026-08-25 QA re-audit ("I can't pay" report): surfaced up front,
           before a cashier/manager gets all the way through picking a
           table/items/payment method only to hit a raw backend rejection at
-          the very last step ("لا توجد وردية مفتوحة") -- see the shiftId
+          the very last step ("لا توجد وردية مفتوحة") — see the shiftId
           fetch effect above for the full root-cause writeup. Only shown
           once the real status is known (shiftStatusKnown), so this never
           flashes on the brief moment before the fetch resolves. */}
       {shiftStatusKnown && !shiftId && (
         <div className="fixed top-20 left-1/2 -translate-x-1/2 flex items-center gap-3 text-white px-5 py-3 rounded-[12px] shadow-sh-3 z-50 text-sm font-medium" style={{ backgroundColor: "var(--warn)" }}>
-          <span>لا توجد وردية مفتوحة -- افتح وردية أولاً قبل البيع</span>
+          <span>لا توجد وردية مفتوحة — افتح وردية أولاً قبل البيع</span>
           <button
             type="button"
             onClick={() => setShowOpenShift(true)}

@@ -189,7 +189,7 @@ export default function NetworkTab({ token }: { token: string | null }) {
     <div className="space-y-6 max-w-xl">
       <h2 className="text-lg font-bold text-ink-900 font-arabic">الشبكة المحلية (تشغيل متعدد الأجهزة)</h2>
       <p className="text-xs text-ink-400 font-arabic">
-        اجعل جهازاً واحداً في الفرع &quot;مركزياً&quot; -- بقية الأجهزة (شاشة المطبخ، كاشير ثانٍ) تتصل به تلقائياً عبر
+        اجعل جهازاً واحداً في الفرع &quot;مركزياً&quot; — بقية الأجهزة (شاشة المطبخ، كاشير ثانٍ) تتصل به تلقائياً عبر
         الشبكة المحلية لمشاركة نفس الطاولات والطلبات لحظياً، دون الحاجة للإنترنت.
       </p>
 
@@ -246,7 +246,7 @@ export default function NetworkTab({ token }: { token: string | null }) {
             </div>
             {joinRole === "register" && (
               <p className="text-xs font-arabic text-warn mb-2">
-                هذا الجهاز يعمل كنقطة بيع كاملة (طلبات، دفع، ورديات) -- يجب تفعيل ترخيص خاص به من تبويب &quot;الترخيص&quot; قبل الاتصال.
+                هذا الجهاز يعمل كنقطة بيع كاملة (طلبات، دفع، ورديات) — يجب تفعيل ترخيص خاص به من تبويب &quot;الترخيص&quot; قبل الاتصال.
               </p>
             )}
             <button

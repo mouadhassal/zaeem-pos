@@ -59,7 +59,7 @@ export default function AIPage() {
   const [messages, setMessages] = useState<Message[]>([{
     id: "welcome",
     role: "assistant",
-    content: "مرحباً! أنا مساعدك الذكي لمنشأتك. اسألني عن مبيعاتك، أصنافك، أداء موظفيك، أو اطلب توصية -- وسأجيبك بالاعتماد على بياناتك الحقيقية فقط، للفترة المحددة أدناه.",
+    content: "مرحباً! أنا مساعدك الذكي لمنشأتك. اسألني عن مبيعاتك، أصنافك، أداء موظفيك، أو اطلب توصية — وسأجيبك بالاعتماد على بياناتك الحقيقية فقط، للفترة المحددة أدناه.",
     timestamp: new Date().toISOString(),
   }]);
   const [input, setInput] = useState("");
@@ -134,7 +134,7 @@ export default function AIPage() {
         </div>
         <div>
           <h1 className="text-xl font-bold text-ink-900">المساعد الذكي</h1>
-          <p className="text-ink-500 text-xs">مدعوم بالذكاء الاصطناعي -- يجيب من بيانات منشأتك الحقيقية فقط</p>
+          <p className="text-ink-500 text-xs">مدعوم بالذكاء الاصطناعي — يجيب من بيانات منشأتك الحقيقية فقط</p>
         </div>
         <div className="mr-auto flex items-center gap-1 bg-saffron-50 text-saffron-600 px-3 py-1 rounded-full text-xs font-medium">
           <Sparkles className="w-3 h-3" />
