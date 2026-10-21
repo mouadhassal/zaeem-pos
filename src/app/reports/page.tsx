@@ -8,6 +8,7 @@ import { toLocalDateStr, parseLocalDateStr, formatArabicDate, formatArabicDateTi
 import { orderNo } from "../../lib/orderNumber";
 import GiftsReport from "./GiftsReport";
 import { orderStatusLabel } from "../../lib/orderStatus";
+import { realErrorText } from "../../lib/errors";
 
 interface SalesSummary {
   totalSales: number;
@@ -300,7 +301,8 @@ export default function ReportsPage() {
       });
     } catch (e) {
       console.error("Reports error:", e);
-      setLoadError("تعذر تحميل التقرير. تحقق من اتصال الخادم.");
+      // Reports are read from this till's own database, not a server.
+      setLoadError(`تعذر تحميل التقرير: ${realErrorText(e)}`);
     } finally {
       setLoading(false);
     }

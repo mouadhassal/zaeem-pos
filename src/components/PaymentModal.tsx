@@ -6,7 +6,7 @@ import { openCashDrawer } from "../lib/printer";
 import { useAuthStore } from "../stores/authStore";
 import { useCurrency } from "../hooks/useCurrency";
 import { realErrorText } from "../lib/errors";
-import { parseMoneyInput } from "../lib/money";
+import { minorToInputValue, parseMoneyInput } from "../lib/money";
 import Typeahead from "./ui/Typeahead";
 
 interface DebtorRow {
@@ -250,6 +250,14 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
             </div>
 
             <div className="grid grid-cols-4 gap-2 mb-4">
+              {/* Exact money is the most common cash payment: one tap, no typing. */}
+              <button
+                onClick={() => setReceivedStr(minorToInputValue(totalCents))}
+                className="h-11 rounded-lg bg-accent-soft text-accent-text font-arabic font-medium hover:brightness-95 transition-[filter,transform] active:scale-[0.97]"
+                data-testid="pay-exact"
+              >
+                المبلغ بالضبط
+              </button>
               {QUICK_AMOUNTS.map((amt) => (
                 <button
                   key={amt}
