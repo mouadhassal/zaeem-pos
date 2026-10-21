@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
+import { LEGACY_DEFAULT_SHOP_NAME } from "../../lib/shopName";
 import { useAuthStore } from "../../stores/authStore";
 import type { TaxMode } from "../../db/types";
 import { checkLicense, activateLicense, getDeviceId, backOfficeLocked, type LicenseStatus } from "../../lib/license";
@@ -315,7 +316,8 @@ export default function SettingsPage() {
     try {
       const cfg = await invoke<{ chain_name: string; currency: string; tax_mode: TaxMode; tax_rate_cents: number }>("get_chain_config_v3", { sessionToken: token });
       setConfig(cfg);
-      setChainName(cfg.chain_name);
+      // The old built-in default is not a real name: show an empty field asking for one.
+      setChainName(cfg.chain_name === LEGACY_DEFAULT_SHOP_NAME ? "" : cfg.chain_name);
       setTaxMode(cfg.tax_mode);
       setTaxRate(String(cfg.tax_rate_cents / 100));
       setCurrency(cfg.currency);
@@ -698,6 +700,7 @@ export default function SettingsPage() {
                     value={chainName}
                     maxLength={60}
                     onChange={(e) => setChainName(e.target.value)}
+                    placeholder="اكتب اسم محلك كما تريده على الفاتورة"
                     className="flex-1 h-10 px-4 rounded-sm border-2 border-ink-200 text-ink-900 font-arabic text-sm text-right outline-none focus:border-saffron-500"
                     dir="rtl"
                   />
@@ -710,6 +713,9 @@ export default function SettingsPage() {
                   </button>
                 </div>
                 <p className="text-[10px] text-ink-500 mt-1 font-arabic">يُطبع أعلى كل إيصال</p>
+                {config?.chain_name === LEGACY_DEFAULT_SHOP_NAME && (
+                  <p className="text-xs text-warn mt-1 font-arabic">لم يُحدَّد اسم المحل بعد — الإيصالات تطبع اسم الفرع حتى تكتبه هنا.</p>
+                )}
               </div>
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">العملة</label>

@@ -239,6 +239,11 @@ impl From<RepoError> for String {
     fn from(e: RepoError) -> String { e.to_string() }
 }
 
+/// (id, menu_item_id, quantity, unit_price_cents, notes, comped, comp_reason) of a live order line.
+type RawOrderItemRow = (String, String, i64, i64, Option<String>, i64, Option<String>);
+/// (order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, comped, comp_reason, comp_by, voided, order status).
+type OrderItemInfoRow = (String, String, i64, i64, Option<String>, Option<String>, i64, Option<String>, Option<String>, i64, String);
+
 pub struct Repo<'a> {
     conn: &'a Connection,
 }
@@ -5046,7 +5051,7 @@ impl<'a> Repo<'a> {
         let mut items_stmt = self.conn.prepare(
             "SELECT id, menu_item_id, quantity, unit_price_cents, notes, comped, comp_reason FROM order_items WHERE order_id = ?1 AND voided = 0"
         )?;
-        let raw_items: Vec<(String, String, i64, i64, Option<String>, i64, Option<String>)> = items_stmt.query_map(params![order_id], |r| {
+        let raw_items: Vec<RawOrderItemRow> = items_stmt.query_map(params![order_id], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
         })?.filter_map(|r| r.ok()).collect();
         drop(items_stmt);
@@ -5214,7 +5219,7 @@ impl<'a> Repo<'a> {
             let mut items_stmt = self.conn.prepare(
                 "SELECT id, menu_item_id, quantity, unit_price_cents, notes, comped, comp_reason FROM order_items WHERE order_id = ?1 AND voided = 0"
             )?;
-            let raw_items: Vec<(String, String, i64, i64, Option<String>, i64, Option<String>)> = items_stmt.query_map(params![order_id], |r| {
+            let raw_items: Vec<RawOrderItemRow> = items_stmt.query_map(params![order_id], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
             })?.filter_map(|r| r.ok()).collect();
             drop(items_stmt);
@@ -5604,9 +5609,7 @@ impl<'a> Repo<'a> {
     /// lives, what it is, and whether the order is still open.
     pub fn open_order_item_info(&self, scope: &Scope, item_id: &str) -> Result<OrderItemInfo, RepoError> {
         self.assert_order_item_in_scope(item_id, scope)?;
-        let (order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, comped, comp_reason, comp_by, voided, status): (
-            String, String, i64, i64, Option<String>, Option<String>, i64, Option<String>, Option<String>, i64, String,
-        ) = self.conn.query_row(
+        let (order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, comped, comp_reason, comp_by, voided, status): OrderItemInfoRow = self.conn.query_row(
             "SELECT i.order_id, i.menu_item_id, i.quantity, i.unit_price_cents, i.notes, i.combo_id, i.comped, i.comp_reason, i.comp_by, i.voided, o.status \
              FROM order_items i JOIN orders o ON o.id = i.order_id WHERE i.id = ?1",
             params![item_id],

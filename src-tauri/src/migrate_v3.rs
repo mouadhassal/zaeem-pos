@@ -2711,6 +2711,7 @@ pub const MIGRATION_AE_VERSION: i64 = 37;
 ///     line it replaced (the old line is voided, never deleted);
 ///   * delivery: delivery_drivers, order_deliveries (one row per delivery
 ///     order), delivery_settlements (paying a driver / taking his cash).
+///
 /// Everything is additive; an install that never uses these behaves exactly
 /// as before.
 pub fn run_restaurant_ops_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {

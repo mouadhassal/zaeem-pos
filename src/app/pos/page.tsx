@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, lazy, Suspense } from "react";
 import { invoke } from "../../lib/invoke";
+import { printableShopName } from "../../lib/shopName";
 import { realErrorText, isNoOpenShiftError } from "../../lib/errors";
 import TableBar from "../../components/layout/TableBar";
 // Perf fix (post-login load lag): these 8 components are only ever needed
@@ -556,7 +557,7 @@ export default function POSPage() {
 
       const cfg = await getReceiptConfig();
       const receipt: ReceiptData = {
-        chainName: cfg.chain_name, branchName: cfg.branch_name,
+        chainName: printableShopName(cfg.chain_name, cfg.branch_name), branchName: cfg.branch_name,
         currency: cfg.currency, orderNumber: orderNo(orderId),
         tableName: tableName ?? "", orderType: orderType === "DEBT" ? "DINE_IN" : orderType,
         items: receiptLines(items), ...cancelledField(items), ...(user?.name ? { cashier: user.name } : {}),
@@ -679,7 +680,7 @@ export default function POSPage() {
     try {
       const cfg = await getReceiptConfig();
       const receipt: ReceiptData = {
-        chainName: cfg.chain_name, branchName: cfg.branch_name,
+        chainName: printableShopName(cfg.chain_name, cfg.branch_name), branchName: cfg.branch_name,
         currency: cfg.currency, orderNumber: orderNo(openOrderId),
         tableName: tableName ?? "", orderType: "DINE_IN",
         items: receiptLines(items), ...cancelledField(items), ...(user?.name ? { cashier: user.name } : {}),
@@ -768,7 +769,7 @@ export default function POSPage() {
     try {
       const cfg = await getReceiptConfig();
       const receipt: ReceiptData = {
-        chainName: cfg.chain_name, branchName: cfg.branch_name,
+        chainName: printableShopName(cfg.chain_name, cfg.branch_name), branchName: cfg.branch_name,
         currency: cfg.currency, orderNumber: orderNo(current.orderId),
         tableName: tableName ?? "", orderType: "DINE_IN",
         items: current.items,
@@ -1093,7 +1094,7 @@ export default function POSPage() {
     const t = state.tax();
     const cfg = await getReceiptConfig();
     const receipt: ReceiptData = {
-      chainName: cfg.chain_name, branchName: cfg.branch_name,
+      chainName: printableShopName(cfg.chain_name, cfg.branch_name), branchName: cfg.branch_name,
       currency: cfg.currency, orderNumber,
       tableName: tableName ?? "", orderType,
       items: receiptLines(items), ...cancelledField(items), ...(user?.name ? { cashier: user.name } : {}),

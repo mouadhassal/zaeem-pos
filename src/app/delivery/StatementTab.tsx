@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { IconPrinter, IconFileTypePdf } from "@tabler/icons-react";
+import { printableShopName } from "../../lib/shopName";
 import {
   getDriverStatement, listDrivers, listSettlements, openForSettlement, settleDriver, settlementSummary,
   type Driver, type Settlement, type Statement,
@@ -79,7 +80,7 @@ export default function StatementTab({ canManage }: { canManage: boolean }) {
     if (!st) return;
     try {
       const cfg = await getReceiptConfig();
-      await printRows(driverStatementRows(cfg.chain_name, st.driver.name, { from, to }, st.rows, st.totals, orderNo));
+      await printRows(driverStatementRows(printableShopName(cfg.chain_name, cfg.branch_name), st.driver.name, { from, to }, st.rows, st.totals, orderNo));
     } catch (e) {
       toast.error(`تعذرت الطباعة: ${realErrorText(e)}`);
     }

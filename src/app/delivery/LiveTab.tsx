@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { IconPrinter } from "@tabler/icons-react";
+import { printableShopName } from "../../lib/shopName";
 import {
   assignDriver, listDeliveries, listDrivers, setDeliveryStatus, toCollectCents,
   type Delivery, type DeliveryStatus, type Driver,
@@ -73,7 +74,7 @@ export default function LiveTab() {
       const cfg = await getReceiptConfig();
       const order = await retrieveOpenOrder(d.order_id).catch(() => null);
       await printRows(deliverySlipRows({
-        chainName: cfg.chain_name, branchName: cfg.branch_name, orderNumber: orderNo(d.order_id), createdAt: d.created_at,
+        chainName: printableShopName(cfg.chain_name, cfg.branch_name), branchName: cfg.branch_name, orderNumber: orderNo(d.order_id), createdAt: d.created_at,
         ...(d.customer_name ? { customerName: d.customer_name } : {}),
         ...(d.customer_phone ? { customerPhone: d.customer_phone } : {}),
         address: d.address ?? "",
