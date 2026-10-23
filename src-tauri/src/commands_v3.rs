@@ -319,7 +319,7 @@ mod tests {
         // where these sync calls actually live -- is in the `_impl`
         // function. Both must never touch the network either way.
         let wiring: &[(&str, &[&str])] = &[
-            ("create_full_order_v3_impl", &["sync_enqueue_order(", "sync_enqueue_order_items("]),
+            ("create_full_order_with_pickup_v3_impl", &["sync_enqueue_order(", "sync_enqueue_order_items("]),
             ("finalize_order_with_payment_v3_impl", &["sync_enqueue_payment(", "sync_enqueue_order("]),
             ("void_order_item_v3_impl", &["sync_enqueue_single_order_item("]),
         ];
