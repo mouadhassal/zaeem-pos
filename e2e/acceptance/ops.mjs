@@ -1,7 +1,8 @@
 // Restaurant-ops acceptance on the REAL compiled POS (debug build with its own
 // app identifier, so its own %APPDATA% data -- never the real install):
 //   item options, kitchen stations (one slip per station), editing / gifting /
-//   cancelling lines already sent, the detailed receipt, delivery end to end.
+//   cancelling lines already sent, the detailed receipt, delivery end to end,
+//   and phone pickups (queue, kitchen timing, collect and pay, no-show).
 // Four fake network printers (raw TCP) stand in for 3 kitchen stations and the
 // receipt printer; every job they receive is saved and can be decoded to a PNG.
 //
@@ -404,6 +405,79 @@ try {
     const after = (await call("list_deliveries_v3", { filter: { statuses: [] } }))[0];
     eq(after.order_status, "PAID", "order paid by the settlement");
     await until(async () => (await b.$$('[data-testid="settlement-row"]')).length === 1, "settlement history row");
+  });
+
+  await step("pickup-order", "phone pickup: a name is enough, it goes to the kitchen and waits in the queue", async () => {
+    await b.refresh();
+    await byId("sidebar", 30000);
+    await nav("pos");
+    await clickId("order-type-TAKEAWAY");
+    await byId("pickup-fields");
+    await reg.addItem("كولا");
+    await clickId("pickup-in-20");
+    ok((await textOf("pickup-at")).includes("اكتب اسم الزبون"), "asks for the name before sending");
+    const kitchenBefore = jobs("pizza").length + jobs("grill").length + jobs("bar").length;
+    await reg.type('input[placeholder="اسم العميل"]', "سامر");
+    await pause(300);
+    console.log("  shot:", await reg.shot("pickup-fields"));
+    await clickId("pay-send-kitchen");
+    await until(async () => (await call("list_pickup_orders_v3")).length === 1, "in the pickup queue", 20000);
+    const p = (await call("list_pickup_orders_v3"))[0];
+    eq(p.customer_name, "سامر", "name stored");
+    eq(p.customer_phone, null, "no phone needed");
+    ok(p.kitchen_sent, "a pickup in 20 minutes goes to the kitchen now");
+    await until(async () => jobs("pizza").length + jobs("grill").length + jobs("bar").length > kitchenBefore, "kitchen slip printed");
+    await until(async () => (await textOf("pickup-count")) === "1", "queue badge shows 1");
+    ids.pickupNow = p;
+  });
+
+  await step("pickup-later", "a pickup hours away waits: no kitchen slip yet", async () => {
+    await clickId("order-type-TAKEAWAY");
+    await reg.addItem("كولا");
+    const at = new Date(Date.now() + 2 * 60 * 60 * 1000);
+    const hhmm = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+    await b.execute((v) => {
+      const el = document.querySelector('input[aria-label="وقت الاستلام"]');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, v);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }, hhmm);
+    await reg.type('input[placeholder="اسم العميل"]', "ريم");
+    await pause(300);
+    const kitchenBefore = jobs("pizza").length + jobs("grill").length + jobs("bar").length;
+    await clickId("pay-send-kitchen");
+    await until(async () => (await call("list_pickup_orders_v3")).length === 2, "second pickup queued", 20000);
+    const later = (await call("list_pickup_orders_v3")).find((x) => x.customer_name === "ريم");
+    ok(later && !later.kitchen_sent, "held back from the kitchen");
+    await pause(2500);
+    eq(jobs("pizza").length + jobs("grill").length + jobs("bar").length, kitchenBefore, "no kitchen slip for a pickup two hours away");
+    ids.pickupLater = later;
+  });
+
+  await step("pickup-collect", "the customer comes: collect from the queue and pay the exact total", async () => {
+    const receiptsBefore = jobs("receipt").length;
+    await clickId("pickup-queue-button");
+    await until(async () => (await b.$$('[data-testid="pickup-row"]')).length === 2, "two rows in the queue");
+    console.log("  shot:", await reg.shot("pickup-queue"));
+    await clickId("pickup-collect");
+    await clickId("pay-exact");
+    await reg.click(/تأكيد وطباعة/);
+    await until(async () => (await call("list_pickup_orders_v3")).length === 1, "collected order left the queue", 20000);
+    eq((await call("list_pickup_orders_v3"))[0].customer_name, "ريم", "the later one still waits");
+    await until(async () => jobs("receipt").length > receiptsBefore, "receipt printed");
+  });
+
+  await step("pickup-no-show", "never came: cancelled with a reason, listed in Reports", async () => {
+    await clickId("pickup-queue-button");
+    await until(async () => (await b.$$('[data-testid="pickup-row"]')).length === 1, "one row left");
+    await reg.click(/^لم يحضر$/);
+    await reg.type('input[placeholder^="السبب"]', "لم يرد على الهاتف");
+    await pause(300);
+    await reg.click(/^إلغاء الطلب$/);
+    await until(async () => (await call("list_pickup_orders_v3")).length === 0, "queue empty", 20000);
+    await b.keys("Escape");
+    await nav("reports");
+    await until(async () => (await b.$$('[data-testid="no-show-row"]')).length === 1, "no-show listed in Reports", 20000);
+    ok((await textOf("no-show-report")).includes("لم يرد على الهاتف"), "reason shown");
   });
 
   await step("gifts-report", "the Reports screen lists the gift with its reason", async () => {

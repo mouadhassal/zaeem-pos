@@ -78,6 +78,8 @@ export interface KitchenTicketData {
   orderType: string;
   items: TicketItem[];
   scheduledAt?: string;
+  /** Phone pickup: when the customer comes (ISO). Printed big so the cook times it. */
+  pickupAt?: string;
   /** Station name printed under the title when this copy is for one kitchen station only. */
   station?: string;
   /** NEW (default), ADDITION to an order already in the kitchen, CANCEL of lines, or EDIT of a line. */
@@ -170,6 +172,10 @@ export function kitchenTicketRows(data: KitchenTicketData, now: Date = new Date(
   rows.push({ t: "two", right: "وقت الطباعة", left: formatArabicTime(now) });
   if (data.scheduledAt) {
     rows.push({ t: "two", right: "مجدول", left: formatArabicTime(new Date(data.scheduledAt)), bold: true });
+  }
+  if (data.pickupAt) {
+    rows.push({ t: "rule" });
+    rows.push({ t: "line", text: `استلام الساعة ${formatArabicTime(new Date(data.pickupAt))}`, size: 34, bold: true, align: "center" });
   }
   rows.push({ t: "rule" });
 

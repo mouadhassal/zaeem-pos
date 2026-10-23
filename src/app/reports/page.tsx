@@ -7,6 +7,7 @@ import DatePicker from "../../components/ui/DatePicker";
 import { toLocalDateStr, parseLocalDateStr, formatArabicDate, formatArabicDateTime } from "../../lib/dateLocal";
 import { orderNo } from "../../lib/orderNumber";
 import GiftsReport from "./GiftsReport";
+import NoShowReport from "./NoShowReport";
 import { orderStatusLabel } from "../../lib/orderStatus";
 import { realErrorText } from "../../lib/errors";
 
@@ -617,6 +618,11 @@ export default function ReportsPage() {
       </div>
 
       <GiftsReport
+        startIso={rangeStart(dateRange, customStart).toISOString()}
+        endIso={rangeEnd(dateRange, customEnd)?.toISOString() ?? null}
+      />
+
+      <NoShowReport
         startIso={rangeStart(dateRange, customStart).toISOString()}
         endIso={rangeEnd(dateRange, customEnd)?.toISOString() ?? null}
       />

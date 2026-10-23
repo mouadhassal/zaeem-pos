@@ -157,7 +157,9 @@ export async function createOrder(
   _savingsCents?: number,
   shiftId?: string,
   managerOverridePin?: string,
-  deliveryFeeCents = 0
+  deliveryFeeCents = 0,
+  /** Phone pickup: when the customer comes (epoch ms). The order waits unpaid in the pickup queue. */
+  pickupAtMs?: number
 ): Promise<string> {
   // deliveryFeeCents folded into the charged total here -- previously
   // always 0 so this omission was invisible; now that a real zone fee can
@@ -195,7 +197,15 @@ export async function createOrder(
     // Re-verified server-side inside create_full_order_v3 (via
     // enforce_discount_cap) -- this is proof to Rust, not a trusted flag.
     managerOverridePin: managerOverridePin ?? null,
+    pickupAtMs: pickupAtMs ?? null,
   });
+
+  // A pickup reaches the kitchen through the pickup queue (now, or 20
+  // minutes before a pickup that is still far away), never from here.
+  if (pickupAtMs !== undefined) {
+    await sendDuePickupsToKitchen();
+    return orderId;
+  }
 
   // 2026-08-03 "next phase" (see nextphase.md §2): a business with no
   // kitchen has nowhere to send this ticket at all -- skip the whole
@@ -775,4 +785,100 @@ export async function activateDelayedOrders(): Promise<void> {
     // no trace anywhere, not even the log. Logged now, still no UI noise.
     logger.error("activate_delayed_orders_v3 failed", { error: String(err) });
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// Pickup queue: phone orders the customer collects and pays for later.
+// ---------------------------------------------------------------------------
+
+export interface PickupOrder {
+  order_id: string;
+  customer_name: string | null;
+  customer_phone: string | null;
+  pickup_at_ms: number;
+  kitchen_at_ms: number;
+  kitchen_sent: boolean;
+  /** PENDING, PREPARING or READY. */
+  kitchen_status: string;
+  total_cents: number;
+  created_at: string;
+}
+
+export interface PickupNoShow {
+  order_id: string;
+  customer_name: string | null;
+  customer_phone: string | null;
+  pickup_at_ms: number;
+  closed_at_ms: number;
+  reason: string | null;
+  by_name: string | null;
+  total_cents: number;
+}
+
+export async function listPickupOrders(): Promise<PickupOrder[]> {
+  return invoke<PickupOrder[]>("list_pickup_orders_v3", { sessionToken: token() });
+}
+
+/// Asks for every pickup whose kitchen time has come and prints its kitchen
+/// slip. Safe to call from every till on a timer: each order is handed out
+/// once, to whoever asks first.
+export async function sendDuePickupsToKitchen(): Promise<void> {
+  let due: PickupOrder[];
+  try {
+    due = await invoke<PickupOrder[]>("claim_due_pickup_kitchen_v3", { sessionToken: token() });
+  } catch (err) {
+    logger.error("claim_due_pickup_kitchen_v3 failed", { error: String(err) });
+    return;
+  }
+  if (due.length === 0) return;
+  const { has_kitchen } = await getBusinessMode();
+  if (!has_kitchen) return;
+  for (const p of due) {
+    const ticket: KitchenTicketData = {
+      tableName: "",
+      orderNumber: orderNo(p.order_id),
+      orderType: "TAKEAWAY",
+      items: [],
+      pickupAt: new Date(p.pickup_at_ms).toISOString(),
+      createdAt: p.created_at,
+      ...cashierField(),
+      ...(p.customer_name ? { customerName: p.customer_name } : {}),
+    };
+    try {
+      const open = await retrieveOpenOrder(p.order_id);
+      if (!open) continue;
+      ticket.items = open.items.map((i) => ({
+        name: i.name, quantity: i.quantity, menuItemId: i.menuItemId,
+        ...(i.notes ? { notes: i.notes } : {}),
+        ...(i.modifiers.length ? { modifiers: i.modifiers.map((m) => m.name) } : {}),
+      }));
+      await printKitchenTicket(ticket);
+    } catch (err) {
+      // The order is already marked as sent, so a failed print must be
+      // retried from the queue and shouted about, never dropped.
+      logger.error("Pickup kitchen print failed, queued for retry", { error: String(err), orderId: p.order_id });
+      if (ticket.items.length > 0) queuePrintJob(ticket, "kitchen");
+      window.dispatchEvent(
+        new CustomEvent("kitchen-print-failed", {
+          detail: { orderNumber: orderNo(p.order_id), error: err instanceof Error ? err.message : String(err) },
+        })
+      );
+    }
+  }
+}
+
+/// The customer came early: send a held-back order to the kitchen now.
+export async function sendPickupToKitchenNow(orderId: string): Promise<void> {
+  await invoke("send_pickup_to_kitchen_now_v3", { sessionToken: token(), orderId });
+  await sendDuePickupsToKitchen();
+}
+
+/// The customer never came: cancels the unpaid order (a manager, or a manager's PIN, and a reason).
+export async function markPickupNoShow(orderId: string, reason: string, managerOverridePin?: string): Promise<void> {
+  await invoke("mark_pickup_no_show_v3", { sessionToken: token(), orderId, reason, managerOverridePin: managerOverridePin ?? null });
+}
+
+export async function listPickupNoShows(fromMs: number, toMs: number): Promise<PickupNoShow[]> {
+  return invoke<PickupNoShow[]>("list_pickup_no_shows_v3", { sessionToken: token(), fromMs, toMs });
 }

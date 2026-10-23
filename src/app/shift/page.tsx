@@ -10,6 +10,7 @@ import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { realErrorText } from "../../lib/errors";
 import { orderNo } from "../../lib/orderNumber";
 import { orderStatusLabel } from "../../lib/orderStatus";
+import { listPickupOrders } from "../../lib/orderService";
 
 // 2026-08-02: was a hardcoded 5000 assuming small everyday prices -- wrong
 // by orders of magnitude for a currency whose real menu prices run in the
@@ -71,6 +72,7 @@ export default function ShiftPage() {
   const [startingShift, setStartingShift] = useState(false);
 
   const [showCloseModal, setShowCloseModal] = useState(false);
+  const [waitingPickups, setWaitingPickups] = useState(0);
   const [actualCash, setActualCash] = useState("");
   const [managerPassword, setManagerPassword] = useState("");
   const [needsAuth, setNeedsAuth] = useState(false);
@@ -165,6 +167,8 @@ export default function ShiftPage() {
     setManagerPassword("");
     setNeedsAuth(false);
     setShowCloseModal(true);
+    setWaitingPickups(0);
+    listPickupOrders().then((p) => setWaitingPickups(p.length)).catch(() => {});
   };
 
   const handleCloseShift = async () => {
@@ -433,6 +437,11 @@ export default function ShiftPage() {
             </div>
 
             <div className="p-6 space-y-4">
+              {waitingPickups > 0 && (
+                <p className="rounded-xl bg-warn-soft px-3 py-2 text-sm text-text-2" data-testid="close-shift-pickups">
+                  يوجد {waitingPickups} من طلبات الاستلام لم تُدفع بعد. يُحسب ثمن كل طلب في وردية من يقبض المبلغ عند حضور الزبون.
+                </p>
+              )}
               <div className="space-y-2">
                 <label className="text-text-3 text-sm">الرصيد الفعلي (النقدي)</label>
                 <input

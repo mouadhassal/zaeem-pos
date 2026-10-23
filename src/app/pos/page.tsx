@@ -48,6 +48,10 @@ import { orderNo } from "../../lib/orderNumber";
 import { assignDriver, listDrivers, type Driver } from "../../lib/deliveryService";
 import OptionPickerModal from "../../components/modals/OptionPickerModal";
 import GiftModal from "../../components/modals/GiftModal";
+import PickupQueueModal from "../../components/modals/PickupQueueModal";
+import { listPickupOrders, sendDuePickupsToKitchen, sendPickupToKitchenNow, markPickupNoShow, type PickupOrder } from "../../lib/orderService";
+import { PICKUP_MINUTES, pickupAtFromClock, pickupAtFromMinutes } from "../../lib/pickup";
+import { formatArabicTime } from "../../lib/dateLocal";
 import { useOptionsStore } from "../../stores/optionsStore";
 import { customModifiers, groupsForItem, selectionFromModifiers } from "../../lib/itemOptions";
 
@@ -170,6 +174,13 @@ export default function POSPage() {
   // doc comment for why this (not just "does this line have a dbItemId")
   // is the real test for "has this quantity been sent yet".
   const [sentQuantities, setSentQuantities] = useState<Record<string, number>>({});
+  // Pickup queue: phone orders waiting for their customer (polled, shared
+  // with the other till over the LAN), and whether the open order in the
+  // cart right now is one of them being collected.
+  const [pickupOrders, setPickupOrders] = useState<PickupOrder[]>([]);
+  const [showPickupQueue, setShowPickupQueue] = useState(false);
+  const [collectingPickup, setCollectingPickup] = useState(false);
+  const [pickupClock, setPickupClock] = useState("");
   const [loyaltyCard, setLoyaltyCard] = useState<{ card_number: string; customer_name: string; points: number; tier: string } | null>(null);
   const [loyaltyRewards, setLoyaltyRewards] = useState<LoyaltyRewardOption[]>([]);
   const [redeemingReward, setRedeemingReward] = useState(false);
@@ -194,7 +205,7 @@ export default function POSPage() {
   const [hasTables, setHasTables] = useState(true);
 
   const { items, tableId, tableName, setTable, addItem, clearCart, voidItem, updateQuantity } = useCartStore();
-  const { orderType, setOrderType, customerName, customerPhone, deliveryAddress, driverId, debtorId, debtorName, resetOrderInfo } = useOrderTypeStore();
+  const { orderType, setOrderType, customerName, customerPhone, deliveryAddress, driverId, debtorId, debtorName, resetOrderInfo, pickupAtMs, setPickupAtMs } = useOrderTypeStore();
   const deliveryFeeCents = useCartStore((s) => s.deliveryFeeCents);
   const setDeliveryFee = useCartStore((s) => s.setDeliveryFee);
   const [feeInput, setFeeInput] = useState("");
@@ -295,12 +306,32 @@ export default function POSPage() {
     if (!hasTables && orderType === "DINE_IN") setOrderType("TAKEAWAY");
   }, [hasTables, orderType, setOrderType]);
 
+  const refreshPickups = useCallback(async () => {
+    try {
+      setPickupOrders(await listPickupOrders());
+    } catch {
+      // The queue badge is a convenience; the next poll tries again.
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshPickups();
+    const t = setInterval(refreshPickups, 15000);
+    return () => clearInterval(t);
+  }, [refreshPickups]);
+
+  useEffect(() => {
+    if (!openOrderId) setCollectingPickup(false);
+  }, [openOrderId]);
+
   useEffect(() => {
     fetchTables();
     activateDelayedOrders();
+    sendDuePickupsToKitchen();
     const interval = setInterval(() => {
       retryPrintQueue();
       activateDelayedOrders();
+      sendDuePickupsToKitchen();
     }, 30000);
     enableBarcodeScanner((code) => {
       window.dispatchEvent(new CustomEvent("barcode-scanned", { detail: code }));
@@ -677,12 +708,20 @@ export default function POSPage() {
   // requires.
   const handleOpenOrderPaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string) => {
     if (!openOrderId) return;
+    const wasPickup = collectingPickup;
+    const afterPickup = () => {
+      if (!wasPickup) return;
+      // Paid early, before its kitchen time: the customer is here, so the
+      // kitchen gets it now (the payment moved its kitchen time to now).
+      sendDuePickupsToKitchen().finally(refreshPickups);
+    };
     try {
       const cfg = await getReceiptConfig();
       const receipt: ReceiptData = {
         chainName: printableShopName(cfg.chain_name, cfg.branch_name), branchName: cfg.branch_name,
         currency: cfg.currency, orderNumber: orderNo(openOrderId),
-        tableName: tableName ?? "", orderType: "DINE_IN",
+        tableName: tableName ?? "", orderType: wasPickup ? "TAKEAWAY" : "DINE_IN",
+        ...(wasPickup && customerName ? { customerName } : {}),
         items: receiptLines(items), ...cancelledField(items), ...(user?.name ? { cashier: user.name } : {}),
         subtotalCents: openOrderTotals?.subtotalCents ?? 0,
         taxCents: openOrderTotals?.taxCents ?? 0, secondaryTaxCents: 0, serviceChargeCents: 0,
@@ -706,9 +745,11 @@ export default function POSPage() {
         setOpenOrderTotals(null);
         setSentQuantities({});
         fetchTables();
+        afterPickup();
         return;
       }
       setShowPayment(false);
+      afterPickup();
       setSuccessMsg(pointsEarned ? `تم الدفع ✓ (+${pointsEarned} نقطة ولاء)` : "تم الدفع ✓");
       setTimeout(() => setSuccessMsg(null), 3000);
       clearCart();
@@ -977,6 +1018,62 @@ export default function POSPage() {
     } catch (err) {
       if (isNoOpenShiftError(err)) setShowOpenShift(true);
       flash(`تعذر إرسال الطلب: ${realErrorText(err)}`);
+    }
+  };
+
+  const handleSendPickup = async () => {
+    if (!user || orderType !== "TAKEAWAY" || pickupAtMs === null || items.length === 0) return;
+    if (!shiftId) { setShowOpenShift(true); return; }
+    if (!customerName.trim()) { flash("اكتب اسم الزبون لطلب الاستلام"); return; }
+    try {
+      const state = useCartStore.getState();
+      const t = state.tax();
+      await createOrder(
+        "", user.id, "TAKEAWAY",
+        items.map((i) => ({ menuItemId: i.menuItemId, name: i.name, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers, ...compFields(i) })),
+        state.subtotal(), t.taxCents, t.secondaryTaxCents, t.serviceChargeCents,
+        state.total(), state.discountCents, state.discountReason,
+        customerName.trim(), customerPhone.trim() || undefined, undefined,
+        state.savings(), shiftId ?? undefined, discountOverridePin ?? undefined, 0, pickupAtMs,
+      );
+      setDiscountOverridePin(null);
+      const at = formatArabicTime(new Date(pickupAtMs));
+      clearCart();
+      resetOrderInfo();
+      setLoyaltyCard(null);
+      setPickupClock("");
+      refreshPickups();
+      flash(`أُضيف الطلب لطلبات الاستلام — الزبون يأتي الساعة ${at} ✓`, 3500);
+    } catch (err) {
+      if (isNoOpenShiftError(err)) setShowOpenShift(true);
+      flash(`تعذر إرسال الطلب: ${realErrorText(err)}`);
+    }
+  };
+
+  // The customer is at the counter: the order goes into the cart as an open
+  // order (nothing can be added to it) and payment opens.
+  const handleCollectPickup = async (p: PickupOrder) => {
+    if (items.length > 0 && openOrderId !== p.order_id) { flash("أنهِ الطلب الحالي أو أفرغ السلة أولاً"); return; }
+    try {
+      const open = await retrieveOpenOrder(p.order_id);
+      if (!open) { flash("الطلب لم يعد مفتوحاً"); refreshPickups(); return; }
+      clearCart();
+      setOrderType("TAKEAWAY");
+      for (const item of open.items) addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
+      useOrderTypeStore.getState().setCustomerName(p.customer_name ?? "");
+      useOrderTypeStore.getState().setCustomerPhone(p.customer_phone ?? "");
+      setOpenOrderId(p.order_id);
+      setOpenOrderTotals({
+        subtotalCents: open.subtotalCents, taxCents: open.taxCents,
+        discountCents: open.discountCents, totalCents: open.totalCents,
+      });
+      setSentQuantities(Object.fromEntries(open.items.map((i) => [i.dbItemId, i.quantity])));
+      setCollectingPickup(true);
+      setShowPickupQueue(false);
+      if (!shiftId) { setShowOpenShift(true); return; }
+      setShowPayment(true);
+    } catch (err) {
+      flash(`تعذر فتح الطلب: ${realErrorText(err)}`);
     }
   };
 
@@ -1306,6 +1403,12 @@ export default function POSPage() {
                   sendToKitchenDisabled: items.length === 0,
                   sendToKitchenLabel: "إرسال للتوصيل (الدفع للسائق)",
                 }
+              : orderType === "TAKEAWAY" && pickupAtMs !== null && !openOrderId
+              ? {
+                  onSendToKitchen: shiftId ? handleSendPickup : () => setShowOpenShift(true),
+                  sendToKitchenDisabled: items.length === 0 || !customerName.trim(),
+                  sendToKitchenLabel: "تأكيد الطلب (الدفع عند الاستلام)",
+                }
               : {})}
           />
         </OrderPanel>
@@ -1347,6 +1450,19 @@ export default function POSPage() {
               </button>
             );
           })}
+          <button
+            onClick={() => { refreshPickups(); setShowPickupQueue(true); }}
+            data-testid="pickup-queue-button"
+            className={`h-8 px-3 rounded-[9px] text-xs font-bold font-arabic transition-all flex items-center gap-1.5 ${
+              pickupOrders.some((p) => p.pickup_at_ms < Date.now()) ? "bg-danger-soft text-danger" : "bg-surface-alt text-text-3 hover:text-text-2 hover:bg-line"
+            }`}
+          >
+            <IconShoppingBag className="w-3.5 h-3.5" stroke={2} />
+            طلبات الاستلام
+            {pickupOrders.length > 0 && (
+              <span className="min-w-5 h-5 px-1 rounded-full bg-accent text-white text-[11px] leading-5 text-center" data-testid="pickup-count">{pickupOrders.length}</span>
+            )}
+          </button>
           <div className="flex-1" />
           {/* Customer info for non-DINE_IN types */}
           {orderType !== "DINE_IN" && orderType !== "DEBT" && (
@@ -1390,6 +1506,48 @@ export default function POSPage() {
             </div>
           )}
         </div>
+
+        {orderType === "TAKEAWAY" && !openOrderId && (
+          <div className="min-h-12 shrink-0 bg-surface-alt border-b border-line flex flex-wrap items-center gap-1.5 px-2 py-1.5" dir="rtl" data-testid="pickup-fields">
+            <span className="text-xs font-bold font-arabic text-text-2 me-1">الاستلام:</span>
+            <button
+              onClick={() => { setPickupAtMs(null); setPickupClock(""); }}
+              className={`h-8 px-3 rounded-[7px] text-xs font-bold font-arabic ${pickupAtMs === null ? "bg-accent text-white" : "bg-surface text-text-3 border border-line"}`}
+            >
+              الدفع الآن
+            </button>
+            {PICKUP_MINUTES.map((m) => {
+              const active = pickupAtMs !== null && !pickupClock && Math.abs(pickupAtMs - pickupAtFromMinutes(Date.now(), m)) < 60_000;
+              return (
+                <button
+                  key={m}
+                  data-testid={`pickup-in-${m}`}
+                  onClick={() => { setPickupAtMs(pickupAtFromMinutes(Date.now(), m)); setPickupClock(""); }}
+                  className={`h-8 px-2.5 rounded-[7px] text-xs font-bold font-arabic ${active ? "bg-accent text-white" : "bg-surface text-text-3 border border-line"}`}
+                >
+                  بعد {m} د
+                </button>
+              );
+            })}
+            <input
+              type="time"
+              value={pickupClock}
+              onChange={(e) => {
+                setPickupClock(e.target.value);
+                const at = pickupAtFromClock(Date.now(), e.target.value);
+                if (at !== null) setPickupAtMs(at);
+              }}
+              aria-label="وقت الاستلام"
+              className="h-8 px-2 rounded-[7px] border border-line text-xs bg-surface focus:outline-none focus:border-accent font-mono"
+              dir="ltr"
+            />
+            {pickupAtMs !== null && (
+              <span className="text-xs font-arabic text-accent-text font-bold" data-testid="pickup-at">
+                يأتي الساعة {formatArabicTime(new Date(pickupAtMs))}{!customerName.trim() ? " — اكتب اسم الزبون" : ""}
+              </span>
+            )}
+          </div>
+        )}
 
         {orderType === "DELIVERY" && (
           <div className="h-12 shrink-0 bg-surface-alt border-b border-line flex items-center gap-2 px-2" dir="rtl" data-testid="delivery-fields">
@@ -1647,13 +1805,24 @@ export default function POSPage() {
             : openOrderId
             ? {
                 totalOverrideCents: openOrderTotals?.totalCents ?? 0,
-                subtitleOverride: `طاولة ${tableName ?? ""} · فاتورة مفتوحة`,
+                subtitleOverride: collectingPickup ? `استلام · ${customerName}` : `طاولة ${tableName ?? ""} · فاتورة مفتوحة`,
               }
             : orderType === "DEBT" && debtorId && debtorName
             ? { initialMethod: "CREDIT" as const, initialDebtorId: debtorId, initialDebtorName: debtorName }
             : orderType === "DEBT"
             ? { initialMethod: "CREDIT" as const }
             : {})}
+        />
+      )}
+
+      {showPickupQueue && (
+        <PickupQueueModal
+          orders={pickupOrders}
+          isManager={["MANAGER", "OWNER", "PLATFORM", "ADMIN"].includes(String(user?.role ?? "").toUpperCase())}
+          onClose={() => setShowPickupQueue(false)}
+          onCollect={handleCollectPickup}
+          onSendNow={async (id) => { await sendPickupToKitchenNow(id); await refreshPickups(); }}
+          onNoShow={async (id, reason, pin) => { await markPickupNoShow(id, reason, pin); await refreshPickups(); flash("أُلغي الطلب (لم يحضر الزبون)"); }}
         />
       )}
 

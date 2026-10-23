@@ -17,7 +17,10 @@ interface OrderTypeState {
   driverId: string;
   debtorId: string | null;
   debtorName: string | null;
+  /** TAKEAWAY only: a phone order the customer collects later (epoch ms), or null to pay now. */
+  pickupAtMs: number | null;
   setOrderType: (t: OrderType) => void;
+  setPickupAtMs: (v: number | null) => void;
   setCustomerName: (v: string) => void;
   setCustomerPhone: (v: string) => void;
   setDeliveryAddress: (v: string) => void;
@@ -34,8 +37,10 @@ export const useOrderTypeStore = create<OrderTypeState>((set) => ({
   driverId: "",
   debtorId: null,
   debtorName: null,
+  pickupAtMs: null,
 
   setOrderType: (t) => set({ orderType: t }),
+  setPickupAtMs: (v) => set({ pickupAtMs: v }),
   setCustomerName: (v) => set({ customerName: v }),
   setCustomerPhone: (v) => set({ customerPhone: v }),
   setDeliveryAddress: (v) => set({ deliveryAddress: v }),
@@ -51,5 +56,6 @@ export const useOrderTypeStore = create<OrderTypeState>((set) => ({
       driverId: "",
       debtorId: null,
       debtorName: null,
+      pickupAtMs: null,
     }),
 }));

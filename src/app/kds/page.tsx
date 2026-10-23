@@ -23,6 +23,9 @@ interface KDSOrder {
   items: KDSItem[];
   created_at: string;
   notes: string | null;
+  /** Phone pickup: when the customer comes (epoch ms) and the name to call out. */
+  pickup_at_ms?: number | null;
+  customer_name?: string | null;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -225,6 +228,12 @@ export default function KDSPage() {
                       {fmtTime(order.created_at)}
                     </span>
                   </div>
+
+                  {order.pickup_at_ms ? (
+                    <div className="mb-2 rounded-sm bg-surface px-2 py-1 text-sm font-bold font-arabic text-ink-900" data-testid="kds-pickup">
+                      استلام الساعة {formatArabicTime(new Date(order.pickup_at_ms))}{order.customer_name ? ` — ${order.customer_name}` : ""}
+                    </div>
+                  ) : null}
 
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-xs text-ink-500 font-arabic">
