@@ -86,6 +86,11 @@ export const LAN_REDIRECT_COMMANDS = new Set([
   "settle_driver_v3",
   "get_driver_statement_v3",
   "list_driver_settlements_v3",
+  // pickup queue (phone orders collected later)
+  "list_pickup_orders_v3",
+  "claim_due_pickup_kitchen_v3",
+  "send_pickup_to_kitchen_now_v3",
+  "mark_pickup_no_show_v3",
 ]);
 
 /**

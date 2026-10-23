@@ -72,6 +72,7 @@ mod tests {
             include_str!("commands/marketplace.rs"),
             include_str!("commands/restaurant.rs"),
             include_str!("commands/delivery.rs"),
+            include_str!("commands/pickup.rs"),
         ].join("\n")
     }
 
@@ -113,6 +114,7 @@ mod tests {
         migrate_v3::run_printer_print_mode_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_printer_categories_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_restaurant_ops_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_pickup_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -2612,6 +2614,201 @@ mod tests {
             let conn = Connection::open(&db_path).unwrap();
             let st: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
             assert_eq!(st, "CANCELLED");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        // ---------------------------------------------------------------
+        // Pickup queue (phone orders collected later), over the same RPC
+        // path a second till uses -- which is also the local path.
+        // ---------------------------------------------------------------
+
+        fn pickup_order(db: &Db, license: &crate::license::cloud::CloudLicenseState, session: &str, item_id: &str, pickup_at_ms: i64, name: Option<&str>) -> Result<String, String> {
+            dispatch_lan_rpc(db, license, "create_full_order_v3", serde_json::json!({
+                "sessionToken": session, "tableId": "", "orderType": "TAKEAWAY",
+                "items": [line(item_id, 2, 1500)],
+                "subtotalCents": 3000, "taxCents": 0, "totalCents": 3000, "discountCents": 0,
+                "discountReason": null, "customerName": name, "customerPhone": null, "deliveryAddress": null,
+                "deliveryFeeCents": 0, "shiftId": null, "managerOverridePin": null, "pickupAtMs": pickup_at_ms,
+            })).map(|v| v.as_str().unwrap().to_string())
+        }
+
+        fn kitchen_ids(db: &Db, license: &crate::license::cloud::CloudLicenseState, session: &str) -> Vec<String> {
+            rpc(db, license, "list_kitchen_orders_v3", serde_json::json!({ "sessionToken": session }))
+                .as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap().to_string()).collect()
+        }
+
+        /// Another cashier in the same branch, with a session and an open shift.
+        fn second_cashier(db_path: &std::path::Path, db: &Db, license: &crate::license::cloud::CloudLicenseState) -> (String, String) {
+            let conn = Connection::open(db_path).unwrap();
+            let (tenant_id, branch_id): (String, String) = conn.query_row("SELECT tenant_id, branch_id FROM staff WHERE name = 'Till 2'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            let id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Evening cashier");
+            let session = security::create_session(&conn, &id, "till-3").unwrap();
+            drop(conn);
+            rpc(db, license, "open_shift_v3", serde_json::json!({ "sessionToken": session, "startingCashCents": 0, "branchId": null }));
+            let conn = Connection::open(db_path).unwrap();
+            let shift_id: String = conn.query_row("SELECT id FROM shifts WHERE user_id = ?1 AND closed_at IS NULL", params![id], |r| r.get(0)).unwrap();
+            (session, shift_id)
+        }
+
+        #[test]
+        fn a_phone_pickup_waits_in_the_queue_reaches_the_kitchen_once_and_is_paid_in_the_payers_shift() {
+            let (db_path, db, license, session, _table_id, item_id) = second_till_fixture("pickup_flow");
+            let now = chrono::Utc::now().timestamp_millis();
+            let order_id = pickup_order(&db, &license, &session, &item_id, now + 20 * 60_000, Some("سامر")).expect("a name is enough, the phone is optional");
+
+            let queue = rpc(&db, &license, "list_pickup_orders_v3", serde_json::json!({ "sessionToken": session }));
+            let row = queue.as_array().unwrap().iter().find(|r| r["order_id"] == order_id.as_str()).expect("the order waits in the pickup queue");
+            assert_eq!(row["customer_name"], "سامر");
+            assert_eq!(row["total_cents"], 3000);
+            assert_eq!(row["kitchen_sent"], false);
+
+            // The kitchen gets it through the claim, exactly once, never twice.
+            assert!(!kitchen_ids(&db, &license, &session).contains(&order_id), "not on the kitchen screen before it is sent");
+            let claimed = rpc(&db, &license, "claim_due_pickup_kitchen_v3", serde_json::json!({ "sessionToken": session }));
+            assert_eq!(claimed.as_array().unwrap().iter().filter(|r| r["order_id"] == order_id.as_str()).count(), 1);
+            let again = rpc(&db, &license, "claim_due_pickup_kitchen_v3", serde_json::json!({ "sessionToken": session }));
+            assert!(again.as_array().unwrap().is_empty(), "a second till asking again must not print it again");
+            let kds = rpc(&db, &license, "list_kitchen_orders_v3", serde_json::json!({ "sessionToken": session }));
+            let ticket = kds.as_array().unwrap().iter().find(|o| o["id"] == order_id.as_str()).expect("on the kitchen screen once sent");
+            assert_eq!(ticket["customer_name"], "سامر");
+            assert_eq!(ticket["pickup_at_ms"], now + 20 * 60_000);
+
+            // The customer comes in the evening shift and pays the exact total there.
+            let (evening, evening_shift) = second_cashier(&db_path, &db, &license);
+            let paid = rpc(&db, &license, "finalize_order_with_payment_v3", serde_json::json!({
+                "sessionToken": evening, "orderId": order_id, "method": "CASH", "amountCents": 3000,
+                "changeCents": 0, "debtorId": null, "cardNumber": null, "referenceCode": null,
+            }));
+            assert!(paid["payment_id"].as_str().is_some());
+            let conn = Connection::open(&db_path).unwrap();
+            let (status, shift, total): (String, String, i64) = conn.query_row("SELECT status, shift_id, total_cents FROM orders WHERE id = ?1", params![order_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+            assert_eq!(status, "PAID");
+            assert_eq!(total, 3000);
+            assert_eq!(shift, evening_shift, "the cash is in the evening drawer, so the order counts in the evening shift");
+            let pickup_status: String = conn.query_row("SELECT status FROM order_pickups WHERE order_id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(pickup_status, "COLLECTED");
+            let stats = rpc(&db, &license, "get_shift_stats_v3", serde_json::json!({ "sessionToken": evening, "shiftId": evening_shift }));
+            assert_eq!(stats["cash_total"], 3000, "the evening drawer holds the cash: {stats}");
+            assert_eq!(stats["order_count"], 1);
+            let morning_shift: String = conn.query_row("SELECT id FROM shifts WHERE user_id = (SELECT id FROM staff WHERE name = 'Till 2')", [], |r| r.get(0)).unwrap();
+            let morning = rpc(&db, &license, "get_shift_stats_v3", serde_json::json!({ "sessionToken": session, "shiftId": morning_shift }));
+            assert_eq!(morning["cash_total"], 0, "the morning cashier never took this cash: {morning}");
+            let queue = rpc(&db, &license, "list_pickup_orders_v3", serde_json::json!({ "sessionToken": session }));
+            assert!(queue.as_array().unwrap().is_empty(), "a collected order leaves the queue");
+
+            for c in ["claim_due_pickup_kitchen_v3", "send_pickup_to_kitchen_now_v3", "mark_pickup_no_show_v3"] {
+                assert!(crate::commands::lan_rpc::lan_rpc_mutates_orders(c), "{c} changes the kitchen queue and must broadcast");
+            }
+            assert!(!crate::commands::lan_rpc::lan_rpc_mutates_orders("list_pickup_orders_v3"));
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn a_pickup_hours_away_is_held_from_the_kitchen_until_the_customer_is_close_or_here() {
+            let (db_path, db, license, session, _table_id, item_id) = second_till_fixture("pickup_later");
+            let now = chrono::Utc::now().timestamp_millis();
+            let order_id = pickup_order(&db, &license, &session, &item_id, now + 2 * 60 * 60_000, Some("ريم")).unwrap();
+            let row = rpc(&db, &license, "list_pickup_orders_v3", serde_json::json!({ "sessionToken": session }));
+            let kitchen_at = row[0]["kitchen_at_ms"].as_i64().unwrap();
+            assert_eq!(kitchen_at, now + 2 * 60 * 60_000 - crate::pickup::KITCHEN_LEAD_MS, "20 minutes before pickup");
+
+            let claimed = rpc(&db, &license, "claim_due_pickup_kitchen_v3", serde_json::json!({ "sessionToken": session }));
+            assert!(claimed.as_array().unwrap().is_empty(), "too early for the kitchen");
+            assert!(!kitchen_ids(&db, &license, &session).contains(&order_id));
+
+            // She came early: send it now.
+            rpc(&db, &license, "send_pickup_to_kitchen_now_v3", serde_json::json!({ "sessionToken": session, "orderId": order_id }));
+            let claimed = rpc(&db, &license, "claim_due_pickup_kitchen_v3", serde_json::json!({ "sessionToken": session }));
+            assert_eq!(claimed[0]["order_id"], order_id.as_str());
+            assert!(kitchen_ids(&db, &license, &session).contains(&order_id));
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn paying_a_held_back_pickup_sends_it_to_the_kitchen() {
+            let (db_path, db, license, session, _table_id, item_id) = second_till_fixture("pickup_paid_early");
+            let now = chrono::Utc::now().timestamp_millis();
+            let order_id = pickup_order(&db, &license, &session, &item_id, now + 3 * 60 * 60_000, Some("علي")).unwrap();
+            rpc(&db, &license, "finalize_order_with_payment_v3", serde_json::json!({
+                "sessionToken": session, "orderId": order_id, "method": "CASH", "amountCents": 3000,
+                "changeCents": 0, "debtorId": null, "cardNumber": null, "referenceCode": null,
+            }));
+            let claimed = rpc(&db, &license, "claim_due_pickup_kitchen_v3", serde_json::json!({ "sessionToken": session }));
+            assert_eq!(claimed.as_array().unwrap().len(), 1, "paid means the customer is here: the kitchen must get it, never lose it");
+            assert_eq!(claimed[0]["order_id"], order_id.as_str());
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn a_pickup_needs_a_takeaway_order_with_a_name_and_a_sane_time() {
+            let (db_path, db, license, session, _table_id, item_id) = second_till_fixture("pickup_rules");
+            let now = chrono::Utc::now().timestamp_millis();
+            assert!(pickup_order(&db, &license, &session, &item_id, now + 20 * 60_000, None).is_err(), "no name");
+            assert!(pickup_order(&db, &license, &session, &item_id, now + 20 * 60_000, Some("  ")).is_err(), "blank name");
+            assert!(pickup_order(&db, &license, &session, &item_id, now - 60 * 60_000, Some("سامر")).is_err(), "an hour ago");
+            assert!(pickup_order(&db, &license, &session, &item_id, now + 25 * 60 * 60_000, Some("سامر")).is_err(), "tomorrow night");
+            let dine_in = dispatch_lan_rpc(&db, &license, "create_full_order_v3", serde_json::json!({
+                "sessionToken": session, "tableId": "", "orderType": "DINE_IN", "items": [line(&item_id, 1, 1500)],
+                "subtotalCents": 1500, "taxCents": 0, "totalCents": 1500, "discountCents": 0,
+                "discountReason": null, "customerName": "سامر", "customerPhone": null, "deliveryAddress": null,
+                "deliveryFeeCents": 0, "shiftId": null, "managerOverridePin": null, "pickupAtMs": now + 20 * 60_000,
+            }));
+            assert!(dine_in.is_err(), "a pickup time only belongs on a takeaway order");
+            let conn = Connection::open(&db_path).unwrap();
+            let n: i64 = conn.query_row("SELECT COUNT(*) FROM orders", [], |r| r.get(0)).unwrap();
+            assert_eq!(n, 0, "a refused pickup leaves nothing behind");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn a_no_show_needs_a_manager_and_a_reason_cancels_the_order_and_stays_on_record() {
+            let (db_path, db, license, session, _table_id, item_id) = second_till_fixture("pickup_no_show");
+            let pin_hash = bcrypt::hash("1234", bcrypt::DEFAULT_COST).unwrap();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                let (tenant_id, branch_id): (String, String) = conn.query_row("SELECT tenant_id, branch_id FROM staff WHERE name = 'Till 2'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+                Repo::new(&conn).create_staff(&tenant_id, Some(&branch_id), Some(&branch_id), "MANAGER", Role::Manager.rank(), "Manager", Some(&pin_hash), None).unwrap();
+            }
+            let now = chrono::Utc::now().timestamp_millis();
+            let order_id = pickup_order(&db, &license, &session, &item_id, now + 20 * 60_000, Some("سامر")).unwrap();
+            let no_show = |reason: &str, pin: Option<&str>| dispatch_lan_rpc(&db, &license, "mark_pickup_no_show_v3", serde_json::json!({
+                "sessionToken": session, "orderId": order_id, "reason": reason, "managerOverridePin": pin,
+            }));
+            assert!(no_show("لم يحضر", None).is_err(), "a cashier alone cannot");
+            assert!(no_show("لم يحضر", Some("9999")).is_err(), "a wrong PIN");
+            assert!(no_show("  ", Some("1234")).is_err(), "a reason is required");
+            let conn = Connection::open(&db_path).unwrap();
+            let st: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_ne!(st, "CANCELLED", "refused attempts change nothing");
+            drop(conn);
+
+            no_show("لم يرد على الهاتف", Some("1234")).expect("with the manager's PIN");
+            let conn = Connection::open(&db_path).unwrap();
+            let st: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(st, "CANCELLED");
+            let tenant_id: String = conn.query_row("SELECT tenant_id FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            let report = crate::pickup::list_no_shows(&conn, &tenant_id, None, 0, i64::MAX).unwrap();
+            assert_eq!(report.len(), 1);
+            assert_eq!(report[0].reason.as_deref(), Some("لم يرد على الهاتف"));
+            assert_eq!(report[0].by_name.as_deref(), Some("Till 2"));
+            assert_eq!(report[0].total_cents, 3000);
+            let audited: i64 = conn.query_row("SELECT COUNT(*) FROM audit_log WHERE entity_id = ?1 AND after_json LIKE '%pickup_no_show%'", params![order_id], |r| r.get(0)).unwrap_or(-1);
+            assert_eq!(audited, 1, "the no-show is in the audit log");
+            drop(conn);
+            let queue = rpc(&db, &license, "list_pickup_orders_v3", serde_json::json!({ "sessionToken": session }));
+            assert!(queue.as_array().unwrap().is_empty());
+            assert!(no_show("مرة ثانية", Some("1234")).is_err(), "only once");
+            assert!(!kitchen_ids(&db, &license, &session).contains(&order_id), "off the kitchen screen");
+
+            // A paid pickup can never be called a no-show.
+            let paid_id = pickup_order(&db, &license, &session, &item_id, now + 20 * 60_000, Some("ريم")).unwrap();
+            rpc(&db, &license, "finalize_order_with_payment_v3", serde_json::json!({
+                "sessionToken": session, "orderId": paid_id, "method": "CASH", "amountCents": 3000,
+                "changeCents": 0, "debtorId": null, "cardNumber": null, "referenceCode": null,
+            }));
+            assert!(dispatch_lan_rpc(&db, &license, "mark_pickup_no_show_v3", serde_json::json!({
+                "sessionToken": session, "orderId": paid_id, "reason": "لم يحضر", "managerOverridePin": "1234",
+            })).is_err());
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
@@ -7261,7 +7458,7 @@ mod tests {
         /// admin, purchase orders/suppliers, and order analytics (AI page).
         /// Every one of these must be BLOCKED when back-office is locked.
         const GATED: &[&str] = &[
-            "list_staff_v3", "get_sales_report_v3", "gifts_report_v3", "ask_assistant_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
+            "list_staff_v3", "get_sales_report_v3", "gifts_report_v3", "list_pickup_no_shows_v3", "ask_assistant_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
             "create_branch_v3", "create_staff_v3", "update_staff_v3", "update_staff_profile_v3",
             "set_staff_active_v3", "list_branches_v3", "list_shifts_v3", "force_close_shift_v3",
             "list_attendance_v3",
@@ -7340,6 +7537,9 @@ mod tests {
             "get_delivery_settings_v3", "list_delivery_drivers_v3", "list_deliveries_v3", "assign_delivery_driver_v3",
             "set_delivery_status_v3", "get_driver_statement_v3", "list_driver_settlements_v3", "settle_driver_v3",
             "transfer_order_v3", "schedule_delayed_order_v3", "activate_delayed_orders_v3",
+            // Pickup queue: taking, sending and cancelling a phone order is
+            // mid-service work, same as the delivery list above.
+            "list_pickup_orders_v3", "claim_due_pickup_kitchen_v3", "send_pickup_to_kitchen_now_v3", "mark_pickup_no_show_v3",
             "finalize_order_with_payment_v3", "list_tables_v3",
             "list_categories_v3", "list_menu_items_v3", "get_menu_item_photo_v3", "get_category_photo_v3",
             "list_combo_components_v3", "resolve_menu_price_v3",

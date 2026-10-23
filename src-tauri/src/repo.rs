@@ -293,6 +293,9 @@ pub struct KdsOrderRow {
     pub created_at: String,
     pub notes: Option<String>,
     pub items: Vec<KdsOrderItemRow>,
+    /// Phone pickups only: when the customer comes, and the name to call out.
+    pub pickup_at_ms: Option<i64>,
+    pub customer_name: Option<String>,
 }
 
 pub struct NewOrder {
@@ -1266,10 +1269,13 @@ impl<'a> Repo<'a> {
         let (pred, binds) = Self::scope_predicate(scope);
         let pred_orders = pred.replace("tenant_id", "orders.tenant_id").replace("branch_id", "orders.branch_id");
         let sql = format!(
-            "SELECT orders.id, tables.name, orders.order_type, COALESCE(order_current.status, 'PENDING'), orders.created_at, orders.discount_reason \
+            "SELECT orders.id, tables.name, orders.order_type, COALESCE(order_current.status, 'PENDING'), orders.created_at, orders.discount_reason, \
+                    order_pickups.pickup_at_ms, CASE WHEN order_pickups.order_id IS NULL THEN NULL ELSE orders.customer_name END \
              FROM orders LEFT JOIN tables ON tables.id = orders.table_id \
              LEFT JOIN order_current ON order_current.order_id = orders.id \
+             LEFT JOIN order_pickups ON order_pickups.order_id = orders.id \
              WHERE {pred_orders} AND COALESCE(order_current.status, 'PENDING') IN ('PENDING', 'PREPARING', 'READY') \
+             AND COALESCE(order_pickups.kitchen_sent, 1) = 1 \
              ORDER BY orders.created_at ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -1278,6 +1284,7 @@ impl<'a> Repo<'a> {
             Ok(KdsOrderRow {
                 id: r.get(0)?, table_name: r.get(1)?, order_type: r.get(2)?, status: r.get(3)?,
                 created_at: r.get(4)?, notes: r.get(5)?, items: vec![],
+                pickup_at_ms: r.get(6)?, customer_name: r.get(7)?,
             })
         })?.collect::<Result<Vec<_>, _>>()?;
         drop(stmt);
@@ -6252,6 +6259,7 @@ mod tests {
         migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_restaurant_ops_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_pickup_migration(&mut conn, &db_path).unwrap();
         db_path
     }
 

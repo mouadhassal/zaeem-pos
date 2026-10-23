@@ -629,16 +629,49 @@ pub fn create_full_order_v3(
     delivery_fee_cents: i64,
     shift_id: Option<String>,
     manager_override_pin: Option<String>,
+    pickup_at_ms: Option<i64>,
 ) -> Result<String, String> {
-    create_full_order_v3_impl(
+    create_full_order_with_pickup_v3_impl(
         &state, &license, session_token, table_id, order_type, items, subtotal_cents, tax_cents,
         total_cents, discount_cents, discount_reason, customer_name, customer_phone,
-        delivery_address, delivery_fee_cents, shift_id, manager_override_pin,
+        delivery_address, delivery_fee_cents, shift_id, manager_override_pin, pickup_at_ms,
     )
 }
 
+/// Every order that is not a phone pickup (the shape the tests call).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_full_order_v3_impl(
+    state: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
+    session_token: String,
+    table_id: String,
+    order_type: String,
+    items: Vec<crate::repo::OrderItemInput>,
+    subtotal_cents: i64,
+    tax_cents: i64,
+    total_cents: i64,
+    discount_cents: i64,
+    discount_reason: Option<String>,
+    customer_name: Option<String>,
+    customer_phone: Option<String>,
+    delivery_address: Option<String>,
+    delivery_fee_cents: i64,
+    shift_id: Option<String>,
+    manager_override_pin: Option<String>,
+) -> Result<String, String> {
+    create_full_order_with_pickup_v3_impl(
+        state, license, session_token, table_id, order_type, items, subtotal_cents, tax_cents,
+        total_cents, discount_cents, discount_reason, customer_name, customer_phone,
+        delivery_address, delivery_fee_cents, shift_id, manager_override_pin, None,
+    )
+}
+
+/// `pickup_at_ms` set = a phone order the customer collects and pays for
+/// later (see `pickup.rs`): the order is created unpaid and waits in the
+/// pickup queue; the kitchen gets it through `claim_due_pickup_kitchen_v3`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_full_order_with_pickup_v3_impl(
     state: &Db,
     license: &crate::license::cloud::CloudLicenseState,
     session_token: String,
@@ -664,6 +697,7 @@ pub(crate) fn create_full_order_v3_impl(
     // server-side below, right before it's used.
     _shift_id: Option<String>,
     manager_override_pin: Option<String>,
+    pickup_at_ms: Option<i64>,
 ) -> Result<String, String> {
     crate::lan::reject_if_local_kitchen_satellite("create_full_order_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
@@ -682,6 +716,14 @@ pub(crate) fn create_full_order_v3_impl(
             return Err("طلب التوصيل يحتاج عنوان العميل ورقم هاتفه".to_string());
         }
     }
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let pickup = match pickup_at_ms {
+        Some(at) => {
+            crate::pickup::validate_order(&order_type, customer_name.as_deref())?;
+            Some((at, crate::pickup::kitchen_at(now_ms, at)?))
+        }
+        None => None,
+    };
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     // 2026-08-02 client walkthrough finding: nothing previously stopped a
@@ -712,6 +754,9 @@ pub(crate) fn create_full_order_v3_impl(
     if order_type == "DELIVERY" {
         crate::delivery::ensure_delivery_row(&tx, &tenant_id, &branch_id, &order_id)?;
     }
+    if let Some((at, kitchen_at)) = pickup {
+        crate::pickup::insert(&tx, &tenant_id, &branch_id, &order_id, at, kitchen_at, now_ms)?;
+    }
 
     Repo::new(&tx).append_order_status_event(&tenant_id, &branch_id, &order_id, "PENDING", &actor.id, &actor.device_id)
         .map_err(|e| e.to_string())?;
@@ -720,7 +765,7 @@ pub(crate) fn create_full_order_v3_impl(
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
         audit::Action::OrderCreated, "order", &order_id,
-        None, Some(&serde_json::json!({ "order_type": order_type, "total_cents": total_cents })),
+        None, Some(&serde_json::json!({ "order_type": order_type, "total_cents": total_cents, "pickup_at_ms": pickup.map(|p| p.0) })),
     ).map_err(|e| e.to_string())?;
 
     if discount_cents > 0 {
@@ -1426,12 +1471,22 @@ pub(crate) fn finalize_order_with_payment_v3_impl(
     }
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    require_open_shift(&conn, &actor.id)?;
+    let payer_shift_id = require_open_shift(&conn, &actor.id)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let (payment_id, points_earned) = Repo::new(&tx).finalize_order_with_payment(
         &tenant_id, &branch_id, &order_id, &method, amount_cents, change_cents,
         debtor_id.as_deref(), &actor.id, card_number.as_deref(), reference_code.as_deref(),
     ).map_err(|e| e.to_string())?;
+    // A phone pickup is paid by whoever is at the till when the customer
+    // comes, often in a later shift: the cash goes in that drawer, so the
+    // order is counted in that shift.
+    if let Some(taken_in_shift) = crate::pickup::mark_collected(&tx, &order_id, &payer_shift_id, chrono::Utc::now().timestamp_millis())? {
+        audit::append(
+            &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+            audit::Action::OrderStatusChanged, "order", &order_id,
+            None, Some(&serde_json::json!({ "action": "pickup_collected", "taken_in_shift": taken_in_shift, "paid_in_shift": payer_shift_id })),
+        ).map_err(|e| e.to_string())?;
+    }
 
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,

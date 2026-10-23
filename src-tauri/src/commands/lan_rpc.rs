@@ -1,7 +1,7 @@
 use crate::Db;
 use super::shared::*;
 use super::auth::{login_pin_v3_impl, logout_v3_impl};
-use super::orders::{list_tables_v3_impl, list_kitchen_orders_v3_impl, update_order_status_v3_impl, create_full_order_v3_impl, void_order_item_v3_impl, take_payment_v3_impl};
+use super::orders::{list_tables_v3_impl, list_kitchen_orders_v3_impl, update_order_status_v3_impl, void_order_item_v3_impl, take_payment_v3_impl};
 use super::shifts::{get_active_shift_v3_impl, clock_in_v3_impl, clock_out_v3_impl, open_shift_v3_impl, close_shift_v3_impl, get_shift_stats_v3_impl};
 use super::debt::{create_debtor_v3_impl, list_debtors_v3_impl};
 use super::delivery::{assign_delivery_driver_v3_impl, get_delivery_settings_v3_impl, get_driver_statement_v3_impl, list_deliveries_v3_impl, list_delivery_drivers_v3_impl, list_driver_settlements_v3_impl, set_delivery_status_v3_impl, settle_driver_v3_impl};
@@ -11,6 +11,8 @@ use super::orders::{get_receipt_config_v3_impl, activate_delayed_orders_v3_impl,
 use super::restaurant::{edit_order_item_v3_impl, list_option_groups_v3_impl, set_order_item_comp_v3_impl};
 use super::settings::{get_chain_config_v3_impl, get_business_mode_v3_impl, get_discount_caps_v3_impl, get_manager_thresholds_v3_impl};
 use super::suppliers::{list_active_printers_v3_impl, list_printer_categories_v3_impl};
+use super::orders::create_full_order_with_pickup_v3_impl;
+use super::pickup::{claim_due_pickup_kitchen_v3_impl, list_pickup_orders_v3_impl, mark_pickup_no_show_v3_impl, send_pickup_to_kitchen_now_v3_impl};
 
 // T3.0 LAN hub/satellite: Phase 1 RPC dispatch allowlist. See `lan.rs`'s
 // module doc for the full design. Every arm here calls the SAME, real,
@@ -38,6 +40,9 @@ pub fn lan_rpc_mutates_orders(command: &str) -> bool {
         command,
         "create_full_order_v3"
             | "create_order_v3"
+            | "claim_due_pickup_kitchen_v3"
+            | "send_pickup_to_kitchen_now_v3"
+            | "mark_pickup_no_show_v3"
             | "update_order_status_v3"
             | "void_order_item_v3"
             | "take_payment_v3"
@@ -139,10 +144,11 @@ pub fn dispatch_lan_rpc(
             let delivery_fee_cents: i64 = args.get("deliveryFeeCents").and_then(|v| v.as_i64()).unwrap_or(0);
             let shift_id: Option<String> = lan_arg(&args, "shiftId")?;
             let manager_override_pin: Option<String> = lan_arg(&args, "managerOverridePin")?;
-            let r = create_full_order_v3_impl(
+            let pickup_at_ms: Option<i64> = lan_arg(&args, "pickupAtMs")?;
+            let r = create_full_order_with_pickup_v3_impl(
                 db, license, session_token, table_id, order_type, items, subtotal_cents, tax_cents,
                 total_cents, discount_cents, discount_reason, customer_name, customer_phone,
-                delivery_address, delivery_fee_cents, shift_id, manager_override_pin,
+                delivery_address, delivery_fee_cents, shift_id, manager_override_pin, pickup_at_ms,
             )?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
@@ -513,6 +519,31 @@ pub fn dispatch_lan_rpc(
             let driver_id: String = lan_arg(&args, "driverId")?;
             let r = list_driver_settlements_v3_impl(db, session_token, driver_id)?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        // ---- Pickup queue (phone orders collected later) -------------------
+        "list_pickup_orders_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = list_pickup_orders_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "claim_due_pickup_kitchen_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = claim_due_pickup_kitchen_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "send_pickup_to_kitchen_now_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            send_pickup_to_kitchen_now_v3_impl(db, session_token, order_id)?;
+            serde_json::Value::Null
+        }
+        "mark_pickup_no_show_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            let reason: String = lan_arg(&args, "reason")?;
+            let manager_override_pin: Option<String> = lan_arg(&args, "managerOverridePin")?;
+            mark_pickup_no_show_v3_impl(db, session_token, order_id, reason, manager_override_pin)?;
+            serde_json::Value::Null
         }
         "list_printer_categories_v3" => {
             let session_token: String = lan_arg(&args, "sessionToken")?;
