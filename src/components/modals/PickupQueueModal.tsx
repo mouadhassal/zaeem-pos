@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { IconX, IconPhone, IconToolsKitchen2 } from "@tabler/icons-react";
 import { formatAmount } from "../../lib/money";
 import { formatArabicTime } from "../../lib/dateLocal";
-import { orderNo } from "../../lib/orderNumber";
+import { useOrderLabels } from "../../lib/orderLabels";
 import { realErrorText } from "../../lib/errors";
 import { pickupCountdown, pickupKitchenLabel } from "../../lib/pickup";
 import type { PickupOrder } from "../../lib/orderService";
@@ -31,6 +31,7 @@ export default function PickupQueueModal({ orders, isManager, onClose, onCollect
   const [pin, setPin] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const labelOf = useOrderLabels(orders.map((o) => o.order_id));
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 15_000);
@@ -89,7 +90,7 @@ export default function PickupQueueModal({ orders, isManager, onClose, onCollect
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="font-arabic font-bold text-sm text-text">
-                        {o.customer_name} <span className="font-mono text-xs text-text-muted">#{orderNo(o.order_id)}</span>
+                        {o.customer_name} <span className="font-mono text-xs text-text-muted">{labelOf(o.order_id)}</span>
                       </p>
                       {o.customer_phone && (
                         <p className="mt-0.5 flex items-center gap-1 font-mono text-xs text-text-muted" dir="ltr">

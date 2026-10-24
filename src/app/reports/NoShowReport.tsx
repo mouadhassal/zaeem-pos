@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { formatMoney } from "../../lib/money";
 import { formatArabicDateTime } from "../../lib/dateLocal";
-import { orderNo } from "../../lib/orderNumber";
+import { useOrderLabels } from "../../lib/orderLabels";
 import { realErrorText } from "../../lib/errors";
 import { listPickupNoShows, type PickupNoShow } from "../../lib/orderService";
 
@@ -12,6 +12,7 @@ import { listPickupNoShows, type PickupNoShow } from "../../lib/orderService";
  */
 export default function NoShowReport({ startIso, endIso }: { startIso: string; endIso: string | null }) {
   const [rows, setRows] = useState<PickupNoShow[] | null>(null);
+  const labelOf = useOrderLabels(rows?.map((r) => r.order_id) ?? []);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -47,7 +48,7 @@ export default function NoShowReport({ startIso, endIso }: { startIso: string; e
             <tbody>
               {rows.map((r) => (
                 <tr key={r.order_id} className="border-t border-ink-100" data-testid="no-show-row">
-                  <td className="p-2"><span dir="ltr">#{orderNo(r.order_id)}</span></td>
+                  <td className="p-2"><span dir="ltr">{labelOf(r.order_id)}</span></td>
                   <td className="p-2">{r.customer_name}{r.customer_phone ? <span className="block font-mono text-xs text-ink-400" dir="ltr">{r.customer_phone}</span> : null}</td>
                   <td className="p-2 whitespace-nowrap">{formatArabicDateTime(new Date(r.pickup_at_ms))}</td>
                   <td className="p-2 whitespace-nowrap">{formatArabicDateTime(new Date(r.closed_at_ms))}</td>

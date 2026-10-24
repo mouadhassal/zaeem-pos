@@ -16,6 +16,7 @@ const DashboardPage = lazy(() => import("./app/dashboard/page"));
 const POSPage = lazy(() => import("./app/pos/page"));
 const ReportsPage = lazy(() => import("./app/reports/page"));
 const ShiftPage = lazy(() => import("./app/shift/page"));
+const OrdersPage = lazy(() => import("./app/orders/page"));
 const MenuPage = lazy(() => import("./app/menu/page"));
 const InventoryPage = lazy(() => import("./app/inventory/page"));
 const StaffPage = lazy(() => import("./app/staff/page"));
@@ -128,6 +129,7 @@ function PosLayout({ children }: { children: React.ReactNode }) {
       case "pos": return children;
       case "reports": return <ReportsPage />;
       case "shift": return <ShiftPage />;
+      case "orders": return <OrdersPage />;
       case "menu": return <MenuPage />;
       case "inventory": return <InventoryPage />;
       case "staff": return <StaffPage />;

@@ -2844,6 +2844,70 @@ pub fn run_pickup_migration(conn: &mut Connection, _db_path: &Path) -> Result<()
     Ok(())
 }
 
+pub const MIGRATION_AG_VERSION: i64 = 39;
+
+/// Migration AG (2026-10-25): daily order numbers and item refunds.
+/// `order_numbers` gives every new order a number that starts again each
+/// business day, one series per order type (A-0001 takeaway, B-0001 dine-in,
+/// C-0001 delivery; rules in `order_history.rs`). `refund_items` records which
+/// lines a refund covered, and `refunds` learns how the money went back
+/// (method), which drawer it left (shift) and whether a manager PIN approved
+/// it. Additive: older refunds keep NULLs and still read as whole-order.
+pub fn run_order_history_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AG_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS order_numbers (
+            order_id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            branch_id TEXT NOT NULL,
+            business_date TEXT NOT NULL,
+            series TEXT NOT NULL,
+            seq INTEGER NOT NULL CHECK (seq > 0),
+            UNIQUE (branch_id, business_date, series, seq)
+        );
+        CREATE TABLE IF NOT EXISTS refund_items (
+            id TEXT PRIMARY KEY,
+            refund_id TEXT NOT NULL REFERENCES refunds(id),
+            order_item_id TEXT NOT NULL REFERENCES order_items(id),
+            quantity INTEGER NOT NULL CHECK (quantity > 0)
+        );
+        CREATE INDEX IF NOT EXISTS idx_refund_items_refund ON refund_items (refund_id);
+        CREATE INDEX IF NOT EXISTS idx_refund_items_item ON refund_items (order_item_id);",
+    )?;
+    let refund_cols: Vec<String> = {
+        let mut stmt = tx.prepare("PRAGMA table_info(refunds)")?;
+        let cols = stmt.query_map([], |r| r.get::<_, String>(1))?.collect::<Result<Vec<_>, _>>()?;
+        cols
+    };
+    // A database that never had refunds (some test fixtures) has nothing to extend.
+    if !refund_cols.is_empty() {
+        for (col, ddl) in [
+            ("method", "ALTER TABLE refunds ADD COLUMN method TEXT"),
+            ("shift_id", "ALTER TABLE refunds ADD COLUMN shift_id TEXT"),
+            ("manager_pin_used", "ALTER TABLE refunds ADD COLUMN manager_pin_used INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            if !refund_cols.iter().any(|c| c == col) {
+                tx.execute(ddl, [])?;
+            }
+        }
+        tx.execute_batch("CREATE INDEX IF NOT EXISTS idx_refunds_shift ON refunds (shift_id, method);")?;
+    }
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AG_VERSION, "0039_order_numbers_refund_items", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

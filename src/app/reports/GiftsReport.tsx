@@ -3,7 +3,7 @@ import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
 import { formatMoney } from "../../lib/money";
 import { formatArabicDateTime } from "../../lib/dateLocal";
-import { orderNo } from "../../lib/orderNumber";
+import { useOrderLabels } from "../../lib/orderLabels";
 import { realErrorText } from "../../lib/errors";
 
 interface GiftRow {
@@ -21,6 +21,7 @@ interface GiftRow {
 export default function GiftsReport({ startIso, endIso }: { startIso: string; endIso: string | null }) {
   const token = useAuthStore((s) => s.token);
   const [rows, setRows] = useState<GiftRow[] | null>(null);
+  const labelOf = useOrderLabels(rows?.map((r) => r.order_id) ?? []);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -62,7 +63,7 @@ export default function GiftsReport({ startIso, endIso }: { startIso: string; en
               <tbody>
                 {rows.map((r, i) => (
                   <tr key={`${r.order_id}-${i}`} className="border-t border-ink-100" data-testid="gift-row">
-                    <td className="p-2"><span dir="ltr">#{orderNo(r.order_id)}</span></td>
+                    <td className="p-2"><span dir="ltr">{labelOf(r.order_id)}</span></td>
                     <td className="p-2 whitespace-nowrap">{formatArabicDateTime(new Date(r.created_at))}</td>
                     <td className="p-2">{r.item_name}</td>
                     <td className="p-2">{r.quantity}</td>

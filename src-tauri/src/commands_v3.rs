@@ -73,6 +73,7 @@ mod tests {
             include_str!("commands/restaurant.rs"),
             include_str!("commands/delivery.rs"),
             include_str!("commands/pickup.rs"),
+            include_str!("commands/order_history.rs"),
         ].join("\n")
     }
 
@@ -115,6 +116,7 @@ mod tests {
         migrate_v3::run_printer_categories_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_restaurant_ops_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_pickup_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_order_history_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -2812,6 +2814,169 @@ mod tests {
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
+        // ---------------------------------------------------------------
+        // Order history, daily numbers and refunds, over the same RPC path
+        // a second till uses -- which is also the local path.
+        // ---------------------------------------------------------------
+
+        fn sell(db: &Db, license: &crate::license::cloud::CloudLicenseState, session: &str, order_type: &str, table_id: &str, items: Vec<serde_json::Value>, total: i64) -> String {
+            rpc(db, license, "create_full_order_v3", serde_json::json!({
+                "sessionToken": session, "tableId": table_id, "orderType": order_type, "items": items,
+                "subtotalCents": total, "taxCents": 0, "totalCents": total, "discountCents": 0,
+                "discountReason": null, "customerName": null, "customerPhone": null, "deliveryAddress": null,
+                "deliveryFeeCents": 0, "shiftId": null, "managerOverridePin": null, "pickupAtMs": null,
+            })).as_str().unwrap().to_string()
+        }
+
+        fn pay_cash(db: &Db, license: &crate::license::cloud::CloudLicenseState, session: &str, order_id: &str, amount: i64) {
+            rpc(db, license, "finalize_order_with_payment_v3", serde_json::json!({
+                "sessionToken": session, "orderId": order_id, "method": "CASH", "amountCents": amount,
+                "changeCents": 0, "debtorId": null, "cardNumber": null, "referenceCode": null,
+            }));
+        }
+
+        /// Staff in Till 2's branch, with a session; `pin` makes it usable as a manager PIN.
+        fn staff_session(db_path: &std::path::Path, role: Role, name: &str, pin: Option<&str>) -> String {
+            let conn = Connection::open(db_path).unwrap();
+            let (tenant_id, branch_id): (String, String) = conn.query_row("SELECT tenant_id, branch_id FROM staff WHERE name = 'Till 2'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            let hash = match pin {
+                Some(p) => bcrypt::hash(p, 4).unwrap(),
+                None => "$2b$dummy".to_string(),
+            };
+            let id = Repo::new(&conn).create_staff(&tenant_id, Some(&branch_id), Some(&branch_id), role_str(role), role.rank(), name, Some(&hash), None).unwrap();
+            security::create_session(&conn, &id, &format!("dev-{name}")).unwrap()
+        }
+
+        fn item_ids(db_path: &std::path::Path, order_id: &str) -> Vec<String> {
+            let conn = Connection::open(db_path).unwrap();
+            let mut stmt = conn.prepare("SELECT id FROM order_items WHERE order_id = ?1 ORDER BY rowid").unwrap();
+            let ids = stmt.query_map(params![order_id], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+            ids
+        }
+
+        fn history(db: &Db, license: &crate::license::cloud::CloudLicenseState, session: &str, date: Option<&str>) -> serde_json::Value {
+            rpc(db, license, "list_order_history_v3", serde_json::json!({ "sessionToken": session, "businessDate": date }))
+        }
+
+        #[test]
+        fn daily_numbers_count_per_order_type_and_the_history_shows_each_person_what_they_may_see() {
+            let (db_path, db, license, session, table_id, item_id) = second_till_fixture("history_numbers");
+            let a1 = sell(&db, &license, &session, "TAKEAWAY", "", vec![line(&item_id, 1, 1500)], 1500);
+            let a2 = sell(&db, &license, &session, "TAKEAWAY", "", vec![line(&item_id, 1, 1500)], 1500);
+            let b1 = sell(&db, &license, &session, "DINE_IN", &table_id, vec![line(&item_id, 2, 1500)], 3000);
+            let nums = rpc(&db, &license, "get_order_numbers_v3", serde_json::json!({ "sessionToken": session, "orderIds": [a1, a2, b1, "nope"] }));
+            assert_eq!(nums[&a1]["label"], "A-0001");
+            assert_eq!(nums[&a2]["label"], "A-0002");
+            assert_eq!(nums[&b1]["label"], "B-0001", "dine-in counts on its own");
+            assert_eq!(nums[&a1]["business_date"], crate::order_history::today().as_str());
+            assert!(nums.get("nope").is_none());
+            pay_cash(&db, &license, &session, &a1, 1500);
+
+            // A cashier sees the orders they took today, whatever day they ask for.
+            let day = history(&db, &license, &session, Some("2020-01-01"));
+            assert_eq!(day["own_only"], true);
+            assert_eq!(day["business_date"], crate::order_history::today().as_str());
+            let rows = day["rows"].as_array().unwrap();
+            assert_eq!(rows.len(), 3);
+            let row = rows.iter().find(|r| r["id"] == a1.as_str()).unwrap();
+            assert_eq!(row["number"], "A-0001");
+            assert_eq!(row["status"], "PAID");
+            assert_eq!(row["payment_method"], "CASH");
+            assert_eq!(row["cashier_name"], "Till 2");
+            assert_eq!(row["item_count"], 1);
+
+            // Another cashier's order: next in the A series, not in Till 2's list, not openable by Till 2.
+            let (evening, _) = second_cashier(&db_path, &db, &license);
+            let e1 = sell(&db, &license, &evening, "TAKEAWAY", "", vec![line(&item_id, 1, 1500)], 1500);
+            let nums = rpc(&db, &license, "get_order_numbers_v3", serde_json::json!({ "sessionToken": session, "orderIds": [e1] }));
+            assert_eq!(nums[&e1]["label"], "A-0003", "one count per branch, whoever takes the order");
+            assert_eq!(history(&db, &license, &session, None)["rows"].as_array().unwrap().len(), 3);
+            assert!(dispatch_lan_rpc(&db, &license, "get_order_history_detail_v3", serde_json::json!({ "sessionToken": session, "orderId": e1 })).is_err());
+
+            // A manager sees everything, and any day.
+            let boss = staff_session(&db_path, Role::Manager, "Boss", None);
+            let all = history(&db, &license, &boss, None);
+            assert_eq!(all["own_only"], false);
+            assert_eq!(all["rows"].as_array().unwrap().len(), 4);
+            let old = history(&db, &license, &boss, Some("2020-01-01"));
+            assert_eq!(old["business_date"], "2020-01-01");
+            assert!(old["rows"].as_array().unwrap().is_empty());
+            let d = rpc(&db, &license, "get_order_history_detail_v3", serde_json::json!({ "sessionToken": boss, "orderId": a1 }));
+            assert_eq!(d["number"], "A-0001");
+            assert_eq!(d["items"][0]["quantity"], 1);
+            assert_eq!(d["items"][0]["refunded_quantity"], 0);
+            assert_eq!(d["payments"][0]["method"], "CASH");
+            assert_eq!(d["payments"][0]["amount_cents"], 1500);
+
+            // The kitchen has no history.
+            let cook = staff_session(&db_path, Role::Kitchen, "Cook", None);
+            assert!(dispatch_lan_rpc(&db, &license, "list_order_history_v3", serde_json::json!({ "sessionToken": cook, "businessDate": null })).is_err());
+
+            // A reprint is written to the audit log.
+            rpc(&db, &license, "record_receipt_reprint_v3", serde_json::json!({ "sessionToken": session, "orderId": a1 }));
+            let conn = Connection::open(&db_path).unwrap();
+            let reprints: i64 = conn.query_row("SELECT COUNT(*) FROM audit_log WHERE entity_id = ?1 AND after_json LIKE '%receipt_reprinted%'", params![a1], |r| r.get(0)).unwrap();
+            assert_eq!(reprints, 1);
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn a_refund_covers_lines_or_the_whole_order_needs_a_manager_and_a_reason_and_takes_cash_from_the_refunders_drawer() {
+            let (db_path, db, locked, session, _table_id, item_id) = second_till_fixture("history_refunds");
+            let license = unlocked_license(&db_path);
+            let boss = staff_session(&db_path, Role::Manager, "Boss", Some("4321"));
+            let order = sell(&db, &locked, &session, "TAKEAWAY", "", vec![line(&item_id, 2, 1500), line(&item_id, 1, 1500)], 4500);
+            pay_cash(&db, &locked, &session, &order, 4500);
+            let items = item_ids(&db_path, &order);
+            assert_eq!(items.len(), 2);
+            let refund = |who: &str, lines: serde_json::Value, reason: &str, pin: Option<&str>, lic: &crate::license::cloud::CloudLicenseState| {
+                dispatch_lan_rpc(&db, lic, "refund_order_v3", serde_json::json!({
+                    "sessionToken": who, "orderId": order, "reason": reason, "lines": lines, "managerOverridePin": pin,
+                }))
+            };
+            let one = serde_json::json!([{ "order_item_id": items[0], "quantity": 1 }]);
+
+            assert!(refund(&session, one.clone(), "بارد", Some("4321"), &locked).unwrap_err().contains("locked"), "back-office gate");
+            assert!(refund(&session, one.clone(), "بارد", None, &license).unwrap_err().contains("رمز المدير"), "a cashier needs a manager");
+            assert!(refund(&session, one.clone(), "بارد", Some("0000"), &license).is_err(), "wrong PIN");
+            assert!(refund(&session, one.clone(), "   ", Some("4321"), &license).unwrap_err().contains("سبب"), "a reason is required");
+
+            let r1 = refund(&session, one.clone(), "الطبق بارد", Some("4321"), &license).unwrap();
+            assert_eq!(r1["amount_cents"], 1500);
+            assert_eq!(r1["method"], "CASH");
+            let till2_shift: String = Connection::open(&db_path).unwrap()
+                .query_row("SELECT s.id FROM shifts s JOIN staff t ON t.id = s.user_id WHERE t.name = 'Till 2' AND s.closed_at IS NULL", [], |r| r.get(0)).unwrap();
+            let stats = rpc(&db, &locked, "get_shift_stats_v3", serde_json::json!({ "sessionToken": session, "shiftId": till2_shift }));
+            assert_eq!(stats["cash_refunds"], 1500, "the cash left Till 2's drawer");
+            assert_eq!(stats["cash_total"], 4500, "sales stay as sold; the refund is its own line");
+
+            assert!(refund(&session, serde_json::json!([{ "order_item_id": items[0], "quantity": 2 }]), "x", Some("4321"), &license).unwrap_err().contains("المتبقي"), "only 1 of that line is left");
+            assert!(refund(&session, serde_json::json!([{ "order_item_id": "nope", "quantity": 1 }]), "x", Some("4321"), &license).is_err());
+
+            // The manager holds no drawer yet: cash cannot leave a drawer nobody holds.
+            assert!(refund(&boss, serde_json::Value::Null, "إلغاء", None, &license).unwrap_err().contains("وردية"));
+            rpc(&db, &locked, "open_shift_v3", serde_json::json!({ "sessionToken": boss, "startingCashCents": 0, "branchId": null }));
+            let r2 = refund(&boss, serde_json::Value::Null, "إلغاء الطلب", None, &license).unwrap();
+            assert_eq!(r2["amount_cents"], 3000, "the whole order: everything still unrefunded");
+            assert!(refund(&boss, serde_json::Value::Null, "مرة ثانية", None, &license).unwrap_err().contains("مسترد بالكامل"));
+
+            let d = rpc(&db, &locked, "get_order_history_detail_v3", serde_json::json!({ "sessionToken": boss, "orderId": order }));
+            assert_eq!(d["refunded_cents"], 4500);
+            let refunds = d["refunds"].as_array().unwrap();
+            assert_eq!(refunds.len(), 2);
+            assert_eq!(refunds[0]["manager_pin_used"], true);
+            assert_eq!(refunds[0]["reason"], "الطبق بارد");
+            assert_eq!(refunds[0]["lines"][0]["quantity"], 1);
+            assert_eq!(refunds[1]["manager_pin_used"], false);
+            let line_of = |id: &str| d["items"].as_array().unwrap().iter().find(|i| i["id"] == id).unwrap()["refunded_quantity"].clone();
+            assert_eq!(line_of(&items[0]), 2);
+            assert_eq!(line_of(&items[1]), 1);
+            let conn = Connection::open(&db_path).unwrap();
+            let audited: i64 = conn.query_row("SELECT COUNT(*) FROM audit_log WHERE entity_id = ?1 AND action = 'OrderRefunded'", params![order], |r| r.get(0)).unwrap();
+            assert_eq!(audited, 2, "every refund is in the audit log");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
         #[test]
         fn second_till_back_office_gates_still_bite_over_rpc_and_the_selling_path_stays_open() {
             let (db_path, db, locked, session, _table_id, _item_id) = second_till_fixture("lan_gates");
@@ -5285,14 +5450,14 @@ mod tests {
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
-    /// 2026-08-13: refund_order's real acceptance criterion -- a
-    /// CREDIT-financed, loyalty-earning order with recipe-linked stock,
-    /// refunded, must atomically reverse ALL THREE (stock back up, points
-    /// back down, debt zeroed) plus record the refund fact and roll up
-    /// orders.refunded_cents, then correctly reject a second refund
-    /// attempt and reject refunding a never-paid order.
+    /// refund_order's acceptance criterion -- a CREDIT-financed,
+    /// loyalty-earning order with recipe-linked stock, refunded whole, must
+    /// atomically take the points back and zero the debt, record the refund
+    /// fact and roll up orders.refunded_cents, and must NOT put the
+    /// ingredients back (2026-10-25, owner's call: refunded food was already
+    /// made). Then a second refund and a never-paid order are refused.
     #[test]
-    fn refund_order_reverses_stock_loyalty_and_debt_atomically() {
+    fn refund_order_reverses_loyalty_and_debt_but_not_stock() {
         let (db_path, tenant_id, branch_id, table_id) = seeded_db("refund_order");
         let conn = Connection::open(&db_path).unwrap();
         let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Refund Manager");
@@ -5329,11 +5494,13 @@ mod tests {
         println!("[refund] pre-refund state confirmed: stock depleted, points earned, debt raised");
 
         // The actual refund.
-        let refund_id = repo.refund_order(&scope, &order_id, &manager_id, Some("العميل غير راضٍ")).unwrap();
-        assert!(!refund_id.is_empty());
+        let outcome = repo.refund_order(&scope, &order_id, &manager_id, Some("العميل غير راضٍ"), None, None, false).unwrap();
+        let refund_id = outcome.refund_id.clone();
+        assert_eq!(outcome.amount_cents, 2000);
+        assert_eq!(outcome.method, "CREDIT", "the money goes back the way it came; credit needs no drawer");
 
         let bun_after_refund: f64 = conn.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![bun_id], |r| r.get(0)).unwrap();
-        assert!((bun_after_refund - 50.0).abs() < 0.001, "refund must restore the 2 buns (48 -> 50), got {bun_after_refund}");
+        assert!((bun_after_refund - 48.0).abs() < 0.001, "refunded food was already made: the buns stay used (48), got {bun_after_refund}");
         let card_after_refund = repo.lookup_loyalty_card(&tenant_id, "REFUND-CARD").unwrap().unwrap();
         assert_eq!(card_after_refund.points, 0, "refund must reverse the 20 earned points back to 0");
         let debtor_after_refund = repo.list_debtors(&scope).unwrap().into_iter().find(|d| d.id == debtor_id).unwrap();
@@ -5342,12 +5509,12 @@ mod tests {
         assert_eq!(refunded_cents, 2000, "orders.refunded_cents rollup must equal the order's total");
         let refund_row_amount: i64 = conn.query_row("SELECT amount_cents FROM refunds WHERE id = ?1", params![refund_id], |r| r.get(0)).unwrap();
         assert_eq!(refund_row_amount, 2000, "the refunds fact row must record the real amount");
-        println!("[refund] post-refund state confirmed: stock restored, points reversed to 0, debt zeroed, refund fact + rollup both correct");
+        println!("[refund] post-refund state confirmed: stock untouched, points reversed to 0, debt zeroed, refund fact + rollup both correct");
 
         // A second refund attempt on the same (already-refunded) order must fail.
-        match repo.refund_order(&scope, &order_id, &manager_id, None) {
+        match repo.refund_order(&scope, &order_id, &manager_id, None, None, None, false) {
             Err(crate::repo::RepoError::OrderNotRefundable { reason, .. }) => {
-                assert!(reason.contains("already refunded"));
+                assert!(reason.contains("مسترد بالكامل"));
                 println!("[refund] a second refund attempt correctly rejected: {reason}");
             }
             other => panic!("expected OrderNotRefundable, got {other:?}"),
@@ -5358,9 +5525,9 @@ mod tests {
             table_id, user_id: manager_id.clone(), order_type: "DINE_IN".to_string(),
             subtotal_cents: 500, tax_cents: 0, total_cents: 500, discount_cents: 0,
         }).unwrap();
-        match repo.refund_order(&scope, &unpaid_order_id, &manager_id, None) {
+        match repo.refund_order(&scope, &unpaid_order_id, &manager_id, None, None, None, false) {
             Err(crate::repo::RepoError::OrderNotRefundable { reason, .. }) => {
-                assert!(reason.contains("PENDING"));
+                assert!(reason.contains("غير مدفوع"));
                 println!("[refund] a never-paid (PENDING) order correctly rejected: {reason}");
             }
             other => panic!("expected OrderNotRefundable, got {other:?}"),
@@ -6789,6 +6956,7 @@ mod tests {
         migrate_v3::run_backup_settings_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_order_history_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("matrix", &conn);
@@ -7540,6 +7708,9 @@ mod tests {
             // Pickup queue: taking, sending and cancelling a phone order is
             // mid-service work, same as the delivery list above.
             "list_pickup_orders_v3", "claim_due_pickup_kitchen_v3", "send_pickup_to_kitchen_now_v3", "mark_pickup_no_show_v3",
+            // Order history: numbers on tickets and the kitchen screen, and a
+            // cashier reprinting today's receipt, are mid-service work.
+            "get_order_numbers_v3", "list_order_history_v3", "get_order_history_detail_v3", "record_receipt_reprint_v3",
             "finalize_order_with_payment_v3", "list_tables_v3",
             "list_categories_v3", "list_menu_items_v3", "get_menu_item_photo_v3", "get_category_photo_v3",
             "list_combo_components_v3", "resolve_menu_price_v3",

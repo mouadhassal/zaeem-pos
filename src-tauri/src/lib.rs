@@ -14,6 +14,7 @@ mod repo;
 mod ops;
 mod delivery;
 mod pickup;
+mod order_history;
 mod audit;
 mod commands_v3;
 mod commands;
@@ -107,6 +108,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_printer_categories_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_restaurant_ops_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_pickup_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_order_history_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -612,6 +614,10 @@ pub fn run() {
             commands::pickup::send_pickup_to_kitchen_now_v3,
             commands::pickup::mark_pickup_no_show_v3,
             commands::pickup::list_pickup_no_shows_v3,
+            commands::order_history::get_order_numbers_v3,
+            commands::order_history::list_order_history_v3,
+            commands::order_history::get_order_history_detail_v3,
+            commands::order_history::record_receipt_reprint_v3,
             commands::suppliers::create_purchase_order_v3,
             commands::suppliers::create_purchase_order_and_bump_supplier_v3,
             commands::suppliers::create_purchase_order_with_items_v3,

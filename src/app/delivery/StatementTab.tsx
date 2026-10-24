@@ -9,7 +9,7 @@ import { getReceiptConfig } from "../../lib/orderService";
 import { printRows } from "../../lib/printer";
 import { deliveryStatusLabel, driverStatementRows } from "../../lib/ticketLayout";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
-import { orderNo } from "../../lib/orderNumber";
+import { useOrderLabels } from "../../lib/orderLabels";
 import { formatMoney } from "../../lib/money";
 import { formatArabicDateTime } from "../../lib/dateLocal";
 import { realErrorText } from "../../lib/errors";
@@ -31,6 +31,7 @@ export default function StatementTab({ canManage }: { canManage: boolean }) {
   const [from, setFrom] = useState(today());
   const [to, setTo] = useState(today());
   const [st, setSt] = useState<Statement | null>(null);
+  const labelOf = useOrderLabels(st?.rows.map((r) => r.order_id) ?? []);
   const [history, setHistory] = useState<Settlement[]>([]);
   const [confirming, setConfirming] = useState(false);
   const [note, setNote] = useState("");
@@ -80,7 +81,7 @@ export default function StatementTab({ canManage }: { canManage: boolean }) {
     if (!st) return;
     try {
       const cfg = await getReceiptConfig();
-      await printRows(driverStatementRows(printableShopName(cfg.chain_name, cfg.branch_name), st.driver.name, { from, to }, st.rows, st.totals, orderNo));
+      await printRows(driverStatementRows(printableShopName(cfg.chain_name, cfg.branch_name), st.driver.name, { from, to }, st.rows, st.totals, labelOf));
     } catch (e) {
       toast.error(`تعذرت الطباعة: ${realErrorText(e)}`);
     }
@@ -90,7 +91,7 @@ export default function StatementTab({ canManage }: { canManage: boolean }) {
     if (!st || !token) return;
     const head = ["الطلب", "التاريخ", "العنوان", "العميل", "الحالة", "إجمالي الطلب", "رسوم التوصيل", "أجرة السائق", "نقد معه", "مسوّى"];
     const rows = st.rows.map((r) => [
-      `#${orderNo(r.order_id)}`, formatArabicDateTime(new Date(r.created_at)), r.address ?? "", r.customer_name ?? "", deliveryStatusLabel(r.status),
+      labelOf(r.order_id), formatArabicDateTime(new Date(r.created_at)), r.address ?? "", r.customer_name ?? "", deliveryStatusLabel(r.status),
       formatMoney(r.total_cents), formatMoney(r.fee_cents), formatMoney(r.pay_cents), formatMoney(r.cash_due_cents), r.pay_settled && r.cash_settled ? "نعم" : "لا",
     ]);
     const t = st.totals;
@@ -161,7 +162,7 @@ export default function StatementTab({ canManage }: { canManage: boolean }) {
                 {st.rows.length === 0 && <tr><td colSpan={10} className="p-6 text-center text-ink-500">لا توجد توصيلات في هذه الفترة</td></tr>}
                 {st.rows.map((r) => (
                   <tr key={r.order_id} className="border-t border-ink-100" data-testid="statement-row">
-                    <td className="p-2"><span dir="ltr">#{orderNo(r.order_id)}</span></td>
+                    <td className="p-2"><span dir="ltr">{labelOf(r.order_id)}</span></td>
                     <td className="p-2 whitespace-nowrap">{formatArabicDateTime(new Date(r.created_at))}</td>
                     <td className="p-2">{r.address}</td>
                     <td className="p-2">{r.customer_name}</td>

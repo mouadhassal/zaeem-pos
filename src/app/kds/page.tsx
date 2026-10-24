@@ -6,7 +6,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { connectLanChangeSocket } from "../../lib/lan";
 import { OutOfStockPanel } from "./OutOfStockPanel";
 import { formatArabicTime } from "../../lib/dateLocal";
-import { orderNo } from "../../lib/orderNumber";
+import { useOrderLabels } from "../../lib/orderLabels";
 
 interface KDSItem {
   name: string;
@@ -70,6 +70,7 @@ function elapsed(iso: string): string {
 export default function KDSPage() {
   const token = useAuthStore((s) => s.token);
   const [orders, setOrders] = useState<KDSOrder[]>([]);
+  const labelOf = useOrderLabels(orders.map((o) => o.id));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>("all");
@@ -216,9 +217,11 @@ export default function KDSPage() {
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <span className="text-lg font-bold text-ink-900 font-arabic">
-                        {/* Takeaway/delivery orders sit on the hidden counter
-                            table; its name means nothing to the cook. */}
-                        {order.order_type === "DINE_IN" && order.table_name ? order.table_name : <span dir="ltr">#{orderNo(order.id)}</span>}
+                        {/* The daily number the counter calls out; a dine-in
+                            order also shows its table. Takeaway/delivery sit on
+                            the hidden counter table, whose name means nothing. */}
+                        <span dir="ltr" data-testid="kds-order-number">{labelOf(order.id)}</span>
+                        {order.order_type === "DINE_IN" && order.table_name ? ` · ${order.table_name}` : ""}
                       </span>
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-arabic bg-surface text-ink-500">
                         {ORDER_TYPE_LABELS[order.order_type] || order.order_type}

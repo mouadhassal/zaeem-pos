@@ -91,6 +91,12 @@ export const LAN_REDIRECT_COMMANDS = new Set([
   "claim_due_pickup_kitchen_v3",
   "send_pickup_to_kitchen_now_v3",
   "mark_pickup_no_show_v3",
+  // order history, daily numbers, refunds
+  "get_order_numbers_v3",
+  "list_order_history_v3",
+  "get_order_history_detail_v3",
+  "record_receipt_reprint_v3",
+  "refund_order_v3",
 ]);
 
 /**

@@ -44,7 +44,7 @@ import { enableBarcodeScanner, disableBarcodeScanner } from "../../lib/barcodeSc
 import { retryPrintQueue, printReceipt } from "../../lib/printer";
 import type { ReceiptData, ReceiptItem } from "../../lib/printer";
 import type { SplitItem, CartItem } from "../../stores/cartStore";
-import { orderNo } from "../../lib/orderNumber";
+import { orderLabel, useOrderLabels } from "../../lib/orderLabels";
 import { assignDriver, listDrivers, type Driver } from "../../lib/deliveryService";
 import OptionPickerModal from "../../components/modals/OptionPickerModal";
 import GiftModal from "../../components/modals/GiftModal";
@@ -589,7 +589,7 @@ export default function POSPage() {
       const cfg = await getReceiptConfig();
       const receipt: ReceiptData = {
         chainName: printableShopName(cfg.chain_name, cfg.branch_name), branchName: cfg.branch_name,
-        currency: cfg.currency, orderNumber: orderNo(orderId),
+        currency: cfg.currency, orderNumber: await orderLabel(orderId),
         tableName: tableName ?? "", orderType: orderType === "DEBT" ? "DINE_IN" : orderType,
         items: receiptLines(items), ...cancelledField(items), ...(user?.name ? { cashier: user.name } : {}),
         subtotalCents: state.subtotal(), taxCents: t.taxCents, secondaryTaxCents: t.secondaryTaxCents,
@@ -719,7 +719,7 @@ export default function POSPage() {
       const cfg = await getReceiptConfig();
       const receipt: ReceiptData = {
         chainName: printableShopName(cfg.chain_name, cfg.branch_name), branchName: cfg.branch_name,
-        currency: cfg.currency, orderNumber: orderNo(openOrderId),
+        currency: cfg.currency, orderNumber: await orderLabel(openOrderId),
         tableName: tableName ?? "", orderType: wasPickup ? "TAKEAWAY" : "DINE_IN",
         ...(wasPickup && customerName ? { customerName } : {}),
         items: receiptLines(items), ...cancelledField(items), ...(user?.name ? { cashier: user.name } : {}),
@@ -811,7 +811,7 @@ export default function POSPage() {
       const cfg = await getReceiptConfig();
       const receipt: ReceiptData = {
         chainName: printableShopName(cfg.chain_name, cfg.branch_name), branchName: cfg.branch_name,
-        currency: cfg.currency, orderNumber: orderNo(current.orderId),
+        currency: cfg.currency, orderNumber: await orderLabel(current.orderId),
         tableName: tableName ?? "", orderType: "DINE_IN",
         items: current.items,
         subtotalCents: current.amountCents, taxCents: 0, secondaryTaxCents: 0,
@@ -864,7 +864,7 @@ export default function POSPage() {
           await voidOrderItem(target.dbItemId, reason, managerOverridePin);
           if (openOrderId) {
             await printKitchenChange({
-              kind: "CANCEL", tableName: tableName ?? "", orderNumber: orderNo(openOrderId), orderType: ticketOrderType,
+              kind: "CANCEL", tableName: tableName ?? "", orderNumber: await orderLabel(openOrderId), orderType: ticketOrderType,
               items: [slipItem(target)], cancelReason: reason,
             });
           }
@@ -944,7 +944,8 @@ export default function POSPage() {
   // Was `tableId.slice(0, 8)` -- a TABLE id shown as "#order", identical for
   // every takeaway (they all share the implicit counter table).
   const liveOrderId = openOrderId ?? currentOrderId ?? null;
-  const orderNumber = liveOrderId ? orderNo(liveOrderId) : "";
+  const labelOf = useOrderLabels(liveOrderId ? [liveOrderId] : []);
+  const orderNumber = liveOrderId ? labelOf(liveOrderId) : "";
   const orderTag = orderNumber ? `#${orderNumber}` : "طلب جديد";
   // "Send to kitchen now, pay later" dine-in fix: quantity in the cart that
   // hasn't actually made it to a real order yet -- either a whole new line,
@@ -1155,7 +1156,7 @@ export default function POSPage() {
       });
       // The kitchen is told what changed: the line as it was, and as it is now.
       await printKitchenChange({
-        kind: "EDIT", tableName: tableName ?? "", orderNumber: orderNo(openOrderId), orderType: ticketOrderType,
+        kind: "EDIT", tableName: tableName ?? "", orderNumber: await orderLabel(openOrderId), orderType: ticketOrderType,
         items: [{
           name: editLine.name, quantity: r.quantity, menuItemId: editLine.menuItemId,
           ...(r.modifiers.length ? { modifiers: r.modifiers.map((m) => m.name) } : {}),

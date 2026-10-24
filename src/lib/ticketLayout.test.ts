@@ -7,6 +7,7 @@ import {
   type KitchenTicketData,
   type ReceiptData,
 } from "./ticketLayout";
+import { formatArabicDate } from "./dateLocal";
 
 const NOW = new Date("2026-10-20T14:30:00");
 const EARLIER = new Date("2026-10-20T14:05:00").toISOString();
@@ -43,9 +44,20 @@ describe("kitchen ticket", () => {
     expect(extra && extra.t === "line" && extra.bold).toBe(false);
   });
 
+  it("prints the daily order number big, under its label", () => {
+    const rows = kitchenTicketRows(ticket({ orderNumber: "A-0007" }), NOW);
+    const i = rows.findIndex((r) => r.t === "line" && r.text === "A-0007");
+    expect(i).toBeGreaterThan(0);
+    const big = rows[i]!;
+    expect(big.t === "line" && big.bold && big.align === "center" && (big.size ?? 0) >= 48).toBe(true);
+    const label = rows[i - 1]!;
+    expect(label.t === "line" && label.text === "رقم الطلب").toBe(true);
+  });
+
   it("carries order number, type, table, cashier and both times", () => {
     const t = text(ticket({ cashier: "ليلى", createdAt: EARLIER }));
-    expect(t).toContain("رقم الطلب | A17");
+    expect(t).toContain("رقم الطلب");
+    expect(t).toContain("A17");
     expect(t).toContain("النوع | صالة");
     expect(t).toContain("طاولة | 5");
     expect(t).toContain("الكاشير | ليلى");
@@ -164,10 +176,23 @@ describe("receipt", () => {
 
   it("is traceable: order number, cashier, when it was taken and when it was paid", () => {
     const t = rtext(receipt({ cashier: "ليلى", createdAt: EARLIER }));
-    expect(t).toContain("رقم الطلب | A17");
+    expect(t).toContain("رقم الطلب");
+    expect(t).toContain("A17");
     expect(t).toContain("الكاشير | ليلى");
     expect(t).toContain("وقت الطلب");
     expect(t).toContain("وقت الدفع");
+  });
+
+  it("a reprint says it is a copy, keeps the day it was paid, and shows what was refunded", () => {
+    const paidAt = "2026-10-20T18:30:00.000Z";
+    const t = rtext(receipt({ isCopy: true, paidAt, createdAt: "2026-10-20T18:00:00.000Z", refundedCents: 12_000 }));
+    expect(t).toContain("(نسخة مكررة)");
+    expect(t).toContain("وقت الطباعة");
+    expect(t).toContain(`التاريخ | ${formatArabicDate(new Date(paidAt))}`);
+    expect(t).toContain("مسترد | -");
+    const fresh = rtext(receipt());
+    expect(fresh).not.toContain("(نسخة مكررة)");
+    expect(fresh).not.toContain("مسترد");
   });
 
   it("states the payment method", () => {

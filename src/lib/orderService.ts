@@ -5,7 +5,7 @@ import type { KitchenTicketData } from "./ticketLayout";
 import { logger } from "./logger";
 import type { ReceiptData } from "./printer";
 import type { OrderType as OrderTypeEnum } from "../stores/orderTypeStore";
-import { orderNo } from "./orderNumber";
+import { orderLabel } from "./orderLabels";
 
 function token(): string {
   return useAuthStore.getState().token ?? "";
@@ -225,10 +225,11 @@ export async function createOrder(
 
   const tables = await listTables();
   const tableName = tables.find((t) => t.id === tableId)?.name ?? "";
+  const orderNumber = await orderLabel(orderId);
   try {
     await printKitchenTicket({
       tableName,
-      orderNumber: orderNo(orderId),
+      orderNumber,
       orderType,
       items: kitchenItems,
       ...cashierField(),
@@ -246,12 +247,12 @@ export async function createOrder(
     // when a table asks where their food is.
     logger.error("Kitchen print failed, queued for retry", { error: String(err) });
     queuePrintJob(
-      { tableName, orderNumber: orderNo(orderId), orderType, items: kitchenItems },
+      { tableName, orderNumber, orderType, items: kitchenItems },
       "kitchen"
     );
     window.dispatchEvent(
       new CustomEvent("kitchen-print-failed", {
-        detail: { tableName, orderNumber: orderNo(orderId), error: err instanceof Error ? err.message : String(err) },
+        detail: { tableName, orderNumber, error: err instanceof Error ? err.message : String(err) },
       })
     );
   }
@@ -548,10 +549,11 @@ export async function addItemsToOrder(
 
   const tables = await listTables();
   const tableName = tables.find((t) => t.current_order_id === orderId)?.name ?? "";
+  const orderNumber = await orderLabel(orderId);
   try {
     await printKitchenTicket({
       tableName,
-      orderNumber: orderNo(orderId),
+      orderNumber,
       orderType,
       items: kitchenItems,
       kind: "ADDITION",
@@ -560,12 +562,12 @@ export async function addItemsToOrder(
   } catch (err) {
     logger.error("Kitchen print failed (addition to open order), queued for retry", { error: String(err) });
     queuePrintJob(
-      { tableName, orderNumber: orderNo(orderId), orderType, items: kitchenItems, kind: "ADDITION", ...cashierField() },
+      { tableName, orderNumber, orderType, items: kitchenItems, kind: "ADDITION", ...cashierField() },
       "kitchen"
     );
     window.dispatchEvent(
       new CustomEvent("kitchen-print-failed", {
-        detail: { tableName, orderNumber: orderNo(orderId), error: err instanceof Error ? err.message : String(err) },
+        detail: { tableName, orderNumber, error: err instanceof Error ? err.message : String(err) },
       })
     );
   }
@@ -755,7 +757,7 @@ export async function activateDelayedOrders(): Promise<void> {
         const tableName = orderTableId ? (tables.find((t) => t.id === orderTableId)?.name ?? "") : "";
         await printKitchenTicket({
           tableName,
-          orderNumber: orderNo(orderId),
+          orderNumber: await orderLabel(orderId),
           orderType: "DINE_IN",
           items: held.items.map((i) => ({
             name: i.name, quantity: i.quantity,
@@ -773,7 +775,7 @@ export async function activateDelayedOrders(): Promise<void> {
         logger.error("Delayed order kitchen print failed", { error: String(err), orderId });
         window.dispatchEvent(
           new CustomEvent("kitchen-print-failed", {
-            detail: { orderNumber: orderNo(orderId), error: err instanceof Error ? err.message : String(err) },
+            detail: { orderNumber: await orderLabel(orderId), error: err instanceof Error ? err.message : String(err) },
           })
         );
       }
@@ -837,7 +839,7 @@ export async function sendDuePickupsToKitchen(): Promise<void> {
   for (const p of due) {
     const ticket: KitchenTicketData = {
       tableName: "",
-      orderNumber: orderNo(p.order_id),
+      orderNumber: await orderLabel(p.order_id),
       orderType: "TAKEAWAY",
       items: [],
       pickupAt: new Date(p.pickup_at_ms).toISOString(),
@@ -861,7 +863,7 @@ export async function sendDuePickupsToKitchen(): Promise<void> {
       if (ticket.items.length > 0) queuePrintJob(ticket, "kitchen");
       window.dispatchEvent(
         new CustomEvent("kitchen-print-failed", {
-          detail: { orderNumber: orderNo(p.order_id), error: err instanceof Error ? err.message : String(err) },
+          detail: { orderNumber: ticket.orderNumber, error: err instanceof Error ? err.message : String(err) },
         })
       );
     }

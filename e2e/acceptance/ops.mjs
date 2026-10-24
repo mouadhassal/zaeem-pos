@@ -2,7 +2,9 @@
 // app identifier, so its own %APPDATA% data -- never the real install):
 //   item options, kitchen stations (one slip per station), editing / gifting /
 //   cancelling lines already sent, the detailed receipt, delivery end to end,
-//   and phone pickups (queue, kitchen timing, collect and pay, no-show).
+//   phone pickups (queue, kitchen timing, collect and pay, no-show), and the
+//   AI menu editor (Arabic-digit prices, delete, results kept), and the order
+//   history (daily numbers, search, reprint, item refund out of the drawer).
 // Four fake network printers (raw TCP) stand in for 3 kitchen stations and the
 // receipt printer; every job they receive is saved and can be decoded to a PNG.
 //
@@ -511,6 +513,101 @@ try {
       for (const c of await b.$$('[data-testid="item-card"]')) { const t = await c.getText(); if (t.includes("كولا") && t.includes("إضافات")) return true; }
       return false;
     }, "cola card now shows the badge (live, no restart)");
+  });
+  await step("onboarding-prices", "AI menu editor: Arabic digits type a price, delete removes the right dish, results survive leaving the page", async () => {
+    const png = path.join(ROOT, ".e2e-pos", "ops-menu-photo.png");
+    fs.writeFileSync(png, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
+    await nav("ai-onboarding");
+    const fi = await b.$('input[type="file"][accept="image/*"]');
+    await b.execute((el) => el.classList.remove("hidden"), fi);
+    await fi.setValue(png);
+    await reg.click(/^معالجة الكل$/);
+    await until(async () => (await call("list_uploads")).some((u) => u.status === "DONE"), "the mock AI read the photo");
+    // leave and come back: the result must still be there
+    await nav("pos");
+    await nav("ai-onboarding");
+    await reg.click(/^تم$/);
+    await reg.click(/^تعديل$/);
+    const price = (await b.$$('input[type="number"]'))[0];
+    eq(await price.getValue(), "500", "first draft price (cola)");
+    await price.click();
+    await b.keys(["Control", "a"]);
+    await b.keys(["Control"]);
+    await b.keys("٧٥٠٠".split(""));
+    await until(async () => (await price.getValue()) === "7500", "Arabic digits typed as 7500");
+    // delete the only dish of the SECOND category; it used to delete the first dish overall
+    const deleted = await b.execute(() => {
+      const name = [...document.querySelectorAll("input")].find((i) => i.value === "حمص باللحم");
+      const row = name?.closest(".p-3");
+      const del = row?.querySelector('button[title="حذف"]');
+      if (!del) return false;
+      del.click();
+      return true;
+    });
+    ok(deleted, "delete button found on the hummus row");
+    await until(async () => b.execute(() => ![...document.querySelectorAll("input")].some((i) => i.value === "حمص باللحم")), "hummus gone from the editor");
+    ok(await b.execute(() => [...document.querySelectorAll("input")].some((i) => i.value === "كولا")), "cola still in the editor");
+    const before = (await call("list_menu_items_v3")).length;
+    await reg.click(/تطبيق على النظام/);
+    await until(async () => (await call("list_menu_items_v3")).length > before, "draft applied");
+    const items = await call("list_menu_items_v3");
+    ok(items.some((i) => i.name === "كولا" && i.price_cents === 7500), "cola saved at 7500");
+    ok(!items.some((i) => i.name === "حمص باللحم"), "deleted dish not created");
+  });
+  await step("history-refund", "order history: daily numbers, find by number, reprint a copy, refund one item from the drawer", async () => {
+    // A takeaway of 2 colas, paid cash: refunding one of them is a real partial refund.
+    const freshId = await call("create_full_order_v3", {
+      tableId: "", orderType: "TAKEAWAY",
+      items: [{ menu_item_id: ids.cola, name: null, quantity: 2, unit_price_cents: 2000, notes: null, combo_id: null, modifiers: [], comped: false, comp_reason: null }],
+      subtotalCents: 4000, taxCents: 0, totalCents: 4000, discountCents: 0, discountReason: null,
+      customerName: null, customerPhone: null, deliveryAddress: null, deliveryFeeCents: 0, shiftId: null, managerOverridePin: null, pickupAtMs: null,
+    });
+    await call("finalize_order_with_payment_v3", { orderId: freshId, method: "CASH", amountCents: 4000, changeCents: 0, debtorId: null, cardNumber: null, referenceCode: null });
+    const day = await call("list_order_history_v3", { businessDate: null });
+    ok(day.rows.length > 1, "today's orders are listed");
+    ok(day.rows.every((r) => /^[A-D]-\d{4}$/.test(r.number ?? "")), `every order of today has a daily number: ${day.rows.map((r) => r.number).join(",")}`);
+    const takeaways = day.rows.filter((r) => r.order_type === "TAKEAWAY").map((r) => r.number).sort();
+    ok(takeaways.every((n, i) => n === `A-${String(i + 1).padStart(4, "0")}`), `takeaways count A-0001 up with no gap: ${takeaways.join(",")}`);
+    const target = day.rows.find((r) => r.id === freshId);
+    ok(target && target.status === "PAID", "the fresh order is in the history, paid");
+    await nav("orders");
+    await byId("history-page");
+    await until(async () => (await b.$$('[data-testid="history-row"]')).length === day.rows.length, "all rows shown");
+    await (await byId("history-search")).setValue(target.number);
+    await until(async () => {
+      const nums = await b.execute(() => [...document.querySelectorAll('[data-testid="history-number"]')].map((e) => e.textContent));
+      return nums.length >= 1 && nums.includes(target.number) && nums.every((n) => n === target.number);
+    }, "search by number finds that order");
+    await clickId("history-row");
+    await until(async () => (await textOf("detail-number")) === target.number, "detail opened");
+    console.log("  shot:", await reg.shot("history-detail"));
+
+    const receiptsBefore = jobs("receipt").length;
+    await clickId("history-reprint");
+    await until(async () => jobs("receipt").length > receiptsBefore, "a copy of the receipt printed");
+
+    await clickId("history-refund");
+    await byId("refund-modal");
+    await clickId("refund-mode-items");
+    await clickId("refund-plus");
+    const amountText = await textOf("refund-amount");
+    ok(!/^0\b/.test(amountText.trim()), `a refund amount is shown: ${amountText}`);
+    await (await byId("refund-reason")).setValue("الطبق وصل بارداً");
+    await pause(300);
+    console.log("  shot:", await reg.shot("history-refund-modal"));
+    await clickId("refund-confirm");
+    await until(async () => !(await exists("refund-modal")), "refund done");
+    await byId("detail-refunded-qty");
+    const d = await call("get_order_history_detail_v3", { orderId: target.id });
+    ok(d.refunded_cents > 0 && d.refunded_cents < d.total_cents, `part of the order refunded: ${d.refunded_cents} of ${d.total_cents}`);
+    eq(d.refunds.length, 1, "one refund");
+    eq(d.refunds[0].reason, "الطبق وصل بارداً", "reason kept");
+    eq(d.refunds[0].method, "CASH", "back the way it was paid");
+    eq(d.refunds[0].lines.length, 1, "one line");
+
+    // The cash left this shift's drawer.
+    await nav("shift");
+    await until(async () => (await textOf("shift-cash-refunds")).length > 0, "the shift shows the cash refund");
   });
   // Visual tour: every sidebar screen at two common till sizes, screenshot +
   // anything wider than the window (the page must never scroll sideways).

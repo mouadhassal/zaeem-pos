@@ -13,6 +13,8 @@ use super::settings::{get_chain_config_v3_impl, get_business_mode_v3_impl, get_d
 use super::suppliers::{list_active_printers_v3_impl, list_printer_categories_v3_impl};
 use super::orders::create_full_order_with_pickup_v3_impl;
 use super::pickup::{claim_due_pickup_kitchen_v3_impl, list_pickup_orders_v3_impl, mark_pickup_no_show_v3_impl, send_pickup_to_kitchen_now_v3_impl};
+use super::order_history::{get_order_history_detail_v3_impl, get_order_numbers_v3_impl, list_order_history_v3_impl, record_receipt_reprint_v3_impl};
+use super::orders::refund_order_v3_impl;
 
 // T3.0 LAN hub/satellite: Phase 1 RPC dispatch allowlist. See `lan.rs`'s
 // module doc for the full design. Every arm here calls the SAME, real,
@@ -61,6 +63,7 @@ pub fn lan_rpc_mutates_orders(command: &str) -> bool {
             | "assign_delivery_driver_v3"
             | "set_delivery_status_v3"
             | "settle_driver_v3"
+            | "refund_order_v3"
             | "create_table_v3"
             | "rename_table_v3"
             | "delete_table_v3"
@@ -521,6 +524,39 @@ pub fn dispatch_lan_rpc(
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
         // ---- Pickup queue (phone orders collected later) -------------------
+        "get_order_numbers_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_ids: Vec<String> = lan_arg(&args, "orderIds")?;
+            let r = get_order_numbers_v3_impl(db, session_token, order_ids)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_order_history_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let business_date: Option<String> = lan_arg(&args, "businessDate")?;
+            let r = list_order_history_v3_impl(db, license, session_token, business_date)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_order_history_detail_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            let r = get_order_history_detail_v3_impl(db, license, session_token, order_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "record_receipt_reprint_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            record_receipt_reprint_v3_impl(db, license, session_token, order_id)?;
+            serde_json::Value::Null
+        }
+        "refund_order_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            let reason: Option<String> = lan_arg(&args, "reason")?;
+            let lines: Option<Vec<crate::order_history::RefundLineInput>> = lan_arg(&args, "lines")?;
+            let manager_override_pin: Option<String> = lan_arg(&args, "managerOverridePin")?;
+            let r = refund_order_v3_impl(db, license, session_token, order_id, reason, lines, manager_override_pin)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
         "list_pickup_orders_v3" => {
             let session_token: String = lan_arg(&args, "sessionToken")?;
             let r = list_pickup_orders_v3_impl(db, license, session_token)?;

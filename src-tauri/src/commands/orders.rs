@@ -1,7 +1,7 @@
 use crate::audit;
 use crate::ops;
 use crate::repo::{NewOrder, OrderRow, Repo, FullOrderInput, SplitBillInput, TableInfo, HeldOrderResult, ReceiptConfig, LoyaltyCardLookup};
-use crate::security::{authorize, authorize_scope, Actor, Permission, Scope};
+use crate::security::{authorize, authorize_scope, Actor, Permission, Role, Scope};
 use crate::Db;
 use bcrypt::verify;
 use rusqlite::{params, OptionalExtension};
@@ -1510,14 +1510,11 @@ pub(crate) fn finalize_order_with_payment_v3_impl(
     Ok(FinalizePaymentResult { payment_id, points_earned })
 }
 
-/// Back-office command -- license-gated (unlike void/payment: a refund
-/// happens AFTER the sale already closed, never mid-service, so it's not
-/// on the "must stay open during a locked license" list those are).
-/// Single function body, not a wrapper+impl split -- the license-gate
-/// coverage test scans this exact body's literal source text for the
-/// require_license_not_locked call, same constraint every other GATED
-/// command here follows (see list_staff_v3/create_roster_entry_v3's own
-/// notes on this).
+/// Refund from the order history screen: the whole order (`lines` absent)
+/// or some of its lines. Back-office, so license-gated (a refund happens
+/// after the sale closed, never mid-service). A manager refunds on their
+/// own; a cashier needs a manager PIN. A reason is always required. Cash
+/// leaves the refunder's open shift drawer. Rules: `Repo::refund_order`.
 #[tauri::command]
 pub fn refund_order_v3(
     state: State<Db>,
@@ -1525,37 +1522,56 @@ pub fn refund_order_v3(
     session_token: String,
     order_id: String,
     reason: Option<String>,
-) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    authorize(&actor, Permission::RefundOrder).map_err(|e| e.to_string())?;
-    require_license_not_locked(&license)?;
-    let scope = actor.scope();
+    lines: Option<Vec<crate::order_history::RefundLineInput>>,
+    manager_override_pin: Option<String>,
+) -> Result<crate::repo::RefundOutcome, String> {
+    refund_order_v3_impl(&state, &license, session_token, order_id, reason, lines, manager_override_pin)
+}
 
+pub(crate) fn refund_order_v3_impl(
+    state: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
+    session_token: String,
+    order_id: String,
+    reason: Option<String>,
+    lines: Option<Vec<crate::order_history::RefundLineInput>>,
+    manager_override_pin: Option<String>,
+) -> Result<crate::repo::RefundOutcome, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    let reason = reason.map(|r| r.trim().to_string()).unwrap_or_default();
+    if reason.is_empty() {
+        return Err("اكتب سبب الاسترداد".to_string());
+    }
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let manager_pin_used = if actor.role.rank() >= Role::Manager.rank() {
+        authorize(&actor, Permission::RefundOrder).map_err(|e| e.to_string())?;
+        false
+    } else {
+        authorize(&actor, Permission::TakePayment).map_err(|e| e.to_string())?;
+        let Some(pin) = manager_override_pin.as_deref() else {
+            return Err("الاسترداد يحتاج رمز المدير".to_string());
+        };
+        if !verify_manager_override_impl(&mut conn, &actor, pin)? {
+            return Err("رمز المدير غير صحيح".to_string());
+        }
+        true
+    };
+    let shift_id = Repo::new(&conn).get_active_shift(&actor.id).map_err(|e| e.to_string())?.map(|s| s.id);
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let refund_id = Repo::new(&tx)
-        .refund_order(&scope, &order_id, &actor.id, reason.as_deref())
+    let outcome = Repo::new(&tx)
+        .refund_order(&actor.scope(), &order_id, &actor.id, Some(&reason), lines.as_deref(), shift_id.as_deref(), manager_pin_used)
         .map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
         audit::Action::OrderRefunded, "order", &order_id,
-        None, Some(&serde_json::json!({ "refund_id": refund_id, "reason": reason })),
+        None, Some(&serde_json::json!({
+            "refund_id": outcome.refund_id, "amount_cents": outcome.amount_cents, "method": outcome.method,
+            "reason": reason, "lines": lines, "manager_override_used": manager_pin_used,
+        })),
     ).map_err(|e| e.to_string())?;
-
-    // `Repo::refund_order` just restored recipe-linked ingredient stock for
-    // every non-voided item on this order (mirror of the deplete at
-    // payment time) -- queue the current snapshot of each ingredient
-    // touched. tenant_id/branch_id come from the order's OWN row, not the
-    // actor's scope, same reasoning as elsewhere in this file.
-    let (order_tenant_id, order_branch_id): (String, String) = tx.query_row(
-        "SELECT tenant_id, branch_id FROM orders WHERE id = ?1", params![order_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ).map_err(|e| e.to_string())?;
-    let license_status = license.cached_status();
-    sync_enqueue_recipe_ingredients_for_order(&tx, &order_tenant_id, &order_branch_id, &order_id, &actor.device_id, &license_status)?;
-
     tx.commit().map_err(|e| e.to_string())?;
-    Ok(refund_id)
+    Ok(outcome)
 }
 
 /// Stamps `payments.rev`/`updated_at_hlc`/`device_id` and queues the row --

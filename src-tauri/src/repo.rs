@@ -205,7 +205,7 @@ impl fmt::Display for RepoError {
             ),
             Self::ShiftAlreadyClosed { shift_id } => write!(f, "shift {shift_id} is already closed -- refusing to overwrite its reconciliation numbers"),
             Self::InvalidLoyaltyPoints { points } => write!(f, "points must be positive, got {points}"),
-            Self::OrderNotRefundable { order_id, reason } => write!(f, "order {order_id} cannot be refunded: {reason}"),
+            Self::OrderNotRefundable { order_id: _, reason } => write!(f, "لا يمكن الاسترداد: {reason}"),
             Self::OrderItemAlreadyVoided { item_id } => write!(f, "order item {item_id} is already voided"),
             Self::StockAdjustmentBelowZero { ingredient_id, current_stock, change_amount } => write!(
                 f, "ingredient {ingredient_id} has {current_stock} in stock -- a change of {change_amount} would drive it below zero"
@@ -273,6 +273,15 @@ pub struct RefundableOrderRow {
     pub total_cents: i64,
     pub refunded_cents: i64,
     pub created_at: String,
+}
+
+/// What `Repo::refund_order` did: how much went back, and how (the order's
+/// own payment method).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RefundOutcome {
+    pub refund_id: String,
+    pub amount_cents: i64,
+    pub method: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -513,6 +522,8 @@ pub struct ShiftStatsRow {
     pub total_sales: i64,
     pub cash_total: i64,
     pub card_total: i64,
+    /// Cash refunded to customers out of this shift's drawer.
+    pub cash_refunds: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1369,6 +1380,7 @@ impl<'a> Repo<'a> {
                      input.subtotal_cents, input.tax_cents, input.total_cents, input.discount_cents, now,
                      currency, scale],
         )?;
+        crate::order_history::assign(self.conn, &id, tenant_id, branch_id, &input.order_type, &crate::order_history::today())?;
         Ok(id)
     }
 
@@ -4417,7 +4429,14 @@ impl<'a> Repo<'a> {
         );
         let card_total: i64 = self.conn.query_row(&card_sql, params_from_iter(card_args.iter()), |r| r.get(0))?;
 
-        Ok(ShiftStatsRow { order_count, total_sales, cash_total, card_total })
+        // Cash handed back to customers from this shift's drawer -- the
+        // drawer is expected to hold that much less.
+        let refund_sql = format!(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM refunds WHERE method = 'CASH' AND {predicate} AND shift_id = {id_placeholder}"
+        );
+        let cash_refunds: i64 = self.conn.query_row(&refund_sql, params_from_iter(order_args.iter()), |r| r.get(0))?;
+
+        Ok(ShiftStatsRow { order_count, total_sales, cash_total, card_total, cash_refunds })
     }
 
     /// `shift/page.tsx`'s "recent orders" list -- last 10 orders opened
@@ -4949,6 +4968,7 @@ impl<'a> Repo<'a> {
                 input.delivery_fee_cents, input.shift_id, now, currency, scale
             ],
         ).map_err(RepoError::from)?;
+        crate::order_history::assign(self.conn, &id, tenant_id, branch_id, &input.order_type, &crate::order_history::today())?;
 
         for item in &input.items {
             self.insert_order_item_row(tenant_id, branch_id, &id, item, &now)?;
@@ -5812,6 +5832,7 @@ impl<'a> Repo<'a> {
                 currency, scale
             ],
         ).map_err(RepoError::from)?;
+        crate::order_history::assign(self.conn, &id, tenant_id, branch_id, &input.order_type, &crate::order_history::today())?;
 
         for item in &input.items {
             self.insert_order_item_row(tenant_id, branch_id, &id, item, &now)?;
@@ -6090,84 +6111,136 @@ impl<'a> Repo<'a> {
         Ok((payment_id, points_earned))
     }
 
-    /// 2026-08-13: the actual missing piece -- full-order refund,
-    /// reversing everything `finalize_order_with_payment` did, atomically
-    /// (caller wraps this in one transaction, same convention as every
-    /// other multi-write method in this file). Full-order only for now
-    /// (amount is always the order's remaining un-refunded total, not a
-    /// caller-chosen partial amount) -- a partial dollar-only refund
-    /// (no stock/loyalty/debt reversal) is a real, separate future need,
-    /// deliberately not built here rather than guessing at ambiguous
-    /// which-items-does-this-cover semantics.
+    /// Refunds a paid order, whole or some of its lines (`lines`), in the
+    /// caller's transaction. Rules (agreed with the owner 2026-10-25):
+    /// - only a PAID order; never more than what is still unrefunded;
+    /// - a line can be refunded up to its quantity, once; gifts were never
+    ///   charged so they cannot be refunded;
+    /// - the amount of some lines is their share of what was really paid
+    ///   (`order_history::refund_amount`); the refund that takes the last
+    ///   chargeable line returns everything left;
+    /// - the money goes back the way it came: CASH leaves the drawer of the
+    ///   refunder's open shift (`shift_id`, required), CREDIT lowers the
+    ///   debtor's balance, CARD/WALLET are recorded for the terminal;
+    /// - loyalty points earned on the order are reversed in proportion
+    ///   (never below zero on the card);
+    /// - ingredients are NOT put back: refunded food was already made.
+    ///   (The first, whole-order version did put them back.)
     ///
-    /// Reverses, in order: recipe stock for every non-voided item (mirror
-    /// of `deplete_recipe_stock`, `+` instead of `-`), loyalty points
-    /// earned on this order (an `ADJUST` transaction, floored so the
-    /// card's points can never go negative from a refund), and the DEBT
-    /// entry if this order was CREDIT-financed (a `PAYMENT` entry zeroing
-    /// out exactly what this order added to the debtor's balance -- reuses
-    /// the same fact-pair convention `record_debt_payment` already uses,
-    /// not a special case). Records the `refunds` fact and bumps
-    /// `orders.refunded_cents` last, once every reversal has succeeded.
-    pub fn refund_order(&self, scope: &Scope, order_id: &str, actor_id: &str, reason: Option<&str>) -> Result<String, RepoError> {
+    /// The refund fact, its lines and the `orders.refunded_cents` rollup are
+    /// written last, once everything above succeeded.
+    #[allow(clippy::too_many_arguments)]
+    pub fn refund_order(
+        &self,
+        scope: &Scope,
+        order_id: &str,
+        actor_id: &str,
+        reason: Option<&str>,
+        lines: Option<&[crate::order_history::RefundLineInput]>,
+        shift_id: Option<&str>,
+        manager_pin_used: bool,
+    ) -> Result<RefundOutcome, RepoError> {
+        let refuse = |why: &str| RepoError::OrderNotRefundable { order_id: order_id.to_string(), reason: why.to_string() };
         self.assert_order_in_scope(order_id, scope)?;
-        let (tenant_id, branch_id, status, total_cents, refunded_cents): (String, String, String, i64, i64) = self.conn.query_row(
-            "SELECT tenant_id, branch_id, status, total_cents, refunded_cents FROM orders WHERE id = ?1",
+        let (tenant_id, branch_id, status, total_cents, refunded_cents, delivery_fee_cents): (String, String, String, i64, i64, i64) = self.conn.query_row(
+            "SELECT tenant_id, branch_id, status, total_cents, refunded_cents, COALESCE(delivery_fee_cents, 0) FROM orders WHERE id = ?1",
             params![order_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
         )?;
         if status != "PAID" {
-            return Err(RepoError::OrderNotRefundable { order_id: order_id.to_string(), reason: format!("order status is {status}, not PAID") });
+            return Err(refuse("الطلب غير مدفوع"));
         }
-        if refunded_cents > 0 {
-            return Err(RepoError::OrderNotRefundable { order_id: order_id.to_string(), reason: "already refunded".to_string() });
+        if refunded_cents >= total_cents {
+            return Err(refuse("الطلب مسترد بالكامل"));
         }
 
-        let now = chrono::Utc::now().to_rfc3339();
-
-        // Reverse recipe stock -- exact mirror of deplete_recipe_stock's
-        // own query, `+` instead of `-`.
+        // Chargeable lines: not cancelled, not a gift. value = (price + options) x quantity.
+        struct Line { id: String, quantity: i64, unit_value: i64, refunded: i64 }
         let mut stmt = self.conn.prepare(
-            "SELECT r.ingredient_id, SUM(oi.quantity * r.quantity_needed) \
-             FROM order_items oi JOIN recipes r ON r.menu_item_id = oi.menu_item_id \
-             WHERE oi.order_id = ?1 AND oi.voided = 0 \
-             GROUP BY r.ingredient_id",
+            "SELECT oi.id, oi.quantity, oi.unit_price_cents + COALESCE((SELECT SUM(price_cents) FROM order_modifiers WHERE order_item_id = oi.id), 0), \
+             (SELECT COALESCE(SUM(ri.quantity), 0) FROM refund_items ri WHERE ri.order_item_id = oi.id) \
+             FROM order_items oi WHERE oi.order_id = ?1 AND oi.voided = 0 AND COALESCE(oi.comped, 0) = 0",
         )?;
-        let needed: Vec<(String, f64)> = stmt
-            .query_map(params![order_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        let chargeable: Vec<Line> = stmt
+            .query_map(params![order_id], |r| Ok(Line { id: r.get(0)?, quantity: r.get(1)?, unit_value: r.get(2)?, refunded: r.get(3)? }))?
             .collect::<Result<Vec<_>, _>>()?;
         drop(stmt);
-        for (ingredient_id, total_needed) in needed {
-            if total_needed <= 0.0 {
-                continue;
+        let gross: i64 = chargeable.iter().map(|l| l.unit_value * l.quantity).sum();
+
+        // What this refund covers, per line.
+        let mut take: Vec<(String, i64)> = Vec::new();
+        match lines {
+            None => {
+                for l in &chargeable {
+                    if l.quantity > l.refunded {
+                        take.push((l.id.clone(), l.quantity - l.refunded));
+                    }
+                }
             }
-            self.conn.execute(
-                "UPDATE ingredients SET current_stock = current_stock + ?1, last_modified = ?2 WHERE id = ?3",
-                params![total_needed, now, ingredient_id],
-            )?;
-            let log_id = uuid::Uuid::now_v7().to_string();
-            self.conn.execute(
-                "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'استرجاع بسبب استرداد', ?6, ?7, ?7, 'pending')",
-                params![log_id, tenant_id, branch_id, ingredient_id, total_needed, actor_id, now],
-            )?;
+            Some(requested) => {
+                for req in requested {
+                    if req.quantity <= 0 {
+                        return Err(refuse("الكمية يجب أن تكون أكبر من صفر"));
+                    }
+                    if let Some(t) = take.iter_mut().find(|(id, _)| *id == req.order_item_id) {
+                        t.1 += req.quantity;
+                    } else {
+                        take.push((req.order_item_id.clone(), req.quantity));
+                    }
+                }
+                for (id, qty) in &take {
+                    let Some(l) = chargeable.iter().find(|l| l.id == *id) else {
+                        return Err(refuse("صنف غير موجود في هذا الطلب، أو ضيافة، أو ملغى"));
+                    };
+                    if *qty > l.quantity - l.refunded {
+                        return Err(refuse("الكمية أكبر من المتبقي غير المسترد"));
+                    }
+                }
+            }
+        }
+        let lines_value: i64 = take
+            .iter()
+            .map(|(id, qty)| chargeable.iter().find(|l| l.id == *id).map(|l| l.unit_value * qty).unwrap_or(0))
+            .sum();
+        let takes_last_item = chargeable.iter().all(|l| {
+            let now_taken = take.iter().find(|(id, _)| *id == l.id).map(|(_, q)| *q).unwrap_or(0);
+            l.refunded + now_taken >= l.quantity
+        });
+        let amount = crate::order_history::refund_amount(lines_value, gross, total_cents, delivery_fee_cents, refunded_cents, takes_last_item);
+        if amount <= 0 {
+            return Err(refuse("لا يوجد مبلغ لاسترداده"));
         }
 
-        // Reverse loyalty points earned on this order, if any.
+        let method: String = self.conn.query_row(
+            "SELECT method FROM payments WHERE order_id = ?1 ORDER BY created_at LIMIT 1",
+            params![order_id],
+            |r| r.get(0),
+        ).optional()?.unwrap_or_else(|| "CASH".to_string());
+        if method == "CASH" && shift_id.is_none() {
+            return Err(refuse("المبلغ النقدي يخرج من درج الوردية — افتح وردية أولاً"));
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Loyalty: reverse the share of earned points this refund brings the total to.
         let earned: Option<(String, i64)> = self.conn.query_row(
             "SELECT card_id, points FROM loyalty_transactions WHERE reference_type = 'order' AND reference_id = ?1 AND type = 'EARN'",
             params![order_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         ).optional()?;
         if let Some((card_id, points)) = earned {
+            let already_reversed: i64 = self.conn.query_row(
+                "SELECT COALESCE(-SUM(points), 0) FROM loyalty_transactions WHERE reference_type = 'order_refund' AND reference_id = ?1",
+                params![order_id],
+                |r| r.get(0),
+            )?;
+            let target = if total_cents > 0 { points * (refunded_cents + amount) / total_cents } else { points };
             let current_points: i64 = self.conn.query_row(
                 "SELECT points FROM loyalty_cards WHERE id = ?1", params![card_id], |r| r.get(0),
             )?;
             // Floored at 0 -- a card that already redeemed some of these
-            // points before the refund must not go negative; the customer
-            // keeps whatever they already redeemed, same reasoning
+            // points keeps what it redeemed, same reasoning
             // InsufficientLoyaltyPoints already protects at redeem time.
-            let reversed = points.min(current_points);
+            let reversed = (target - already_reversed).min(current_points);
             if reversed > 0 {
                 let new_points = current_points - reversed;
                 let tiers = self.list_loyalty_tiers(&tenant_id)?;
@@ -6184,42 +6257,43 @@ impl<'a> Repo<'a> {
             }
         }
 
-        // Reverse the debt entry, if this order was CREDIT-financed --
+        // Debt: a CREDIT-financed order owes less by the refunded amount --
         // same DEBT/PAYMENT fact-pair convention record_debt_payment uses,
-        // reusing the debtor_id/amount from this order's own DEBT entry
-        // rather than trusting a caller-supplied one.
-        let debt: Option<(String, i64)> = self.conn.query_row(
-            "SELECT debtor_id, amount_cents FROM debt_entries WHERE order_id = ?1 AND type = 'DEBT'",
+        // debtor taken from this order's own DEBT entry, never the caller.
+        let debtor: Option<String> = self.conn.query_row(
+            "SELECT debtor_id FROM debt_entries WHERE order_id = ?1 AND type = 'DEBT'",
             params![order_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| r.get(0),
         ).optional()?;
-        if let Some((debtor_id, debt_amount)) = debt {
-            let debt_entry_id = uuid::Uuid::now_v7().to_string();
+        if let Some(debtor_id) = debtor {
             self.conn.execute(
                 "INSERT INTO debt_entries (id, tenant_id, branch_id, debtor_id, order_id, amount_cents, type, notes, created_by, created_at, sync_version, last_modified, sync_status) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'PAYMENT', 'استرداد طلب', ?7, ?8, 1, ?8, 'pending')",
-                params![debt_entry_id, tenant_id, branch_id, debtor_id, order_id, debt_amount, actor_id, now],
+                params![uuid::Uuid::now_v7().to_string(), tenant_id, branch_id, debtor_id, order_id, amount, actor_id, now],
             )?;
             self.conn.execute(
                 "UPDATE debtors SET total_paid_cents = total_paid_cents + ?1, balance_cents = balance_cents - ?1, last_transaction_at = ?2, last_modified = ?2 WHERE id = ?3",
-                params![debt_amount, now, debtor_id],
+                params![amount, now, debtor_id],
             )?;
         }
 
-        // Record the refund fact + bump the rollup, last -- everything
-        // above has already succeeded by this point.
         let refund_id = uuid::Uuid::now_v7().to_string();
         self.conn.execute(
-            "INSERT INTO refunds (id, tenant_id, branch_id, order_id, amount_cents, reason, refunded_by, created_at, last_modified, sync_status) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, 'pending')",
-            params![refund_id, tenant_id, branch_id, order_id, total_cents, reason, actor_id, now],
+            "INSERT INTO refunds (id, tenant_id, branch_id, order_id, amount_cents, reason, refunded_by, created_at, last_modified, sync_status, method, shift_id, manager_pin_used) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, 'pending', ?9, ?10, ?11)",
+            params![refund_id, tenant_id, branch_id, order_id, amount, reason, actor_id, now, method, if method == "CASH" { shift_id } else { None }, manager_pin_used as i64],
         )?;
+        for (item_id, qty) in &take {
+            self.conn.execute(
+                "INSERT INTO refund_items (id, refund_id, order_item_id, quantity) VALUES (?1, ?2, ?3, ?4)",
+                params![uuid::Uuid::now_v7().to_string(), refund_id, item_id, qty],
+            )?;
+        }
         self.conn.execute(
-            "UPDATE orders SET refunded_cents = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
-            params![total_cents, now, order_id],
+            "UPDATE orders SET refunded_cents = refunded_cents + ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
+            params![amount, now, order_id],
         )?;
-
-        Ok(refund_id)
+        Ok(RefundOutcome { refund_id, amount_cents: amount, method })
     }
 }
 
@@ -6260,6 +6334,7 @@ mod tests {
         migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_restaurant_ops_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_pickup_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_order_history_migration(&mut conn, &db_path).unwrap();
         db_path
     }
 

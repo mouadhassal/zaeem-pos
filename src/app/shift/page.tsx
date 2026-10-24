@@ -8,7 +8,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useShiftStore } from "../../stores/shiftStore";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { realErrorText } from "../../lib/errors";
-import { orderNo } from "../../lib/orderNumber";
+import { useOrderLabels } from "../../lib/orderLabels";
 import { orderStatusLabel } from "../../lib/orderStatus";
 import { listPickupOrders } from "../../lib/orderService";
 
@@ -33,6 +33,8 @@ interface ShiftStats {
   totalSales: number;
   cashTotal: number;
   cardTotal: number;
+  /** Cash handed back to customers (refunds) out of this drawer. */
+  cashRefunds: number;
 }
 
 interface SummaryData {
@@ -63,8 +65,9 @@ export default function ShiftPage() {
   const setActiveShiftId = useShiftStore((s) => s.setActiveShiftId);
 
   const [activeShift, setActiveShift] = useState<ActiveShift | null>(null);
-  const [stats, setStats] = useState<ShiftStats>({ orderCount: 0, totalSales: 0, cashTotal: 0, cardTotal: 0 });
+  const [stats, setStats] = useState<ShiftStats>({ orderCount: 0, totalSales: 0, cashTotal: 0, cardTotal: 0, cashRefunds: 0 });
   const [recentOrders, setRecentOrders] = useState<{ id: string; total_cents: number; created_at: string; status: string }[]>([]);
+  const labelOf = useOrderLabels(recentOrders.map((o) => o.id));
   const [elapsed, setElapsed] = useState("00:00:00");
   const [initialLoading, setInitialLoading] = useState(true);
 
@@ -103,7 +106,7 @@ export default function ShiftPage() {
       setActiveShiftId(shift?.id ?? null);
 
       if (shift) {
-        const stats = await invoke<{ order_count: number; total_sales: number; cash_total: number; card_total: number }>(
+        const stats = await invoke<{ order_count: number; total_sales: number; cash_total: number; card_total: number; cash_refunds: number }>(
           "get_shift_stats_v3", { sessionToken: token, shiftId: shift.id }
         );
         setStats({
@@ -111,6 +114,7 @@ export default function ShiftPage() {
           totalSales: stats.total_sales,
           cashTotal: stats.cash_total,
           cardTotal: stats.card_total,
+          cashRefunds: stats.cash_refunds,
         });
 
         const orders = await invoke<{ id: string; total_cents: number; created_at: string; status: string }[]>(
@@ -178,9 +182,10 @@ export default function ShiftPage() {
     try {
       const token = useAuthStore.getState().token;
 
-      const shiftStats = await invoke<{ cash_total: number }>("get_shift_stats_v3", { sessionToken: token, shiftId: activeShift.id });
+      const shiftStats = await invoke<{ cash_total: number; cash_refunds: number }>("get_shift_stats_v3", { sessionToken: token, shiftId: activeShift.id });
 
-      const expectedCashCents = shiftStats.cash_total + activeShift.starting_cash_cents;
+      // Cash refunded to customers left this drawer.
+      const expectedCashCents = shiftStats.cash_total - shiftStats.cash_refunds + activeShift.starting_cash_cents;
       const actualCashCents = parseMoneyInput(actualCash);
       const diffCents = actualCashCents - expectedCashCents;
       const absDiff = Math.abs(diffCents);
@@ -380,6 +385,11 @@ export default function ShiftPage() {
             نقدي
           </div>
           <p className="text-2xl font-bold text-accent-text font-mono tabular" dir="ltr">{formatMoney(stats.cashTotal)}</p>
+          {stats.cashRefunds > 0 && (
+            <p className="text-xs text-danger mt-1" data-testid="shift-cash-refunds">
+              مستردات نقدية: <span className="font-mono tabular" dir="ltr">-{formatMoney(stats.cashRefunds)}</span>
+            </p>
+          )}
         </div>
       </div>
 
@@ -401,7 +411,7 @@ export default function ShiftPage() {
             {recentOrders.map((o) => (
               <div key={o.id} className="flex items-center justify-between py-2 border-b border-line-2 last:border-0">
                 <div className="flex items-center gap-3">
-                  <span className="font-mono text-xs text-text-muted">{orderNo(o.id)}</span>
+                  <span className="font-mono text-xs text-text-muted">{labelOf(o.id)}</span>
                   <span className="text-sm text-text">
                     {orderStatusLabel(o.status)}
                   </span>

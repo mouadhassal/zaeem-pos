@@ -50,6 +50,12 @@ export interface ReceiptData {
   cashier?: string;
   /** When the order was taken (ISO). Falls back to "now" for a new sale. */
   createdAt?: string;
+  /** When it was paid (ISO), for a receipt printed again later. Falls back to "now". */
+  paidAt?: string;
+  /** A receipt printed again from the order history. */
+  isCopy?: boolean;
+  /** Already refunded to the customer, shown under the total on a reprint. */
+  refundedCents?: number;
   /** Lines taken off the order before it was paid, with why. */
   cancelledItems?: { name: string; quantity: number; reason?: string }[];
   /**
@@ -151,6 +157,16 @@ function itemRows(items: readonly TicketItem[], prefix = ""): Row[] {
   return rows;
 }
 
+/** The daily order number (A-0001), big enough to call out across a counter. */
+function orderNumberRows(orderNumber: string): Row[] {
+  return [
+    { t: "gap", h: 4 },
+    { t: "line", text: "رقم الطلب", size: 22, align: "center" },
+    { t: "line", text: orderNumber, size: 52, bold: true, align: "center" },
+    { t: "gap", h: 4 },
+  ];
+}
+
 export function kitchenTicketRows(data: KitchenTicketData, now: Date = new Date()): Row[] {
   const kind = data.kind ?? "NEW";
   const rows: Row[] = [];
@@ -160,11 +176,10 @@ export function kitchenTicketRows(data: KitchenTicketData, now: Date = new Date(
   if (data.stationOf && data.stationOf > 1 && data.stationNo) {
     rows.push({ t: "line", text: `قسم ${data.stationNo} من ${data.stationOf}`, size: 24, align: "center" });
   }
-  rows.push({ t: "gap", h: 6 });
+  rows.push(...orderNumberRows(data.orderNumber));
   rows.push({ t: "rule" });
 
   if (isSeatedTable(data.tableName)) rows.push({ t: "two", right: "طاولة", left: data.tableName });
-  rows.push({ t: "two", right: "رقم الطلب", left: data.orderNumber, bold: true });
   rows.push({ t: "two", right: "النوع", left: ORDER_TYPE_LABELS[data.orderType] ?? data.orderType });
   if (data.customerName) rows.push({ t: "two", right: "العميل", left: data.customerName });
   if (data.cashier) rows.push({ t: "two", right: "الكاشير", left: data.cashier });
@@ -222,13 +237,15 @@ export function receiptRows(data: ReceiptData, now: Date = new Date()): Row[] {
   rows.push({ t: "line", text: data.chainName, size: 42, bold: true, align: "center" });
   // When the shop has no name of its own the title already is the branch name.
   if (data.branchName && data.branchName !== data.chainName) rows.push({ t: "line", text: data.branchName, size: 24, align: "center" });
-  rows.push({ t: "gap", h: 6 });
+  if (data.isCopy) rows.push({ t: "line", text: "(نسخة مكررة)", size: 24, align: "center" });
+  rows.push(...orderNumberRows(data.orderNumber));
   rows.push({ t: "rule" });
 
-  rows.push({ t: "two", right: "رقم الطلب", left: data.orderNumber, bold: true });
-  rows.push({ t: "two", right: "التاريخ", left: formatArabicDate(now) });
+  const paidAt = parse(data.paidAt, now);
+  rows.push({ t: "two", right: "التاريخ", left: formatArabicDate(paidAt) });
   if (data.createdAt) rows.push({ t: "two", right: "وقت الطلب", left: formatArabicTime(parse(data.createdAt, now)) });
-  rows.push({ t: "two", right: data.createdAt ? "وقت الدفع" : "الوقت", left: formatArabicTime(now) });
+  rows.push({ t: "two", right: data.createdAt ? "وقت الدفع" : "الوقت", left: formatArabicTime(paidAt) });
+  if (data.isCopy) rows.push({ t: "two", right: "وقت الطباعة", left: dateTime(now) });
   if (data.cashier) rows.push({ t: "two", right: "الكاشير", left: data.cashier });
   // 2026-08-13 generalization fix: was drawn unconditionally -- a takeaway/
   // delivery order (tableName = "") or ANY order from a has_tables=false
@@ -279,6 +296,7 @@ export function receiptRows(data: ReceiptData, now: Date = new Date()): Row[] {
 
   rows.push({ t: "rule" });
   rows.push({ t: "two", right: "الإجمالي", left: fmt(data.totalCents), size: 34, bold: true });
+  if (data.refundedCents && data.refundedCents > 0) rows.push({ t: "two", right: "مسترد", left: `-${fmt(data.refundedCents)}`, bold: true });
   rows.push({ t: "rule" });
 
   if (data.paymentMethod) rows.push({ t: "two", right: "طريقة الدفع", left: PAYMENT_LABELS[data.paymentMethod] ?? data.paymentMethod });
