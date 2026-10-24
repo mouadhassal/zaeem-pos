@@ -1,3 +1,5 @@
+import { toLatinDigits } from "./digits";
+
 // Currency-aware money formatting. Mirrors src-tauri/src/money.rs's
 // MoneyPolicy::scale_for exactly -- must stay in sync with that match arm,
 // not diverge with its own rules. SYP/IQD have scale 0 (every *_cents
@@ -92,6 +94,8 @@ export function minorToInputValue(amountCents: number, currency: string = curren
 
 export function parseMoneyInput(value: string, currency: string = currentCurrency): number {
   const scale = scaleFor(currency);
-  const parsed = parseFloat(value) || 0;
+  // Arabic digits read as 0 and "7,500" (the grouping formatMoney itself
+  // prints) read as 7 with a bare parseFloat.
+  const parsed = parseFloat(toLatinDigits(value).replace(/[,٬\s]/g, "")) || 0;
   return Math.round(parsed * 10 ** scale);
 }

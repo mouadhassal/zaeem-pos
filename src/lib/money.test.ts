@@ -66,4 +66,10 @@ describe("parseMoneyInput", () => {
   it("returns 0 for unparseable input", () => {
     expect(parseMoneyInput("abc")).toBe(0);
   });
+
+  it("reads Arabic digits and grouped amounts", () => {
+    expect(parseMoneyInput("٧٥٠٠")).toBe(7500);
+    expect(parseMoneyInput("7,500")).toBe(7500);
+    expect(parseMoneyInput("١٢٫٥٠", "SAR")).toBe(1250);
+  });
 });

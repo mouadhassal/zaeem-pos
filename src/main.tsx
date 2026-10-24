@@ -5,6 +5,7 @@ import SplashScreen from "./components/SplashScreen";
 import { checkForUpdatesSilently } from "./lib/autoUpdate";
 import { startMemoryMonitoring, measureStartup, startFpsMonitor } from "./lib/performance";
 import { logger } from "./lib/logger";
+import { installLatinDigitInput } from "./lib/digits";
 // ZAEEM_DESIGN_SYSTEM.md §2: Poppins/Cairo for headings & UI, Manrope/Cairo
 // for body, IBM Plex Mono (tabular) for every numeral -- self-hosted via
 // @fontsource, not a CDN <link>, since this app must render correctly on a
@@ -107,6 +108,8 @@ function Root() {
 
   return <App />;
 }
+
+installLatinDigitInput();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

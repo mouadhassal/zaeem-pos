@@ -96,6 +96,14 @@ export default function AiOnboardingPage() {
     }
   }, [selectedIdx, token]);
 
+  // Uploads already read by the AI live in the backend queue; without this
+  // they vanished from the screen as soon as the owner left the page.
+  useEffect(() => {
+    invoke<UploadItem[]>("list_uploads", { sessionToken: token })
+      .then(setUploads)
+      .catch((e) => setUploadError(`تعذر تحميل قائمة الملفات: ${realErrorText(e)}`));
+  }, [token]);
+
   const handleFiles = async (files: FileList | Array<File> | null, kind: string) => {
     if (!files) return;
     for (const file of Array.from(files)) {
@@ -536,12 +544,12 @@ export default function AiOnboardingPage() {
                       </div>
 
                       <div className="divide-y divide-ink-100">
-                        {items.map((item, itemIdx) => {
+                        {items.map((item) => {
                           const globalIdx = displayDraft.items.indexOf(item);
                           return (
                             <div key={globalIdx} className="p-3 hover:bg-ink-50 transition-colors">
                               <div className="flex items-start gap-3">
-                                {!editing && (
+                                {editing && (
                                   <button
                                     onClick={() => moveItem(globalIdx, -1)}
                                     className="p-1 text-ink-300 hover:text-ink-600"
@@ -621,7 +629,7 @@ export default function AiOnboardingPage() {
                                         <Plus className="w-3.5 h-3.5" />
                                       </button>
                                       <button
-                                        onClick={() => removeItem(itemIdx)}
+                                        onClick={() => removeItem(globalIdx)}
                                         className="p-1.5 rounded-lg text-ink-400 hover:text-danger-600 hover:bg-danger-50 transition-colors"
                                         title="حذف"
                                       >
