@@ -6,6 +6,7 @@ import type { TaxMode } from "../../db/types";
 import { checkLicense, activateLicense, getDeviceId, backOfficeLocked, type LicenseStatus } from "../../lib/license";
 import { IconPencil as Pencil, IconTrash as Trash, IconPhotoPlus as ImagePlus, IconX as X } from "@tabler/icons-react";
 import NetworkTab from "./NetworkTab";
+import ProductsPerRowSetting from "./ProductsPerRowSetting";
 import { checkForUpdatesManually } from "../../lib/autoUpdate";
 import { createBackup, listBackups, getBackupSettings, updateBackupSettings, type BackupInfo, type BackupSettings } from "../../lib/backup";
 import { realErrorText } from "../../lib/errors";
@@ -766,6 +767,9 @@ export default function SettingsPage({ initialTab = "general" }: { initialTab?: 
                 </button>
               </div>
             </div>
+
+            <h2 className="text-lg font-bold text-ink-900 font-arabic">شاشة البيع</h2>
+            <ProductsPerRowSetting />
           </div>
         )}
 

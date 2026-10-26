@@ -609,6 +609,89 @@ try {
     await nav("shift");
     await until(async () => (await textOf("shift-cash-refunds")).length > 0, "the shift shows the cash refund");
   });
+  // Settings > عام > "عدد الأصناف في كل صف": the owner picks how many item
+  // cards share a row; the cards shrink to fit and nothing spills out, even
+  // with a long price and an item already in the cart.
+  await step("grid-density", "products per row: 5 keeps full-size cards, 7 and 10 shrink to fit, nothing spills out", async () => {
+    const cat = await call("create_category_v3", { name: "حلويات", color: null, sortOrder: 0, imagePath: null });
+    const prices = [1500, 2500, 12500, 125000, 3000, 4500, 99000, 6000, 7500, 800, 15000, 2200, 33000, 5000, 18000];
+    for (let i = 0; i < prices.length; i++) {
+      await call("create_menu_item_v3", { name: `حلوى رقم ${i + 1} بالقشطة`, categoryId: cat, priceCents: prices[i], costCents: 0, description: null, barcode: null });
+    }
+    // A 1920x1080 till at 125% scaling: the size the owner sees 5 per row on today.
+    await b.setWindowSize(1536, 864);
+    await b.refresh();
+    await byId("sidebar", 30000);
+    await nav("pos");
+    await clickId("order-type-TAKEAWAY").catch(() => {});
+    // one item in the cart, with the longest price, so its stepper shows
+    const cartItem = "حلوى رقم 4 بالقشطة";
+    await b.execute((nm) => {
+      const card = [...document.querySelectorAll('[data-testid="item-card"]')].find((c) => c.innerText.includes(nm));
+      card.click();
+      card.click();
+    }, cartItem);
+    const measure = () =>
+      b.execute((nm) => {
+        const cards = [...document.querySelectorAll('[data-testid="item-card"]')];
+        const top0 = Math.round(cards[0].getBoundingClientRect().top);
+        const perRow = cards.filter((c) => Math.round(c.getBoundingClientRect().top) === top0).length;
+        const spill = cards.filter((c) => {
+          const cr = c.getBoundingClientRect();
+          return c.scrollWidth > c.clientWidth + 1 || [...c.querySelectorAll("*")].some((e) => {
+            const r = e.getBoundingClientRect();
+            return r.width > 0 && (r.left < cr.left - 1 || r.right > cr.right + 1 || r.bottom > cr.bottom + 1);
+          });
+        }).map((c) => c.innerText.split("\n")[0]);
+        const inCart = cards.find((c) => c.innerText.includes(nm));
+        const r = cards[0].getBoundingClientRect();
+        const qtyShown = !!inCart.querySelector('button[aria-label="تقليل"]') && [...inCart.querySelectorAll("span")].some((x) => x.children.length === 0 && x.innerText.trim() === "2");
+        return { perRow, w: Math.round(r.width), h: Math.round(r.height), spill, qtyShown, inCart: !!inCart.querySelector('button[aria-label="تقليل"]'), gridW: Math.round(document.querySelector('[data-testid="menu-grid"]').getBoundingClientRect().width) };
+      }, cartItem);
+    const setPerRow = async (n) => {
+      await nav("settings");
+      await clickId(`products-per-row-${n}`);
+      await nav("pos");
+      await pause(600);
+    };
+    const auto = await measure();
+    console.log("  auto:", JSON.stringify(auto));
+    const seen = {};
+    for (const n of [5, 7, 10]) {
+      await setPerRow(n);
+      seen[n] = await measure();
+      console.log(`  ${n} per row:`, JSON.stringify(seen[n]));
+      console.log("  shot:", await reg.shot(`grid-${n}`));
+      eq(seen[n].perRow, n, `cards in the first row at ${n}`);
+      eq(seen[n].spill, [], `cards with content outside them at ${n}`);
+      ok(seen[n].qtyShown, `the in-cart quantity shows at ${n}`);
+    }
+    ok(seen[7].w < seen[5].w && seen[10].w < seen[7].w, "more per row = smaller cards");
+    ok(seen[7].h < seen[5].h && seen[10].h < seen[7].h, "smaller cards are shorter too, so more rows fit");
+    // the choice survives a restart of the page (kept on this device)
+    await b.refresh();
+    await byId("sidebar", 30000);
+    await nav("pos");
+    await pause(600);
+    eq((await measure()).perRow, 10, "per-row choice after a reload");
+    // the reload emptied the unsent cart: tap the card again, then the "−"
+    // on its picture (10 per row) must take it back out
+    await clickId("order-type-TAKEAWAY").catch(() => {});
+    await b.execute((nm) => {
+      [...document.querySelectorAll('[data-testid="item-card"]')].find((c) => c.innerText.includes(nm)).click();
+    }, cartItem);
+    await pause(300);
+    ok((await measure()).inCart, "tapping a small card adds it");
+    await b.execute((nm) => {
+      const card = [...document.querySelectorAll('[data-testid="item-card"]')].find((c) => c.innerText.includes(nm));
+      card.querySelector('button[aria-label="تقليل"]').click();
+    }, cartItem);
+    await pause(300);
+    ok(!(await measure()).inCart, "the picture's − took the item back out of the cart");
+    await setPerRow(0);
+    eq((await measure()).perRow, auto.perRow, "back to auto");
+    await b.setWindowSize(1280, 720);
+  });
   // Visual tour: every sidebar screen at two common till sizes, screenshot +
   // anything wider than the window (the page must never scroll sideways).
   await step("tour", "every screen fits the window at 1366 and 1024 wide", async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, type ComponentProps } from "react";
+import { useEffect, useRef, useState, useMemo, type ComponentProps } from "react";
 import { IconSearch, IconLayoutGrid } from "@tabler/icons-react";
 import { useMenuStore, useFilteredMenuItems } from "../../stores/menuStore";
 import { useCartStore } from "../../stores/cartStore";
@@ -14,6 +14,8 @@ import { useOptionsStore } from "../../stores/optionsStore";
 import { groupsForItem, type OptionGroup } from "../../lib/itemOptions";
 import OptionPickerModal from "../../components/modals/OptionPickerModal";
 import { navigateTo } from "../../lib/appNav";
+import { useMenuGridStore } from "../../stores/menuGridStore";
+import { menuGridLayout } from "../../lib/menuGridLayout";
 
 // list_menu_items_v3 returns "HAS_PHOTO" (not a real path/URL, see its
 // P0-fix doc comment) when an item has a photo, null otherwise -- this
@@ -92,6 +94,28 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
   useEffect(() => {
     fetchMenu();
   }, [fetchMenu]);
+
+  // Products per row (Settings > عام): the grid's width decides how small
+  // the cards must be to fit the chosen count.
+  const productsPerRow = useMenuGridStore((s) => s.productsPerRow);
+  const gridAreaRef = useRef<HTMLDivElement>(null);
+  const [gridWidth, setGridWidth] = useState(0);
+  useEffect(() => {
+    const el = gridAreaRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setGridWidth(Math.floor(entry.contentRect.width));
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  const layout = menuGridLayout(productsPerRow, gridWidth);
+  const gridStyle = {
+    gap: layout.gapPx,
+    gridTemplateColumns: layout.columns
+      ? `repeat(${layout.columns}, minmax(0, 1fr))`
+      : "repeat(auto-fill, minmax(180px, 1fr))",
+  };
 
   const handleAdd = (item: (typeof allItems)[0]) => {
     const cat = categories.find((c) => c.id === item.category_id);
@@ -265,9 +289,9 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-3">
+      <div ref={gridAreaRef} className="flex-1 overflow-y-auto p-3">
         {isInitialLoading ? (
-          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}>
+          <div className="grid" style={gridStyle}>
             {Array.from({ length: 12 }, (_, i) => (
               <div key={i} className="h-28 rounded-[12px] bg-surface-alt animate-pulse" />
             ))}
@@ -293,7 +317,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
             )}
           </div>
         ) : (
-          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}>
+          <div className="grid" style={gridStyle} data-testid="menu-grid">
             {visibleItems.map((item) => {
               const cat = categories.find((c) => c.id === item.category_id);
               return (
@@ -310,6 +334,9 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
                   quantity={getQty(item.id)}
                   hasOptions={!item.is_combo && groupsForItem(optionGroups, item.id, item.category_id).length > 0}
                   currencySymbol={currencySymbol}
+                  density={layout.density}
+                  glyphHeightPx={layout.glyphHeightPx}
+                  iconSizePx={layout.iconSizePx}
                   onAdd={() => handleAdd(item)}
                   onRemove={() => handleRemove(item)}
                 />
