@@ -5,14 +5,14 @@ import { usePermissions } from "../../hooks/usePermissions";
 import { getBusinessMode } from "../../lib/orderService";
 import { navForMode } from "../../lib/businessPreset";
 import { openMarketplace } from "../../lib/marketplace";
-import { getCachedLicenseStatus, isPosLite } from "../../lib/license";
+import { usePlanStore, LITE_PAGES } from "../../stores/planStore";
 import { BrandMark } from "../BrandLogo";
 import {
   IconLogout as LogOut,
   IconCashRegister, IconToolsKitchen2, IconClipboardList, IconBox,
   IconChartBar, IconUsers, IconClock, IconReceipt2, IconWallet,
   IconBuilding, IconCoin, IconGift, IconRobot, IconWand,
-  IconSettings, IconTool, IconLayoutDashboard, IconShoppingCart, IconCalendar, IconTruckDelivery, IconHistory,
+  IconSettings, IconBook, IconTool, IconLayoutDashboard, IconShoppingCart, IconCalendar, IconTruckDelivery, IconHistory,
   type Icon,
 } from "@tabler/icons-react";
 
@@ -37,6 +37,7 @@ const ICON_BY_ID: Record<string, Icon> = {
   ai: IconRobot,
   "ai-onboarding": IconWand,
   settings: IconSettings,
+  guide: IconBook,
   debug: IconTool,
 };
 
@@ -63,20 +64,13 @@ export default function Sidebar({ active, onNavigate }: Props) {
   useEffect(() => {
     getBusinessMode().then((m) => setHasKitchen(m.has_kitchen)).catch(() => {});
   }, []);
-  // 2026-08-14 pricing tiers: 'pos_lite' is the sell-and-print terminal
-  // without the CRM/ERP layer -- this is only the UI-level hide, mirroring
-  // hasKitchen's pattern above. The real enforcement is server-side
-  // (commands_v3.rs's require_plan_includes_management); a pos_lite
-  // terminal that somehow still navigated here would just get rejected on
-  // the backend call, same as any other permission gate in this app.
-  const [posLite, setPosLite] = useState(false);
-  useEffect(() => {
-    getCachedLicenseStatus().then((s) => setPosLite(isPosLite(s))).catch(() => {});
-  }, []);
-  const CRM_ERP_NAV_IDS = new Set(["reports", "loyalty", "debt", "schedule"]);
+  // POS Lite shows only the till's own screens (stores/planStore.ts). An
+  // allowlist, so a new page is Full-only until someone decides otherwise;
+  // the real enforcement is plan_gate.rs refusing the commands.
+  const posLite = usePlanStore((s) => s.posLite);
   // Business preset (restaurant/retail) decides KDS visibility and labels.
   const items = navForMode(
-    navItems.filter((n) => n.allowed).filter((n) => !posLite || !CRM_ERP_NAV_IDS.has(n.id)),
+    navItems.filter((n) => n.allowed).filter((n) => !posLite || LITE_PAGES.has(n.id)),
     { has_tables: true, has_kitchen: hasKitchen },
   );
 

@@ -11,6 +11,7 @@ import LicenseBanner from "./components/LicenseBanner";
 import { backOfficeLocked, type LicenseStatus } from "./lib/license";
 import { IconLock } from "@tabler/icons-react";
 import { usePermissions } from "./hooks/usePermissions";
+import { usePlanStore, LITE_PAGES } from "./stores/planStore";
 
 const DashboardPage = lazy(() => import("./app/dashboard/page"));
 const POSPage = lazy(() => import("./app/pos/page"));
@@ -31,6 +32,7 @@ const SettingsPage = lazy(() => import("./app/settings/page"));
 const AIPage = lazy(() => import("./app/ai/page"));
 const AiOnboardingPage = lazy(() => import("./app/ai-onboarding/page"));
 const LoyaltyPage = lazy(() => import("./app/loyalty/page"));
+const GuidePage = lazy(() => import("./app/guide/page"));
 
 const DebugPage = import.meta.env.DEV
   ? lazy(() => import("./app/debug/page"))
@@ -61,9 +63,11 @@ function PosLayout({ children }: { children: React.ReactNode }) {
   // landing view was wrong, not the KDS page/route itself.
   // Lets the locked screen's "activate" button open Settings on the licence tab.
   const [settingsInitialTab, setSettingsInitialTab] = useState<"general" | "license">("general");
+  const posLite = usePlanStore((s) => s.posLite);
   const [activeView, setActiveView] = useState(() => {
     const role = useAuthStore.getState().user?.role;
-    if (role === "OWNER") return "dashboard";
+    // POS Lite has no dashboard: its owner starts at the till.
+    if (role === "OWNER") return usePlanStore.getState().posLite ? "pos" : "dashboard";
     if (role === "KITCHEN") return "kds";
     return "pos";
   });
@@ -78,11 +82,20 @@ function PosLayout({ children }: { children: React.ReactNode }) {
       return;
     }
     const item = navItems.find((n) => n.id === id);
-    if (item && item.allowed) {
+    if (item && item.allowed && (!posLite || LITE_PAGES.has(id))) {
       if (id === "settings") setSettingsInitialTab("general");
       setActiveView(id);
     }
   };
+
+  // The plan can arrive (or change, e.g. a downgrade) after this screen
+  // opened: a Lite till never stays on a Full-only page.
+  useEffect(() => {
+    if (licenseStatus) usePlanStore.getState().setFromStatus(licenseStatus);
+  }, [licenseStatus]);
+  useEffect(() => {
+    if (posLite && !LITE_PAGES.has(activeView) && activeView !== "debug") setActiveView("pos");
+  }, [posLite, activeView]);
 
   // Screens can ask to open another screen (e.g. the empty till -> Menu).
   useEffect(() => {
@@ -98,7 +111,7 @@ function PosLayout({ children }: { children: React.ReactNode }) {
   // License lives, the only place a locked device can paste a new
   // activation key. SettingsPage itself gates its OTHER tabs individually
   // when locked, so nothing except the license tab becomes reachable.
-  const locked = activeView !== "pos" && activeView !== "settings" && licenseStatus !== null && backOfficeLocked(licenseStatus);
+  const locked = activeView !== "pos" && activeView !== "settings" && activeView !== "guide" && licenseStatus !== null && backOfficeLocked(licenseStatus);
 
   const renderContent = () => {
     if (locked) {
@@ -143,6 +156,7 @@ function PosLayout({ children }: { children: React.ReactNode }) {
       case "loyalty": return <LoyaltyPage />;
       case "ai": return <AIPage />;
       case "ai-onboarding": return <AiOnboardingPage />;
+      case "guide": return <GuidePage />;
       case "settings": return <SettingsPage initialTab={settingsInitialTab} />;
       case "debug": return DebugPage ? <DebugPage /> : null;
       default: return children;
@@ -185,6 +199,7 @@ export default function App() {
     // and every launch forced a fresh PIN login. checkNeedsSetup must NOT
     // run over a restored session -- it force-clears isAuthenticated --
     // so it only runs when no verified session was restored.
+    void usePlanStore.getState().load();
     const boot = async () => {
       await checkSession();
       if (!useAuthStore.getState().isAuthenticated) {

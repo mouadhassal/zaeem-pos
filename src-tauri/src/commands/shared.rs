@@ -124,14 +124,8 @@ pub(crate) fn require_license_not_locked_or_initial_setup(
 /// an unrecognized string, same reasoning as this repo's licensing
 /// incidents already documented in README.md #6.
 pub(crate) fn require_plan_includes_management(license: &crate::license::cloud::CloudLicenseState) -> Result<(), String> {
-    let plan = match license.cached_status() {
-        license_core::signed::LicenseStatus::Active { plan, .. }
-        | license_core::signed::LicenseStatus::Grace { plan, .. }
-        | license_core::signed::LicenseStatus::LockedBackOffice { plan, .. } => plan,
-        license_core::signed::LicenseStatus::Invalid { .. } => return Ok(()),
-    };
-    if plan == "pos_lite" {
-        return Err("هذه الباقة (POS خفيف) لا تشمل هذه الميزة -- تواصل معنا للترقية إلى الباقة الكاملة".to_string());
+    if crate::plan_gate::is_pos_lite(&license.cached_status()) {
+        return Err(crate::plan_gate::LITE_REFUSED.to_string());
     }
     Ok(())
 }

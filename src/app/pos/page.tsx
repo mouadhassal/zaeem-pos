@@ -30,6 +30,7 @@ import {
   IconToolsKitchen2, IconShoppingBag, IconWallet, IconX, IconTruckDelivery,
 } from "@tabler/icons-react";
 import { useCartStore } from "../../stores/cartStore";
+import { usePlanStore } from "../../stores/planStore";
 import { useAuthStore } from "../../stores/authStore";
 import { useShiftStore } from "../../stores/shiftStore";
 import { useOrderTypeStore } from "../../stores/orderTypeStore";
@@ -203,6 +204,8 @@ export default function POSPage() {
   // the backend default, so the table bar/DINE_IN option never flash-hide
   // before the real value loads.
   const [hasTables, setHasTables] = useState(true);
+  // POS Lite has no debt book and no loyalty (plan_gate.rs refuses both).
+  const posLite = usePlanStore((s) => s.posLite);
 
   const { items, tableId, tableName, setTable, addItem, clearCart, voidItem, updateQuantity } = useCartStore();
   const { orderType, setOrderType, customerName, customerPhone, deliveryAddress, driverId, debtorId, debtorName, resetOrderInfo, pickupAtMs, setPickupAtMs } = useOrderTypeStore();
@@ -1422,6 +1425,7 @@ export default function POSPage() {
             // 2026-08-03 "next phase": DINE_IN implies a dining room --
             // meaningless once tables are off.
             .filter((t) => hasTables || t !== "DINE_IN")
+            .filter((t) => !posLite || t !== "DEBT")
             .map((t) => {
             const IconComp = ORDER_TYPE_ICONS[t] || IconToolsKitchen2;
             const isActive = orderType === t;
@@ -1481,7 +1485,7 @@ export default function POSPage() {
                 className="h-7 px-2 rounded-[7px] border border-line text-xs w-24 bg-surface-alt focus:outline-none focus:border-accent font-mono"
                 dir="ltr"
               />
-              <button
+              {!posLite && <button
                 onClick={() => setShowLoyaltyScan(true)}
                 className={`h-7 px-2 rounded-[7px] text-xs font-bold transition-all flex items-center gap-1 ${
                   loyaltyCard ? "bg-accent-soft text-accent-text" : "bg-surface-alt text-text-3 hover:text-text-2"
@@ -1489,7 +1493,7 @@ export default function POSPage() {
               >
                 <Award className="w-3 h-3" />
                 {loyaltyCard ? `${loyaltyCard.customer_name} (${loyaltyCard.points})` : "ولاء"}
-              </button>
+              </button>}
             </>
           )}
           {orderType === "DEBT" && (

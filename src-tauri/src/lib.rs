@@ -33,6 +33,7 @@ mod diagnostics;
 mod reconcile;
 mod assistant;
 mod goods_receipt;
+mod plan_gate;
 
 // Only the debug-build staff seeding (seed_default_staff) hashes PINs here.
 #[cfg(debug_assertions)]
@@ -224,6 +225,26 @@ fn log_update_event(message: String) {
 // in that scope, and writes an audit entry on a successful grant. See that
 // function's doc comment for the full rationale.
 
+/// POS Lite: refuses every Full-only command (plan_gate.rs) before it runs,
+/// so no single command body has to remember the plan check.
+fn gate_by_plan<R: tauri::Runtime>(
+    handler: impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        let refused = invoke
+            .message
+            .webview_ref()
+            .try_state::<license::cloud::CloudLicenseState>()
+            .map(|l| plan_gate::refuses(invoke.message.command(), &l.cached_status()))
+            .unwrap_or(false);
+        if refused {
+            invoke.resolver.reject(plan_gate::LITE_REFUSED);
+            return true;
+        }
+        handler(invoke)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -382,6 +403,15 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    // POS Lite keeps its data on the till (plan_gate.rs): the
+                    // outbox keeps filling and is sent only after an upgrade.
+                    let uploads = sync_timer_handle
+                        .try_state::<crate::license::cloud::CloudLicenseState>()
+                        .map(|l| plan_gate::uploads_to_cloud(&l.cached_status()))
+                        .unwrap_or(true);
+                    if !uploads {
+                        continue;
+                    }
                     if let Some(db) = sync_timer_handle.try_state::<Db>() {
                         let result = sync::run_tick(&db.0, 500, &sync_config_dir).await;
                         obslog::log_sync_tick_result(&result);
@@ -445,7 +475,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(gate_by_plan(tauri::generate_handler![
             diagnose_db,
             log_frontend_command_error,
             log_update_event,
@@ -691,7 +721,7 @@ pub fn run() {
             print::print_raw_bytes_v3,
             print::print_network_raw_v3,
             print::print_image_driver_v3,
-        ])
+        ]))
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

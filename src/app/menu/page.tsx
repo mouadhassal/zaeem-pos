@@ -10,6 +10,7 @@ import { IconPencil, IconTrash, IconX } from "@tabler/icons-react";
 import Typeahead from "../../components/ui/Typeahead";
 import { useToast } from "../../hooks/useToast";
 import OptionsTab from "./OptionsTab";
+import { usePlanStore } from "../../stores/planStore";
 
 interface Category {
   id: string;
@@ -362,13 +363,17 @@ export default function MenuPage() {
   }, [fetchAll]);
 
   // ---- Menu Items ----
+  // Recipes draw stock from Inventory, which POS Lite doesn't have.
+  const posLite = usePlanStore((s) => s.posLite);
   const fetchAllIngredientsOnce = () => {
+    if (posLite) return;
     invoke<IngredientOption[]>("list_ingredients_v3", { sessionToken: token })
       .then(setAllIngredients)
       .catch(() => setAllIngredients([]));
   };
 
   const fetchRecipeIngredients = (itemId: string) => {
+    if (posLite) return;
     invoke<RecipeIngredient[]>("list_recipe_ingredients_v3", { sessionToken: token, menuItemId: itemId })
       .then(setRecipeIngredients)
       .catch(() => setRecipeIngredients([]));
@@ -1450,7 +1455,7 @@ export default function MenuPage() {
                 />
               </div>
 
-              <div>
+              {!posLite && <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">
                   المكونات المستهلكة (اختياري)
                 </label>
@@ -1564,7 +1569,7 @@ export default function MenuPage() {
                     احفظ الصنف أولاً، بعدها تقدر تربطه بمكوّنات من المخزون
                   </p>
                 )}
-              </div>
+              </div>}
 
               {itemErrors._form && (
                 <p className="text-sm text-danger font-arabic">{itemErrors._form}</p>

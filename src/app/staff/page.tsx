@@ -11,6 +11,7 @@ import DatePicker from "../../components/ui/DatePicker";
 import { formatMoney } from "../../lib/money";
 import { toLocalDateStr, parseLocalDateStr, formatArabicDate, formatArabicTime } from "../../lib/dateLocal";
 import { useToast } from "../../hooks/useToast";
+import { usePlanStore } from "../../stores/planStore";
 /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 type Tab = "employees" | "shifts" | "attendance";
@@ -156,6 +157,8 @@ export default function StaffPage() {
   const user = useAuthStore((s) => s.user);
   const token = useAuthStore((s) => s.token);
   const [tab, setTab] = useState<Tab>("employees");
+  // POS Lite keeps cashiers and shifts; attendance is HR, Full only.
+  const posLite = usePlanStore((s) => s.posLite);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -461,7 +464,7 @@ export default function StaffPage() {
       )}
 
       <div className="flex gap-2 border-b border-ink-200 pb-2">
-        {(["employees", "shifts", "attendance"] as Tab[]).map((t) => (
+        {(["employees", "shifts", "attendance"] as Tab[]).filter((t) => !posLite || t !== "attendance").map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -717,7 +720,7 @@ export default function StaffPage() {
       )}
 
       {/* TAB: Attendance */}
-      {tab === "attendance" && (
+      {tab === "attendance" && !posLite && (
         <div className="space-y-4">
           <div className="flex gap-2 border-b border-ink-200 pb-2">
             {(["today", "history"] as const).map((st) => (

@@ -10,6 +10,7 @@ import DatePicker from "../../components/ui/DatePicker";
 import { formatMoney } from "../../lib/money";
 import { formatArabicDate } from "../../lib/dateLocal";
 import { useToast } from "../../hooks/useToast";
+import { usePlanStore } from "../../stores/planStore";
 
 interface Customer {
   id: string;
@@ -151,7 +152,10 @@ export default function CustomersPage() {
       // repo.rs's delete_customer, which has no FK enforcement against
       // loyalty_cards.customer_id).
       try {
-        const cards = await invoke<LoyaltyCardSummary[]>("list_loyalty_cards_v3", { sessionToken: token });
+        // POS Lite has no loyalty: nothing to warn about.
+        const cards = usePlanStore.getState().posLite
+          ? []
+          : await invoke<LoyaltyCardSummary[]>("list_loyalty_cards_v3", { sessionToken: token });
         setLoyaltyCards(cards);
       } catch {
         // Non-fatal: the delete dialog just won't show the loyalty warning.

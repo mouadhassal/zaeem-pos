@@ -14,6 +14,7 @@ const CASHIER_NAV: SidebarNavItem[] = [
   { id: "orders", label: "سجل الطلبات", icon: "history", allowed: true },
   { id: "delivery", label: "التوصيل", icon: "truck", allowed: true },
   { id: "debt", label: "الديون", icon: "wallet", allowed: true, readOnly: true },
+  { id: "guide", label: "الدليل", icon: "book", allowed: true },
 ];
 
 const MANAGER_NAV: SidebarNavItem[] = [
@@ -32,6 +33,7 @@ const MANAGER_NAV: SidebarNavItem[] = [
   { id: "staff", label: "الموظفين", icon: "users-round", allowed: true },
   { id: "schedule", label: "جدول الدوام", icon: "calendar", allowed: true },
   { id: "ai", label: "المساعد الذكي", icon: "bot", allowed: true },
+  { id: "guide", label: "الدليل", icon: "book", allowed: true },
   { id: "settings", label: "الإعدادات", icon: "settings", allowed: true },
 ];
 
@@ -41,6 +43,7 @@ const ACCOUNTANT_NAV: SidebarNavItem[] = [
   { id: "orders", label: "سجل الطلبات", icon: "history", allowed: true },
   { id: "reports", label: "التقارير", icon: "bar-chart-3", allowed: true },
   { id: "finance", label: "المالية", icon: "wallet", allowed: true },
+  { id: "guide", label: "الدليل", icon: "book", allowed: true },
 ];
 
 const OWNER_NAV: SidebarNavItem[] = [
@@ -63,12 +66,14 @@ const OWNER_NAV: SidebarNavItem[] = [
   { id: "loyalty", label: "برنامج الولاء", icon: "award", allowed: true },
   { id: "ai", label: "المساعد الذكي", icon: "bot", allowed: true },
   { id: "ai-onboarding", label: "إعداد القائمة AI", icon: "scan-line", allowed: true },
+  { id: "guide", label: "الدليل", icon: "book", allowed: true },
   { id: "settings", label: "الإعدادات", icon: "settings", allowed: true },
 ];
 
 const KITCHEN_NAV: SidebarNavItem[] = [
   { id: "kds", label: "المطبخ", icon: "calculator", allowed: true },
   { id: "shift", label: "الوردية", icon: "clock", allowed: true },
+  { id: "guide", label: "الدليل", icon: "book", allowed: true },
 ];
 
 export function getNavForRole(role: UserRole | undefined): SidebarNavItem[] {

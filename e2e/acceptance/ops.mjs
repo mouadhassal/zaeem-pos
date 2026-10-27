@@ -692,6 +692,29 @@ try {
     eq((await measure()).perRow, auto.perRow, "back to auto");
     await b.setWindowSize(1280, 720);
   });
+  // The in-app user guide (sidebar "الدليل"): written per role, searchable in
+  // Arabic, and still reachable when the licence blocks the back office.
+  await step("guide", "user guide: owner sees the chapters, search finds the refund steps", async () => {
+    await b.setWindowSize(1366, 768);
+    await nav("guide");
+    await byId("guide-page");
+    const chapterIds = () => b.execute(() => [...document.querySelectorAll('[data-testid^="guide-chapter-"]')].map((e) => e.dataset.testid.replace("guide-chapter-", "")));
+    const owner = await chapterIds();
+    console.log("  owner chapters:", owner.join(" "));
+    for (const id of ["start", "shift", "selling", "menu", "settings", "reports", "troubleshoot"]) ok(owner.includes(id), `owner is missing the ${id} chapter`);
+    ok(!owner.includes("kitchen") || owner.length > 10, "owner guide looks too small");
+    console.log("  shot:", await reg.shot("guide-owner"));
+    await (await byId("guide-search")).setValue("استرداد");
+    await until(async () => (await chapterIds()).includes("history"), "search shows the history chapter");
+    ok(!(await chapterIds()).includes("start"), "search should drop chapters with no match");
+    await clickId("guide-chapter-history");
+    await until(async () => (await reg.text()).includes("تأكيد الاسترداد"), "the refund steps are open");
+    console.log("  shot:", await reg.shot("guide-search"));
+    await (await byId("guide-search")).setValue("كلمةغيرموجودةأبدا");
+    await until(async () => (await chapterIds()).length === 0, "nonsense search finds nothing");
+    await b.refresh();
+    await byId("sidebar", 30000);
+  });
   // Visual tour: every sidebar screen at two common till sizes, screenshot +
   // anything wider than the window (the page must never scroll sideways).
   await step("tour", "every screen fits the window at 1366 and 1024 wide", async () => {
@@ -782,6 +805,75 @@ try {
     if (await clickText("إغلاق الوردية")) await check("close-shift"); else problems.push("close-shift: no button");
     await b.setWindowSize(1280, 720);
     ok(problems.length === 0, problems.join(" | "));
+  });
+
+  // POS Lite (licence plan pos_lite): only the till's screens, Full-only
+  // commands refused by the backend, no selling on credit or loyalty, a cash
+  // sale still prints -- and putting a Full licence back brings everything
+  // back without a restart.
+  await step("lite", "POS Lite: till screens only, Full-only commands refused, cash sale prints, upgrade restores", async () => {
+    const mint = (plan) =>
+      execFileSync(process.execPath, [path.join(ROOT, "scripts/e2e/mint-pos-license.mjs"), "--key", process.env.OPS_TEST_KEY, "--tenant", "t-ops", "--branch", "b-ops", "--device", "this", "--days", "3", "--plan", plan], { encoding: "utf8" }).trim();
+    await call("activate_license_v3", { activationKey: mint("pos_lite") });
+    eq((await call("get_cached_license_status_v3")).plan, "pos_lite", "licence plan");
+    await b.setWindowSize(1366, 768);
+    await b.refresh();
+    await byId("sidebar", 30000);
+    const navIds = () => b.execute(() => [...document.querySelectorAll('[data-testid^="sidebar-nav-"]')].map((e) => e.dataset.testid.replace("sidebar-nav-", "")));
+    const LITE = ["pos", "shift", "orders", "delivery", "customers", "menu", "kds", "staff", "guide", "settings"];
+    const lite = await navIds();
+    console.log("  Lite sidebar:", lite.join(" "));
+    eq(lite.filter((id) => !LITE.includes(id)), [], "Full-only pages in the Lite sidebar");
+    for (const id of ["pos", "shift", "orders", "delivery", "customers", "menu", "staff", "settings"]) ok(lite.includes(id), `${id} missing from the Lite sidebar`);
+
+    // the backend refuses Full-only commands, whatever the screen shows
+    for (const cmd of ["get_sales_report_v3", "get_dashboard_summary_v3", "list_debtors_v3", "list_ingredients_v3", "list_loyalty_cards_v3", "ask_assistant_v3", "list_branches_full_v3", "list_attendance_v3"]) {
+      const err = await call(cmd).then(() => "", (e) => String(e.message));
+      ok(err.includes("POS Lite"), `${cmd} must be refused on Lite, got: ${err.slice(0, 120) || "ok"}`);
+    }
+    const credit = await call("take_payment_v3", { orderId: "x", method: "CREDIT", amountCents: 1, changeCents: 0, debtorId: "d" }).then(() => "", (e) => String(e.message));
+    ok(credit.includes("POS Lite"), `selling on credit must be refused on Lite, got: ${credit.slice(0, 120)}`);
+
+    // the till: no debt order type, no loyalty, no "debt" payment; a cash sale prints
+    await call("open_shift_v3", { startingCashCents: 0, branchId: null }).catch(() => {});
+    await nav("pos");
+    ok(!(await exists("order-type-DEBT")), "no debt order type on Lite");
+    await clickId("order-type-TAKEAWAY");
+    await pause(400);
+    const visibleButton = (text) => b.execute((t) => [...document.querySelectorAll("button")].some((x) => x.offsetParent !== null && x.innerText.trim() === t), text);
+    ok(!(await visibleButton("ولاء")), "no loyalty button on Lite");
+    // an item with no option groups (drinks get one in options-live)
+    await reg.addItem("شيش طاووق");
+    const receiptsBefore = jobs("receipt").length;
+    ok(await b.execute(() => { const x = [...document.querySelectorAll("button")].find((e) => e.offsetParent !== null && e.innerText.trim() === "دفع"); x?.click(); return !!x; }), "pay button");
+    await byId("pay-exact");
+    ok(await visibleButton("نقدي"), "cash is offered");
+    ok(!(await visibleButton("دين")), "no debt payment on Lite");
+    console.log("  shot:", await reg.shot("lite-pay"));
+    await clickId("pay-exact");
+    await reg.click(/تأكيد وطباعة/);
+    await until(async () => jobs("receipt").length > receiptsBefore, "Lite cash sale printed its receipt", 20000);
+
+    // Menu without recipes, Staff without attendance
+    await nav("staff");
+    ok(!(await b.execute(() => document.body.innerText.includes("الحضور والانصراف"))), "no attendance tab on Lite");
+    console.log("  shot:", await reg.shot("lite-staff"));
+
+    // the guide on Lite: the till's chapters, none of the Full-only ones
+    await nav("guide");
+    await byId("guide-page");
+    const guideIds = await b.execute(() => [...document.querySelectorAll('[data-testid^="guide-chapter-"]')].map((e) => e.dataset.testid.replace("guide-chapter-", "")));
+    console.log("  Lite guide chapters:", guideIds.join(" "));
+    for (const id of ["selling", "shift", "menu", "settings"]) ok(guideIds.includes(id), `Lite guide is missing ${id}`);
+    for (const id of ["reports", "inventory", "finance", "debt", "loyalty", "ai-assistant"]) ok(!guideIds.includes(id), `Lite guide must not show ${id}`);
+    ok(!(await b.execute(() => document.body.innerText.includes("البيع بالدين"))), "Lite guide must not explain debt sales");
+    console.log("  shot:", await reg.shot("lite-guide"));
+
+    // upgrade: a Full licence brings the whole sidebar back with no restart
+    // (the app's 1-minute licence poll notices the plan change)
+    await call("activate_license_v3", { activationKey: mint("full") });
+    await until(async () => (await navIds()).includes("reports"), "Full sidebar back after the upgrade", 90000);
+    ok((await navIds()).includes("debt"), "debt back after the upgrade");
   });
 } finally {
   await reg.stop();

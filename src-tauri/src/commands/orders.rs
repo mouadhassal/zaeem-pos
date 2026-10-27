@@ -247,6 +247,7 @@ pub(crate) fn take_payment_v3_impl(
     crate::lan::reject_if_local_kitchen_satellite("take_payment_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::TakePayment).map_err(|e| e.to_string())?;
+    crate::plan_gate::require_payment_allowed(&license.cached_status(), &method, debtor_id.as_deref())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         resolve_operating_branch(&conn, &actor, license, None)?
@@ -1458,6 +1459,7 @@ pub(crate) fn finalize_order_with_payment_v3_impl(
 ) -> Result<FinalizePaymentResult, String> {
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::TakePayment).map_err(|e| e.to_string())?;
+    crate::plan_gate::require_payment_allowed(&license.cached_status(), &method, debtor_id.as_deref())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         resolve_operating_branch(&conn, &actor, license, None)?

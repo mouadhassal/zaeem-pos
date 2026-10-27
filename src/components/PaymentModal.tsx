@@ -8,6 +8,7 @@ import { useCurrency } from "../hooks/useCurrency";
 import { realErrorText } from "../lib/errors";
 import { minorToInputValue, parseMoneyInput } from "../lib/money";
 import Typeahead from "./ui/Typeahead";
+import { usePlanStore } from "../stores/planStore";
 
 interface DebtorRow {
   id: string;
@@ -56,6 +57,8 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
   const totalCents = totalOverrideCents ?? cartTotalCents;
   const { fmt, symbol } = useCurrency();
   const [method, setMethod] = useState<PaymentMethod>(initialMethod ?? "CASH");
+  // POS Lite has no debt book: no "on credit" method (plan_gate.rs refuses it).
+  const posLite = usePlanStore((s) => s.posLite);
   const [receivedStr, setReceivedStr] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
@@ -205,7 +208,7 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
 
         <div className="px-6 pt-4">
           <div className="flex gap-2 bg-surface-alt rounded-xl p-1">
-            {(["CASH", "CARD", "WALLET", "CREDIT"] as PaymentMethod[]).map((m) => {
+            {(["CASH", "CARD", "WALLET", "CREDIT"] as PaymentMethod[]).filter((m) => !posLite || m !== "CREDIT").map((m) => {
               const MethodIcon = m === "CASH" ? IconCash : m === "CARD" ? IconCreditCard : m === "WALLET" ? IconWallet : IconCircleCheck;
               return (
                 <button
