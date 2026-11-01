@@ -15,6 +15,8 @@ interface LineItem {
   notes?: string;
   comped?: boolean;
   compReason?: string;
+  weightGrams?: number;
+  pricePerKgCents?: number;
   /** Already sent to the kitchen: changed through the order-edit flow, not by editing the cart line. */
   sent?: boolean;
 }

@@ -102,19 +102,17 @@ impl AiProvider for RemoteAiProvider {
         Err(AiError::Unavailable("anomaly detection is not implemented yet".into()))
     }
 
-    /// 2026-08-04: same proxy-through-Supabase shape as `menu_from_media`
-    /// above (real key stays server-side, this binary never sees it) --
-    /// posts the caller's question plus a bounded, already-computed
-    /// business snapshot (crate::assistant::build_snapshot) to a new edge
-    /// function, `ai-assistant`, and returns its free-text answer as-is.
-    /// No multi-turn tool-calling loop: one snapshot, one question, one
-    /// answer -- if the model needs a different date range it says so in
-    /// its own text, the owner re-asks, same as any other chat turn.
-    fn answer(&self, q: &str, s: &Snapshot) -> Result<Answer, AiError> {
+    /// Same proxy-through-Supabase shape as `menu_from_media` above (real key
+    /// stays server-side, this binary never sees it) -- posts the question, a
+    /// bounded business snapshot (crate::assistant) and the last few chat
+    /// turns to the `ai-assistant` edge function and returns its text. One
+    /// round trip, no tool loop. Every failure is turned into a plain Arabic
+    /// sentence the owner can act on (`friendly_failure`).
+    fn answer(&self, q: &str, s: &Snapshot, history: &[ChatTurn]) -> Result<Answer, AiError> {
         let device_token = self.device_token();
 
         let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(45))
             .build()
             .map_err(|e| AiError::Unavailable(e.to_string()))?;
 
@@ -126,14 +124,15 @@ impl AiProvider for RemoteAiProvider {
                 "device_token": device_token,
                 "question": q,
                 "snapshot": s,
+                "history": history,
             }))
             .send()
-            .map_err(|e| AiError::Unavailable(format!("could not reach AI service: {e}")))?;
+            .map_err(|e| AiError::Unavailable(friendly_transport_error(e.is_timeout(), e.is_connect())))?;
 
         if !resp.status().is_success() {
-            let status = resp.status();
+            let status = resp.status().as_u16();
             let body = resp.text().unwrap_or_default();
-            return Err(AiError::ExtractionFailed(format!("AI service returned {status}: {body}")));
+            return Err(AiError::Unavailable(friendly_failure(status, &body)));
         }
 
         #[derive(serde::Deserialize)]
@@ -142,15 +141,75 @@ impl AiProvider for RemoteAiProvider {
         }
         let parsed: AssistantResponse = resp
             .json()
-            .map_err(|e| AiError::ExtractionFailed(format!("invalid AI response shape: {e}")))?;
+            .map_err(|_| AiError::Unavailable("وصل رد غير مفهوم من خدمة الذكاء الاصطناعي، حاول مجدداً".into()))?;
+        if parsed.answer.trim().is_empty() {
+            return Err(AiError::Unavailable("لم يستطع المساعد صياغة جواب لهذا السؤال، جرّب صياغة أخرى".into()));
+        }
 
-        // Was hardcoded `confidence: 1.0` -- claimed 100% certainty on
-        // every answer regardless of what the LLM actually said. The
-        // `ai-assistant` edge function's response has no confidence
-        // field to parse (unlike `menu_from_media`'s per-item confidence,
-        // which the extraction function DOES compute and return), and
-        // that function is out-of-repo (Supabase-side); rather than keep
-        // shipping a number that lies, this honestly reports "no signal".
+        // The edge function has no confidence signal; report none rather than a fake number.
         Ok(Answer { text: parsed.answer, confidence: None })
+    }
+}
+
+/// Arabic text for a network-level failure (no HTTP status at all).
+pub(crate) fn friendly_transport_error(timed_out: bool, connect_failed: bool) -> String {
+    if timed_out {
+        "استغرق الرد وقتاً طويلاً، حاول مجدداً".into()
+    } else if connect_failed {
+        "لا يوجد اتصال بالإنترنت. يحتاج المساعد الذكي إلى الاتصال ليجيب".into()
+    } else {
+        "تعذّر الوصول إلى خدمة الذكاء الاصطناعي، تأكد من الاتصال وحاول مجدداً".into()
+    }
+}
+
+/// Arabic text for an HTTP failure from the edge function. The function's own
+/// Arabic `error` text is used when it sent one (licence / limit messages are
+/// written for exactly this screen); otherwise a sentence per status class.
+pub(crate) fn friendly_failure(status: u16, body: &str) -> String {
+    let server_msg = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str().map(str::to_owned)))
+        .filter(|m| m.chars().any(|c| ('\u{0600}'..='\u{06FF}').contains(&c)));
+    match status {
+        401 => format!(
+            "{}. إن كان هذا الجهاز مفعّلاً بمفتاح قديم فأعد تفعيله بمفتاح ترخيص جديد من WENZDES",
+            server_msg.unwrap_or_else(|| "هذه الميزة تحتاج جهازاً مفعّلاً بترخيص WENZDES".into())
+        ),
+        403 | 429 => server_msg.unwrap_or_else(|| {
+            if status == 429 { "تم الوصول إلى الحد المسموح لاستخدام الذكاء الاصطناعي، حاول لاحقاً".into() } else { "لا يوجد ترخيص فعّال لهذا الجهاز".into() }
+        }),
+        413 => "حجم البيانات كبير على المساعد، اختر فترة أقصر".into(),
+        503 => "المساعد الذكي متوقف مؤقتاً من جهة الخادم، حاول بعد قليل".into(),
+        500..=599 => "حدث عطل مؤقت في خدمة الذكاء الاصطناعي، حاول بعد قليل".into(),
+        _ => server_msg.unwrap_or_else(|| "تعذّر الحصول على جواب من المساعد الذكي، حاول مجدداً".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn licence_errors_keep_the_servers_arabic_and_never_show_raw_json() {
+        let m = friendly_failure(401, r#"{"error":"هذه الميزة تحتاج جهازاً مفعّلاً بترخيص WENZDES"}"#);
+        assert!(m.contains("تحتاج جهازاً مفعّلاً") && m.contains("مفتاح ترخيص جديد"), "{m}");
+        assert!(!m.contains('{') && !m.contains("401"));
+        assert_eq!(friendly_failure(403, r#"{"error":"لا يوجد ترخيص فعّال لهذا الجهاز"}"#), "لا يوجد ترخيص فعّال لهذا الجهاز");
+        assert!(friendly_failure(429, r#"{"error":"تم الوصول إلى الحد المسموح لاستخدام الذكاء الاصطناعي، حاول مجدداً غداً"}"#).contains("غداً"));
+    }
+
+    #[test]
+    fn english_or_missing_bodies_get_a_plain_arabic_sentence() {
+        assert!(friendly_failure(503, r#"{"error":"AI is not configured on the server yet"}"#).contains("متوقف مؤقتاً"));
+        assert!(friendly_failure(500, "Internal error").contains("عطل مؤقت"));
+        assert!(friendly_failure(429, "").contains("الحد المسموح"));
+        assert!(friendly_failure(418, "<html>").contains("تعذّر الحصول"));
+    }
+
+    #[test]
+    fn network_failures_are_told_apart() {
+        assert!(friendly_transport_error(true, false).contains("وقتاً طويلاً"));
+        assert!(friendly_transport_error(false, true).contains("لا يوجد اتصال"));
+        assert!(friendly_transport_error(false, false).contains("تعذّر الوصول"));
     }
 }

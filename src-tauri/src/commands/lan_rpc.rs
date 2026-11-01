@@ -365,7 +365,8 @@ pub fn dispatch_lan_rpc(
             let notes: Option<String> = lan_arg(&args, "notes")?;
             let reason: String = lan_arg(&args, "reason")?;
             let manager_override_pin: Option<String> = lan_arg(&args, "managerOverridePin")?;
-            let r = edit_order_item_v3_impl(db, license, session_token, item_id, quantity, modifiers, notes, reason, manager_override_pin)?;
+            let weight: Option<crate::weighing::LineWeight> = lan_arg(&args, "weight")?;
+            let r = edit_order_item_v3_impl(db, license, session_token, item_id, quantity, modifiers, notes, reason, manager_override_pin, weight)?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
         "set_order_item_comp_v3" => {

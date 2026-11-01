@@ -31,6 +31,8 @@ export interface MenuItem {
   barcode: string | null;
   /** ZAEEM_POS_PLATFORM_PLAN.md §3.1 Item kind -- 'simple' | 'prepared' | 'composite' (see migrate_v3::run_item_kind_migration). Not yet used for any UI branching; threaded through as read-only kernel-territory data. */
   item_kind: string;
+  /** 'weight': price_cents is the price of one kilogram and the till asks for a weight or an amount (lib/weight.ts). */
+  sold_by: "unit" | "weight";
   /** >0 when a happy-hour rule for this item is active right now (see happyHourStore.getActiveHappyHourDiscount). */
   happyHourDiscountPercent: number;
   /** price_cents with the active happy-hour discount already applied -- this, not price_cents, is what the cashier should charge/see right now. */
@@ -78,7 +80,7 @@ export const useMenuStore = create<MenuState>((set) => ({
         invoke<{
           id: string; name: string; price_cents: number; category_id: string; image_path: string | null;
           is_combo: number; combo_original_price_cents: number | null; combo_description: string | null;
-          barcode: string | null; is_active: number; item_kind: string;
+          barcode: string | null; is_active: number; item_kind: string; sold_by?: string;
         }[]>("list_menu_items_v3", { sessionToken: token }),
         // The offers built in Menu Management (combo_meals bundles + happy-hour
         // rules) used to be fetched only by menu/page.tsx's admin screen --
@@ -149,8 +151,9 @@ export const useMenuStore = create<MenuState>((set) => ({
           combo_components: comboRowsByItem[i].map((r) => ({ menuItemId: r.menu_item_id, name: r.menu_item_name, qty: r.quantity })),
           barcode: item.barcode,
           item_kind: item.item_kind,
+          sold_by: item.sold_by === "weight" ? "weight" : "unit",
           happyHourDiscountPercent,
-          effectivePriceCents: happyHourDiscountPercent > 0
+          effectivePriceCents: happyHourDiscountPercent > 0 && item.sold_by !== "weight"
             ? Math.round(item.price_cents * (1 - happyHourDiscountPercent / 100))
             : item.price_cents,
         };

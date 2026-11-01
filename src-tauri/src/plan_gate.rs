@@ -44,7 +44,9 @@ pub const FULL_ONLY_COMMANDS: &[&str] = &[
     "gifts_report_v3", "get_sales_report_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
     "list_pickup_no_shows_v3",
     // HR
-    "list_attendance_v3", "clock_in_v3", "clock_out_v3", "list_roster_entries_v3", "create_roster_entry_v3",
+    "list_attendance_v3", "clock_in_v3", "clock_out_v3",
+    "fingerprint_status_v3", "list_fingerprint_enrolments_v3", "enrol_fingerprint_v3", "delete_fingerprint_enrolment_v3",
+    "fingerprint_punch_v3", "list_punches_v3", "get_attendance_settings_v3", "set_attendance_settings_v3", "list_roster_entries_v3", "create_roster_entry_v3",
     "update_roster_entry_v3", "delete_roster_entry_v3",
     // debt book
     "list_debtors_v3", "create_debtor_v3", "update_debtor_v3", "deactivate_debtor_v3", "list_debt_entries_v3",
@@ -55,7 +57,7 @@ pub const FULL_ONLY_COMMANDS: &[&str] = &[
     "create_loyalty_reward_v3", "set_loyalty_reward_active_v3", "delete_loyalty_reward_v3", "redeem_loyalty_reward_v3",
     "lookup_loyalty_card_v3",
     // AI assistant and AI menu setup
-    "ask_assistant_v3", "queue_media", "list_uploads", "process_queue", "reset_failed_uploads", "clear_uploads",
+    "ask_assistant_v3", "assistant_insights_v3", "queue_media", "list_uploads", "process_queue", "reset_failed_uploads", "clear_uploads",
     "delete_upload", "apply_draft",
 ];
 

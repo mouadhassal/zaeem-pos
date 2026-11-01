@@ -12,6 +12,7 @@ import { formatMoney } from "../../lib/money";
 import { toLocalDateStr, parseLocalDateStr, formatArabicDate, formatArabicTime } from "../../lib/dateLocal";
 import { useToast } from "../../hooks/useToast";
 import { usePlanStore } from "../../stores/planStore";
+import FingerprintPanel from "./FingerprintPanel";
 /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 type Tab = "employees" | "shifts" | "attendance";
@@ -191,7 +192,7 @@ export default function StaffPage() {
   const [forceCloseShiftId, setForceCloseShiftId] = useState<string | null>(null);
 
   const [clockingUserId, setClockingUserId] = useState<string | null>(null);
-  const [attendanceSubTab, setAttendanceSubTab] = useState<"today" | "history">("today");
+  const [attendanceSubTab, setAttendanceSubTab] = useState<"today" | "history" | "fingerprint">("today");
   const [attendanceDateFrom, setAttendanceDateFrom] = useState(() => {
     const d = new Date(); d.setDate(d.getDate() - 30); return toLocalDateStr(d);
   });
@@ -723,7 +724,7 @@ export default function StaffPage() {
       {tab === "attendance" && !posLite && (
         <div className="space-y-4">
           <div className="flex gap-2 border-b border-ink-200 pb-2">
-            {(["today", "history"] as const).map((st) => (
+            {(["today", "history", "fingerprint"] as const).map((st) => (
               <button
                 key={st}
                 onClick={() => setAttendanceSubTab(st)}
@@ -733,7 +734,7 @@ export default function StaffPage() {
                     : "text-ink-500 hover:text-saffron-600 hover:bg-white"
                 }`}
               >
-                {st === "today" ? "اليوم" : "سجل الحضور"}
+                {st === "today" ? "اليوم" : st === "history" ? "سجل الحضور" : "البصمة والتأخير"}
               </button>
             ))}
           </div>
@@ -839,6 +840,8 @@ export default function StaffPage() {
               )}
             </>
           )}
+
+          {attendanceSubTab === "fingerprint" && <FingerprintPanel employees={employees} />}
 
           {attendanceSubTab === "history" && (
             <div className="space-y-4">

@@ -290,6 +290,24 @@ pub fn update_menu_item_v3(state: State<Db>, license: State<crate::license::clou
     Ok(())
 }
 
+/// Sets how an item is sold: by the piece ('unit') or by weight ('weight', where
+/// the item's price is per kilogram). The owner changes this on the menu screen.
+#[tauri::command]
+pub fn set_menu_item_sold_by_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, sold_by: String) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    if sold_by != crate::weighing::SOLD_BY_UNIT && sold_by != crate::weighing::SOLD_BY_WEIGHT {
+        return Err("طريقة البيع غير صالحة".to_string());
+    }
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).set_menu_item_sold_by(&actor.tenant_id, &item_id, &sold_by).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, None, Some(&serde_json::json!({ "sold_by": sold_by }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn delete_menu_item_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String) -> Result<(), String> {
     let actor = authenticate_actor(&state, &session_token)?;

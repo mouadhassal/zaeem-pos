@@ -34,6 +34,8 @@ mod reconcile;
 mod assistant;
 mod goods_receipt;
 mod plan_gate;
+mod weighing;
+mod attendance;
 
 // Only the debug-build staff seeding (seed_default_staff) hashes PINs here.
 #[cfg(debug_assertions)]
@@ -110,6 +112,8 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_restaurant_ops_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_pickup_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_order_history_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_weighed_items_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_attendance_punches_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -305,6 +309,8 @@ pub fn run() {
             #[cfg(debug_assertions)]
             seed_default_staff(&conn).expect("Failed to seed default staff");
             app.manage(Db(Mutex::new(conn)));
+            // No fingerprint device is chosen yet: this reader says so plainly (see attendance.rs).
+            app.manage(attendance::ReaderState::none());
 
             // AI onboarding state -- a SEPARATE connection to the SAME file
             // as Db's, above (P0 fix, 2026-07-23: this and app_conn below
@@ -530,6 +536,7 @@ pub fn run() {
             commands::menu::update_menu_item_v3,
             commands::menu::delete_menu_item_v3,
             commands::menu::set_menu_item_active_v3,
+            commands::menu::set_menu_item_sold_by_v3,
             commands::menu::upload_menu_item_photo_v3,
             commands::menu::delete_menu_item_photo_v3,
             commands::menu::get_menu_item_photo_v3,
@@ -559,6 +566,14 @@ pub fn run() {
             commands::shifts::list_attendance_v3,
             commands::shifts::clock_in_v3,
             commands::shifts::clock_out_v3,
+            commands::fingerprint::fingerprint_status_v3,
+            commands::fingerprint::list_fingerprint_enrolments_v3,
+            commands::fingerprint::enrol_fingerprint_v3,
+            commands::fingerprint::delete_fingerprint_enrolment_v3,
+            commands::fingerprint::fingerprint_punch_v3,
+            commands::fingerprint::list_punches_v3,
+            commands::fingerprint::get_attendance_settings_v3,
+            commands::fingerprint::set_attendance_settings_v3,
             commands::staff::list_roster_entries_v3,
             commands::staff::create_roster_entry_v3,
             commands::staff::update_roster_entry_v3,
@@ -598,6 +613,7 @@ pub fn run() {
             commands::reports::get_sales_report_v3,
             commands::reports::gifts_report_v3,
             commands::reports::ask_assistant_v3,
+            commands::reports::assistant_insights_v3,
             commands::reports::detect_anomalies_v3,
             commands::reports::forecast_demand_v3,
             commands::reports::backup_database_v3,

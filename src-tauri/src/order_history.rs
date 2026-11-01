@@ -281,13 +281,13 @@ pub fn detail(conn: &Connection, tenant_id: &str, branch_id: &str, order_id: &st
     let mut items = Vec::new();
     let mut cancelled = Vec::new();
     {
-        let mut stmt = conn
-            .prepare(
-                "SELECT oi.id, COALESCE(m.name, ''), oi.quantity, oi.unit_price_cents, oi.notes, COALESCE(oi.comped, 0), oi.comp_reason, oi.voided, oi.void_reason, \
-                 (SELECT COALESCE(SUM(ri.quantity), 0) FROM refund_items ri WHERE ri.order_item_id = oi.id) \
-                 FROM order_items oi LEFT JOIN menu_items m ON m.id = oi.menu_item_id WHERE oi.order_id = ?1 ORDER BY oi.rowid",
-            )
-            .map_err(e)?;
+        let lines_sql = format!(
+            "SELECT oi.id, COALESCE(m.name, '') || {weight_suffix}, oi.quantity, oi.unit_price_cents, oi.notes, COALESCE(oi.comped, 0), oi.comp_reason, oi.voided, oi.void_reason, \
+             (SELECT COALESCE(SUM(ri.quantity), 0) FROM refund_items ri WHERE ri.order_item_id = oi.id) \
+             FROM order_items oi LEFT JOIN menu_items m ON m.id = oi.menu_item_id WHERE oi.order_id = ?1 ORDER BY oi.rowid",
+            weight_suffix = crate::weighing::weight_suffix_sql("oi.weight_grams"),
+        );
+        let mut stmt = conn.prepare(&lines_sql).map_err(e)?;
         #[allow(clippy::type_complexity)]
         let raw: Vec<(String, String, i64, i64, Option<String>, i64, Option<String>, i64, Option<String>, i64)> = stmt
             .query_map(params![order_id], |r| {

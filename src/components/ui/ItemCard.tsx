@@ -18,6 +18,8 @@ interface Props {
   badge?: string;
   /** The item has option groups (without onion, extra cheese...): tapping opens the picker, and the card says so. */
   hasOptions?: boolean;
+  /** Sold by weight: the price is per kilogram, and tapping asks for a weight or an amount. */
+  soldByWeight?: boolean;
   /** Smaller cards when the owner picks many products per row (lib/menuGridLayout.ts). */
   density?: CardDensity;
   glyphHeightPx?: number;
@@ -33,7 +35,7 @@ const DENSITY = {
 
 export default function ItemCard({
   name, priceCents, originalPriceCents, categoryName, photoUrl,
-  quantity, currencySymbol, onAdd, onRemove, badge, hasOptions,
+  quantity, currencySymbol, onAdd, onRemove, badge, hasOptions, soldByWeight,
   density = "regular", glyphHeightPx, iconSizePx,
 }: Props) {
   const d = DENSITY[density];
@@ -78,7 +80,15 @@ export default function ItemCard({
           </div>
         )}
       </div>
-      {hasOptions && (
+      {soldByWeight && (
+        <span
+          className={`absolute top-1.5 end-1.5 z-10 ${d.pill} font-semibold rounded-full ${density === "regular" ? "px-2" : "px-1.5"} py-0.5 bg-accent-soft text-accent-text`}
+          data-testid="item-card-weighed"
+        >
+          بالوزن
+        </span>
+      )}
+      {hasOptions && !soldByWeight && (
         <span
           className={`absolute top-1.5 end-1.5 z-10 ${d.pill} font-semibold rounded-full ${density === "regular" ? "px-2" : "px-1.5"} py-0.5 bg-accent-soft text-accent-text`}
           data-testid="item-card-options"
@@ -96,7 +106,7 @@ export default function ItemCard({
               <span dir="ltr" className={`${d.old} text-text-muted line-through`}>{formattedOriginal}</span>
             )}
             <span dir="ltr">{formatted}</span>
-            <span className={`${d.cur} text-text-muted`}>{currencySymbol}</span>
+            <span className={`${d.cur} text-text-muted`}>{currencySymbol}{soldByWeight ? " / كغ" : ""}</span>
           </span>
           {density !== "mini" && <Stepper quantity={quantity} onAdd={onAdd} onRemove={onRemove} size={d.stepper} />}
         </div>

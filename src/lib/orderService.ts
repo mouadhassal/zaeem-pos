@@ -6,9 +6,22 @@ import { logger } from "./logger";
 import type { ReceiptData } from "./printer";
 import type { OrderType as OrderTypeEnum } from "../stores/orderTypeStore";
 import { orderLabel } from "./orderLabels";
+import { nameWithWeight } from "./weight";
 
 function token(): string {
   return useAuthStore.getState().token ?? "";
+}
+
+/** A cart line sold by weight, as the order payload carries it. */
+function weightField(i: { weightGrams?: number | undefined; exactAmountCents?: number | undefined }): { weight?: { grams: number; amount_cents?: number } } {
+  if (!i.weightGrams) return {};
+  return { weight: { grams: i.weightGrams, ...(i.exactAmountCents ? { amount_cents: i.exactAmountCents } : {}) } };
+}
+
+/** The weight of a line read back from the database, in the cart's terms. */
+function heldWeight(i: HeldOrderItem): { weightGrams?: number; pricePerKgCents?: number; exactAmountCents?: number } {
+  if (!i.weight_grams) return {};
+  return { weightGrams: i.weight_grams, pricePerKgCents: i.price_per_kg_cents ?? 0, exactAmountCents: i.unit_price_cents };
 }
 
 interface OrderItemInput {
@@ -21,6 +34,8 @@ interface OrderItemInput {
   modifiers: { name: string; price_cents: number }[];
   comped?: boolean;
   comp_reason?: string | null;
+  /** Only for an item sold by weight; the server prices it (src-tauri/src/weighing.rs). */
+  weight?: { grams: number; amount_cents?: number };
 }
 
 interface HeldOrderModifier {
@@ -38,6 +53,9 @@ interface HeldOrderItem {
   modifiers: HeldOrderModifier[];
   comped?: boolean;
   comp_reason?: string | null;
+  /** A line sold by weight: what was weighed and the per-kg rate it was sold at. */
+  weight_grams?: number | null;
+  price_per_kg_cents?: number | null;
 }
 
 export interface HeldOrderResult {
@@ -143,6 +161,8 @@ export async function createOrder(
     modifiers?: { name: string; priceCents: number }[];
     comped?: boolean;
     compReason?: string;
+    weightGrams?: number;
+    exactAmountCents?: number;
   }[],
   subtotalCents: number,
   taxCents: number,
@@ -177,6 +197,7 @@ export async function createOrder(
     modifiers: (i.modifiers ?? []).map((m) => ({ name: m.name, price_cents: m.priceCents })),
     comped: i.comped ?? false,
     comp_reason: i.compReason ?? null,
+    ...weightField(i),
   }));
 
   const orderId = await invoke<string>("create_full_order_v3", {
@@ -314,6 +335,8 @@ export async function holdOrder(
     modifiers?: { name: string; priceCents: number }[];
     comped?: boolean;
     compReason?: string;
+    weightGrams?: number;
+    exactAmountCents?: number;
   }[],
   subtotalCents: number,
   taxCents: number,
@@ -330,6 +353,7 @@ export async function holdOrder(
     modifiers: (i.modifiers ?? []).map((m) => ({ name: m.name, price_cents: m.priceCents })),
     comped: i.comped ?? false,
     comp_reason: i.compReason ?? null,
+    ...weightField(i),
   }));
 
   return invoke<string>("hold_order_v3", {
@@ -357,6 +381,9 @@ export async function retrieveHeldOrder(
     modifiers: { name: string; priceCents: number }[];
     comped: boolean;
     compReason: string;
+    weightGrams?: number;
+    pricePerKgCents?: number;
+    exactAmountCents?: number;
   }[];
   customerName?: string;
   customerPhone?: string;
@@ -373,13 +400,14 @@ export async function retrieveHeldOrder(
     items: result.items.map((i) => ({
       dbItemId: i.db_item_id,
       menuItemId: i.menu_item_id,
-      name: i.name,
+      name: nameWithWeight(i.name, i.weight_grams),
       quantity: i.quantity,
       unitPriceCents: i.unit_price_cents,
       notes: i.notes,
       modifiers: i.modifiers.map((m) => ({ name: m.name, priceCents: m.price_cents })),
       comped: !!i.comped,
       compReason: i.comp_reason ?? "",
+      ...heldWeight(i),
     })),
     ...(result.customer_name ? { customerName: result.customer_name } : {}),
     ...(result.customer_phone ? { customerPhone: result.customer_phone } : {}),
@@ -411,7 +439,7 @@ export async function listPendingOrdersForTable(tableId: string): Promise<{
     id: o.id,
     totalCents: o.total_cents,
     items: o.items.map((i) => ({
-      name: i.name,
+      name: nameWithWeight(i.name, i.weight_grams),
       quantity: i.quantity,
       priceCents: i.unit_price_cents,
       modifiers: i.modifiers.map((m) => ({ name: m.name, priceCents: m.price_cents })),
@@ -443,6 +471,9 @@ export interface OpenOrderResult {
     modifiers: { name: string; priceCents: number }[];
     comped: boolean;
     compReason: string;
+    weightGrams?: number;
+    pricePerKgCents?: number;
+    exactAmountCents?: number;
   }[];
   customerName?: string;
   customerPhone?: string;
@@ -474,13 +505,14 @@ export async function retrieveOpenOrder(orderId: string): Promise<OpenOrderResul
     items: result.items.map((i) => ({
       dbItemId: i.db_item_id,
       menuItemId: i.menu_item_id,
-      name: i.name,
+      name: nameWithWeight(i.name, i.weight_grams),
       quantity: i.quantity,
       unitPriceCents: i.unit_price_cents,
       notes: i.notes,
       modifiers: i.modifiers.map((m) => ({ name: m.name, priceCents: m.price_cents })),
       comped: !!i.comped,
       compReason: i.comp_reason ?? "",
+      ...heldWeight(i),
     })),
     ...(result.customer_name ? { customerName: result.customer_name } : {}),
     ...(result.customer_phone ? { customerPhone: result.customer_phone } : {}),
@@ -512,6 +544,8 @@ export async function addItemsToOrder(
     modifiers?: { name: string; priceCents: number }[];
     comped?: boolean;
     compReason?: string;
+    weightGrams?: number;
+    exactAmountCents?: number;
   }[]
 ): Promise<void> {
   if (items.length === 0) return;
@@ -526,6 +560,7 @@ export async function addItemsToOrder(
     modifiers: (i.modifiers ?? []).map((m) => ({ name: m.name, price_cents: m.priceCents })),
     comped: i.comped ?? false,
     comp_reason: i.compReason ?? null,
+    ...weightField(i),
   }));
 
   await invoke<void>("add_items_to_order_v3", {
@@ -707,6 +742,8 @@ export async function scheduleDelayedOrder(
     modifiers?: { name: string; priceCents: number }[];
     comped?: boolean;
     compReason?: string;
+    weightGrams?: number;
+    exactAmountCents?: number;
   }[],
   subtotalCents: number,
   taxCents: number,
@@ -723,6 +760,7 @@ export async function scheduleDelayedOrder(
     modifiers: (i.modifiers ?? []).map((m) => ({ name: m.name, price_cents: m.priceCents })),
     comped: i.comped ?? false,
     comp_reason: i.compReason ?? null,
+    ...weightField(i),
   }));
 
   return invoke<string>("schedule_delayed_order_v3", {

@@ -240,9 +240,9 @@ impl From<RepoError> for String {
 }
 
 /// (id, menu_item_id, quantity, unit_price_cents, notes, comped, comp_reason) of a live order line.
-type RawOrderItemRow = (String, String, i64, i64, Option<String>, i64, Option<String>);
+type RawOrderItemRow = (String, String, i64, i64, Option<String>, i64, Option<String>, Option<i64>, Option<i64>);
 /// (order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, comped, comp_reason, comp_by, voided, order status).
-type OrderItemInfoRow = (String, String, i64, i64, Option<String>, Option<String>, i64, Option<String>, Option<String>, i64, String);
+type OrderItemInfoRow = (String, String, i64, i64, Option<String>, Option<String>, i64, Option<String>, Option<String>, i64, String, Option<i64>, Option<i64>);
 
 pub struct Repo<'a> {
     conn: &'a Connection,
@@ -366,6 +366,11 @@ pub struct OrderItemInput {
     pub comp_reason: Option<String>,
     #[serde(skip_deserializing)]
     pub comp_by: Option<String>,
+    /// Present only for an item sold by weight (`menu_items.sold_by = 'weight'`);
+    /// see `weighing.rs`. Such a line is quantity 1 and its `unit_price_cents`
+    /// is the price of the portion, set by the server.
+    #[serde(default)]
+    pub weight: Option<crate::weighing::LineWeight>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -429,6 +434,8 @@ pub struct OrderItemInfo {
     pub voided: bool,
     pub order_status: String,
     pub modifiers: Vec<OrderModifierInput>,
+    /// The weighed portion this line was sold as, if any (locked at its sold price).
+    pub weight: Option<crate::weighing::LineWeight>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -448,6 +455,9 @@ pub struct HeldOrderItem {
     pub modifiers: Vec<HeldOrderModifier>,
     pub comped: bool,
     pub comp_reason: Option<String>,
+    /// Set for a line sold by weight: what was weighed and the per-kg rate it was sold at.
+    pub weight_grams: Option<i64>,
+    pub price_per_kg_cents: Option<i64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -700,6 +710,8 @@ pub struct MenuItemRow {
     /// and why the other 5 plan-listed kinds aren't implemented yet.
     pub item_kind: String,
     pub attributes: Option<String>,
+    /// 'unit' (a piece, the default) or 'weight' (`price_cents` is the price of one kilogram).
+    pub sold_by: String,
 }
 
 /// `menuStore.ts`'s combo-component lookup. NOTE: this mirrors an existing
@@ -1177,7 +1189,7 @@ impl<'a> Repo<'a> {
     /// deliberate "everything" access is the one documented exception, not a
     /// fallback -- it only fires when the actor's role really is Platform,
     /// established by `authenticate` + `staff.role`, never by a missing scope.
-    fn scope_predicate(scope: &Scope) -> (&'static str, Vec<String>) {
+    pub(crate) fn scope_predicate(scope: &Scope) -> (&'static str, Vec<String>) {
         match scope {
             Scope::Platform => ("1=1", vec![]),
             Scope::Tenant { tenant_id } => ("tenant_id = ?1", vec![tenant_id.clone()]),
@@ -1302,13 +1314,14 @@ impl<'a> Repo<'a> {
 
         let pred_items = pred.replace("tenant_id", "orders.tenant_id").replace("branch_id", "orders.branch_id");
         let items_sql = format!(
-            "SELECT order_items.order_id, menu_items.name, order_items.quantity, order_items.notes, \
+            "SELECT order_items.order_id, menu_items.name || {weight_suffix}, order_items.quantity, order_items.notes, \
                     (SELECT group_concat(name, char(31)) FROM order_modifiers WHERE order_item_id = order_items.id) \
              FROM order_items \
              INNER JOIN orders ON orders.id = order_items.order_id \
              INNER JOIN menu_items ON menu_items.id = order_items.menu_item_id \
              LEFT JOIN order_current ON order_current.order_id = orders.id \
-             WHERE {pred_items} AND COALESCE(order_current.status, 'PENDING') IN ('PENDING', 'PREPARING', 'READY') AND order_items.voided = 0"
+             WHERE {pred_items} AND COALESCE(order_current.status, 'PENDING') IN ('PENDING', 'PREPARING', 'READY') AND order_items.voided = 0",
+            weight_suffix = crate::weighing::weight_suffix_sql("order_items.weight_grams"),
         );
         let mut items_stmt = self.conn.prepare(&items_sql)?;
         let item_bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
@@ -1407,7 +1420,7 @@ impl<'a> Repo<'a> {
     /// fails, the whole payment fails" rule as loyalty accrual above.
     fn deplete_recipe_stock(&self, tenant_id: &str, branch_id: &str, order_id: &str, actor_id: &str, now: &str) -> Result<(), RepoError> {
         let mut stmt = self.conn.prepare(
-            "SELECT r.ingredient_id, SUM(oi.quantity * r.quantity_needed) \
+            "SELECT r.ingredient_id, SUM(CASE WHEN oi.weight_grams IS NOT NULL THEN oi.weight_grams / 1000.0 ELSE oi.quantity END * r.quantity_needed) \
              FROM order_items oi JOIN recipes r ON r.menu_item_id = oi.menu_item_id \
              WHERE oi.order_id = ?1 AND oi.voided = 0 \
              GROUP BY r.ingredient_id",
@@ -2713,10 +2726,10 @@ impl<'a> Repo<'a> {
     /// left open here too rather than silently claiming to close it).
     pub fn price_authoritative_items(&self, tenant_id: &str, items: &[OrderItemInput]) -> Result<Vec<OrderItemInput>, RepoError> {
         items.iter().map(|item| {
-            let (price_cents, is_active): (i64, i64) = self.conn.query_row(
-                "SELECT price_cents, is_active FROM menu_items WHERE id = ?1 AND tenant_id = ?2",
+            let (price_cents, is_active, sold_by): (i64, i64, String) = self.conn.query_row(
+                "SELECT price_cents, is_active, sold_by FROM menu_items WHERE id = ?1 AND tenant_id = ?2",
                 params![item.menu_item_id, tenant_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             ).optional()?.ok_or_else(|| RepoError::ItemUnavailable {
                 item_id: item.menu_item_id.clone(),
                 branch_id: String::new(),
@@ -2736,6 +2749,33 @@ impl<'a> Repo<'a> {
                     reason: "quantity must be positive".to_string(),
                 });
             }
+            // A weighed item is priced from its weight at the catalogue's per-kg rate;
+            // a piece item must not carry a weight (see weighing.rs).
+            let priced_weight = match (sold_by.as_str(), &item.weight) {
+                (_, Some(w)) if w.locked => Some(
+                    crate::weighing::price_line(price_cents, item.quantity, w)
+                        .map_err(|reason| RepoError::ItemUnavailable { item_id: item.menu_item_id.clone(), branch_id: String::new(), reason })?,
+                ),
+                (crate::weighing::SOLD_BY_WEIGHT, Some(w)) => Some(
+                    crate::weighing::price_line(price_cents, item.quantity, w)
+                        .map_err(|reason| RepoError::ItemUnavailable { item_id: item.menu_item_id.clone(), branch_id: String::new(), reason })?,
+                ),
+                (crate::weighing::SOLD_BY_WEIGHT, None) => {
+                    return Err(RepoError::ItemUnavailable {
+                        item_id: item.menu_item_id.clone(),
+                        branch_id: String::new(),
+                        reason: "this item is sold by weight: enter the weight or the amount".to_string(),
+                    });
+                }
+                (_, Some(_)) => {
+                    return Err(RepoError::ItemUnavailable {
+                        item_id: item.menu_item_id.clone(),
+                        branch_id: String::new(),
+                        reason: "this item is not sold by weight".to_string(),
+                    });
+                }
+                (_, None) => None,
+            };
             let modifiers = crate::ops::price_modifiers(self.conn, tenant_id, &item.menu_item_id, &item.modifiers)
                 .map_err(|reason| RepoError::ItemUnavailable { item_id: item.menu_item_id.clone(), branch_id: String::new(), reason })?;
             let comp_reason = item.comp_reason.as_deref().map(str::trim).filter(|r| !r.is_empty()).map(str::to_string);
@@ -2750,13 +2790,14 @@ impl<'a> Repo<'a> {
                 menu_item_id: item.menu_item_id.clone(),
                 name: item.name.clone(),
                 quantity: item.quantity,
-                unit_price_cents: price_cents,
+                unit_price_cents: priced_weight.as_ref().map_or(price_cents, |p| p.line_cents),
                 notes: item.notes.clone(),
                 combo_id: item.combo_id.clone(),
                 modifiers,
                 comped: item.comped,
                 comp_reason: if item.comped { comp_reason } else { None },
                 comp_by: if item.comped { item.comp_by.clone() } else { None },
+                weight: priced_weight.map(|p| crate::weighing::LineWeight { grams: p.grams, amount_cents: Some(p.line_cents), price_per_kg_cents: p.price_per_kg_cents, locked: false }),
             })
         }).collect()
     }
@@ -2788,11 +2829,12 @@ impl<'a> Repo<'a> {
         let comp_value = if item.comped { Self::line_total_cents(item) } else { 0 };
         self.conn.execute(
             "INSERT INTO order_items (id, tenant_id, branch_id, order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, voided, \
-             comped, comp_reason, comp_by, comp_value_cents, sync_version, last_modified, sync_status) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?12, ?13, 1, ?14, 'pending')",
+             comped, comp_reason, comp_by, comp_value_cents, weight_grams, price_per_kg_cents, sync_version, last_modified, sync_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?12, ?13, ?14, ?15, 1, ?16, 'pending')",
             params![
                 item_id, tenant_id, branch_id, order_id, item.menu_item_id, item.quantity, item.unit_price_cents, item.notes, item.combo_id,
-                item.comped as i64, item.comp_reason, item.comp_by, comp_value, now
+                item.comped as i64, item.comp_reason, item.comp_by, comp_value,
+                item.weight.as_ref().map(|w| w.grams), item.weight.as_ref().map(|w| w.price_per_kg_cents), now
             ],
         ).map_err(RepoError::from)?;
         for modifier in &item.modifiers {
@@ -3722,7 +3764,7 @@ impl<'a> Repo<'a> {
         self.assert_scope_populated("menu_items", false)?;
         let mut stmt = self.conn.prepare(
             "SELECT id, name, price_cents, cost_cents, category_id, image_path, description, barcode, is_active, \
-                    is_combo, combo_original_price_cents, combo_description, item_kind, attributes \
+                    is_combo, combo_original_price_cents, combo_description, item_kind, attributes, sold_by \
              FROM menu_items WHERE tenant_id = ?1 ORDER BY name ASC",
         )?;
         let rows = stmt.query_map(params![tenant_id], |r| {
@@ -3730,7 +3772,7 @@ impl<'a> Repo<'a> {
                 id: r.get(0)?, name: r.get(1)?, price_cents: r.get(2)?, cost_cents: r.get(3)?, category_id: r.get(4)?,
                 image_path: r.get(5)?, description: r.get(6)?, barcode: r.get(7)?, is_active: r.get(8)?,
                 is_combo: r.get(9)?, combo_original_price_cents: r.get(10)?, combo_description: r.get(11)?,
-                item_kind: r.get(12)?, attributes: r.get(13)?,
+                item_kind: r.get(12)?, attributes: r.get(13)?, sold_by: r.get(14)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
@@ -3781,6 +3823,17 @@ impl<'a> Repo<'a> {
         self.conn.execute(
             "UPDATE menu_items SET name = ?1, category_id = ?2, price_cents = ?3, cost_cents = ?4, description = ?5, barcode = ?6, last_modified = datetime('now') WHERE id = ?7",
             params![name, category_id, price_cents, cost_cents, description, barcode, item_id],
+        )?;
+        Ok(())
+    }
+
+    /// Switches an item between being sold by the piece and by weight. Only the
+    /// way the till rings it up changes; lines already sold keep their prices.
+    pub fn set_menu_item_sold_by(&self, tenant_id: &str, item_id: &str, sold_by: &str) -> Result<(), RepoError> {
+        self.assert_tenant_owns_row("menu_items", item_id, tenant_id)?;
+        self.conn.execute(
+            "UPDATE menu_items SET sold_by = ?1, last_modified = datetime('now'), sync_status = 'pending' WHERE id = ?2",
+            params![sold_by, item_id],
         )?;
         Ok(())
     }
@@ -4277,7 +4330,7 @@ impl<'a> Repo<'a> {
             )?;
 
             let theoretical_usage: f64 = self.conn.query_row(
-                "SELECT COALESCE(SUM(recipes.quantity_needed * order_items.quantity), 0) \
+                "SELECT COALESCE(SUM(recipes.quantity_needed * CASE WHEN order_items.weight_grams IS NOT NULL THEN order_items.weight_grams / 1000.0 ELSE order_items.quantity END), 0) \
                  FROM order_items \
                  INNER JOIN recipes ON recipes.menu_item_id = order_items.menu_item_id AND recipes.ingredient_id = ?1 \
                  INNER JOIN orders ON orders.id = order_items.order_id \
@@ -4315,8 +4368,8 @@ impl<'a> Repo<'a> {
         let sql = format!(
             "SELECT menu_items.id, menu_items.name, \
                     SUM(order_items.quantity), \
-                    SUM(CASE WHEN order_items.comped = 1 THEN 0 ELSE order_items.quantity * menu_items.price_cents END), \
-                    SUM(order_items.quantity * menu_items.cost_cents) \
+                    SUM(CASE WHEN order_items.comped = 1 THEN 0 WHEN order_items.weight_grams IS NOT NULL THEN order_items.unit_price_cents ELSE order_items.quantity * menu_items.price_cents END), \
+                    SUM(CASE WHEN order_items.weight_grams IS NOT NULL THEN order_items.weight_grams * menu_items.cost_cents / 1000 ELSE order_items.quantity * menu_items.cost_cents END) \
              FROM order_items \
              INNER JOIN menu_items ON menu_items.id = order_items.menu_item_id \
              INNER JOIN orders ON orders.id = order_items.order_id \
@@ -4547,7 +4600,7 @@ impl<'a> Repo<'a> {
     /// before writing an attendance row for them -- a manager clocking in
     /// staff must not be able to touch another branch's/tenant's roster by
     /// guessing an id.
-    fn assert_staff_in_scope(&self, staff_id: &str, scope: &Scope) -> Result<(), RepoError> {
+    pub(crate) fn assert_staff_in_scope(&self, staff_id: &str, scope: &Scope) -> Result<(), RepoError> {
         let (predicate, args) = Self::scope_predicate(scope);
         let id_placeholder = format!("?{}", args.len() + 1);
         let sql = format!("SELECT 1 FROM staff WHERE {predicate} AND id = {id_placeholder}");
@@ -4566,7 +4619,11 @@ impl<'a> Repo<'a> {
         let now = chrono::Utc::now();
         let today = now.format("%Y-%m-%d").to_string();
         let now_iso = now.to_rfc3339();
-        let status = if now.format("%H").to_string().parse::<i64>().unwrap_or(0) >= 9 { "LATE" } else { "PRESENT" };
+        let settings = crate::attendance::load_settings(self.conn, tenant_id).map_err(|e| RepoError::Db(rusqlite::Error::InvalidParameterName(e)))?;
+        let status = crate::attendance::arrival_status_at(now, &settings);
+        // The raw record first; a manager's button is a punch like any other.
+        crate::attendance::log_punch(self.conn, tenant_id, branch_id, user_id, crate::attendance::Direction::In, crate::attendance::Source::Manual, None, None, now)
+            .map_err(|e| RepoError::Db(rusqlite::Error::InvalidParameterName(e)))?;
 
         let existing_id: Option<String> = self.conn.query_row(
             "SELECT id FROM attendance WHERE user_id = ?1 AND date = ?2", params![user_id, today], |r| r.get(0),
@@ -4596,6 +4653,13 @@ impl<'a> Repo<'a> {
         let now = chrono::Utc::now();
         let today = now.format("%Y-%m-%d").to_string();
         let now_iso = now.to_rfc3339();
+        let (tenant_id, branch_id): (String, Option<String>) = self.conn.query_row(
+            "SELECT tenant_id, branch_id FROM staff WHERE id = ?1", params![user_id], |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if let Some(branch_id) = branch_id {
+            crate::attendance::log_punch(self.conn, &tenant_id, &branch_id, user_id, crate::attendance::Direction::Out, crate::attendance::Source::Manual, None, None, now)
+                .map_err(|e| RepoError::Db(rusqlite::Error::InvalidParameterName(e)))?;
+        }
 
         let record: Option<(Option<String>, String)> = self.conn.query_row(
             "SELECT clock_in, status FROM attendance WHERE user_id = ?1 AND date = ?2", params![user_id, today],
@@ -5074,17 +5138,22 @@ impl<'a> Repo<'a> {
     /// Shared item+modifier fetch used by both `retrieve_held_order` (DRAFT)
     /// and `retrieve_open_order` (PENDING/PREPARING/READY/SERVED) -- same
     /// query shape, only the caller's status filter on `orders` differs.
+    #[cfg(test)]
+    pub fn fetch_order_items_for_retrieval_for_test(&self, order_id: &str) -> Result<Vec<HeldOrderItem>, RepoError> {
+        self.fetch_order_items_for_retrieval(order_id)
+    }
+
     fn fetch_order_items_for_retrieval(&self, order_id: &str) -> Result<Vec<HeldOrderItem>, RepoError> {
         let mut items_stmt = self.conn.prepare(
-            "SELECT id, menu_item_id, quantity, unit_price_cents, notes, comped, comp_reason FROM order_items WHERE order_id = ?1 AND voided = 0"
+            "SELECT id, menu_item_id, quantity, unit_price_cents, notes, comped, comp_reason, weight_grams, price_per_kg_cents FROM order_items WHERE order_id = ?1 AND voided = 0"
         )?;
         let raw_items: Vec<RawOrderItemRow> = items_stmt.query_map(params![order_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?))
         })?.filter_map(|r| r.ok()).collect();
         drop(items_stmt);
 
         let mut items = Vec::with_capacity(raw_items.len());
-        for (db_item_id, menu_item_id, quantity, unit_price_cents, notes, comped, comp_reason) in raw_items {
+        for (db_item_id, menu_item_id, quantity, unit_price_cents, notes, comped, comp_reason, weight_grams, price_per_kg_cents) in raw_items {
             let name: String = self.conn.query_row(
                 "SELECT name FROM menu_items WHERE id = ?1", params![menu_item_id], |r| r.get(0)
             ).unwrap_or_default();
@@ -5100,7 +5169,7 @@ impl<'a> Repo<'a> {
             items.push(HeldOrderItem {
                 db_item_id, menu_item_id, name, quantity, unit_price_cents,
                 notes: notes.unwrap_or_default(), modifiers,
-                comped: comped != 0, comp_reason,
+                comped: comped != 0, comp_reason, weight_grams, price_per_kg_cents,
             });
         }
         Ok(items)
@@ -5152,22 +5221,23 @@ impl<'a> Repo<'a> {
     /// tax/total never drift from a real, authoritative recompute.
     pub fn list_order_items_as_input(&self, order_id: &str) -> Result<Vec<OrderItemInput>, RepoError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, menu_item_id, quantity, unit_price_cents, notes, combo_id, comped, comp_reason, comp_by FROM order_items WHERE order_id = ?1 AND voided = 0"
+            "SELECT id, menu_item_id, quantity, unit_price_cents, notes, combo_id, comped, comp_reason, comp_by, weight_grams, price_per_kg_cents FROM order_items WHERE order_id = ?1 AND voided = 0"
         )?;
         #[allow(clippy::type_complexity)]
-        let rows: Vec<(String, String, i64, i64, Option<String>, Option<String>, i64, Option<String>, Option<String>)> = stmt.query_map(params![order_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?))
+        let rows: Vec<(String, String, i64, i64, Option<String>, Option<String>, i64, Option<String>, Option<String>, Option<i64>, Option<i64>)> = stmt.query_map(params![order_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?))
         })?.filter_map(|r| r.ok()).collect();
         drop(stmt);
 
         let mut items = Vec::with_capacity(rows.len());
-        for (item_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, comped, comp_reason, comp_by) in rows {
+        for (item_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, comped, comp_reason, comp_by, weight_grams, price_per_kg_cents) in rows {
             let mut mod_stmt = self.conn.prepare("SELECT name, price_cents FROM order_modifiers WHERE order_item_id = ?1")?;
             let modifiers: Vec<OrderModifierInput> = mod_stmt.query_map(params![item_id], |r| {
                 Ok(OrderModifierInput { name: r.get(0)?, price_cents: r.get(1)?, locked: true })
             })?.filter_map(|r| r.ok()).collect();
             drop(mod_stmt);
-            items.push(OrderItemInput { menu_item_id, name: None, quantity, unit_price_cents, notes, combo_id, modifiers, comped: comped != 0, comp_reason, comp_by });
+            let weight = weight_grams.map(|grams| crate::weighing::LineWeight { grams, amount_cents: Some(unit_price_cents), price_per_kg_cents: price_per_kg_cents.unwrap_or(0), locked: true });
+            items.push(OrderItemInput { menu_item_id, name: None, quantity, unit_price_cents, notes, combo_id, modifiers, comped: comped != 0, comp_reason, comp_by, weight });
         }
         Ok(items)
     }
@@ -5244,15 +5314,15 @@ impl<'a> Repo<'a> {
         let mut result = Vec::with_capacity(rows.len());
         for (order_id, total_cents) in rows {
             let mut items_stmt = self.conn.prepare(
-                "SELECT id, menu_item_id, quantity, unit_price_cents, notes, comped, comp_reason FROM order_items WHERE order_id = ?1 AND voided = 0"
+                "SELECT id, menu_item_id, quantity, unit_price_cents, notes, comped, comp_reason, weight_grams, price_per_kg_cents FROM order_items WHERE order_id = ?1 AND voided = 0"
             )?;
             let raw_items: Vec<RawOrderItemRow> = items_stmt.query_map(params![order_id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?))
             })?.filter_map(|r| r.ok()).collect();
             drop(items_stmt);
 
             let mut items = Vec::with_capacity(raw_items.len());
-            for (db_item_id, menu_item_id, quantity, unit_price_cents, notes, comped, comp_reason) in raw_items {
+            for (db_item_id, menu_item_id, quantity, unit_price_cents, notes, comped, comp_reason, weight_grams, price_per_kg_cents) in raw_items {
                 let name: String = self.conn.query_row(
                     "SELECT name FROM menu_items WHERE id = ?1", params![menu_item_id], |r| r.get(0)
                 ).unwrap_or_default();
@@ -5268,7 +5338,7 @@ impl<'a> Repo<'a> {
                 items.push(HeldOrderItem {
                     db_item_id, menu_item_id, name, quantity, unit_price_cents,
                     notes: notes.unwrap_or_default(), modifiers,
-                    comped: comped != 0, comp_reason,
+                    comped: comped != 0, comp_reason, weight_grams, price_per_kg_cents,
                 });
             }
             result.push(PendingOrderSummary { id: order_id, total_cents, items });
@@ -5589,10 +5659,10 @@ impl<'a> Repo<'a> {
     /// at partial-refund-via-void semantics no one asked for.
     pub fn void_order_item(&self, scope: &Scope, item_id: &str, reason: &str, actor_id: &str) -> Result<(), RepoError> {
         self.assert_order_item_in_scope(item_id, scope)?;
-        let (order_id, menu_item_id, quantity, already_voided): (String, String, i64, bool) = self.conn.query_row(
-            "SELECT order_id, menu_item_id, quantity, voided FROM order_items WHERE id = ?1",
+        let (order_id, menu_item_id, quantity, already_voided, weight_grams): (String, String, i64, bool, Option<i64>) = self.conn.query_row(
+            "SELECT order_id, menu_item_id, quantity, voided, weight_grams FROM order_items WHERE id = ?1",
             params![item_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )?;
         if already_voided {
             return Err(RepoError::OrderItemAlreadyVoided { item_id: item_id.to_string() });
@@ -5613,7 +5683,7 @@ impl<'a> Repo<'a> {
                 .collect::<Result<Vec<_>, _>>()?;
             drop(stmt);
             for (ingredient_id, qty_needed) in recipe_rows {
-                let restore = qty_needed * quantity as f64;
+                let restore = qty_needed * weight_grams.map_or(quantity as f64, |g| g as f64 / 1000.0);
                 if restore <= 0.0 {
                     continue;
                 }
@@ -5636,17 +5706,18 @@ impl<'a> Repo<'a> {
     /// lives, what it is, and whether the order is still open.
     pub fn open_order_item_info(&self, scope: &Scope, item_id: &str) -> Result<OrderItemInfo, RepoError> {
         self.assert_order_item_in_scope(item_id, scope)?;
-        let (order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, comped, comp_reason, comp_by, voided, status): OrderItemInfoRow = self.conn.query_row(
-            "SELECT i.order_id, i.menu_item_id, i.quantity, i.unit_price_cents, i.notes, i.combo_id, i.comped, i.comp_reason, i.comp_by, i.voided, o.status \
+        let (order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, comped, comp_reason, comp_by, voided, status, weight_grams, price_per_kg_cents): OrderItemInfoRow = self.conn.query_row(
+            "SELECT i.order_id, i.menu_item_id, i.quantity, i.unit_price_cents, i.notes, i.combo_id, i.comped, i.comp_reason, i.comp_by, i.voided, o.status, i.weight_grams, i.price_per_kg_cents \
              FROM order_items i JOIN orders o ON o.id = i.order_id WHERE i.id = ?1",
             params![item_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?)),
         )?;
         let mut stmt = self.conn.prepare("SELECT name, price_cents FROM order_modifiers WHERE order_item_id = ?1")?;
         let modifiers: Vec<OrderModifierInput> = stmt
             .query_map(params![item_id], |r| Ok(OrderModifierInput { name: r.get(0)?, price_cents: r.get(1)?, locked: true }))?
             .collect::<Result<_, _>>()?;
-        Ok(OrderItemInfo { order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, comped: comped != 0, comp_reason, comp_by, voided: voided != 0, order_status: status, modifiers })
+        let weight = weight_grams.map(|grams| crate::weighing::LineWeight { grams, amount_cents: Some(unit_price_cents), price_per_kg_cents: price_per_kg_cents.unwrap_or(0), locked: true });
+        Ok(OrderItemInfo { order_id, menu_item_id, quantity, unit_price_cents, notes, combo_id, comped: comped != 0, comp_reason, comp_by, voided: voided != 0, order_status: status, modifiers, weight })
     }
 
     /// Replaces one line of an OPEN order with a changed copy (quantity,
@@ -5734,7 +5805,7 @@ impl<'a> Repo<'a> {
         if comped {
             let value = Self::line_total_cents(&OrderItemInput {
                 menu_item_id: info.menu_item_id.clone(), name: None, quantity: info.quantity, unit_price_cents: info.unit_price_cents,
-                notes: None, combo_id: None, modifiers: info.modifiers.clone(), comped: false, comp_reason: None, comp_by: None,
+                notes: None, combo_id: None, modifiers: info.modifiers.clone(), comped: false, comp_reason: None, comp_by: None, weight: None,
             });
             self.conn.execute(
                 "UPDATE order_items SET comped = 1, comp_reason = ?1, comp_by = ?2, comp_value_cents = ?3, last_modified = ?4, sync_status = 'pending' WHERE id = ?5",
@@ -6335,6 +6406,8 @@ mod tests {
         migrate_v3::run_restaurant_ops_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_pickup_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_order_history_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_weighed_items_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_attendance_punches_migration(&mut conn, &db_path).unwrap();
         db_path
     }
 
@@ -6562,7 +6635,7 @@ mod tests {
             subtotal_cents: 1500, tax_cents: 0, total_cents: 1500, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
             delivery_fee_cents: 0, shift_id: None,
-            items: vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 3, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+            items: vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 3, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
         }).unwrap();
         repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CASH", 1500, 0, None, &actor_id, None, None).unwrap();
         conn.execute("UPDATE orders SET closed_at = '2026-01-15T12:00:00Z' WHERE id = ?1", params![order_id]).unwrap();

@@ -34,6 +34,8 @@ interface MenuItem {
   /** 'simple' | 'prepared' | 'composite' -- derived server-side (see
    *  Repo::recompute_item_kind), never set directly by this UI. */
   item_kind: string;
+  /** 'weight': price_cents is the price of one kilogram and the till asks for a weight or an amount. */
+  sold_by?: string;
 }
 
 /** Display copy for `item_kind`, read-only everywhere -- the only way this
@@ -105,6 +107,7 @@ interface MenuItemForm {
   cost_cents: string;
   description: string;
   barcode: string;
+  sold_by: "unit" | "weight";
 }
 
 interface CategoryForm {
@@ -136,6 +139,7 @@ const emptyMenuItemForm: MenuItemForm = {
   cost_cents: "",
   description: "",
   barcode: "",
+  sold_by: "unit",
 };
 
 const emptyCategoryForm: CategoryForm = {
@@ -167,6 +171,7 @@ const menuItemSchema = z.object({
   cost_cents: z.coerce.number().min(0, "يجب أن يكون 0 أو أكثر").optional().default(0),
   description: z.string().optional().default(""),
   barcode: z.string().optional().default(""),
+  sold_by: z.enum(["unit", "weight"]).default("unit"),
 });
 
 const categorySchema = z.object({
@@ -407,6 +412,7 @@ export default function MenuPage() {
       cost_cents: String(item.cost_cents),
       description: item.description ?? "",
       barcode: item.barcode ?? "",
+      sold_by: item.sold_by === "weight" ? "weight" : "unit",
     });
     setItemErrors({});
     setPhotoError(null);
@@ -536,10 +542,16 @@ export default function MenuPage() {
         description: parsed.data.description || null,
         barcode: parsed.data.barcode || null,
       };
+      let savedId = editItemId;
       if (editItemId) {
         await invoke("update_menu_item_v3", { ...args, itemId: editItemId });
       } else {
-        await invoke("create_menu_item_v3", args);
+        savedId = await invoke<string>("create_menu_item_v3", args);
+      }
+      // How it is sold (a piece, or by weight with the price per kilogram) is its own small write.
+      const wasSoldBy = menuItems.find((i) => i.id === editItemId)?.sold_by === "weight" ? "weight" : "unit";
+      if (savedId && parsed.data.sold_by !== wasSoldBy) {
+        await invoke("set_menu_item_sold_by_v3", { sessionToken: token, itemId: savedId, soldBy: parsed.data.sold_by });
       }
       setShowItemModal(false);
       toast.success(editItemId ? "تم تحديث الصنف ✓" : "تمت إضافة الصنف ✓");
@@ -996,6 +1008,7 @@ export default function MenuPage() {
                       </td>
                       <td className="p-3 font-mono text-saffron-600 font-bold">
                         {formatMoney(item.price_cents)}
+                        {item.sold_by === "weight" && <span className="text-xs font-arabic text-ink-500"> / كغ</span>}
                       </td>
                       <td className="p-3 font-mono text-ink-500">
                         {item.cost_cents > 0 ? formatMoney(item.cost_cents) : "-"}
@@ -1343,9 +1356,36 @@ export default function MenuPage() {
                 )}
               </div>
 
+              <div>
+                <span className="block text-sm font-arabic text-ink-900 mb-1">طريقة البيع</span>
+                <div className="grid grid-cols-2 gap-1 bg-surface-alt rounded-sm p-1" role="radiogroup" aria-label="طريقة البيع">
+                  {([
+                    ["unit", "بالحبة"],
+                    ["weight", "بالوزن"],
+                  ] as const).map(([v, label]) => (
+                    <button
+                      key={v}
+                      type="button"
+                      role="radio"
+                      aria-checked={itemForm.sold_by === v}
+                      data-testid={`item-sold-by-${v}`}
+                      onClick={() => setItemForm((p) => ({ ...p, sold_by: v }))}
+                      className={`h-9 rounded-[6px] text-sm font-arabic transition-colors ${itemForm.sold_by === v ? "bg-saffron-600 text-white font-bold" : "text-ink-600 hover:text-ink-900"}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {itemForm.sold_by === "weight" && (
+                  <p className="text-xs text-ink-500 font-arabic mt-1.5 leading-relaxed">
+                    السعر أدناه هو سعر الكيلو. عند البيع يكتب الكاشير الوزن أو المبلغ الذي طلبه الزبون. وصفة الصنف (إن وُجدت) تُحسب لكل كيلو.
+                  </p>
+                )}
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm font-arabic text-ink-900 mb-1">السعر *</label>
+                  <label className="block text-sm font-arabic text-ink-900 mb-1">{itemForm.sold_by === "weight" ? "سعر الكيلو *" : "السعر *"}</label>
                   <input
                     type="number"
                     min="0"

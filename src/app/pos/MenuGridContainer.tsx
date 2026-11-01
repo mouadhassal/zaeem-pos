@@ -13,6 +13,8 @@ import { formatAmount } from "../../lib/money";
 import { useOptionsStore } from "../../stores/optionsStore";
 import { groupsForItem, type OptionGroup } from "../../lib/itemOptions";
 import OptionPickerModal from "../../components/modals/OptionPickerModal";
+import WeightModal from "../../components/modals/WeightModal";
+import { formatWeight } from "../../lib/weight";
 import { navigateTo } from "../../lib/appNav";
 import { useMenuGridStore } from "../../stores/menuGridStore";
 import { menuGridLayout } from "../../lib/menuGridLayout";
@@ -44,6 +46,10 @@ interface Props {
     savingsCents?: number;
     comboId?: string;
     modifiers?: { name: string; priceCents: number }[];
+    /** Sold by weight: the portion in grams (quantity is 1 and unitPriceCents is the portion's price). */
+    weightGrams?: number;
+    pricePerKgCents?: number;
+    exactAmountCents?: number;
   }) => void;
 }
 
@@ -90,6 +96,8 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
     void loadOptions(token, true);
   }, [loadOptions, token]);
   const [picker, setPicker] = useState<{ payload: Parameters<Props["onAddItem"]>[0]; groups: OptionGroup[]; name: string } | null>(null);
+  // An item sold by weight asks for the weight or the amount first.
+  const [weighing, setWeighing] = useState<{ payload: Parameters<Props["onAddItem"]>[0]; groups: OptionGroup[]; name: string; pricePerKgCents: number } | null>(null);
 
   useEffect(() => {
     fetchMenu();
@@ -142,6 +150,10 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
       savingsCents: comboSavings + happyHourSavings,
     };
     const groups = item.is_combo ? [] : groupsForItem(optionGroups, item.id, item.category_id);
+    if (item.sold_by === "weight") {
+      setWeighing({ payload, groups, name: item.name, pricePerKgCents: item.price_cents });
+      return;
+    }
     if (groups.length > 0) setPicker({ payload, groups, name: item.name });
     else onAddItem(payload);
   };
@@ -198,6 +210,29 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
 
   return (
     <div className="flex flex-col h-full">
+      {weighing && (
+        <WeightModal
+          itemName={weighing.name}
+          pricePerKgCents={weighing.pricePerKgCents}
+          onCancel={() => setWeighing(null)}
+          onConfirm={(portion) => {
+            const payload = {
+              ...weighing.payload,
+              name: `${weighing.name} — ${formatWeight(portion.grams)}`,
+              quantity: 1,
+              unitPriceCents: portion.lineCents,
+              weightGrams: portion.grams,
+              pricePerKgCents: weighing.pricePerKgCents,
+              ...(portion.exactAmountCents ? { exactAmountCents: portion.exactAmountCents } : {}),
+              savingsCents: 0,
+            };
+            // A weighed item can still have options ("without onion"): pick them after the weight.
+            if (weighing.groups.length > 0) setPicker({ payload, groups: weighing.groups, name: weighing.name });
+            else onAddItem(payload);
+            setWeighing(null);
+          }}
+        />
+      )}
       {picker && (
         <OptionPickerModal
           itemName={picker.name}
@@ -331,7 +366,8 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
                     ? { originalPriceCents: item.price_cents, badge: `🕐 -${item.happyHourDiscountPercent}%` }
                     : {})}
                   categoryName={cat?.name || ""}
-                  quantity={getQty(item.id)}
+                  quantity={item.sold_by === "weight" ? 0 : getQty(item.id)}
+                  soldByWeight={item.sold_by === "weight"}
                   hasOptions={!item.is_combo && groupsForItem(optionGroups, item.id, item.category_id).length > 0}
                   currencySymbol={currencySymbol}
                   density={layout.density}

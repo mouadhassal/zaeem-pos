@@ -22,6 +22,7 @@ const OnScreenReceiptModal = lazy(() => import("../../components/modals/OnScreen
 const DebtSelectModal = lazy(() => import("../../components/modals/DebtSelectModal"));
 import MenuGridContainer from "./MenuGridContainer";
 import OrderPanel from "../../components/ui/OrderPanel";
+import WeightModal from "../../components/modals/WeightModal";
 import PayKey from "../../components/ui/PayKey";
 import {
   IconAward as Award,
@@ -90,9 +91,15 @@ function cancelledField(items: CartItem[]): { cancelledItems?: { name: string; q
   return cancelled.length > 0 ? { cancelledItems: cancelled } : {};
 }
 
-/** Gift ("on the house") fields for an order line, only present when the line is a gift. */
-function compFields(i: CartItem): { comped?: boolean; compReason?: string } {
-  return i.comped ? { comped: true, compReason: i.compReason ?? "" } : {};
+/**
+ * The optional fields of an order line that the server needs: gift status, and for an
+ * item sold by weight the portion (the server prices it again from the weight).
+ */
+function compFields(i: CartItem): { comped?: boolean; compReason?: string; weightGrams?: number; exactAmountCents?: number } {
+  return {
+    ...(i.comped ? { comped: true, compReason: i.compReason ?? "" } : {}),
+    ...(i.weightGrams ? { weightGrams: i.weightGrams, ...(i.exactAmountCents ? { exactAmountCents: i.exactAmountCents } : {}) } : {}),
+  };
 }
 
 function unsentCartLines(items: CartItem[], sentQuantities: Record<string, number>): CartItem[] {
@@ -928,6 +935,7 @@ export default function POSPage() {
       notes: i.notes,
       comped: !!i.comped,
       compReason: i.compReason ?? "",
+      ...(i.weightGrams ? { weightGrams: i.weightGrams, ...(i.pricePerKgCents ? { pricePerKgCents: i.pricePerKgCents } : {}) } : {}),
       sent: !!i.dbItemId,
     })),
   [items, menuItemsById]);
@@ -1091,6 +1099,23 @@ export default function POSPage() {
   const [editLineId, setEditLineId] = useState<string | null>(null);
   const [giftLineId, setGiftLineId] = useState<string | null>(null);
   const setLineOptions = useCartStore((s) => s.setLineOptions);
+  const setLineWeight = useCartStore((s) => s.setLineWeight);
+  // A line sold by weight is changed in the weight dialog, not the options picker.
+  const [weightEditId, setWeightEditId] = useState<string | null>(null);
+  const weightEditLine = items.find((i) => i.id === weightEditId);
+  const handleEditLine = (id: string) => {
+    const line = items.find((i) => i.id === id);
+    if (line?.weightGrams) {
+      if (line.dbItemId) {
+        setSuccessMsg("هذا الصنف أُرسل للمطبخ: لتغيير وزنه احذفه (مع السبب) ثم أضفه بالوزن الجديد");
+        setTimeout(() => setSuccessMsg(null), 5000);
+        return;
+      }
+      setWeightEditId(id);
+      return;
+    }
+    setEditLineId(id);
+  };
   const setLineComp = useCartStore((s) => s.setLineComp);
   const editLine = items.find((i) => i.id === editLineId);
   const giftLine = items.find((i) => i.id === giftLineId);
@@ -1290,7 +1315,7 @@ export default function POSPage() {
           onIncrementLine={handleIncrementLine}
           onDecrementLine={handleDecrementLine}
           onVoidLine={handleVoidLineClick}
-          onEditLine={setEditLineId}
+          onEditLine={handleEditLine}
           onGiftLine={handleGiftClick}
           toolbar={
             <div className="grid grid-cols-4 gap-1.5">
@@ -1611,6 +1636,24 @@ export default function POSPage() {
           imperceptible -- unlike the first-paint menu grid, nothing here is
           ever the thing a user is staring at waiting for on page load. */}
       {/* OrderTypeSelector removed — top bar handles order type selection */}
+
+      {weightEditLine?.weightGrams && (
+        <WeightModal
+          itemName={weightEditLine.name.replace(/ — [^—]*$/, "")}
+          pricePerKgCents={weightEditLine.pricePerKgCents ?? 0}
+          initialGrams={weightEditLine.weightGrams}
+          confirmLabel="حفظ"
+          onCancel={() => setWeightEditId(null)}
+          onConfirm={(p) => {
+            setLineWeight(weightEditLine.id, {
+              weightGrams: p.grams,
+              unitPriceCents: p.lineCents,
+              ...(p.exactAmountCents ? { exactAmountCents: p.exactAmountCents } : {}),
+            });
+            setWeightEditId(null);
+          }}
+        />
+      )}
 
       {editLine && (
         <OptionPickerModal

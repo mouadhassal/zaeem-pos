@@ -15,7 +15,7 @@ impl AiProvider for NullAiProvider {
         ))
     }
 
-    fn answer(&self, _q: &str, _s: &Snapshot) -> Result<Answer, AiError> {
+    fn answer(&self, _q: &str, _s: &Snapshot, _h: &[ChatTurn]) -> Result<Answer, AiError> {
         Err(AiError::Unavailable(
             "NullAiProvider: no AI backend configured".into(),
         ))

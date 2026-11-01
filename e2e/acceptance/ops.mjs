@@ -807,6 +807,231 @@ try {
     ok(problems.length === 0, problems.join(" | "));
   });
 
+  // Items sold by weight: the owner marks shawarma "by weight" (price per kilo),
+  // the cashier sells "10,000 worth" and "285 g", the cart shows each portion as
+  // its own line with no stepper, the bill is exact, the order history and the
+  // kitchen screen carry the weight.
+  await step("weighed", "sell by weight and by amount: exact bill, no stepper, weight in history and on the kitchen screen", async () => {
+    await b.setWindowSize(1366, 768);
+    // Earlier steps leave items in the cart and a closed shift: start from a clean till.
+    await b.refresh();
+    await byId("sidebar", 30000);
+    // The Menu form offers "how it is sold" and relabels the price as per kilo.
+    await nav("menu");
+    await reg.click(/إضافة صنف/);
+    await byId("item-sold-by-weight");
+    await clickId("item-sold-by-weight");
+    ok((await reg.text()).includes("سعر الكيلو"), "the price field becomes the kilo price");
+    console.log("  shot:", await reg.shot("menu-sold-by-weight"));
+    await recover();
+    await b.keys("Escape");
+    await pause(300);
+
+    ids.shawarma = await call("create_menu_item_v3", { name: "شاورما لحمة", categoryId: ids.catGrill, priceCents: 120000, costCents: 40000, description: null, barcode: null });
+    await call("set_menu_item_sold_by_v3", { itemId: ids.shawarma, soldBy: "weight" });
+    const listed = (await call("list_menu_items_v3")).find((i) => i.id === ids.shawarma);
+    eq(listed.sold_by, "weight", "stored as sold by weight");
+
+    await call("open_shift_v3", { startingCashCents: 0, branchId: null }).catch(() => {});
+    await nav("pos");
+    await clickId("order-type-TAKEAWAY");
+    await pause(500);
+    const tapCard = (name) => b.execute((nm) => {
+      const card = [...document.querySelectorAll('[data-testid="item-card"]')].find((c) => c.innerText.includes(nm));
+      if (!card) return false;
+      card.click();
+      return true;
+    }, name);
+    const cardText = await b.execute(() => [...document.querySelectorAll('[data-testid="item-card"]')].find((c) => c.innerText.includes("شاورما لحمة"))?.innerText ?? "");
+    ok(cardText.includes("بالوزن") && cardText.includes("/ كغ"), `the card says it is sold by weight: ${cardText.replace(/\n/g, " ")}`);
+
+    // 1) "give me 10,000 of it"
+    ok(await tapCard("شاورما لحمة"), "tapped the shawarma card");
+    await byId("weight-modal");
+    const input = await byId("weight-input");
+    await input.setValue("10000");
+    await pause(300);
+    ok((await textOf("weight-result-value")).includes("83 غ"), `10,000 buys 83 g: ${await textOf("weight-result-value")}`);
+    console.log("  shot:", await reg.shot("weight-modal-amount"));
+    await clickId("weight-confirm");
+    await until(async () => !(await exists("weight-modal")), "dialog closed");
+
+    // 2) "285 grams"
+    ok(await tapCard("شاورما لحمة"), "tapped again");
+    await byId("weight-modal");
+    await clickId("weight-mode-weight");
+    await (await byId("weight-input")).setValue("0.285");
+    await pause(300);
+    ok((await textOf("weight-result-value")).includes("34,200"), `285 g costs 34,200: ${await textOf("weight-result-value")}`);
+    await clickId("weight-confirm");
+    await until(async () => !(await exists("weight-modal")), "dialog closed");
+
+    // a nonsense weight cannot be confirmed
+    ok(await tapCard("شاورما لحمة"), "tapped a third time");
+    await byId("weight-modal");
+    await clickId("weight-mode-weight");
+    await (await byId("weight-input")).setValue("0");
+    await pause(300);
+    ok(!(await (await byId("weight-confirm")).isEnabled()), "zero weight cannot be added");
+    await reg.click(/^إلغاء$/);
+    await until(async () => !(await exists("weight-modal")), "dialog cancelled");
+
+    // The cart: two separate portions, no quantity stepper, the right total.
+    const lines = await b.execute(() => [...document.querySelectorAll('[data-testid="order-line"]')].map((l) => ({ text: l.innerText.replace(/\n+/g, " | "), steppers: l.querySelectorAll('[aria-label="زيادة الكمية"]').length })));
+    console.log("  cart:", JSON.stringify(lines));
+    eq(lines.length, 2, "two portions are two lines");
+    ok(lines[0].text.includes("83 غ") && lines[1].text.includes("285 غ"), "each line carries its weight");
+    ok(lines.every((l) => l.steppers === 0), "no quantity stepper on a weighed line");
+    ok((await reg.text()).includes("44,200"), "the cart total is 10,000 + 34,200");
+    console.log("  shot:", await reg.shot("weighed-cart"));
+
+    // Changing a portion before it is sent
+    await b.execute(() => [...document.querySelectorAll('[data-testid="order-line-edit"]')][1]?.click());
+    await byId("weight-modal");
+    await (await byId("weight-input")).setValue("0.5");
+    await pause(300);
+    await clickId("weight-confirm");
+    await until(async () => (await reg.text()).includes("500 غ") || (await reg.text()).includes("0.5"), "the portion changed");
+    ok((await reg.text()).includes("70,000"), "total is now 10,000 + 60,000 = 70,000");
+
+    // Pay: the bill is exactly what was asked for.
+    const receiptsBefore = jobs("receipt").length;
+    ok(await b.execute(() => { const x = [...document.querySelectorAll("button")].find((e) => e.offsetParent !== null && e.innerText.trim() === "دفع"); x?.click(); return !!x; }), "pay button");
+    await byId("pay-exact");
+    await clickId("pay-exact");
+    await reg.click(/تأكيد وطباعة/);
+    await until(async () => jobs("receipt").length > receiptsBefore, "the weighed sale printed its receipt", 20000);
+
+    const day = await call("list_order_history_v3", { businessDate: null });
+    const sold = day.rows.find((r) => r.status === "PAID" && r.total_cents === 70000);
+    ok(sold, `a paid order of exactly 70,000 is in the history: ${day.rows.map((r) => r.total_cents).join(",")}`);
+    const detail = await call("get_order_history_detail_v3", { orderId: sold.id });
+    const names = detail.items.map((i) => `${i.name}:${i.quantity}:${i.unit_price_cents}`);
+    console.log("  history lines:", names.join(" ; "));
+    ok(names.includes("شاورما لحمة — 83 غ:1:10000"), "10,000 of shawarma is 83 g, charged exactly 10,000");
+    ok(names.some((n) => n.startsWith("شاورما لحمة — 500 غ:1:60000")), "500 g is 60,000");
+    console.log("  shot:", await reg.shot("weighed-sold"));
+
+    // A hand-made call cannot invent a price: the server prices the weight itself.
+    const forged = await call("create_full_order_v3", {
+      tableId: "", orderType: "TAKEAWAY",
+      items: [{ menu_item_id: ids.shawarma, name: null, quantity: 1, unit_price_cents: 1, notes: null, combo_id: null, modifiers: [], comped: false, comp_reason: null, weight: { grams: 1000, amount_cents: 5 } }],
+      subtotalCents: 1, taxCents: 0, totalCents: 1, discountCents: 0, discountReason: null,
+      customerName: null, customerPhone: null, deliveryAddress: null, deliveryFeeCents: 0, shiftId: null, managerOverridePin: null, pickupAtMs: null,
+    }).then(() => "accepted", (e) => String(e.message));
+    ok(forged !== "accepted" && forged.includes("does not match"), `a forged amount is refused: ${forged.slice(0, 160)}`);
+
+    // The kitchen screen shows the weight beside the name.
+    const kdsOrder = await call("create_full_order_v3", {
+      tableId: "", orderType: "TAKEAWAY",
+      items: [{ menu_item_id: ids.shawarma, name: null, quantity: 1, unit_price_cents: 1, notes: null, combo_id: null, modifiers: [], comped: false, comp_reason: null, weight: { grams: 250 } }],
+      subtotalCents: 1, taxCents: 0, totalCents: 1, discountCents: 0, discountReason: null,
+      customerName: null, customerPhone: null, deliveryAddress: null, deliveryFeeCents: 0, shiftId: null, managerOverridePin: null, pickupAtMs: null,
+    });
+    const kds = await call("list_kitchen_orders_v3");
+    const kline = kds.find((o) => o.id === kdsOrder)?.items.map((i) => i.name) ?? [];
+    ok(kline.includes("شاورما لحمة — 250 غ"), `the kitchen screen shows the weight: ${JSON.stringify(kline)}`);
+  });
+
+  // Attendance: the fingerprint tab. No reader is chosen yet, so it must say so
+  // plainly and refuse to enrol or punch; the late rule can be set; a manual
+  // clock-in lands in the punch log.
+  await step("fingerprint", "attendance tab: no-device status, late rule saved, manual clock-in logged", async () => {
+    await b.setWindowSize(1366, 768);
+    const staff = await call("list_staff_v3");
+    const cashier = staff.find((s) => s.role === "CASHIER") ?? staff[0];
+    await call("clock_in_v3", { userId: cashier.id });
+    await nav("staff");
+    await reg.click(/الحضور والانصراف/);
+    await pause(400);
+    await reg.click(/البصمة والتأخير/);
+    await byId("fingerprint-panel");
+    ok((await textOf("fingerprint-status")).includes("لا يوجد جهاز بصمة"), `says no reader: ${await textOf("fingerprint-status")}`);
+    ok(!(await (await b.$('[data-testid="fingerprint-enrol"]')).isEnabled()), "enrolling is disabled without a reader");
+    // tapping the punch button explains instead of failing silently
+    await clickId("fingerprint-punch");
+    await until(async () => (await reg.text()).includes("لا يوجد جهاز بصمة متصل"), "the punch button explains there is no device");
+
+    // the late rule
+    // A <time> input is a segmented 12-hour widget the driver cannot type into: set it as React sees it.
+    await b.execute(() => {
+      const el = document.querySelector('[data-testid="attendance-shift-start"]');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, "10:30");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await (await byId("attendance-grace")).setValue("15");
+    await clickId("attendance-settings-save");
+    await until(async () => (await call("get_attendance_settings_v3")).shift_start === "10:30", "late rule saved");
+    eq((await call("get_attendance_settings_v3")).late_grace_minutes, 15, "grace saved");
+
+    // the punch log shows the manual clock-in
+    await until(async () => (await b.execute(() => document.querySelector('[data-testid="punch-log"]')?.innerText ?? "")).includes("يدوي"), "the manual clock-in is in the punch log");
+    console.log("  shot:", await reg.shot("fingerprint-panel"));
+    const err = await call("enrol_fingerprint_v3", { userId: cashier.id, finger: "right_index" }).then(() => "", (e) => String(e.message));
+    ok(err.includes("لا يوجد جهاز"), `enrolling without a reader is refused: ${err.slice(0, 120)}`);
+    await call("set_attendance_settings_v3", { shiftStart: "09:00", lateGraceMinutes: 10 });
+  });
+
+  // The AI assistant page: starter questions, an answer with follow-up chips,
+  // earlier turns sent back as context, a plain-Arabic error with a retry button
+  // (never raw JSON), a fresh-chat button, and the rule-based insights command.
+  // The debug build answers with MockAiProvider ("Mock response to: ...").
+  await step("assistant", "AI page: answer + follow-ups, history sent, friendly offline error with retry, new chat, insights", async () => {
+    await b.setWindowSize(1366, 768);
+    await nav("ai");
+    await byId("ai-chat-input");
+    const msgCount = () => b.execute(() => document.querySelectorAll('[data-testid^="ai-chat-message-"]:not([data-testid$="-text"])').length);
+    eq(await msgCount(), 1, "only the welcome bubble at first");
+    ok((await reg.text()).includes("أسئلة سريعة"), "starter questions are shown");
+
+    // 1) a question gets an answer, then follow-up chips appear
+    await (await byId("ai-chat-input")).setValue("كم بعنا اليوم؟");
+    await clickId("ai-chat-send");
+    await until(async () => (await b.execute(() => document.body.innerText)).includes("Mock response to: كم بعنا اليوم؟"), "the answer arrived", 20000);
+    await byId("ai-followups");
+    ok(await exists("ai-chat-copy"), "an answer can be copied");
+
+    // 2) a follow-up carries the earlier turns as context (mock echoes how many it got)
+    await (await byId("ai-chat-input")).setValue("__history__");
+    await clickId("ai-chat-send");
+    await until(async () => (await b.execute(() => document.body.innerText)).includes("history=2"), "the follow-up was sent with the 2 earlier turns", 20000);
+
+    // 3) a failure reads as plain Arabic with a retry button, no raw JSON / English plumbing
+    await (await byId("ai-chat-input")).setValue("__offline__");
+    await clickId("ai-chat-send");
+    await byId("ai-chat-retry");
+    const text = await b.execute(() => document.body.innerText);
+    ok(text.includes("لا يوجد اتصال بالإنترنت"), "the offline message is Arabic");
+    ok(!text.includes("AI unavailable") && !text.includes("AI service returned"), "no English plumbing text");
+    await pause(900);
+    console.log("  shot:", await reg.shot("assistant-error"));
+    // a failed turn is not replayed as history
+    await (await byId("ai-chat-input")).setValue("__history__");
+    await clickId("ai-chat-send");
+    await until(async () => (await b.execute(() => document.body.innerText)).includes("history=4"), "errors are not sent back as context (2+2 real turns)", 20000);
+
+    // 4) new chat resets
+    await clickId("ai-chat-new");
+    await until(async () => (await msgCount()) === 1, "fresh chat");
+    console.log("  shot:", await reg.shot("assistant-fresh"));
+
+    // 5) the question is bounded
+    const tooLong = await call("ask_assistant_v3", { question: "x".repeat(1001), startIso: "2026-01-01T00:00:00Z", endIso: "2026-12-31T00:00:00Z" }).then(() => "accepted", (e) => String(e.message));
+    ok(tooLong.includes("طويل جداً"), `an over-long question is refused: ${tooLong}`);
+
+    // 6) rule-based insights: computed on the till, no AI
+    const now = new Date();
+    const day = 86400000;
+    const insights = await call("assistant_insights_v3", {
+      tzOffsetMinutes: 0,
+      periods: [
+        { label: "last_7_days", start_iso: new Date(now - 6 * day).toISOString(), end_iso: now.toISOString() },
+        { label: "previous_7_days", start_iso: new Date(now - 13 * day).toISOString(), end_iso: new Date(now - 6 * day - 1).toISOString() },
+      ],
+    });
+    ok(Array.isArray(insights) && insights.every((i) => i.text && i.question && ["up", "down", "warn", "info"].includes(i.kind)), `insights are well-formed: ${JSON.stringify(insights).slice(0, 200)}`);
+  });
+
   // POS Lite (licence plan pos_lite): only the till's screens, Full-only
   // commands refused by the backend, no selling on credit or loyalty, a cash
   // sale still prints -- and putting a Full licence back brings everything
@@ -827,7 +1052,7 @@ try {
     for (const id of ["pos", "shift", "orders", "delivery", "customers", "menu", "staff", "settings"]) ok(lite.includes(id), `${id} missing from the Lite sidebar`);
 
     // the backend refuses Full-only commands, whatever the screen shows
-    for (const cmd of ["get_sales_report_v3", "get_dashboard_summary_v3", "list_debtors_v3", "list_ingredients_v3", "list_loyalty_cards_v3", "ask_assistant_v3", "list_branches_full_v3", "list_attendance_v3"]) {
+    for (const cmd of ["get_sales_report_v3", "get_dashboard_summary_v3", "list_debtors_v3", "list_ingredients_v3", "list_loyalty_cards_v3", "ask_assistant_v3", "list_branches_full_v3", "list_attendance_v3", "list_punches_v3", "fingerprint_status_v3", "assistant_insights_v3"]) {
       const err = await call(cmd).then(() => "", (e) => String(e.message));
       ok(err.includes("POS Lite"), `${cmd} must be refused on Lite, got: ${err.slice(0, 120) || "ok"}`);
     }

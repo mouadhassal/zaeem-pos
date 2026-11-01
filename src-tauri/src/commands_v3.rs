@@ -74,6 +74,7 @@ mod tests {
             include_str!("commands/delivery.rs"),
             include_str!("commands/pickup.rs"),
             include_str!("commands/order_history.rs"),
+            include_str!("commands/fingerprint.rs"),
         ].join("\n")
     }
 
@@ -117,6 +118,8 @@ mod tests {
         migrate_v3::run_restaurant_ops_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_pickup_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_order_history_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_weighed_items_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_attendance_punches_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -440,7 +443,7 @@ mod tests {
             open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let items = vec![OrderItemInput {
                 menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 1000,
-                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license,
@@ -493,7 +496,7 @@ mod tests {
                 menu_item_id: item_id, name: None, quantity: 2,
                 // The attack: claim the real 1000-cent item costs 1 cent.
                 unit_price_cents: 1,
-                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license, session, table_id, "DINE_IN".to_string(), fabricated_items,
@@ -552,7 +555,7 @@ mod tests {
             };
             let items = vec![OrderItemInput {
                 menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
-                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license, session.clone(), table_id, "DINE_IN".to_string(), items,
@@ -605,7 +608,7 @@ mod tests {
             };
             let items = vec![OrderItemInput {
                 menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
-                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license, session.clone(), table_id, "DINE_IN".to_string(), items,
@@ -879,7 +882,7 @@ mod tests {
             open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let items = vec![OrderItemInput {
                 menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
-                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license,
@@ -1071,7 +1074,7 @@ mod tests {
             // already visible on KDS -- with nothing paid yet.
             let first_items = vec![OrderItemInput {
                 menu_item_id: item_1_id, name: None, quantity: 1, unit_price_cents: 1000,
-                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(), first_items,
@@ -1103,7 +1106,7 @@ mod tests {
             // contain this one new line.
             let second_items = vec![OrderItemInput {
                 menu_item_id: item_2_id, name: None, quantity: 2, unit_price_cents: 500,
-                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
             }];
             add_items_to_order_v3_impl(&db, &license, session.clone(), order_id.clone(), second_items)
                 .expect("add_items_to_order_v3 must succeed on an open PENDING order");
@@ -1172,8 +1175,8 @@ mod tests {
             open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
 
             let items = vec![
-                OrderItemInput { menu_item_id: burger_id, name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None },
-                OrderItemInput { menu_item_id: fries_id.clone(), name: None, quantity: 2, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None },
+                OrderItemInput { menu_item_id: burger_id, name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None },
+                OrderItemInput { menu_item_id: fries_id.clone(), name: None, quantity: 2, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None },
             ];
             let order_id = create_full_order_v3_impl(
                 &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(), items,
@@ -1250,7 +1253,7 @@ mod tests {
 
             let more_items = vec![OrderItemInput {
                 menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
-                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
             }];
             let err = add_items_to_order_v3_impl(&db, &license, session, order_id, more_items)
                 .expect_err("adding items to an already-PAID order must be rejected");
@@ -1282,6 +1285,391 @@ mod tests {
             let exists: bool = conn.query_row("SELECT COUNT(*) > 0 FROM payments WHERE id = ?1", params![payment_id], |r| r.get(0)).unwrap();
             assert!(exists);
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Attendance by fingerprint, through the real command bodies. The device is
+        /// pretended (a "finger" is just some bytes) because no reader is chosen yet.
+        mod fingerprint_commands {
+            use super::*;
+            use crate::attendance::{FingerprintReader, NoReader, ReaderStatus};
+            use crate::commands::fingerprint::{enrol_fingerprint_v3_impl, fingerprint_punch_v3_impl, fingerprint_status_v3_impl};
+            use chrono::TimeZone;
+
+            fn unlocked_license(db_path: &std::path::Path) -> crate::license::cloud::CloudLicenseState {
+                struct NeverCalledTransport;
+                #[async_trait::async_trait]
+                impl crate::license::cloud::CloudTransport for NeverCalledTransport {
+                    async fn check(&self, _license_id: &str, _device_token: &str) -> crate::license::cloud::CloudCheckOutcome {
+                        panic!("sale-path commands must never call the cloud transport");
+                    }
+                }
+                let license_dir = db_path.parent().unwrap().join("unlocked-license");
+                fs::create_dir_all(&license_dir).unwrap();
+                let key = license_core::signed::test_support::test_keypair();
+                let offline = crate::license::store::LicenseState::init(license_dir.clone(), key.verifying_key());
+                let now = chrono::Utc::now().timestamp_millis();
+                let payload = license_core::signed::test_support::sample_payload(
+                    crate::license::fingerprint::current(), now - 1000, now + 30 * 86_400_000,
+                );
+                offline.accept_renewal(license_core::signed::test_support::mint(&key, &payload)).unwrap();
+                crate::license::cloud::CloudLicenseState::new(offline, license_dir, None, Box::new(NeverCalledTransport))
+            }
+
+            struct Finger(std::sync::Mutex<Option<Vec<u8>>>);
+
+            impl Finger {
+                fn put(&self, bytes: &[u8]) {
+                    *self.0.lock().unwrap() = Some(bytes.to_vec());
+                }
+            }
+
+            impl FingerprintReader for Finger {
+                fn provider(&self) -> &'static str { "fake" }
+                fn status(&self) -> ReaderStatus { ReaderStatus { connected: true, model: Some("Fake".into()), message: "ok".into() } }
+                fn capture_template(&self) -> Result<Vec<u8>, String> { self.0.lock().unwrap().clone().ok_or("no finger".to_string()) }
+                fn identify(&self, enrolments: &[(String, Vec<u8>)]) -> Result<Option<String>, String> {
+                    let f = self.0.lock().unwrap().clone().ok_or("no finger".to_string())?;
+                    Ok(enrolments.iter().find(|(_, t)| *t == f).map(|(id, _)| id.clone()))
+                }
+            }
+
+            struct F {
+                db_path: PathBuf,
+                db: Db,
+                license: crate::license::cloud::CloudLicenseState,
+                manager_session: String,
+                cashier_session: String,
+                cashier_id: String,
+                tenant_id: String,
+            }
+
+            fn setup(name: &str) -> F {
+                let (db_path, tenant_id, branch_id, _table) = seeded_db(name);
+                let (manager_id, cashier_id) = {
+                    let conn = Connection::open(&db_path).unwrap();
+                    (seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Manager"), seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier"))
+                };
+                let (manager_session, cashier_session) = {
+                    let conn = Connection::open(&db_path).unwrap();
+                    (security::create_session(&conn, &manager_id, "device-1").unwrap(), security::create_session(&conn, &cashier_id, "device-1").unwrap())
+                };
+                F { db: real_db(&db_path), license: unlocked_license(&db_path), db_path, manager_session, cashier_session, cashier_id, tenant_id }
+            }
+
+            fn day(h: u32, m: u32) -> chrono::DateTime<chrono::Utc> {
+                chrono::Utc.with_ymd_and_hms(2026, 11, 3, h, m, 0).unwrap()
+            }
+
+            #[test]
+            fn with_no_device_the_status_says_so_and_nothing_can_be_enrolled_or_punched() {
+                let f = setup("fp_no_device");
+                let status = fingerprint_status_v3_impl(&f.db, &NoReader, f.cashier_session.clone()).unwrap();
+                assert!(!status.reader.connected);
+                assert_eq!(status.enrolled_people, 0);
+                let r = enrol_fingerprint_v3_impl(&f.db, &f.license, &NoReader, f.manager_session.clone(), f.cashier_id.clone(), "right_index".into());
+                assert!(r.unwrap_err().contains("لا يوجد جهاز"));
+                assert!(fingerprint_punch_v3_impl(&f.db, &f.license, &NoReader, f.cashier_session.clone(), day(6, 0)).is_err());
+                let conn = Connection::open(&f.db_path).unwrap();
+                let n: i64 = conn.query_row("SELECT (SELECT COUNT(*) FROM fingerprint_enrolments) + (SELECT COUNT(*) FROM attendance_punches)", [], |r| r.get(0)).unwrap();
+                assert_eq!(n, 0, "nothing was stored");
+                let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+            }
+
+            #[test]
+            fn a_manager_enrols_and_the_employee_then_clocks_in_and_out_with_a_finger() {
+                let f = setup("fp_end_to_end");
+                let reader = Finger(Default::default());
+                reader.put(b"cashier-index");
+                enrol_fingerprint_v3_impl(&f.db, &f.license, &reader, f.manager_session.clone(), f.cashier_id.clone(), "right_index".into()).unwrap();
+                assert_eq!(fingerprint_status_v3_impl(&f.db, &reader, f.cashier_session.clone()).unwrap().enrolled_people, 1);
+
+                // Whoever is signed in at the till, the finger decides who is recorded.
+                let inn = fingerprint_punch_v3_impl(&f.db, &f.license, &reader, f.manager_session.clone(), day(6, 0)).unwrap();
+                assert_eq!((inn.user_id.as_str(), inn.direction), (f.cashier_id.as_str(), "IN"));
+                let out = fingerprint_punch_v3_impl(&f.db, &f.license, &reader, f.manager_session.clone(), day(14, 0)).unwrap();
+                assert_eq!(out.direction, "OUT");
+
+                let conn = Connection::open(&f.db_path).unwrap();
+                let (n, ci, co): (i64, Option<String>, Option<String>) = conn
+                    .query_row("SELECT COUNT(*), MAX(clock_in), MAX(clock_out) FROM attendance WHERE user_id = ?1", params![f.cashier_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+                assert_eq!(n, 1);
+                assert!(ci.is_some() && co.is_some());
+                let sources: Vec<String> = conn.prepare("SELECT source FROM attendance_punches ORDER BY punched_at").unwrap()
+                    .query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+                assert_eq!(sources, vec!["FINGERPRINT", "FINGERPRINT"]);
+                let audited: i64 = conn.query_row("SELECT COUNT(*) FROM audit_log WHERE entity_type = 'attendance' AND entity_id = ?1", params![f.cashier_id], |r| r.get(0)).unwrap();
+                assert_eq!(audited, 2, "both punches are in the audit trail");
+                let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+            }
+
+            #[test]
+            fn an_unknown_finger_records_nothing() {
+                let f = setup("fp_stranger");
+                let reader = Finger(Default::default());
+                reader.put(b"cashier-index");
+                enrol_fingerprint_v3_impl(&f.db, &f.license, &reader, f.manager_session.clone(), f.cashier_id.clone(), "right_index".into()).unwrap();
+                reader.put(b"stranger");
+                let r = fingerprint_punch_v3_impl(&f.db, &f.license, &reader, f.cashier_session.clone(), day(6, 0));
+                assert!(r.is_err());
+                let conn = Connection::open(&f.db_path).unwrap();
+                let n: i64 = conn.query_row("SELECT COUNT(*) FROM attendance_punches", [], |r| r.get(0)).unwrap();
+                assert_eq!(n, 0);
+                let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+            }
+
+            #[test]
+            fn a_cashier_cannot_enrol_fingers() {
+                let f = setup("fp_permission");
+                let reader = Finger(Default::default());
+                reader.put(b"x");
+                let r = enrol_fingerprint_v3_impl(&f.db, &f.license, &reader, f.cashier_session.clone(), f.cashier_id.clone(), "right_index".into());
+                assert!(r.is_err(), "enrolling a finger is a manager's job");
+                let r = enrol_fingerprint_v3_impl(&f.db, &f.license, &reader, "not-a-session".into(), f.cashier_id.clone(), "right_index".into());
+                assert!(r.is_err());
+                let conn = Connection::open(&f.db_path).unwrap();
+                let n: i64 = conn.query_row("SELECT COUNT(*) FROM fingerprint_enrolments", [], |r| r.get(0)).unwrap();
+                assert_eq!(n, 0);
+                let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+            }
+
+            #[test]
+            fn the_manual_buttons_write_to_the_same_punch_log() {
+                let f = setup("fp_manual_log");
+                clock_in_v3_impl(&f.db, &f.license, f.manager_session.clone(), f.cashier_id.clone()).unwrap();
+                clock_out_v3_impl(&f.db, &f.license, f.manager_session.clone(), f.cashier_id.clone()).unwrap();
+                let conn = Connection::open(&f.db_path).unwrap();
+                let rows: Vec<(String, String)> = conn.prepare("SELECT direction, source FROM attendance_punches ORDER BY punched_at, direction DESC").unwrap()
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect();
+                assert_eq!(rows.len(), 2);
+                assert!(rows.iter().all(|(_, s)| s == "MANUAL"));
+                assert!(rows.iter().any(|(d, _)| d == "IN") && rows.iter().any(|(d, _)| d == "OUT"));
+                let _ = (f.tenant_id.len(), fs::remove_dir_all(f.db_path.parent().unwrap()));
+            }
+        }
+
+        /// Items sold by weight: a "weight" item's price is per kilogram, the till sends
+        /// grams (or grams plus the exact amount the customer asked for), and the server
+        /// alone decides what the line costs. Stock follows the kilos actually sold.
+        mod sold_by_weight {
+            use super::*;
+
+            struct W {
+                db_path: PathBuf,
+                db: Db,
+                license: crate::license::cloud::CloudLicenseState,
+                session: String,
+                table_id: String,
+                shawarma: String,
+                fries: String,
+                meat: String,
+                tenant_id: String,
+                cashier_id: String,
+            }
+
+            fn setup(name: &str) -> W {
+                let (db_path, tenant_id, branch_id, table_id) = seeded_db(name);
+                let (cashier_id, shawarma, fries, meat) = {
+                    let conn = Connection::open(&db_path).unwrap();
+                    let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                    let repo = Repo::new(&conn);
+                    let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                    // 120,000 per kilogram.
+                    let shawarma = repo.create_menu_item(&tenant_id, "Shawarma", &category_id, 120_000, 50_000, None, None).unwrap();
+                    repo.set_menu_item_sold_by(&tenant_id, &shawarma, "weight").unwrap();
+                    let fries = repo.create_menu_item(&tenant_id, "Fries", &category_id, 5_000, 2_000, None, None).unwrap();
+                    let meat = repo.create_ingredient(&tenant_id, &branch_id, "Meat", "kg", 20, 2.0).unwrap();
+                    conn.execute("UPDATE ingredients SET current_stock = 50.0 WHERE id = ?1", params![meat]).unwrap();
+                    // The recipe of a weighed item is "per kilogram sold".
+                    conn.execute("INSERT INTO recipes (id, tenant_id, menu_item_id, ingredient_id, quantity_needed) VALUES ('rw', ?1, ?2, ?3, 1.0)", params![tenant_id, shawarma, meat]).unwrap();
+                    (cashier_id, shawarma, fries, meat)
+                };
+                let session = {
+                    let conn = Connection::open(&db_path).unwrap();
+                    security::create_session(&conn, &cashier_id, "device-1").unwrap()
+                };
+                let db = real_db(&db_path);
+                let license = never_checked_license(&db_path);
+                open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+                W { db_path, db, license, session, table_id, shawarma, fries, meat, tenant_id, cashier_id }
+            }
+
+            fn line(menu_item_id: &str, quantity: i64, price: i64, weight: Option<crate::weighing::LineWeight>) -> OrderItemInput {
+                OrderItemInput { menu_item_id: menu_item_id.to_string(), name: None, quantity, unit_price_cents: price, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight }
+            }
+
+            fn grams(g: i64) -> Option<crate::weighing::LineWeight> {
+                Some(crate::weighing::LineWeight { grams: g, amount_cents: None, price_per_kg_cents: 0, locked: false })
+            }
+
+            fn amount(g: i64, a: i64) -> Option<crate::weighing::LineWeight> {
+                Some(crate::weighing::LineWeight { grams: g, amount_cents: Some(a), price_per_kg_cents: 0, locked: false })
+            }
+
+            fn order(w: &W, items: Vec<OrderItemInput>) -> Result<String, String> {
+                create_full_order_v3_impl(&w.db, &w.license, w.session.clone(), w.table_id.clone(), "DINE_IN".to_string(), items, 1, 0, 1, 0, None, None, None, None, 0, None, None)
+            }
+
+            /// The assistant's snapshot: counted by the day the sale was paid, grouped in
+            /// the till's local time, with kilos, categories, profit inputs, stock levels
+            /// and named comparison periods -- and never another shop's numbers.
+            #[test]
+            fn the_assistant_snapshot_knows_kilos_categories_hours_and_comparison_periods() {
+                use crate::assistant::{build_rich_snapshot, PeriodWindow, SnapshotContext};
+                let w = setup("assistant_rich");
+                let order_id = order(&w, vec![line(&w.shawarma, 1, 1, grams(500)), line(&w.fries, 2, 1, None)]).unwrap();
+                let conn = Connection::open(&w.db_path).unwrap();
+                let (branch_id, total): (String, i64) = conn.query_row("SELECT branch_id, total_cents FROM orders WHERE id = ?1", params![order_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+                assert_eq!(total, 60_000 + 10_000);
+                Repo::new(&conn).take_payment(&w.tenant_id, &branch_id, crate::repo::PaymentInput {
+                    order_id: order_id.clone(), method: "CASH".to_string(), amount_cents: total, change_cents: 0, debtor_id: None, actor_id: w.cashier_id.clone(),
+                }).unwrap();
+                // 21:30 UTC on 10 March is 00:30 on 11 March for a till three hours east.
+                conn.execute("UPDATE orders SET closed_at = '2026-03-10T21:30:00Z' WHERE id = ?1", params![order_id]).unwrap();
+                conn.execute("UPDATE ingredients SET current_stock = 1.0 WHERE id = ?1", params![w.meat]).unwrap();
+                let category_id: String = conn.query_row("SELECT category_id FROM menu_items WHERE id = ?1", params![w.fries], |r| r.get(0)).unwrap();
+                Repo::new(&conn).create_menu_item(&w.tenant_id, "Never sold", &category_id, 1_000, 0, None, None).unwrap();
+
+                let scope = crate::security::Scope::Branch { tenant_id: w.tenant_id.clone(), branch_id: branch_id.clone() };
+                let ctx = SnapshotContext {
+                    tz_offset_minutes: 180,
+                    now_local: "2026-03-11 (الأربعاء) 10:00".into(),
+                    periods: vec![
+                        PeriodWindow { label: "sale_day".into(), start_iso: "2026-03-10T00:00:00Z".into(), end_iso: "2026-03-10T23:59:59Z".into() },
+                        PeriodWindow { label: "day_before".into(), start_iso: "2026-03-09T00:00:00Z".into(), end_iso: "2026-03-09T23:59:59Z".into() },
+                    ],
+                };
+                let s = build_rich_snapshot(&conn, &scope, "2026-03-01T00:00:00Z", "2026-03-31T00:00:00Z", &ctx).unwrap();
+
+                assert_eq!((s.order_count, s.total_revenue_cents, s.cash_cents), (1, 70_000, 70_000));
+                assert_eq!(s.sales_by_day.iter().map(|d| d.date.as_str()).collect::<Vec<_>>(), vec!["2026-03-11"], "grouped by the LOCAL date, not the UTC date");
+                assert_eq!(s.sales_by_hour.len(), 1);
+                assert_eq!(s.sales_by_hour[0].hour, 0, "00:30 local");
+                assert_eq!(s.weighed_items.len(), 1);
+                assert_eq!((s.weighed_items[0].name.as_str(), s.weighed_items[0].kilograms, s.weighed_items[0].revenue_cents), ("Shawarma", 0.5, 60_000));
+                let shawarma = s.top_items.iter().find(|i| i.name == "Shawarma").unwrap();
+                assert_eq!((shawarma.revenue_cents, shawarma.cost_cents), (60_000, 25_000), "cost of a weighed line = kilo cost x kilos");
+                let fries = s.top_items.iter().find(|i| i.name == "Fries").unwrap();
+                assert_eq!((fries.quantity, fries.revenue_cents, fries.cost_cents), (2, 10_000, 4_000));
+                assert_eq!(s.sales_by_category.len(), 1);
+                assert_eq!(s.sales_by_category[0].revenue_cents, 70_000);
+                assert_eq!((s.sales_by_order_type[0].order_type.as_str(), s.sales_by_order_type[0].order_count), ("DINE_IN", 1));
+                assert_eq!(s.slow_items, vec!["Never sold".to_string()], "an active item that sold nothing is a slow seller");
+                assert_eq!(s.low_stock.len(), 1);
+                assert_eq!((s.low_stock[0].name.as_str(), s.low_stock[0].current, s.low_stock[0].minimum, s.low_stock[0].unit.as_str()), ("Meat", 1.0, 2.0, "kg"));
+                assert_eq!(s.periods.len(), 2);
+                assert_eq!((s.periods[0].label.as_str(), s.periods[0].order_count, s.periods[0].total_cents, s.periods[0].avg_order_cents), ("sale_day", 1, 70_000, 70_000));
+                assert_eq!(s.periods[1].order_count, 0, "the day before had no sales");
+                assert_eq!(s.now_local, "2026-03-11 (الأربعاء) 10:00");
+
+                // Another shop's scope sees none of it.
+                let other = crate::security::Scope::Tenant { tenant_id: "some-other-shop".into() };
+                let none = build_rich_snapshot(&conn, &other, "2026-03-01T00:00:00Z", "2026-03-31T00:00:00Z", &ctx).unwrap();
+                assert_eq!((none.order_count, none.top_items.len(), none.weighed_items.len(), none.low_stock.len(), none.slow_items.len()), (0, 0, 0, 0, 0));
+
+                // The rule-based insights read the same periods without any AI call.
+                let ins = crate::assistant::build_insights(&conn, &scope, &ctx).unwrap();
+                assert!(ins.iter().any(|i| i.text.contains("1 مادة تحت الحد الأدنى")), "{ins:?}");
+                let _ = fs::remove_dir_all(w.db_path.parent().unwrap());
+            }
+
+            #[test]
+            fn a_weighed_line_is_priced_by_the_server_from_its_weight() {
+                let w = setup("weighed_by_weight");
+                // The caller claims the portion costs 1; the server prices 285 g at 120,000/kg.
+                let order_id = order(&w, vec![line(&w.shawarma, 1, 1, grams(285)), line(&w.fries, 2, 1, None)]).unwrap();
+                let conn = Connection::open(&w.db_path).unwrap();
+                let (qty, unit, g, ppk): (i64, i64, Option<i64>, Option<i64>) = conn.query_row(
+                    "SELECT quantity, unit_price_cents, weight_grams, price_per_kg_cents FROM order_items WHERE order_id = ?1 AND menu_item_id = ?2",
+                    params![order_id, w.shawarma], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                ).unwrap();
+                assert_eq!((qty, unit, g, ppk), (1, 34_200, Some(285), Some(120_000)));
+                let fries: (i64, Option<i64>) = conn.query_row(
+                    "SELECT unit_price_cents, weight_grams FROM order_items WHERE order_id = ?1 AND menu_item_id = ?2",
+                    params![order_id, w.fries], |r| Ok((r.get(0)?, r.get(1)?)),
+                ).unwrap();
+                assert_eq!(fries, (5_000, None), "a piece item next to a weighed one is untouched");
+                let total: i64 = conn.query_row("SELECT total_cents FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+                assert_eq!(total, 34_200 + 2 * 5_000, "the bill is the weighed portion plus the pieces");
+                let _ = fs::remove_dir_all(w.db_path.parent().unwrap());
+            }
+
+            #[test]
+            fn an_amount_asked_for_is_charged_exactly() {
+                let w = setup("weighed_by_amount");
+                // "Give me 10,000 of shawarma": 83 g, and the customer pays 10,000, not 9,960.
+                let order_id = order(&w, vec![line(&w.shawarma, 1, 1, amount(83, 10_000))]).unwrap();
+                let conn = Connection::open(&w.db_path).unwrap();
+                let (unit, g): (i64, i64) = conn.query_row(
+                    "SELECT unit_price_cents, weight_grams FROM order_items WHERE order_id = ?1", params![order_id], |r| Ok((r.get(0)?, r.get(1)?)),
+                ).unwrap();
+                assert_eq!((unit, g), (10_000, 83));
+                let total: i64 = conn.query_row("SELECT total_cents FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+                assert_eq!(total, 10_000);
+                let _ = fs::remove_dir_all(w.db_path.parent().unwrap());
+            }
+
+            #[test]
+            fn a_tampered_or_impossible_weighed_line_is_refused_and_nothing_is_saved() {
+                let w = setup("weighed_refused");
+                for (what, items) in [
+                    ("amount that does not match the weight", vec![line(&w.shawarma, 1, 1, amount(83, 1_000))]),
+                    ("no weight on a weighed item", vec![line(&w.shawarma, 1, 34_200, None)]),
+                    ("weight on a piece item", vec![line(&w.fries, 1, 5_000, grams(100))]),
+                    ("quantity 2 of a weighed line", vec![line(&w.shawarma, 2, 1, grams(100))]),
+                    ("zero grams", vec![line(&w.shawarma, 1, 1, grams(0))]),
+                ] {
+                    let r = order(&w, items);
+                    assert!(r.is_err(), "{what} must be refused");
+                }
+                let conn = Connection::open(&w.db_path).unwrap();
+                let n: i64 = conn.query_row("SELECT COUNT(*) FROM orders", [], |r| r.get(0)).unwrap();
+                assert_eq!(n, 0, "a refused order leaves nothing behind");
+                let _ = fs::remove_dir_all(w.db_path.parent().unwrap());
+            }
+
+            #[test]
+            fn paying_takes_the_kilos_sold_out_of_stock_and_voiding_puts_them_back() {
+                let w = setup("weighed_stock");
+                let order_id = order(&w, vec![line(&w.shawarma, 1, 1, grams(285))]).unwrap();
+                take_payment_v3_impl(&w.db, &w.license, w.session.clone(), order_id.clone(), "CASH".to_string(), 34_200, 0, None).unwrap();
+                let conn = Connection::open(&w.db_path).unwrap();
+                let stock = |c: &Connection| -> f64 { c.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![w.meat], |r| r.get(0)).unwrap() };
+                assert!((stock(&conn) - (50.0 - 0.285)).abs() < 1e-9, "285 g sold takes 0.285 kg of meat, got {}", stock(&conn));
+                let item_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_id], |r| r.get(0)).unwrap();
+                drop(conn);
+                {
+                    let conn = Connection::open(&w.db_path).unwrap();
+                    let repo = Repo::new(&conn);
+                    let scope = security::Scope::Tenant { tenant_id: w.tenant_id.clone() };
+                    repo.void_order_item(&scope, &item_id, "test", &w.cashier_id).unwrap();
+                }
+                let conn = Connection::open(&w.db_path).unwrap();
+                assert!((stock(&conn) - 50.0).abs() < 1e-9, "voiding the paid line gives the 0.285 kg back, got {}", stock(&conn));
+                let _ = fs::remove_dir_all(w.db_path.parent().unwrap());
+            }
+
+            #[test]
+            fn adding_to_an_open_tab_keeps_the_weighed_line_at_the_price_it_was_sold_at() {
+                let w = setup("weighed_add_to_tab");
+                let order_id = order(&w, vec![line(&w.shawarma, 1, 1, amount(83, 10_000))]).unwrap();
+                // The owner raises the kilo price after the line was sold.
+                {
+                    let conn = Connection::open(&w.db_path).unwrap();
+                    conn.execute("UPDATE menu_items SET price_cents = 200000 WHERE id = ?1", params![w.shawarma]).unwrap();
+                }
+                {
+                    let conn = Connection::open(&w.db_path).unwrap();
+                    let existing = Repo::new(&conn).list_order_items_as_input(&order_id).unwrap();
+                    assert_eq!(existing.len(), 1);
+                    let tenant = w.tenant_id.clone();
+                    let priced = Repo::new(&conn).price_authoritative_items(&tenant, &existing).unwrap();
+                    assert_eq!(priced[0].unit_price_cents, 10_000, "a line already on the order does not move when the menu changes");
+                    assert_eq!(priced[0].weight.as_ref().map(|x| x.grams), Some(83));
+                    let held = Repo::new(&conn).fetch_order_items_for_retrieval_for_test(&order_id).unwrap();
+                    assert_eq!((held[0].weight_grams, held[0].price_per_kg_cents), (Some(83), Some(120_000)));
+                }
+                let _ = fs::remove_dir_all(w.db_path.parent().unwrap());
+            }
         }
 
         #[test]
@@ -1316,7 +1704,7 @@ mod tests {
             // deduction must show up as an `inventory_logs` fact row too.
             let order_id = create_full_order_v3_impl(
                 &db, &license, session.clone(), table_id, "DINE_IN".to_string(),
-                vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 3, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+                vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 3, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
                 1500, 0, 1500, 0, None, None, None, None, 0, None, None,
             ).unwrap();
 
@@ -1360,7 +1748,7 @@ mod tests {
                 subtotal_cents: 2000, tax_cents: 0, total_cents: 2000, discount_cents: 0,
                 discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
                 delivery_fee_cents: 0, shift_id: None,
-                items: vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+                items: vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
             }).unwrap();
             let item_row_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_id], |r| r.get(0)).unwrap();
             repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CASH", 2000, 0, None, &cashier_id, None, None).unwrap();
@@ -1446,7 +1834,7 @@ mod tests {
             // Hold once (cashier rings up 1 item, gets interrupted, holds).
             hold_order_v3_impl(
                 &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
-                vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+                vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
                 500, 0, 500, None,
             ).expect("first hold must succeed");
 
@@ -1456,7 +1844,7 @@ mod tests {
             // forever alongside a second one.
             hold_order_v3_impl(
                 &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
-                vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 2, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+                vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 2, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
                 1000, 0, 1000, None,
             ).expect("second hold on the same table must succeed");
 
@@ -1478,7 +1866,7 @@ mod tests {
             open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let order_id = create_full_order_v3_impl(
                 &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
-                vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+                vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
                 1000, 0, 1000, 0, None, None, None, None, 0, None, None,
             ).unwrap();
             take_payment_v3_impl(&db, &license, session, order_id, "CASH".to_string(), 1000, 0, None).unwrap();
@@ -1514,7 +1902,7 @@ mod tests {
             open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let items = vec![OrderItemInput {
                 menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 400,
-                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license,
@@ -1571,7 +1959,7 @@ mod tests {
             open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let items = vec![OrderItemInput {
                 menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 6000000,
-                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license,
@@ -1736,7 +2124,7 @@ mod tests {
             open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let items = vec![OrderItemInput {
                 menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
-                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license,
@@ -1783,7 +2171,7 @@ mod tests {
             for _ in 0..2 {
                 let items = vec![OrderItemInput {
                     menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 1000,
-                    notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                    notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
                 }];
                 create_full_order_v3_impl(
                     &db, &license,
@@ -1829,7 +2217,7 @@ mod tests {
             open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let items = vec![OrderItemInput {
                 menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000,
-                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license,
@@ -1879,7 +2267,7 @@ mod tests {
             open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let items = vec![OrderItemInput {
                 menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 1000,
-                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
             }];
             let order_id = hold_order_v3_impl(
                 &db, &license, session, table_id.clone(), "DINE_IN".to_string(), items,
@@ -1928,7 +2316,7 @@ mod tests {
             open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
             let items = vec![OrderItemInput {
                 menu_item_id: item_id, name: None, quantity: 2, unit_price_cents: 1000,
-                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
             }];
             let order_id = create_full_order_v3_impl(
                 &db, &license,
@@ -2019,7 +2407,7 @@ mod tests {
             let shift_id = open_shift_v3_impl(&db, &license, session.clone(), 0, None).unwrap();
             let mk_items = || vec![OrderItemInput {
                 menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 300,
-                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
             }];
             let order_a = create_full_order_v3_impl(&db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(), mk_items(), 300, 0, 300, 0, None, None, None, None, 0, None, None).unwrap();
             let order_b = create_full_order_v3_impl(&db, &license, session.clone(), table_id, "DINE_IN".to_string(), mk_items(), 300, 0, 300, 0, None, None, None, None, 0, None, None).unwrap();
@@ -3071,7 +3459,7 @@ mod tests {
                 (0..n)
                     .map(|_| OrderItemInput {
                         menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 400,
-                        notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None,
+                        notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
                     })
                     .collect()
             };
@@ -3194,7 +3582,7 @@ mod tests {
             for _ in 0..2 {
                 let voided_order_id = create_full_order_v3_impl(
                     &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
-                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 400, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 400, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
                     400, 0, 400, 0, None, None, None, None, 0, None, None,
                 ).unwrap();
                 let voided_item_db_id: String = {
@@ -3205,7 +3593,7 @@ mod tests {
 
                 let resale_order_id = create_full_order_v3_impl(
                     &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
-                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 400, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 400, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
                     400, 0, 400, 0, None, None, None, None, 0, None, None,
                 ).unwrap();
                 take_payment_v3_impl(&db, &license, session.clone(), resale_order_id, "CASH".to_string(), 400, 0, None).unwrap();
@@ -3257,7 +3645,7 @@ mod tests {
             for weeks_ago in 1..=5i64 {
                 let order_id = create_full_order_v3_impl(
                     &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
-                    vec![OrderItemInput { menu_item_id: popular_item_id.clone(), name: None, quantity: 3, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+                    vec![OrderItemInput { menu_item_id: popular_item_id.clone(), name: None, quantity: 3, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
                     1500, 0, 1500, 0, None, None, None, None, 0, None, None,
                 ).unwrap();
                 let backdated = (chrono::Utc::now() - chrono::Duration::days(7 * weeks_ago)).format("%Y-%m-%d %H:%M:%S").to_string();
@@ -3269,7 +3657,7 @@ mod tests {
             // never produce a forecast (MIN_TOTAL_QUANTITY not met).
             let rare_order_id = create_full_order_v3_impl(
                 &db, &license, session.clone(), table_id, "DINE_IN".to_string(),
-                vec![OrderItemInput { menu_item_id: rare_item_id.clone(), name: None, quantity: 2, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+                vec![OrderItemInput { menu_item_id: rare_item_id.clone(), name: None, quantity: 2, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
                 1000, 0, 1000, 0, None, None, None, None, 0, None, None,
             ).unwrap();
             let backdated = (chrono::Utc::now() - chrono::Duration::days(7)).format("%Y-%m-%d %H:%M:%S").to_string();
@@ -3342,7 +3730,7 @@ mod tests {
             for weeks_ago in 1..=8i64 {
                 let order_id = create_full_order_v3_impl(
                     &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(),
-                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 8, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+                    vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 8, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
                     4000, 0, 4000, 0, None, None, None, None, 0, None, None,
                 ).unwrap();
                 let backdated = (chrono::Utc::now() - chrono::Duration::days(7 * weeks_ago)).format("%Y-%m-%d %H:%M:%S").to_string();
@@ -5481,7 +5869,7 @@ mod tests {
             subtotal_cents: 2000, tax_cents: 0, total_cents: 2000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
             delivery_fee_cents: 0, shift_id: None,
-            items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 2, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+            items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 2, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
         }).unwrap();
         repo.finalize_order_with_payment(&tenant_id, &branch_id, &order_id, "CREDIT", 2000, 0, Some(&debtor_id), &manager_id, Some("REFUND-CARD"), None).unwrap();
 
@@ -5619,8 +6007,8 @@ mod tests {
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
             delivery_fee_cents: 0, shift_id: None,
             items: vec![
-                crate::repo::OrderItemInput { menu_item_id: item_a.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None },
-                crate::repo::OrderItemInput { menu_item_id: item_b.clone(), name: None, quantity: 1, unit_price_cents: 700, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None },
+                crate::repo::OrderItemInput { menu_item_id: item_a.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None },
+                crate::repo::OrderItemInput { menu_item_id: item_b.clone(), name: None, quantity: 1, unit_price_cents: 700, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None },
             ],
         }).unwrap();
         let table: crate::repo::TableInfo = repo.list_tables(&scope).unwrap().into_iter().find(|t| t.id == table_id).unwrap();
@@ -5720,7 +6108,7 @@ mod tests {
             subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
             delivery_fee_cents: 0, shift_id: None,
-            items: vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+            items: vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
         }).unwrap();
         let item_b_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_b], |r| r.get(0)).unwrap();
 
@@ -6460,8 +6848,8 @@ mod tests {
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
             delivery_fee_cents: 0, shift_id: None,
             items: vec![
-                crate::repo::OrderItemInput { menu_item_id: burger_id.clone(), name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None },
-                crate::repo::OrderItemInput { menu_item_id: fries_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None },
+                crate::repo::OrderItemInput { menu_item_id: burger_id.clone(), name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None },
+                crate::repo::OrderItemInput { menu_item_id: fries_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None },
             ],
         }).unwrap();
         let fries_item_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1 AND menu_item_id = ?2", params![order_a, fries_id], |r| r.get(0)).unwrap();
@@ -6482,7 +6870,7 @@ mod tests {
             subtotal_cents: 1000, tax_cents: 0, total_cents: 1000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
             delivery_fee_cents: 0, shift_id: None,
-            items: vec![crate::repo::OrderItemInput { menu_item_id: burger_id.clone(), name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+            items: vec![crate::repo::OrderItemInput { menu_item_id: burger_id.clone(), name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
         }).unwrap();
         repo.append_order_status_event(&tenant_id, &branch_a, &order_a_paid_first, "PENDING", &cashier_a, "test-device").unwrap();
         repo.rebuild_order_current(&order_a_paid_first).unwrap();
@@ -6495,7 +6883,7 @@ mod tests {
             subtotal_cents: 500, tax_cents: 0, total_cents: 500, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
             delivery_fee_cents: 0, shift_id: None,
-            items: vec![crate::repo::OrderItemInput { menu_item_id: fries_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+            items: vec![crate::repo::OrderItemInput { menu_item_id: fries_id.clone(), name: None, quantity: 1, unit_price_cents: 500, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
         }).unwrap();
         for status in ["PENDING", "PREPARING", "READY", "SERVED"] {
             repo.append_order_status_event(&tenant_id, &branch_a, &order_a_served, status, &cashier_a, "test-device").unwrap();
@@ -6509,7 +6897,7 @@ mod tests {
             subtotal_cents: 2000, tax_cents: 0, total_cents: 2000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
             delivery_fee_cents: 0, shift_id: None,
-            items: vec![crate::repo::OrderItemInput { menu_item_id: burger_id, name: None, quantity: 2, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+            items: vec![crate::repo::OrderItemInput { menu_item_id: burger_id, name: None, quantity: 2, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
         }).unwrap();
 
         let feed_a = repo.list_kitchen_orders(&scope_a).unwrap();
@@ -6957,6 +7345,8 @@ mod tests {
         migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_order_history_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_weighed_items_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_attendance_punches_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("matrix", &conn);
@@ -7098,7 +7488,7 @@ mod tests {
             subtotal_cents: 0, tax_cents: 0, total_cents: 0, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
             delivery_fee_cents: 0, shift_id: None,
-            items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+            items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
         });
         match zeroed {
             Err(RepoError::PaymentAmountMismatch { .. }) => println!("[attack-1] zero a total: REJECTED (subtotal_cents=0 doesn't match the item's own declared price)"),
@@ -7110,7 +7500,7 @@ mod tests {
             subtotal_cents: 10000, tax_cents: 0, total_cents: 10000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
             delivery_fee_cents: 0, shift_id: None,
-            items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+            items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
         }).unwrap();
         match repo.take_payment(&tenant_id, &branch_a, crate::repo::PaymentInput { order_id: real_order.clone(), method: "CASH".into(), amount_cents: 0, change_cents: 0, debtor_id: None, actor_id: cashier_a.clone() }) {
             Err(RepoError::PaymentAmountMismatch { .. }) => println!("[attack-1] zero a total via take_payment(amount=0): REJECTED"),
@@ -7136,7 +7526,7 @@ mod tests {
             subtotal_cents: 10000, tax_cents: 0, total_cents: 10000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
             delivery_fee_cents: 0, shift_id: None,
-            items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+            items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
         }).unwrap();
         let item_b_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_b], |r| r.get(0)).unwrap();
         match repo.void_order_item(&scope_a, &item_b_id, "محاولة إبطال من فرع آخر", &cashier_a) {
@@ -7196,7 +7586,7 @@ mod tests {
             subtotal_cents: 10000, tax_cents: 0, total_cents: 10000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
             delivery_fee_cents: 0, shift_id: None,
-            items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+            items: vec![crate::repo::OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
         }).unwrap();
         // Tendered 20000 with change_cents=0 (pocketing 10000 of phantom change) instead of the correct change_cents=10000.
         match repo.take_payment(&tenant_id, &branch_a, crate::repo::PaymentInput { order_id: another_order, method: "CASH".into(), amount_cents: 20000, change_cents: 0, debtor_id: None, actor_id: cashier_a.clone() }) {
@@ -7221,7 +7611,7 @@ mod tests {
             subtotal_cents: 10000, tax_cents: 0, total_cents: 10000, discount_cents: 0,
             discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
             delivery_fee_cents: 0, shift_id: None,
-            items: vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None }],
+            items: vec![crate::repo::OrderItemInput { menu_item_id: item_id, name: None, quantity: 1, unit_price_cents: 10000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
         }).unwrap();
         let item_for_void: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_for_void], |r| r.get(0)).unwrap();
         repo.void_order_item(&scope_a, &item_for_void, injection, &cashier_a).unwrap();
@@ -7626,10 +8016,13 @@ mod tests {
         /// admin, purchase orders/suppliers, and order analytics (AI page).
         /// Every one of these must be BLOCKED when back-office is locked.
         const GATED: &[&str] = &[
-            "list_staff_v3", "get_sales_report_v3", "gifts_report_v3", "list_pickup_no_shows_v3", "ask_assistant_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
+            "list_staff_v3", "get_sales_report_v3", "gifts_report_v3", "list_pickup_no_shows_v3", "ask_assistant_v3", "assistant_insights_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
             "create_branch_v3", "create_staff_v3", "update_staff_v3", "update_staff_profile_v3",
             "set_staff_active_v3", "list_branches_v3", "list_shifts_v3", "force_close_shift_v3",
             "list_attendance_v3",
+            "list_fingerprint_enrolments_v3", "enrol_fingerprint_v3", "delete_fingerprint_enrolment_v3",
+            "list_punches_v3", "get_attendance_settings_v3", "set_attendance_settings_v3",
+            "set_menu_item_sold_by_v3",
             "list_roster_entries_v3", "create_roster_entry_v3", "update_roster_entry_v3", "delete_roster_entry_v3",
             "create_category_v3", "update_category_v3", "delete_category_v3",
             "upload_menu_item_photo_v3", "delete_menu_item_photo_v3",
@@ -7736,6 +8129,9 @@ mod tests {
             "export_pdf_v3",
             "get_active_shift_v3", "open_shift_v3", "close_shift_v3", "get_shift_stats_v3",
             "list_shift_orders_v3", "clock_in_v3", "clock_out_v3",
+            // Putting a finger on the reader is floor work (like clock_in_v3), and the
+            // reader's status is only what the Staff screen shows beside the button.
+            "fingerprint_punch_v3", "fingerprint_status_v3",
         ];
 
         pub(super) fn function_body(source: &str, name: &str) -> String {
@@ -8183,7 +8579,7 @@ mod tests {
         }
 
         fn item(menu_item_id: &str, qty: i64, price: i64, modifiers: Vec<OrderModifierInput>) -> OrderItemInput {
-            OrderItemInput { menu_item_id: menu_item_id.to_string(), name: None, quantity: qty, unit_price_cents: price, notes: None, combo_id: None, modifiers, comped: false, comp_reason: None, comp_by: None }
+            OrderItemInput { menu_item_id: menu_item_id.to_string(), name: None, quantity: qty, unit_price_cents: price, notes: None, combo_id: None, modifiers, comped: false, comp_reason: None, comp_by: None, weight: None }
         }
 
         fn modifier(name: &str, price: i64) -> OrderModifierInput {
@@ -8338,7 +8734,7 @@ mod tests {
             let db = real_db(&f.db_path);
             let license = never_checked_license(&f.db_path);
             crate::commands::restaurant::edit_order_item_v3_impl(
-                &db, &license, f.session.clone(), item_id.to_string(), qty, mods, notes.map(str::to_string), reason.to_string(), pin.map(str::to_string),
+                &db, &license, f.session.clone(), item_id.to_string(), qty, mods, notes.map(str::to_string), reason.to_string(), pin.map(str::to_string), None,
             )
         }
 
@@ -8450,7 +8846,7 @@ mod tests {
             };
             let db = real_db(&f.db_path);
             let license = never_checked_license(&f.db_path);
-            let res = crate::commands::restaurant::edit_order_item_v3_impl(&db, &license, other_session, id, 2, vec![], None, "x".to_string(), None);
+            let res = crate::commands::restaurant::edit_order_item_v3_impl(&db, &license, other_session, id, 2, vec![], None, "x".to_string(), None, None);
             assert!(res.is_err(), "an edit must not cross branches");
             assert_eq!(order_total(&f, &order_id), 10_000);
             let _ = fs::remove_dir_all(f.db_path.parent().unwrap());

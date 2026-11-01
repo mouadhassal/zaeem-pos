@@ -15,6 +15,9 @@ interface Props {
   /** Options picked for this line ("without onion", "extra cheese"); their prices are part of the line total. */
   modifiers?: { name: string; priceCents: number }[];
   notes?: string;
+  /** Sold by weight: the portion in grams. Such a line has no quantity stepper; its weight is changed in the weight dialog. */
+  weightGrams?: number;
+  pricePerKgCents?: number;
   /** "On the house": shown with its real value struck through and not charged. */
   comped?: boolean;
   compReason?: string;
@@ -28,7 +31,7 @@ interface Props {
 
 export default function OrderLine({
   id, menuItemId, hasPhoto, categoryName, name, quantity, unitPriceCents, currencySymbol,
-  modifiers = [], notes, comped, compReason, onEdit, onGift,
+  modifiers = [], notes, comped, compReason, weightGrams, pricePerKgCents, onEdit, onGift,
   onIncrement, onDecrement, onVoid,
 }: Props) {
   const style = getCategoryStyle(categoryName);
@@ -88,7 +91,14 @@ export default function OrderLine({
         )}
         <div className="flex items-center justify-between gap-2">
           <span className="tabular text-xs text-text-muted flex items-baseline gap-1 min-w-0">
-            {(quantity > 1 || !(onIncrement || onDecrement)) && (
+            {weightGrams ? (
+              pricePerKgCents ? (
+                <>
+                  <span dir="ltr">{fmt(pricePerKgCents)}</span>
+                  <span>{currencySymbol} / كغ</span>
+                </>
+              ) : null
+            ) : (quantity > 1 || !(onIncrement || onDecrement)) && (
               <>
                 <span dir="ltr">{fmt(unitWithOptions)}</span>
                 <span>{currencySymbol}</span>
@@ -96,7 +106,7 @@ export default function OrderLine({
               </>
             )}
           </span>
-          {(onIncrement || onDecrement) && (
+          {!weightGrams && (onIncrement || onDecrement) && (
             <div className="flex items-center gap-1 shrink-0">
               <button
                 type="button"
@@ -133,7 +143,7 @@ export default function OrderLine({
                 data-testid="order-line-edit"
               >
                 <Pencil className="w-3.5 h-3.5" />
-                <span>إضافات</span>
+                <span>{weightGrams ? "الوزن" : "إضافات"}</span>
               </button>
             )}
             {onGift && (

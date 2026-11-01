@@ -35,7 +35,14 @@ impl AiProvider for MockAiProvider {
         ])
     }
 
-    fn answer(&self, q: &str, _s: &Snapshot) -> Result<Answer, AiError> {
+    fn answer(&self, q: &str, _s: &Snapshot, h: &[ChatTurn]) -> Result<Answer, AiError> {
+        // Dev/acceptance hook: lets the e2e suite see the real "no internet" error bubble.
+        if q.contains("__offline__") {
+            return Err(AiError::Unavailable(super::remote::friendly_transport_error(false, true)));
+        }
+        if q.contains("__history__") {
+            return Ok(Answer { text: format!("history={}", h.len()), confidence: Some(0.75) });
+        }
         Ok(Answer {
             text: format!("Mock response to: {}", q),
             confidence: Some(0.75),

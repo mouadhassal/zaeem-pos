@@ -154,6 +154,7 @@ pub fn get_sales_report_v3(state: State<Db>, license: State<crate::license::clou
 /// down AI backend can never block a sale on another terminal sharing
 /// this connection.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn ask_assistant_v3(
     state: State<Db>,
     ai_state: State<crate::ai::commands::AppState>,
@@ -162,21 +163,60 @@ pub fn ask_assistant_v3(
     question: String,
     start_iso: String,
     end_iso: String,
+    tz_offset_minutes: Option<i64>,
+    now_local: Option<String>,
+    periods: Option<Vec<crate::assistant::PeriodWindow>>,
+    history: Option<Vec<crate::ai::ChatTurn>>,
 ) -> Result<crate::ai::Answer, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
     require_license_not_locked(&license)?;
 
-    if question.trim().is_empty() {
+    let question = question.trim().to_string();
+    if question.is_empty() {
         return Err("السؤال فارغ".into());
     }
+    if question.chars().count() > 1000 {
+        return Err("السؤال طويل جداً، اختصره (الحد 1000 حرف)".into());
+    }
+
+    let ctx = crate::assistant::SnapshotContext {
+        tz_offset_minutes: tz_offset_minutes.unwrap_or(0),
+        now_local: now_local.unwrap_or_default().chars().take(60).collect(),
+        periods: periods.unwrap_or_default(),
+    };
+    let history = crate::ai::clean_history(history.unwrap_or_default());
 
     let snapshot = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        crate::assistant::build_snapshot(&conn, &actor.scope(), &start_iso, &end_iso).map_err(|e| e.to_string())?
+        crate::assistant::build_rich_snapshot(&conn, &actor.scope(), &start_iso, &end_iso, &ctx).map_err(|e| e.to_string())?
     };
 
-    ai_state.provider.answer(&question, &snapshot).map_err(|e| e.to_string())
+    ai_state.provider.answer(&question, &snapshot, &history).map_err(|e| e.user_message())
+}
+
+/// Plain findings the assistant page shows when it opens (sales up/down vs the
+/// week before, high voids, heavy discounts, low stock) -- computed locally
+/// from the same numbers, no AI call, so it works offline and costs nothing.
+/// Tapping one sends its `question` to the assistant.
+#[tauri::command]
+pub fn assistant_insights_v3(
+    state: State<Db>,
+    license: State<crate::license::cloud::CloudLicenseState>,
+    session_token: String,
+    tz_offset_minutes: Option<i64>,
+    periods: Option<Vec<crate::assistant::PeriodWindow>>,
+) -> Result<Vec<crate::assistant::Insight>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
+    let ctx = crate::assistant::SnapshotContext {
+        tz_offset_minutes: tz_offset_minutes.unwrap_or(0),
+        now_local: String::new(),
+        periods: periods.unwrap_or_default(),
+    };
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::assistant::build_insights(&conn, &actor.scope(), &ctx).map_err(|e| e.to_string())
 }
 
 /// 2026-08-02: fully-offline anomaly detection (void rate, cash variance,

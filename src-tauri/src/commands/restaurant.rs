@@ -92,6 +92,7 @@ pub(crate) fn edit_order_item_v3_impl(
     notes: Option<String>,
     reason: String,
     manager_override_pin: Option<String>,
+    weight: Option<crate::weighing::LineWeight>,
 ) -> Result<EditedItem, String> {
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
@@ -126,6 +127,8 @@ pub(crate) fn edit_order_item_v3_impl(
         menu_item_id: old.menu_item_id.clone(), name: None, quantity, unit_price_cents: old.unit_price_cents,
         notes: notes.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()), combo_id: old.combo_id.clone(),
         modifiers, comped: old.comped, comp_reason: old.comp_reason.clone(), comp_by: old.comp_by.clone(),
+        // A weighed line is changed by giving a new weight; without one it keeps the weight and price it was sold at.
+        weight: weight.or_else(|| old.weight.clone()),
     };
     let priced = Repo::new(&conn).price_authoritative_items(&tenant_id, std::slice::from_ref(&candidate)).map_err(|e| e.to_string())?;
     let new_item = priced.into_iter().next().ok_or("empty pricing result")?;
@@ -157,8 +160,8 @@ pub(crate) fn edit_order_item_v3_impl(
         audit::Action::OrderStatusChanged, "order_item", &new_id,
         None, Some(&serde_json::json!({
             "action": "edit", "replaces": item_id, "reason": reason,
-            "before": { "quantity": old.quantity, "options": old.modifiers.iter().map(|m| m.name.clone()).collect::<Vec<_>>(), "notes": old.notes },
-            "after": { "quantity": new_item.quantity, "options": new_item.modifiers.iter().map(|m| m.name.clone()).collect::<Vec<_>>(), "notes": new_item.notes },
+            "before": { "quantity": old.quantity, "weight_grams": old.weight.as_ref().map(|w| w.grams), "options": old.modifiers.iter().map(|m| m.name.clone()).collect::<Vec<_>>(), "notes": old.notes },
+            "after": { "quantity": new_item.quantity, "weight_grams": new_item.weight.as_ref().map(|w| w.grams), "options": new_item.modifiers.iter().map(|m| m.name.clone()).collect::<Vec<_>>(), "notes": new_item.notes },
             "value_removed_cents": removed, "manager_override_used": override_used,
         })),
     ).map_err(|e| e.to_string())?;
@@ -183,8 +186,9 @@ pub fn edit_order_item_v3(
     notes: Option<String>,
     reason: String,
     manager_override_pin: Option<String>,
+    weight: Option<crate::weighing::LineWeight>,
 ) -> Result<EditedItem, String> {
-    edit_order_item_v3_impl(&state, &license, session_token, item_id, quantity, modifiers, notes, reason, manager_override_pin)
+    edit_order_item_v3_impl(&state, &license, session_token, item_id, quantity, modifiers, notes, reason, manager_override_pin, weight)
 }
 
 /// Gives a line of an open order away ("on the house") or takes the gift back.

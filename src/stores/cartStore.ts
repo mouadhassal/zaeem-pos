@@ -3,6 +3,7 @@ import type { TaxConfig, TaxResult } from "../lib/taxCalculator";
 import { calculateTax } from "../lib/taxCalculator";
 import type { ComboComponent } from "./menuStore";
 import { lineKey } from "../lib/itemOptions";
+import { formatWeight } from "../lib/weight";
 
 export interface CartModifier {
   name: string;
@@ -30,6 +31,15 @@ export interface CartItem {
   savingsCents?: number;
   /** Present only when this item was loaded from an already-persisted order_items row (a held/reopened order). */
   dbItemId?: string;
+  /**
+   * Sold by weight (lib/weight.ts): the portion in grams. Such a line is quantity 1 and
+   * `unitPriceCents` is the price of the portion; the server prices it again from the weight.
+   */
+  weightGrams?: number;
+  /** The menu's per-kilogram price this portion was priced at (for display). */
+  pricePerKgCents?: number;
+  /** Set when the customer asked for an exact amount ("give me 10,000 of it"): charged exactly. */
+  exactAmountCents?: number;
 }
 
 export interface SplitItem {
@@ -56,6 +66,8 @@ interface CartState {
   voidItem: (id: string, reason: string) => void;
   /** Replaces the options and note of one line (cashier edited it before sending). */
   setLineOptions: (id: string, modifiers: CartModifier[], notes: string) => void;
+  /** Changes the portion of a line sold by weight (one that is not on the server yet). */
+  setLineWeight: (id: string, portion: { weightGrams: number; unitPriceCents: number; exactAmountCents?: number }) => void;
   /** Marks a line as a gift (or takes the gift back). */
   setLineComp: (id: string, comped: boolean, reason: string) => void;
   setDiscount: (cents: number, reason: string) => void;
@@ -86,8 +98,9 @@ export const useCartStore = create<CartState>((set, get) => ({
     set((state) => {
       // Same item with different options, note or gift status is a different line,
       // and a line that already exists on the server is never merged into or out of.
-      const existing = state.items.find(
-        (i) => i.menuItemId === item.menuItemId && !i.comboId && !i.voided && !i.dbItemId && !item.dbItemId && lineKey(i) === lineKey(item)
+      // A weighed portion is always its own line: two 285 g portions are not "2 of" anything.
+      const existing = item.weightGrams ? undefined : state.items.find(
+        (i) => i.menuItemId === item.menuItemId && !i.comboId && !i.voided && !i.dbItemId && !item.dbItemId && !i.weightGrams && lineKey(i) === lineKey(item)
       );
       if (existing && !item.comboId) {
         return {
@@ -115,7 +128,7 @@ export const useCartStore = create<CartState>((set, get) => ({
     set((state) => ({
       items: state.items
         .map((i) =>
-          i.id === id ? { ...i, quantity: Math.max(0, i.quantity + delta) } : i
+          i.id === id && !i.weightGrams ? { ...i, quantity: Math.max(0, i.quantity + delta) } : i
         )
         .filter((i) => i.quantity > 0),
     })),
@@ -130,6 +143,21 @@ export const useCartStore = create<CartState>((set, get) => ({
   setLineOptions: (id, modifiers, notes) =>
     set((state) => ({
       items: state.items.map((i) => (i.id === id ? { ...i, modifiers, notes } : i)),
+    })),
+
+  setLineWeight: (id, portion) =>
+    set((state) => ({
+      items: state.items.map((i) => {
+        if (i.id !== id || !i.weightGrams || i.dbItemId) return i;
+        const { exactAmountCents: _drop, ...rest } = i;
+        return {
+          ...rest,
+          name: i.name.replace(/ — [^—]*$/, "") + ` — ${formatWeight(portion.weightGrams)}`,
+          weightGrams: portion.weightGrams,
+          unitPriceCents: portion.unitPriceCents,
+          ...(portion.exactAmountCents ? { exactAmountCents: portion.exactAmountCents } : {}),
+        };
+      }),
     })),
 
   setLineComp: (id, comped, reason) =>

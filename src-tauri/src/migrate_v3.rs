@@ -2908,6 +2908,66 @@ pub fn run_order_history_migration(conn: &mut Connection, _db_path: &Path) -> Re
     Ok(())
 }
 
+pub const MIGRATION_AH_VERSION: i64 = 40;
+
+/// Migration AH (2026-11-01): items sold by weight ("give me 10,000 of
+/// shawarma"). `menu_items.sold_by` is 'unit' (the default, everything that
+/// exists today) or 'weight', in which case `price_cents` is the price of one
+/// kilogram. A weighed order line keeps quantity 1 and stores its real
+/// portion price in `unit_price_cents`, so every total, refund and report
+/// that multiplies price by quantity stays correct; `weight_grams` and
+/// `price_per_kg_cents` record what was actually weighed and at what rate.
+/// Additive: old rows keep 'unit' and NULL weights.
+pub fn run_weighed_items_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AH_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    add_column_if_missing(&tx, "menu_items", "sold_by", "TEXT NOT NULL DEFAULT 'unit'")?;
+    add_column_if_missing(&tx, "order_items", "weight_grams", "INTEGER")?;
+    add_column_if_missing(&tx, "order_items", "price_per_kg_cents", "INTEGER")?;
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AH_VERSION, "0040_weighed_items", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub const MIGRATION_AI_VERSION: i64 = 41;
+
+/// Migration AI (2026-11-01): attendance punches and fingerprint enrolments.
+/// `attendance_punches` is the raw, append-only record of every clock-in and
+/// clock-out whatever its source (manager button, fingerprint, wall-clock
+/// import); the daily `attendance` row is derived from it. `fingerprint_enrolments`
+/// holds the templates a reader captured (local to this till, never synced) and
+/// `attendance_settings` the shift start and late grace. Additive: nothing
+/// existing changes, and attendance that was recorded by hand before this has no
+/// punches, which is fine. See `attendance.rs`.
+pub fn run_attendance_punches_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AI_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    tx.execute_batch(crate::attendance::SCHEMA_SQL)?;
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AI_VERSION, "0041_attendance_punches", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

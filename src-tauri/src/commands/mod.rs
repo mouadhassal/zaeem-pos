@@ -26,4 +26,5 @@ pub mod marketplace;
 pub mod restaurant;
 pub mod delivery;
 pub mod pickup;
+pub mod fingerprint;
 pub mod order_history;
