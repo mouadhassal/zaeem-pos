@@ -2968,6 +2968,68 @@ pub fn run_attendance_punches_migration(conn: &mut Connection, _db_path: &Path) 
     Ok(())
 }
 
+pub const MIGRATION_AJ_VERSION: i64 = 42;
+
+/// Migration AJ (2026-11-02): the cost of an item is recorded on the order line
+/// when it is sold (`order_items.unit_cost_cents`), so the margin profit of a
+/// past day does not change when the owner later edits the item's cost price.
+/// A trigger fills it for every way a line can be created (till, LAN satellite,
+/// sync). A cost of 0 means "never entered" and is stored as NULL, so reports
+/// fall back to the item's current cost price and pick it up once it is entered.
+/// Old lines have NULL as well: they use the current cost price, as before.
+pub fn run_order_item_cost_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AJ_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    add_column_if_missing(&tx, "order_items", "unit_cost_cents", "INTEGER")?;
+    tx.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS trg_order_items_cost_snapshot AFTER INSERT ON order_items
+         WHEN NEW.unit_cost_cents IS NULL
+         BEGIN
+             UPDATE order_items
+                SET unit_cost_cents = (SELECT NULLIF(cost_cents, 0) FROM menu_items WHERE id = NEW.menu_item_id)
+              WHERE id = NEW.id;
+         END;",
+    )?;
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AJ_VERSION, "0042_order_item_cost_snapshot", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub const MIGRATION_AK_VERSION: i64 = 43;
+
+/// Migration AK (2026-11-02): payroll. The owner's rules (`payroll_settings`),
+/// each person's pay (`payroll_employees`), accepted-excuse days, bonuses and
+/// fines, salary advances, and the frozen monthly payslips. Local to this till
+/// (not synced). Additive. See `payroll.rs`.
+pub fn run_payroll_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AK_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    tx.execute_batch(crate::payroll::SCHEMA_SQL)?;
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AK_VERSION, "0043_payroll", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

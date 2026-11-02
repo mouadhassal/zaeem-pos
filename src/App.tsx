@@ -28,6 +28,7 @@ const KDSPage = lazy(() => import("./app/kds/page"));
 const DeliveryPage = lazy(() => import("./app/delivery/page"));
 const BranchesPage = lazy(() => import("./app/branches/page"));
 const FinancePage = lazy(() => import("./app/finance/page"));
+const PayrollPage = lazy(() => import("./app/payroll/page"));
 const SettingsPage = lazy(() => import("./app/settings/page"));
 const AIPage = lazy(() => import("./app/ai/page"));
 const AiOnboardingPage = lazy(() => import("./app/ai-onboarding/page"));
@@ -153,6 +154,7 @@ function PosLayout({ children }: { children: React.ReactNode }) {
       case "customers": return <CustomersPage />;
       case "branches": return <BranchesPage />;
       case "finance": return <FinancePage />;
+      case "payroll": return <PayrollPage />;
       case "loyalty": return <LoyaltyPage />;
       case "ai": return <AIPage />;
       case "ai-onboarding": return <AiOnboardingPage />;

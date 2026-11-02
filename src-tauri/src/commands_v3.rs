@@ -75,6 +75,7 @@ mod tests {
             include_str!("commands/pickup.rs"),
             include_str!("commands/order_history.rs"),
             include_str!("commands/fingerprint.rs"),
+            include_str!("commands/payroll.rs"),
         ].join("\n")
     }
 
@@ -120,6 +121,8 @@ mod tests {
         migrate_v3::run_order_history_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_weighed_items_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_attendance_punches_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_order_item_cost_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_payroll_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -1569,6 +1572,89 @@ mod tests {
                 // The rule-based insights read the same periods without any AI call.
                 let ins = crate::assistant::build_insights(&conn, &scope, &ctx).unwrap();
                 assert!(ins.iter().any(|i| i.text.contains("1 مادة تحت الحد الأدنى")), "{ins:?}");
+                let _ = fs::remove_dir_all(w.db_path.parent().unwrap());
+            }
+
+            /// A refund must lower sales everywhere, and both ways of counting profit
+            /// come from the same numbers: margin (sales - item costs), expenses
+            /// (sales - every bill) and net (margin - rent/salaries/bills, without
+            /// counting the ingredients twice).
+            #[test]
+            fn a_refund_lowers_net_sales_and_both_profit_views_agree() {
+                use crate::profit;
+                let w = setup("profit_views");
+                // 2 fries sold for 10,000 (they cost 2 x 2,000 to make), paid in cash.
+                let order_id = order(&w, vec![line(&w.fries, 2, 5_000, None)]).unwrap();
+                take_payment_v3_impl(&w.db, &w.license, w.session.clone(), order_id.clone(), "CASH".to_string(), 10_000, 0, None).unwrap();
+                let conn = Connection::open(&w.db_path).unwrap();
+                let branch_id: String = conn.query_row("SELECT branch_id FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+                let shift_id: String = conn.query_row("SELECT id FROM shifts WHERE closed_at IS NULL", [], |r| r.get(0)).unwrap();
+                let scope = crate::security::Scope::Branch { tenant_id: w.tenant_id.clone(), branch_id: branch_id.clone() };
+                let item_id: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order_id], |r| r.get(0)).unwrap();
+                let now = chrono::Utc::now();
+                let (start, end) = ((now - chrono::Duration::days(2)).to_rfc3339(), (now + chrono::Duration::days(2)).to_rfc3339());
+                let today = now.format("%Y-%m-%d").to_string();
+
+                let before = profit::summary(&conn, &scope, &start, &end, 0).unwrap();
+                assert_eq!((before.totals.gross_sales_cents, before.totals.refunds_cents, before.totals.net_sales_cents), (10_000, 0, 10_000));
+                assert_eq!((before.totals.cogs_cents, before.totals.margin_profit_cents, before.margin_bp), (4_000, 6_000, 6_000));
+
+                // One of the two fries goes back.
+                let out = Repo::new(&conn).refund_order(&scope, &order_id, &w.cashier_id, Some("test"), Some(&[crate::order_history::RefundLineInput { order_item_id: item_id, quantity: 1 }]), Some(&shift_id), false).unwrap();
+                let refunded = out.amount_cents;
+                assert!(refunded > 0 && refunded < 10_000, "a partial refund, got {refunded}");
+
+                let after = profit::summary(&conn, &scope, &start, &end, 0).unwrap();
+                assert_eq!((after.totals.gross_sales_cents, after.totals.refunds_cents, after.totals.net_sales_cents), (10_000, refunded, 10_000 - refunded));
+                assert_eq!(after.totals.cogs_cents, 4_000, "the refunded dish was already made, so its cost stays");
+                assert_eq!(after.totals.margin_profit_cents, 10_000 - refunded - 4_000);
+
+                // The old screens now agree: finance revenue, the sales report, the dashboard, the branch cards.
+                let revenue = Repo::new(&conn).finance_revenue_summary(&scope, &start, &end).unwrap();
+                assert_eq!((revenue.gross, revenue.refunds, revenue.total), (10_000, refunded, 10_000 - refunded));
+                assert_eq!(revenue.cash, 10_000 - refunded, "a cash refund comes off the cash column");
+                let report = Repo::new(&conn).sales_report(&scope, &start, Some(&end)).unwrap();
+                assert_eq!((report.total_sales, report.gross_sales, report.refunds_cents), (10_000 - refunded, 10_000, refunded));
+                let dash = Repo::new(&conn).dashboard_summary(&crate::security::Scope::Tenant { tenant_id: w.tenant_id.clone() }, &start, &end, 0).unwrap();
+                assert_eq!(dash.total_revenue_cents, 10_000 - refunded);
+                assert_eq!(dash.profit.totals.net_sales_cents, 10_000 - refunded);
+                let (_, today_sales, _) = Repo::new(&conn).tenant_today_stats(&w.tenant_id).unwrap();
+                assert_eq!(today_sales, 10_000 - refunded);
+
+                // Expenses: rent, a salary and buying ingredients.
+                let repo = Repo::new(&conn);
+                repo.create_operational_cost(&w.tenant_id, &branch_id, "إيجار", 3_000, &today, None, &w.cashier_id).unwrap();
+                repo.create_operational_cost(&w.tenant_id, &branch_id, "رواتب", 2_000, &today, None, &w.cashier_id).unwrap();
+                repo.create_operational_cost(&w.tenant_id, &branch_id, "مشتريات مواد", 1_000, &today, None, &w.cashier_id).unwrap();
+                let p = profit::summary(&conn, &scope, &start, &end, 0).unwrap().totals;
+                assert_eq!((p.expenses_cents, p.food_purchases_cents, p.operating_expenses_cents, p.salaries_cents), (6_000, 1_000, 5_000, 2_000));
+                assert_eq!(p.expense_profit_cents, 10_000 - refunded - 6_000, "expenses way: sales minus every bill");
+                assert_eq!(p.net_profit_cents, 10_000 - refunded - 4_000 - 5_000, "net: margin minus rent and salaries, ingredients not counted twice");
+
+                // The day-by-day table adds up to the same totals.
+                let days = profit::daily(&conn, &scope, &start, &end, 0).unwrap();
+                assert_eq!(days.iter().map(|d| d.net_sales_cents).sum::<i64>(), p.net_sales_cents);
+                assert_eq!(days.iter().map(|d| d.net_profit_cents).sum::<i64>(), p.net_profit_cents);
+
+                // The cost is recorded when the item is sold: changing the cost price later does not rewrite the past.
+                conn.execute("UPDATE menu_items SET cost_cents = 9000 WHERE id = ?1", params![w.fries]).unwrap();
+                assert_eq!(profit::summary(&conn, &scope, &start, &end, 0).unwrap().totals.cogs_cents, 4_000);
+
+                // An item sold before its cost was entered is flagged, then picks the cost up once it is entered.
+                let category_id: String = conn.query_row("SELECT category_id FROM menu_items WHERE id = ?1", params![w.fries], |r| r.get(0)).unwrap();
+                let water = Repo::new(&conn).create_menu_item(&w.tenant_id, "Water", &category_id, 1_000, 0, None, None).unwrap();
+                let water_order = order(&w, vec![line(&water, 1, 1_000, None)]).unwrap();
+                take_payment_v3_impl(&w.db, &w.license, w.session.clone(), water_order, "CASH".to_string(), 1_000, 0, None).unwrap();
+                let flagged = profit::summary(&conn, &scope, &start, &end, 0).unwrap();
+                assert_eq!(flagged.items_without_cost, 1);
+                conn.execute("UPDATE menu_items SET cost_cents = 400 WHERE id = ?1", params![water]).unwrap();
+                let fixed = profit::summary(&conn, &scope, &start, &end, 0).unwrap();
+                assert_eq!((fixed.items_without_cost, fixed.totals.cogs_cents), (0, 4_400));
+
+                // Another shop sees none of it.
+                let other = crate::security::Scope::Tenant { tenant_id: "some-other-shop".into() };
+                let none = profit::summary(&conn, &other, &start, &end, 0).unwrap();
+                assert_eq!((none.totals.gross_sales_cents, none.totals.expenses_cents), (0, 0));
                 let _ = fs::remove_dir_all(w.db_path.parent().unwrap());
             }
 
@@ -7228,6 +7314,10 @@ mod tests {
         migrate_v3::run_backup_settings_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
+        // The money views read refunds and the sold-line cost/weight columns.
+        migrate_v3::run_refund_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_weighed_items_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_order_item_cost_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("dashboard", &conn);
@@ -7274,7 +7364,7 @@ mod tests {
 
         // Owner (Tenant scope): both branches, correctly broken down and summed.
         let owner_scope = crate::security::Scope::Tenant { tenant_id: fx.tenant1.clone() };
-        let summary = repo.dashboard_summary(&owner_scope, range_start, range_end).unwrap();
+        let summary = repo.dashboard_summary(&owner_scope, range_start, range_end, 0).unwrap();
         assert_eq!(summary.branches.len(), 2, "Owner must see exactly Tenant1's 2 branches, never Tenant2's");
         let b1a = summary.branches.iter().find(|b| b.branch_id == fx.branch1a).unwrap();
         assert_eq!(b1a.revenue_cents, 3000);
@@ -7297,14 +7387,14 @@ mod tests {
 
         // Manager (Branch scope): exactly their one branch, same numbers as the Owner's per-branch row.
         let manager_scope = crate::security::Scope::Branch { tenant_id: fx.tenant1.clone(), branch_id: fx.branch1a.clone() };
-        let manager_summary = repo.dashboard_summary(&manager_scope, range_start, range_end).unwrap();
+        let manager_summary = repo.dashboard_summary(&manager_scope, range_start, range_end, 0).unwrap();
         assert_eq!(manager_summary.branches.len(), 1, "Manager must see exactly their own 1 branch");
         assert_eq!(manager_summary.branches[0].branch_id, fx.branch1a);
         assert_eq!(manager_summary.total_revenue_cents, 3000, "Manager's total must equal their own branch only, not the tenant-wide 8000");
         println!("[dashboard] Manager (Branch-scoped) correctly sees only their own branch");
 
         // Platform scope is meaningless for this command -- must hard-error, not return an empty/garbage summary.
-        match repo.dashboard_summary(&crate::security::Scope::Platform, range_start, range_end) {
+        match repo.dashboard_summary(&crate::security::Scope::Platform, range_start, range_end, 0) {
             Err(crate::repo::RepoError::DashboardRequiresTenantOrBranchScope) => println!("[dashboard] Platform scope correctly rejected"),
             other => panic!("expected DashboardRequiresTenantOrBranchScope, got {other:?}"),
         }
@@ -7347,6 +7437,8 @@ mod tests {
         migrate_v3::run_order_history_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_weighed_items_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_attendance_punches_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_order_item_cost_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_payroll_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("matrix", &conn);
@@ -8022,6 +8114,10 @@ mod tests {
             "list_attendance_v3",
             "list_fingerprint_enrolments_v3", "enrol_fingerprint_v3", "delete_fingerprint_enrolment_v3",
             "list_punches_v3", "get_attendance_settings_v3", "set_attendance_settings_v3",
+            "get_payroll_settings_v3", "save_payroll_settings_v3", "list_payroll_employees_v3", "save_payroll_employee_v3",
+            "payroll_month_v3", "get_payslip_v3", "approve_payslip_v3", "pay_payslip_v3",
+            "reopen_payslip_v3", "add_payroll_adjustment_v3", "delete_payroll_adjustment_v3", "add_payroll_advance_v3",
+            "list_payroll_advances_v3", "cancel_payroll_advance_v3", "set_paid_leave_v3", "add_manual_punch_v3",
             "set_menu_item_sold_by_v3",
             "list_roster_entries_v3", "create_roster_entry_v3", "update_roster_entry_v3", "delete_roster_entry_v3",
             "create_category_v3", "update_category_v3", "delete_category_v3",
@@ -8043,7 +8139,7 @@ mod tests {
             "list_recipe_ingredients_v3", "add_recipe_ingredient_v3", "update_recipe_ingredient_v3", "delete_recipe_ingredient_v3",
             "create_debtor_v3", "update_debtor_v3", "deactivate_debtor_v3",
             "list_debt_entries_v3", "record_debt_payment_v3",
-            "get_finance_revenue_v3", "get_dashboard_summary_v3", "get_tax_collected_v3", "list_operational_costs_v3",
+            "get_finance_revenue_v3", "get_dashboard_summary_v3", "get_profit_trend_v3", "get_tax_collected_v3", "list_operational_costs_v3",
             "create_operational_cost_v3", "list_invoices_v3", "create_invoice_v3", "mark_invoice_paid_v3",
             "update_chain_currency_v3", "update_chain_name_v3", "update_chain_tax_v3", "update_discount_caps_v3", "update_manager_thresholds_v3",
             "update_business_mode_v3",

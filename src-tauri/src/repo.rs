@@ -876,7 +876,12 @@ pub struct TerminalRow {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RevenueSummaryRow {
     pub order_count: i64,
+    /// Net sales: what was sold minus what was refunded in the period.
     pub total: i64,
+    /// What was sold, before refunds.
+    pub gross: i64,
+    /// Refunds made in the period.
+    pub refunds: i64,
     pub cash: i64,
     pub card: i64,
     pub wallet: i64,
@@ -895,6 +900,9 @@ pub struct DashboardBranchRow {
     pub avg_ticket_cents: i64,
     pub outstanding_debt_cents: i64,
     pub outstanding_supplier_balance_cents: i64,
+    /// Both ways of counting profit, with their parts. `revenue_cents` above is
+    /// the net sales and `profit_cents` the expenses way.
+    pub profit: crate::profit::ProfitSummary,
 }
 
 /// `branches` has one row for a Manager (`Scope::Branch`, always their own
@@ -911,6 +919,8 @@ pub struct DashboardSummaryRow {
     pub total_profit_cents: i64,
     pub total_outstanding_debt_cents: i64,
     pub total_outstanding_supplier_balance_cents: i64,
+    /// Both ways of counting profit over every branch in scope.
+    pub profit: crate::profit::ProfitSummary,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -948,7 +958,10 @@ pub struct InventoryStatusRow {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SalesReportRow {
+    /// Net sales: what was sold minus what was refunded in the window.
     pub total_sales: i64,
+    pub gross_sales: i64,
+    pub refunds_cents: i64,
     pub order_count: i64,
     pub top_items: Vec<FavoriteItemRow>,
     pub staff_performance: Vec<StaffPerformanceRow>,
@@ -2378,15 +2391,26 @@ impl<'a> Repo<'a> {
 
     pub fn finance_revenue_summary(&self, scope: &Scope, start_iso: &str, end_iso: &str) -> Result<RevenueSummaryRow, RepoError> {
         let (predicate, args) = Self::scope_predicate(scope);
+        // Orders count on the day they were paid; refunds on the day the money went back.
         let sql = format!(
-            "SELECT COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders WHERE {predicate} AND status = 'PAID' AND created_at >= ?{a} AND created_at <= ?{b}",
+            "SELECT COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders WHERE {predicate} AND status = 'PAID'              AND COALESCE(closed_at, created_at) >= ?{a} AND COALESCE(closed_at, created_at) <= ?{b}",
             a = args.len() + 1, b = args.len() + 2,
         );
         let mut all_args = args.clone();
         all_args.push(start_iso.to_string());
         all_args.push(end_iso.to_string());
         let params_refs: Vec<&dyn rusqlite::ToSql> = all_args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
-        let (order_count, total): (i64, i64) = self.conn.query_row(&sql, params_refs.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let (order_count, gross): (i64, i64) = self.conn.query_row(&sql, params_refs.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))?;
+
+        // Money handed back, by how the order had been paid.
+        let refund_sql = format!(
+            "SELECT COALESCE(method, 'CASH'), COALESCE(SUM(amount_cents), 0) FROM refunds WHERE {predicate}              AND created_at >= ?{a} AND created_at <= ?{b} GROUP BY 1",
+            a = args.len() + 1, b = args.len() + 2,
+        );
+        let mut stmt_r = self.conn.prepare(&refund_sql)?;
+        let refund_rows: Vec<(String, i64)> = stmt_r.query_map(params_refs.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+        let refunds: i64 = refund_rows.iter().map(|(_, a)| a).sum();
+        let total = gross - refunds;
 
         // `payments` and `orders` both carry tenant_id/branch_id after
         // Migration A -- qualify the generic predicate with `orders.` so
@@ -2394,10 +2418,7 @@ impl<'a> Repo<'a> {
         let (pred2, args2) = Self::scope_predicate(scope);
         let pred2 = pred2.replace("tenant_id", "orders.tenant_id").replace("branch_id", "orders.branch_id");
         let sql2 = format!(
-            "SELECT payments.method, COALESCE(SUM(payments.amount_cents - COALESCE(payments.change_cents, 0)), 0) FROM payments \
-             INNER JOIN orders ON orders.id = payments.order_id \
-             WHERE {pred2} AND orders.status = 'PAID' AND payments.created_at >= ?{a} AND payments.created_at <= ?{b} \
-             GROUP BY payments.method",
+            "SELECT payments.method, COALESCE(SUM(payments.amount_cents - COALESCE(payments.change_cents, 0)), 0) FROM payments              INNER JOIN orders ON orders.id = payments.order_id              WHERE {pred2} AND orders.status = 'PAID' AND payments.created_at >= ?{a} AND payments.created_at <= ?{b}              GROUP BY payments.method",
             a = args2.len() + 1, b = args2.len() + 2,
         );
         let mut all_args2 = args2.clone();
@@ -2418,7 +2439,16 @@ impl<'a> Repo<'a> {
                 _ => {}
             }
         }
-        Ok(RevenueSummaryRow { order_count, total, cash, card, wallet })
+        // What went back to customers comes off the way it was paid.
+        for (method, amount) in refund_rows {
+            match method.as_str() {
+                "CASH" => cash -= amount,
+                "CARD" => card -= amount,
+                "WALLET" => wallet -= amount,
+                _ => {}
+            }
+        }
+        Ok(RevenueSummaryRow { order_count, total, gross, refunds, cash, card, wallet })
     }
 
     /// T2.0 owner dashboard: money-first summary, one row per branch in
@@ -2435,13 +2465,13 @@ impl<'a> Repo<'a> {
     /// the local-first half of T2.0 plan §3, not the cross-device half.
     /// `Scope::Branch` (Manager) gets exactly their one branch -- same
     /// query, same struct shape, just one row.
-    pub fn dashboard_summary(&self, scope: &Scope, start_iso: &str, end_iso: &str) -> Result<DashboardSummaryRow, RepoError> {
-        let branch_ids: Vec<(String, String)> = match scope {
+    pub fn dashboard_summary(&self, scope: &Scope, start_iso: &str, end_iso: &str, tz_offset_minutes: i64) -> Result<DashboardSummaryRow, RepoError> {
+        let (tenant_id, branch_ids): (String, Vec<(String, String)>) = match scope {
             Scope::Platform => return Err(RepoError::DashboardRequiresTenantOrBranchScope),
-            Scope::Tenant { tenant_id } => self.list_branches(tenant_id)?,
-            Scope::Branch { branch_id, .. } => {
+            Scope::Tenant { tenant_id } => (tenant_id.clone(), self.list_branches(tenant_id)?),
+            Scope::Branch { tenant_id, branch_id } => {
                 let name: String = self.conn.query_row("SELECT name FROM branch WHERE id = ?1", params![branch_id], |r| r.get(0))?;
-                vec![(branch_id.clone(), name)]
+                (tenant_id.clone(), vec![(branch_id.clone(), name)])
             }
         };
 
@@ -2449,16 +2479,13 @@ impl<'a> Repo<'a> {
         let (mut total_revenue, mut total_costs, mut total_debt, mut total_supplier_balance) = (0i64, 0i64, 0i64, 0i64);
 
         for (branch_id, branch_name) in branch_ids {
-            let (order_count, revenue_cents): (i64, i64) = self.conn.query_row(
-                "SELECT COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders WHERE branch_id = ?1 AND status = 'PAID' AND created_at >= ?2 AND created_at <= ?3",
-                params![branch_id, start_iso, end_iso],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
-            let costs_cents: i64 = self.conn.query_row(
-                "SELECT COALESCE(SUM(amount_cents), 0) FROM operational_costs WHERE branch_id = ?1 AND date >= ?2 AND date <= ?3",
-                params![branch_id, start_iso, end_iso],
-                |r| r.get(0),
-            )?;
+            // Sales are net of refunds; both ways of counting profit come from
+            // the one profit module so every page agrees.
+            let branch_scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+            let profit = crate::profit::summary(self.conn, &branch_scope, start_iso, end_iso, tz_offset_minutes)?;
+            let order_count = profit.totals.order_count;
+            let revenue_cents = profit.totals.net_sales_cents;
+            let costs_cents = profit.totals.expenses_cents;
             // Running balances, NOT date-ranged -- "who owes us / who do we
             // owe right now," same as the debt/supplier ledger pages.
             let debt_cents: i64 = self.conn.query_row(
@@ -2470,7 +2497,7 @@ impl<'a> Repo<'a> {
                 params![branch_id], |r| r.get(0),
             )?;
 
-            let profit_cents = revenue_cents - costs_cents;
+            let profit_cents = profit.totals.expense_profit_cents;
             let avg_ticket_cents = if order_count > 0 { revenue_cents / order_count } else { 0 };
 
             total_revenue += revenue_cents;
@@ -2481,9 +2508,11 @@ impl<'a> Repo<'a> {
             branches.push(DashboardBranchRow {
                 branch_id, branch_name, revenue_cents, order_count, costs_cents, profit_cents, avg_ticket_cents,
                 outstanding_debt_cents: debt_cents, outstanding_supplier_balance_cents: supplier_balance_cents,
+                profit,
             });
         }
 
+        let all = crate::profit::summary(self.conn, scope, start_iso, end_iso, tz_offset_minutes)?;
         Ok(DashboardSummaryRow {
             branches,
             total_revenue_cents: total_revenue,
@@ -2491,6 +2520,7 @@ impl<'a> Repo<'a> {
             total_profit_cents: total_revenue - total_costs,
             total_outstanding_debt_cents: total_debt,
             total_outstanding_supplier_balance_cents: total_supplier_balance,
+            profit: all,
         })
     }
 
@@ -2569,7 +2599,12 @@ impl<'a> Repo<'a> {
         all_args.push(range_start_iso.to_string());
         if let Some(end) = range_end_iso { all_args.push(end.to_string()); }
         let params_refs: Vec<&dyn rusqlite::ToSql> = all_args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
-        let (order_count, total_sales): (i64, i64) = self.conn.query_row(&sql, params_refs.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let (order_count, gross_sales): (i64, i64) = self.conn.query_row(&sql, params_refs.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))?;
+        // Refunds made in the same window come off the sales.
+        let refund_end = if range_end_iso.is_some() { format!(" AND created_at < ?{}", args.len() + 2) } else { String::new() };
+        let refund_sql = format!("SELECT COALESCE(SUM(amount_cents), 0) FROM refunds WHERE {pred} AND created_at >= ?{a}{refund_end}", a = args.len() + 1);
+        let refunds_cents: i64 = self.conn.query_row(&refund_sql, params_refs.as_slice(), |r| r.get(0))?;
+        let total_sales = gross_sales - refunds_cents;
 
         // Was a completely unscoped, all-time query -- no WHERE clause at
         // all, so "top items" silently meant "top items across every
@@ -2619,7 +2654,7 @@ impl<'a> Repo<'a> {
         let mut stmt4 = self.conn.prepare(&sql4)?;
         let inventory_status: Vec<InventoryStatusRow> = stmt4.query_map(params_refs4.as_slice(), |r| Ok(InventoryStatusRow { name: r.get(0)?, current_stock: r.get(1)?, min_stock: r.get(2)? }))?.collect::<Result<Vec<_>, _>>()?;
 
-        Ok(SalesReportRow { total_sales, order_count, top_items, staff_performance, inventory_status })
+        Ok(SalesReportRow { total_sales, gross_sales, refunds_cents, order_count, top_items, staff_performance, inventory_status })
     }
 
     // -----------------------------------------------------------------
@@ -3073,7 +3108,7 @@ impl<'a> Repo<'a> {
     /// every branch). Not "fixed" into real per-branch stats here.
     pub fn tenant_today_stats(&self, tenant_id: &str) -> Result<(i64, i64, i64), RepoError> {
         let (order_count, revenue_cents): (i64, i64) = self.conn.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders \
+            "SELECT COUNT(*), COALESCE(SUM(total_cents - refunded_cents), 0) FROM orders \
              WHERE tenant_id = ?1 AND created_at >= ?2 AND status NOT IN ('CANCELLED', 'VOIDED')",
             params![tenant_id, chrono::Utc::now().format("%Y-%m-%dT00:00:00").to_string()],
             |r| Ok((r.get(0)?, r.get(1)?)),
@@ -3091,7 +3126,7 @@ impl<'a> Repo<'a> {
     /// today; the caller fills in 0s for branches with none.
     pub fn branch_today_stats(&self, tenant_id: &str) -> Result<Vec<(String, i64, i64)>, RepoError> {
         let mut stmt = self.conn.prepare(
-            "SELECT branch_id, COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders \
+            "SELECT branch_id, COUNT(*), COALESCE(SUM(total_cents - refunded_cents), 0) FROM orders \
              WHERE tenant_id = ?1 AND created_at >= ?2 AND status NOT IN ('CANCELLED', 'VOIDED') \
              GROUP BY branch_id",
         )?;
@@ -6408,6 +6443,8 @@ mod tests {
         migrate_v3::run_order_history_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_weighed_items_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_attendance_punches_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_order_item_cost_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_payroll_migration(&mut conn, &db_path).unwrap();
         db_path
     }
 

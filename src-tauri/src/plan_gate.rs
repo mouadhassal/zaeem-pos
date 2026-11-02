@@ -39,7 +39,7 @@ pub const FULL_ONLY_COMMANDS: &[&str] = &[
     // supplier marketplace
     "get_marketplace_context_v3", "list_marketplace_receipts_v3", "receive_marketplace_order_v3",
     // dashboard, finance, reports
-    "get_finance_revenue_v3", "get_dashboard_summary_v3", "get_tax_collected_v3", "list_operational_costs_v3",
+    "get_finance_revenue_v3", "get_dashboard_summary_v3", "get_profit_trend_v3", "get_tax_collected_v3", "list_operational_costs_v3",
     "create_operational_cost_v3", "list_invoices_v3", "create_invoice_v3", "mark_invoice_paid_v3",
     "gifts_report_v3", "get_sales_report_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
     "list_pickup_no_shows_v3",
@@ -48,6 +48,11 @@ pub const FULL_ONLY_COMMANDS: &[&str] = &[
     "fingerprint_status_v3", "list_fingerprint_enrolments_v3", "enrol_fingerprint_v3", "delete_fingerprint_enrolment_v3",
     "fingerprint_punch_v3", "list_punches_v3", "get_attendance_settings_v3", "set_attendance_settings_v3", "list_roster_entries_v3", "create_roster_entry_v3",
     "update_roster_entry_v3", "delete_roster_entry_v3",
+    // payroll
+    "get_payroll_settings_v3", "save_payroll_settings_v3", "list_payroll_employees_v3", "save_payroll_employee_v3",
+    "payroll_month_v3", "get_payslip_v3", "approve_payslip_v3", "pay_payslip_v3",
+    "reopen_payslip_v3", "add_payroll_adjustment_v3", "delete_payroll_adjustment_v3", "add_payroll_advance_v3",
+    "list_payroll_advances_v3", "cancel_payroll_advance_v3", "set_paid_leave_v3", "add_manual_punch_v3",
     // debt book
     "list_debtors_v3", "create_debtor_v3", "update_debtor_v3", "deactivate_debtor_v3", "list_debt_entries_v3",
     "record_debt_payment_v3",

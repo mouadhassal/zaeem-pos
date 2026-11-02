@@ -13,6 +13,8 @@ import { realErrorText } from "../../lib/errors";
 
 interface SalesSummary {
   totalSales: number;
+  grossSales: number;
+  refunds: number;
   orderCount: number;
   avgTicket: number;
   topItems: { name: string; quantity: number }[];
@@ -254,7 +256,7 @@ export default function ReportsPage() {
       const endDate = rangeEnd(dateRange, customEnd);
 
       const report = await invoke<{
-        total_sales: number; order_count: number;
+        total_sales: number; gross_sales: number; refunds_cents: number; order_count: number;
         top_items: { name: string; quantity: number }[];
         staff_performance: { name: string; order_count: number }[];
         inventory_status: { name: string; current_stock: number; min_stock: number }[];
@@ -270,6 +272,8 @@ export default function ReportsPage() {
 
       setSummary({
         totalSales,
+        grossSales: report.gross_sales,
+        refunds: report.refunds_cents,
         orderCount,
         avgTicket,
         topItems: report.top_items.map((i) => ({ name: i.name, quantity: i.quantity ?? 0 })),
@@ -413,7 +417,7 @@ export default function ReportsPage() {
         <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${formatArabicDate(new Date())}</p>
         <div style="display:flex;gap:12px;margin-bottom:20px">
           <div style="flex:1;border:1px solid #E4E7EC;border-radius:8px;padding:10px;text-align:center">
-            <div style="font-size:11px;color:#667085">إجمالي المبيعات</div>
+            <div style="font-size:11px;color:#667085">صافي المبيعات</div>
             <div style="font-size:16px;font-weight:700">${fmt(summary.totalSales)}</div>
           </div>
           <div style="flex:1;border:1px solid #E4E7EC;border-radius:8px;padding:10px;text-align:center">
@@ -497,9 +501,12 @@ export default function ReportsPage() {
 
       <div className="grid grid-cols-3 gap-4">
         <div className="zc-card p-4 space-y-1">
-          <p className="text-ink-400 text-sm font-arabic">إجمالي المبيعات</p>
+          <p className="text-ink-400 text-sm font-arabic">صافي المبيعات</p>
           <p className="text-2xl font-bold text-saffron-600 font-mono">
             {fmt(summary.totalSales)}
+          </p>
+          <p className="text-[11px] text-ink-400 font-arabic">
+            المبيعات {fmt(summary.grossSales)} − المرتجعات {fmt(summary.refunds)}
           </p>
         </div>
         <div className="zc-card p-4 space-y-1">

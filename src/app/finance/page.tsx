@@ -8,6 +8,8 @@ import DatePicker from "../../components/ui/DatePicker";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { realErrorText } from "../../lib/errors";
 import { toLocalDateStr, parseLocalDateStr, formatArabicDate } from "../../lib/dateLocal";
+import ProfitCards from "../../components/ProfitCards";
+import { categoryHint, EXPENSE_CATEGORIES, tzOffsetMinutes, type DayProfit, type ProfitSummary } from "../../lib/profit";
 
 type Tab = "pnl" | "revenue" | "costs" | "invoices" | "taxes";
 type DateRange = "today" | "week" | "month" | "custom";
@@ -24,6 +26,7 @@ interface PnlBranch {
   costs_cents: number;
   profit_cents: number;
   order_count: number;
+  profit: ProfitSummary;
 }
 
 interface PnlSummary {
@@ -31,18 +34,14 @@ interface PnlSummary {
   total_revenue_cents: number;
   total_costs_cents: number;
   total_profit_cents: number;
-}
-
-interface PnlTrendPoint {
-  date: string;
-  revenue: number;
-  costs: number;
-  profit: number;
+  profit: ProfitSummary;
 }
 
 interface RevenueRow {
   date: string;
   orderCount: number;
+  gross: number;
+  refunds: number;
   cash: number;
   card: number;
   wallet: number;
@@ -110,7 +109,7 @@ function rangeEnd(range: DateRange, customEnd?: string): Date {
   return now;
 }
 
-const CATEGORY_OPTIONS = ["إيجار", "رواتب", "كهرباء", "مياه", "إنترنت", "صيانة", "مستلزمات", "تسويق", "أخرى"];
+const CATEGORY_OPTIONS = EXPENSE_CATEGORIES;
 
 export default function FinancePage() {
   const token = useAuthStore((s) => s.token);
@@ -120,7 +119,7 @@ export default function FinancePage() {
   const [customEnd, setCustomEnd] = useState("");
 
   const [pnlSummary, setPnlSummary] = useState<PnlSummary | null>(null);
-  const [pnlTrend, setPnlTrend] = useState<PnlTrendPoint[]>([]);
+  const [pnlTrend, setPnlTrend] = useState<DayProfit[]>([]);
   const [pnlLoading, setPnlLoading] = useState(false);
   const [pnlError, setPnlError] = useState<string | null>(null);
 
@@ -132,7 +131,7 @@ export default function FinancePage() {
   const [costs, setCosts] = useState<CostRecord[]>([]);
   const [totalCosts, setTotalCosts] = useState(0);
   const [showAddCost, setShowAddCost] = useState(false);
-  const [costCategory, setCostCategory] = useState(CATEGORY_OPTIONS[0]);
+  const [costCategory, setCostCategory] = useState<string>(CATEGORY_OPTIONS[0]);
   const [costAmount, setCostAmount] = useState("");
   const [costDate, setCostDate] = useState(toLocalDateStr(new Date()));
   const [costNotes, setCostNotes] = useState("");
@@ -172,7 +171,7 @@ export default function FinancePage() {
       const s = startDate.toISOString();
       const e = endDate.toISOString();
 
-      const revenue = await invoke<{ order_count: number; total: number; cash: number; card: number; wallet: number }>(
+      const revenue = await invoke<{ order_count: number; total: number; gross: number; refunds: number; cash: number; card: number; wallet: number }>(
         "get_finance_revenue_v3", { sessionToken: token, startIso: s, endIso: e }
       );
 
@@ -182,6 +181,8 @@ export default function FinancePage() {
       setRevenueData([{
         date: toLocalDateStr(startDate),
         orderCount: revenue.order_count,
+        gross: revenue.gross,
+        refunds: revenue.refunds,
         cash: revenue.cash,
         card: revenue.card,
         wallet: revenue.wallet,
@@ -222,47 +223,19 @@ export default function FinancePage() {
     setPnlLoading(true);
     setPnlError(null);
     try {
-      const startDate = rangeStart(dateRange, customStart);
-      const endDate = rangeEnd(dateRange, customEnd);
-
-      const summary = await invoke<PnlSummary>("get_dashboard_summary_v3", {
-        sessionToken: token, startIso: startDate.toISOString(), endIso: endDate.toISOString(),
-      });
+      const startIso = rangeStart(dateRange, customStart).toISOString();
+      const endIso = rangeEnd(dateRange, customEnd).toISOString();
+      const tz = tzOffsetMinutes();
+      const summary = await invoke<PnlSummary>("get_dashboard_summary_v3", { sessionToken: token, startIso, endIso, tzOffsetMinutes: tz });
       setPnlSummary(summary);
-
-      const msPerDay = 24 * 60 * 60 * 1000;
-      const spanDays = Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / msPerDay) + 1);
-      const dayCount = Math.min(31, spanDays);
-      const days: Date[] = [];
-      for (let i = 0; i < dayCount; i++) {
-        const d = new Date(startDate);
-        d.setDate(d.getDate() + i);
-        if (d > endDate) break;
-        days.push(d);
-      }
-
-      const trend = await Promise.all(days.map(async (day) => {
-        const dayStart = new Date(day);
-        dayStart.setHours(0, 0, 0, 0);
-        const dayEnd = new Date(day);
-        dayEnd.setHours(23, 59, 59, 999);
-        const cappedEnd = dayEnd > endDate ? endDate : dayEnd;
-        const rev = await invoke<{ total: number }>("get_finance_revenue_v3", {
-          sessionToken: token, startIso: dayStart.toISOString(), endIso: cappedEnd.toISOString(),
-        });
-        const dayStr = toLocalDateStr(day);
-        const dayCosts = costs
-          .filter((c) => c.date.slice(0, 10) === dayStr)
-          .reduce((acc, c) => acc + c.amount_cents, 0);
-        return { date: dayStr, revenue: rev.total, costs: dayCosts, profit: rev.total - dayCosts };
-      }));
-      setPnlTrend(trend);
+      const days = await invoke<DayProfit[]>("get_profit_trend_v3", { sessionToken: token, startIso, endIso, tzOffsetMinutes: tz });
+      setPnlTrend(days);
     } catch (err) {
       setPnlError(`تعذر تحميل بيانات الأرباح والخسائر: ${realErrorText(err)}`);
     } finally {
       setPnlLoading(false);
     }
-  }, [dateRange, customStart, customEnd, token, costs]);
+  }, [dateRange, customStart, customEnd, token]);
 
   useEffect(() => {
     if (tab === "pnl") fetchPnl();
@@ -284,20 +257,27 @@ export default function FinancePage() {
     try {
       let tableHtml = "";
       if (tab === "pnl") {
+        const t = pnlSummary?.profit;
         tableHtml =
           pdfTableHtml(
             "ملخص الأرباح والخسائر",
             ["البيان", "القيمة"],
             [
-              ["إجمالي الإيرادات", formatMoney(pnlSummary?.total_revenue_cents ?? 0)],
-              ["إجمالي التكاليف", formatMoney(pnlSummary?.total_costs_cents ?? 0)],
-              ["صافي الربح", formatMoney(pnlSummary?.total_profit_cents ?? 0)],
+              ["المبيعات", formatMoney(t?.gross_sales_cents ?? 0)],
+              ["المرتجعات", formatMoney(t?.refunds_cents ?? 0)],
+              ["صافي المبيعات", formatMoney(t?.net_sales_cents ?? 0)],
+              ["تكلفة الأصناف المباعة", formatMoney(t?.cogs_cents ?? 0)],
+              ["ربح الهامش", formatMoney(t?.margin_profit_cents ?? 0)],
+              ["كل المصروفات", formatMoney(t?.expenses_cents ?? 0)],
+              ["الربح بالمصروفات", formatMoney(t?.expense_profit_cents ?? 0)],
+              ["مصروفات جارية (إيجار، رواتب، فواتير)", formatMoney(t?.operating_expenses_cents ?? 0)],
+              ["صافي الربح الفعلي", formatMoney(t?.net_profit_cents ?? 0)],
             ]
           ) +
           pdfTableHtml(
             "الاتجاه اليومي",
-            ["التاريخ", "الإيرادات", "التكاليف", "الربح"],
-            pnlTrend.map((p) => [p.date, formatMoney(p.revenue), formatMoney(p.costs), formatMoney(p.profit)])
+            ["التاريخ", "صافي المبيعات", "ربح الهامش", "الربح بالمصروفات", "صافي الربح الفعلي"],
+            pnlTrend.map((p) => [p.date ?? "", formatMoney(p.net_sales_cents), formatMoney(p.margin_profit_cents), formatMoney(p.expense_profit_cents), formatMoney(p.net_profit_cents)])
           );
       } else if (tab === "revenue") {
         tableHtml = pdfTableHtml(
@@ -472,22 +452,7 @@ export default function FinancePage() {
                 </div>
               )}
 
-              <div className="grid grid-cols-3 gap-4">
-                <div className="bg-white rounded-md p-4 space-y-1 border border-ink-200">
-                  <p className="text-ink-400 text-sm font-arabic">إجمالي الإيرادات</p>
-                  <p className="text-2xl font-bold text-saffron-600 font-mono">{formatMoney(pnlSummary.total_revenue_cents)}</p>
-                </div>
-                <div className="bg-white rounded-md p-4 space-y-1 border border-ink-200">
-                  <p className="text-ink-400 text-sm font-arabic">إجمالي التكاليف</p>
-                  <p className="text-2xl font-bold text-danger-600 font-mono">{formatMoney(pnlSummary.total_costs_cents)}</p>
-                </div>
-                <div className="bg-white rounded-md p-4 space-y-1 border border-ink-200">
-                  <p className="text-ink-400 text-sm font-arabic">صافي الربح</p>
-                  <p className={`text-2xl font-bold font-mono ${pnlSummary.total_profit_cents >= 0 ? "text-ok" : "text-danger"}`}>
-                    {formatMoney(pnlSummary.total_profit_cents)}
-                  </p>
-                </div>
-              </div>
+              <ProfitCards profit={pnlSummary.profit} fmt={formatMoney} />
 
               {pnlSummary.branches.length > 1 && (
                 <div className="zc-card overflow-x-auto">
@@ -498,9 +463,11 @@ export default function FinancePage() {
                     <thead>
                       <tr className="border-b border-ink-200 bg-surface-alt text-ink-400 font-arabic">
                         <th className="text-right p-3 font-medium">الفرع</th>
-                        <th className="text-center p-3 font-medium">الإيرادات</th>
-                        <th className="text-center p-3 font-medium">التكاليف</th>
-                        <th className="text-center p-3 font-medium">الربح</th>
+                        <th className="text-center p-3 font-medium">صافي المبيعات</th>
+                        <th className="text-center p-3 font-medium">المصروفات</th>
+                        <th className="text-center p-3 font-medium">الربح بالمصروفات</th>
+                        <th className="text-center p-3 font-medium">ربح الهامش</th>
+                        <th className="text-center p-3 font-medium">صافي الربح الفعلي</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -510,6 +477,8 @@ export default function FinancePage() {
                           <td className="p-3 text-center font-mono text-saffron-600">{formatMoney(b.revenue_cents)}</td>
                           <td className="p-3 text-center font-mono text-danger">{formatMoney(b.costs_cents)}</td>
                           <td className={`p-3 text-center font-mono font-bold ${b.profit_cents >= 0 ? "text-ok" : "text-danger"}`}>{formatMoney(b.profit_cents)}</td>
+                          <td className={`p-3 text-center font-mono ${b.profit.margin_profit_cents >= 0 ? "text-ok" : "text-danger"}`}>{formatMoney(b.profit.margin_profit_cents)}</td>
+                          <td className={`p-3 text-center font-mono ${b.profit.net_profit_cents >= 0 ? "text-ok" : "text-danger"}`}>{formatMoney(b.profit.net_profit_cents)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -520,31 +489,32 @@ export default function FinancePage() {
               <div className="zc-card overflow-x-auto">
                 <div className="p-4 pb-0">
                   <h2 className="font-bold text-ink-900 font-arabic">الاتجاه اليومي</h2>
-                  {pnlTrend.length >= 31 && (
-                    <p className="text-[10px] text-ink-400 font-arabic mt-1">يُعرض حتى 31 يوماً كحد أقصى ضمن الفترة المحددة</p>
-                  )}
                 </div>
                 <table className="w-full text-sm mt-2">
                   <thead>
                     <tr className="border-b border-ink-200 bg-surface-alt text-ink-400 font-arabic">
                       <th className="text-right p-3 font-medium">التاريخ</th>
-                      <th className="text-center p-3 font-medium">الإيرادات</th>
-                      <th className="text-center p-3 font-medium">التكاليف</th>
-                      <th className="text-center p-3 font-medium">الربح</th>
+                      <th className="text-center p-3 font-medium">صافي المبيعات</th>
+                      <th className="text-center p-3 font-medium">ربح الهامش</th>
+                      <th className="text-center p-3 font-medium">المصروفات</th>
+                      <th className="text-center p-3 font-medium">الربح بالمصروفات</th>
+                      <th className="text-center p-3 font-medium">صافي الربح الفعلي</th>
                     </tr>
                   </thead>
                   <tbody>
                     {pnlTrend.map((p) => (
                       <tr key={p.date} className="border-b border-ink-100 hover:bg-saffron-50">
                         <td className="p-3 font-arabic text-ink-900">{p.date}</td>
-                        <td className="p-3 text-center font-mono text-saffron-600">{formatMoney(p.revenue)}</td>
-                        <td className="p-3 text-center font-mono text-danger">{formatMoney(p.costs)}</td>
-                        <td className={`p-3 text-center font-mono font-bold ${p.profit >= 0 ? "text-ok" : "text-danger"}`}>{formatMoney(p.profit)}</td>
+                        <td className="p-3 text-center font-mono text-saffron-600">{formatMoney(p.net_sales_cents)}</td>
+                        <td className={`p-3 text-center font-mono ${p.margin_profit_cents >= 0 ? "text-ok" : "text-danger"}`}>{formatMoney(p.margin_profit_cents)}</td>
+                        <td className="p-3 text-center font-mono text-danger">{formatMoney(p.expenses_cents)}</td>
+                        <td className={`p-3 text-center font-mono font-bold ${p.expense_profit_cents >= 0 ? "text-ok" : "text-danger"}`}>{formatMoney(p.expense_profit_cents)}</td>
+                        <td className={`p-3 text-center font-mono ${p.net_profit_cents >= 0 ? "text-ok" : "text-danger"}`}>{formatMoney(p.net_profit_cents)}</td>
                       </tr>
                     ))}
                     {pnlTrend.length === 0 && (
                       <tr>
-                        <td colSpan={4} className="p-6 text-center text-ink-500 font-arabic">لا توجد بيانات</td>
+                        <td colSpan={6} className="p-6 text-center text-ink-500 font-arabic">لا توجد بيانات</td>
                       </tr>
                     )}
                   </tbody>
@@ -589,9 +559,12 @@ export default function FinancePage() {
 
           <div className="grid grid-cols-3 gap-4">
             <div className="bg-white rounded-md p-4 space-y-1 border border-ink-200">
-              <p className="text-ink-400 text-sm font-arabic">إجمالي الإيرادات</p>
+              <p className="text-ink-400 text-sm font-arabic">صافي المبيعات</p>
               <p className="text-2xl font-bold text-saffron-600 font-mono">
                 {formatMoney(totalRevenue)}
+              </p>
+              <p className="text-[11px] text-ink-400 font-arabic">
+                المبيعات {formatMoney(revenueData[0]?.gross ?? 0)} − المرتجعات {formatMoney(revenueData[0]?.refunds ?? 0)}
               </p>
             </div>
             <div className="bg-white rounded-md p-4 space-y-1 border border-ink-200">
@@ -873,6 +846,7 @@ export default function FinancePage() {
                     <option key={cat} value={cat}>{cat}</option>
                   ))}
                 </select>
+                <p className="mt-1 text-[11px] text-ink-400 font-arabic" data-testid="cost-category-hint">{categoryHint(costCategory)}</p>
               </div>
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">المبلغ</label>

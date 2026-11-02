@@ -36,6 +36,8 @@ mod goods_receipt;
 mod plan_gate;
 mod weighing;
 mod attendance;
+mod profit;
+mod payroll;
 
 // Only the debug-build staff seeding (seed_default_staff) hashes PINs here.
 #[cfg(debug_assertions)]
@@ -114,6 +116,8 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_order_history_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_weighed_items_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_attendance_punches_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_order_item_cost_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_payroll_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -574,6 +578,22 @@ pub fn run() {
             commands::fingerprint::list_punches_v3,
             commands::fingerprint::get_attendance_settings_v3,
             commands::fingerprint::set_attendance_settings_v3,
+            commands::payroll::get_payroll_settings_v3,
+            commands::payroll::save_payroll_settings_v3,
+            commands::payroll::list_payroll_employees_v3,
+            commands::payroll::save_payroll_employee_v3,
+            commands::payroll::payroll_month_v3,
+            commands::payroll::get_payslip_v3,
+            commands::payroll::approve_payslip_v3,
+            commands::payroll::pay_payslip_v3,
+            commands::payroll::reopen_payslip_v3,
+            commands::payroll::add_payroll_adjustment_v3,
+            commands::payroll::delete_payroll_adjustment_v3,
+            commands::payroll::add_payroll_advance_v3,
+            commands::payroll::list_payroll_advances_v3,
+            commands::payroll::cancel_payroll_advance_v3,
+            commands::payroll::set_paid_leave_v3,
+            commands::payroll::add_manual_punch_v3,
             commands::staff::list_roster_entries_v3,
             commands::staff::create_roster_entry_v3,
             commands::staff::update_roster_entry_v3,
@@ -604,6 +624,7 @@ pub fn run() {
             commands::debt::record_debt_payment_v3,
             commands::reports::get_finance_revenue_v3,
             commands::reports::get_dashboard_summary_v3,
+            commands::reports::get_profit_trend_v3,
             commands::reports::get_tax_collected_v3,
             commands::reports::list_operational_costs_v3,
             commands::reports::create_operational_cost_v3,

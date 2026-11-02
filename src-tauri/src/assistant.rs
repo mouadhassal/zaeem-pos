@@ -155,16 +155,18 @@ pub struct AssistantSnapshot {
     pub low_stock: Vec<LowStockRow>,
     /// Named comparison windows (today, yesterday, last 7 days, ...).
     pub periods: Vec<PeriodSummary>,
+    /// Net sales, cost of goods, both profit lines and the margin for the main range.
+    pub profit: crate::profit::ProfitSummary,
 }
 
-fn tenant_of(scope: &Scope) -> Option<&str> {
+pub(crate) fn tenant_of(scope: &Scope) -> Option<&str> {
     match scope {
         Scope::Platform => None,
         Scope::Tenant { tenant_id } | Scope::Branch { tenant_id, .. } => Some(tenant_id),
     }
 }
 
-fn scope_predicate(scope: &Scope) -> (&'static str, Vec<String>) {
+pub(crate) fn scope_predicate(scope: &Scope) -> (&'static str, Vec<String>) {
     match scope {
         Scope::Platform => ("1=1", vec![]),
         Scope::Tenant { tenant_id } => ("tenant_id = ?1", vec![tenant_id.clone()]),
@@ -175,7 +177,7 @@ fn scope_predicate(scope: &Scope) -> (&'static str, Vec<String>) {
 }
 
 /// Prefixes the scope columns with a table name ("tenant_id" -> "orders.tenant_id").
-fn qualify(pred: &str, table: &str) -> String {
+pub(crate) fn qualify(pred: &str, table: &str) -> String {
     pred.replace("tenant_id", &format!("{table}.tenant_id")).replace("branch_id", &format!("{table}.branch_id"))
 }
 
@@ -184,7 +186,7 @@ fn clamp_offset(m: i64) -> i64 {
 }
 
 /// `+120` / `-60` / `+0` -- the SQLite date modifier for a whole-minute shift.
-fn modifier(minutes: i64) -> String {
+pub(crate) fn modifier(minutes: i64) -> String {
     format!("{:+} minutes", clamp_offset(minutes))
 }
 
@@ -212,14 +214,22 @@ pub fn build_rich_snapshot(
     let p_items = qualify(pred, "order_items");
 
     // ---- totals (by closed_at, the day the sale was paid) ----
-    let (order_count, total_revenue_cents, discount_cents, refunded_cents): (i64, i64, i64, i64) = conn.query_row(
+    let (order_count, gross_sales_cents, discount_cents): (i64, i64, i64) = conn.query_row(
         &format!(
-            "SELECT COUNT(*), COALESCE(SUM(total_cents), 0), COALESCE(SUM(discount_cents), 0), COALESCE(SUM(refunded_cents), 0) \
+            "SELECT COUNT(*), COALESCE(SUM(total_cents), 0), COALESCE(SUM(discount_cents), 0) \
              FROM orders WHERE {pred} AND status = 'PAID' AND closed_at >= ?{ia} AND closed_at <= ?{ib}"
         ),
         params_from_iter(a1.iter()),
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
+    // Refunds count on the day the money went back; sales are net of them.
+    let refunded_cents: i64 = conn.query_row(
+        &format!("SELECT COALESCE(SUM(amount_cents), 0) FROM refunds WHERE {pred} AND created_at >= ?{ia} AND created_at <= ?{ib}"),
+        params_from_iter(a1.iter()),
+        |r| r.get(0),
+    )?;
+    let total_revenue_cents = gross_sales_cents - refunded_cents;
+    let profit = crate::profit::summary(conn, scope, start_iso, end_iso, ctx.tz_offset_minutes)?;
     let avg_order_cents = if order_count > 0 { total_revenue_cents / order_count } else { 0 };
 
     let (mut cash_cents, mut card_cents, mut wallet_cents) = (0i64, 0i64, 0i64);
@@ -260,8 +270,8 @@ pub fn build_rich_snapshot(
         let mut stmt = conn.prepare(&format!(
             "SELECT menu_items.name, SUM(order_items.quantity), \
                     SUM(CASE WHEN order_items.comped = 1 THEN 0 ELSE order_items.unit_price_cents * order_items.quantity END), \
-                    SUM(CASE WHEN order_items.weight_grams IS NOT NULL THEN menu_items.cost_cents * order_items.weight_grams / 1000 \
-                             ELSE menu_items.cost_cents * order_items.quantity END) \
+                    SUM(CASE WHEN order_items.weight_grams IS NOT NULL THEN COALESCE(order_items.unit_cost_cents, menu_items.cost_cents, 0) * order_items.weight_grams / 1000 \
+                             ELSE COALESCE(order_items.unit_cost_cents, menu_items.cost_cents, 0) * order_items.quantity END) \
              FROM order_items \
              INNER JOIN orders ON orders.id = order_items.order_id \
              INNER JOIN menu_items ON menu_items.id = order_items.menu_item_id \
@@ -463,6 +473,7 @@ pub fn build_rich_snapshot(
         operating_costs,
         low_stock,
         periods,
+        profit,
     })
 }
 
@@ -473,14 +484,20 @@ pub fn period_summary(conn: &Connection, scope: &Scope, label: &str, start_iso: 
     let mut a = args;
     a.push(start_iso.to_string());
     a.push(end_iso.to_string());
-    let (order_count, total_cents, discount_cents, refunded_cents): (i64, i64, i64, i64) = conn.query_row(
+    let (order_count, gross_cents, discount_cents): (i64, i64, i64) = conn.query_row(
         &format!(
-            "SELECT COUNT(*), COALESCE(SUM(total_cents), 0), COALESCE(SUM(discount_cents), 0), COALESCE(SUM(refunded_cents), 0) \
+            "SELECT COUNT(*), COALESCE(SUM(total_cents), 0), COALESCE(SUM(discount_cents), 0) \
              FROM orders WHERE {pred} AND status = 'PAID' AND closed_at >= ?{ia} AND closed_at <= ?{ib}"
         ),
         params_from_iter(a.iter()),
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
+    let refunded_cents: i64 = conn.query_row(
+        &format!("SELECT COALESCE(SUM(amount_cents), 0) FROM refunds WHERE {pred} AND created_at >= ?{ia} AND created_at <= ?{ib}"),
+        params_from_iter(a.iter()),
+        |r| r.get(0),
+    )?;
+    let total_cents = gross_cents - refunded_cents;
     let p_items = qualify(pred, "order_items");
     let void_count: i64 = conn.query_row(
         &format!(

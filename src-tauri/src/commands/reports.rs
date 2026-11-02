@@ -27,12 +27,22 @@ pub fn get_finance_revenue_v3(state: State<Db>, license: State<crate::license::c
 /// today that's reachable from `OWNER_NAV` only, matching "OWNER: all
 /// branches, money" vs "MANAGER: own branch, operations" from the plan.
 #[tauri::command]
-pub fn get_dashboard_summary_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String) -> Result<crate::repo::DashboardSummaryRow, String> {
+pub fn get_dashboard_summary_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String, tz_offset_minutes: Option<i64>) -> Result<crate::repo::DashboardSummaryRow, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).dashboard_summary(&actor.scope(), &start_iso, &end_iso).map_err(|e| e.to_string())
+    Repo::new(&conn).dashboard_summary(&actor.scope(), &start_iso, &end_iso, tz_offset_minutes.unwrap_or(0)).map_err(|e| e.to_string())
+}
+
+/// Day-by-day net sales and both profit lines for the finance page's trend table.
+#[tauri::command]
+pub fn get_profit_trend_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String, tz_offset_minutes: Option<i64>) -> Result<Vec<crate::profit::DayProfit>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::profit::daily(&conn, &actor.scope(), &start_iso, &end_iso, tz_offset_minutes.unwrap_or(0)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

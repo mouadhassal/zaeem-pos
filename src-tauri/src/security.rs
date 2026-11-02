@@ -190,6 +190,10 @@ pub enum Permission {
     /// decision, not floor work a Cashier should self-serve (unlike
     /// TakePayment/ManageDebt, which ARE Cashier-rank).
     RefundOrder,
+    /// 2026-11-02: payroll (pay rates, deduction rules, payslips, advances).
+    /// Owner only: salaries are the most private numbers in the business, and
+    /// the owner alone decides the rules.
+    ManagePayroll,
 }
 
 impl Permission {
@@ -215,6 +219,7 @@ impl Permission {
             Permission::ToggleItemAvailability => Role::Cashier.rank(),
             Permission::ManageRoster => Role::Manager.rank(),
             Permission::RefundOrder => Role::Manager.rank(),
+            Permission::ManagePayroll => Role::Owner.rank(),
         }
     }
 }
@@ -427,6 +432,7 @@ pub fn authorize(actor: &Actor, perm: Permission) -> Result<(), SecurityError> {
                 Permission::ToggleItemAvailability => "ToggleItemAvailability",
                 Permission::ManageRoster => "ManageRoster",
                 Permission::RefundOrder => "RefundOrder",
+                Permission::ManagePayroll => "ManagePayroll",
             },
             reason: format!("role {:?} (rank {}) is below the minimum rank {} for this permission", actor.role, actor.role.rank(), perm.minimum_rank()),
         })
@@ -461,6 +467,15 @@ pub fn authorize_scope(actor: &Actor, target_tenant_id: &str, target_branch_id: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn payroll_is_for_the_owner_alone() {
+        assert_eq!(Permission::ManagePayroll.minimum_rank(), Role::Owner.rank());
+        let manager = Actor { id: "m".into(), tenant_id: "t".into(), branch_id: Some("b".into()), role: Role::Manager, device_id: "d".into() };
+        let owner = Actor { id: "o".into(), tenant_id: "t".into(), branch_id: None, role: Role::Owner, device_id: "d".into() };
+        assert!(authorize(&manager, Permission::ManagePayroll).is_err(), "a manager must not see anyone's salary");
+        assert!(authorize(&owner, Permission::ManagePayroll).is_ok());
+    }
 
     const ALL_ROLES: [Role; 6] = [Role::Platform, Role::Owner, Role::Manager, Role::Cashier, Role::Kitchen, Role::Server];
     const ALL_PERMS: [Permission; 22] = [

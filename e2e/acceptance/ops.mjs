@@ -902,9 +902,11 @@ try {
     await reg.click(/تأكيد وطباعة/);
     await until(async () => jobs("receipt").length > receiptsBefore, "the weighed sale printed its receipt", 20000);
 
-    const day = await call("list_order_history_v3", { businessDate: null });
+    // The receipt can print a moment before the payment is committed: wait for the paid row.
+    let day = await call("list_order_history_v3", { businessDate: null });
+    await until(async () => { day = await call("list_order_history_v3", { businessDate: null }); return day.rows.some((r) => r.status === "PAID" && r.total_cents === 70000); }, "the 70,000 order is paid in the history");
     const sold = day.rows.find((r) => r.status === "PAID" && r.total_cents === 70000);
-    ok(sold, `a paid order of exactly 70,000 is in the history: ${day.rows.map((r) => r.total_cents).join(",")}`);
+    ok(sold, `a paid order of exactly 70,000 is in the history: ${day.rows.map((r) => r.total_cents + ":" + r.status).join(",")}`);
     const detail = await call("get_order_history_detail_v3", { orderId: sold.id });
     const names = detail.items.map((i) => `${i.name}:${i.quantity}:${i.unit_price_cents}`);
     console.log("  history lines:", names.join(" ; "));
@@ -1032,6 +1034,188 @@ try {
     ok(Array.isArray(insights) && insights.every((i) => i.text && i.question && ["up", "down", "warn", "info"].includes(i.kind)), `insights are well-formed: ${JSON.stringify(insights).slice(0, 200)}`);
   });
 
+  // Net sales and the profit views: a refund lowers sales everywhere, the
+  // dashboard shows margin / expenses / net profit each with its explanation,
+  // and the cost category on the Finance form says how it counts.
+  await step("profit", "a refund lowers net sales; dashboard shows margin, expenses and net profit with the explanation", async () => {
+    await b.setWindowSize(1366, 768);
+    const tz = -new Date().getTimezoneOffset();
+    const range = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return { startIso: d.toISOString(), endIso: new Date(Date.now() + 60000).toISOString(), tzOffsetMinutes: tz }; };
+    const localDay = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; })();
+    const before = await call("get_dashboard_summary_v3", range());
+
+    // 2 colas (4,000) paid in cash, each costing 667 to make.
+    const orderId = await call("create_full_order_v3", {
+      tableId: "", orderType: "TAKEAWAY",
+      items: [{ menu_item_id: ids.cola, name: null, quantity: 2, unit_price_cents: 2000, notes: null, combo_id: null, modifiers: [], comped: false, comp_reason: null }],
+      subtotalCents: 4000, taxCents: 0, totalCents: 4000, discountCents: 0, discountReason: null,
+      customerName: null, customerPhone: null, deliveryAddress: null, deliveryFeeCents: 0, shiftId: null, managerOverridePin: null, pickupAtMs: null,
+    });
+    await call("finalize_order_with_payment_v3", { orderId, method: "CASH", amountCents: 4000, changeCents: 0, debtorId: null, cardNumber: null, referenceCode: null });
+    const sold = await call("get_dashboard_summary_v3", range());
+    eq(sold.profit.gross_sales_cents - before.profit.gross_sales_cents, 4000, "the sale is counted");
+    eq(sold.profit.cogs_cents - before.profit.cogs_cents, 1334, "cost of what was sold: 2 x 667");
+    eq(sold.profit.margin_profit_cents - before.profit.margin_profit_cents, 4000 - 1334, "margin profit of the sale");
+
+    // The refund brings net sales down; the cost of the cooked dish stays.
+    const out = await call("refund_order_v3", { orderId, reason: "اختبار الاسترداد", lines: null, managerOverridePin: null });
+    ok(out.amount_cents > 0, "a refund amount");
+    const refunded = await call("get_dashboard_summary_v3", range());
+    eq(refunded.profit.refunds_cents - before.profit.refunds_cents, out.amount_cents, "the refund is counted");
+    eq(refunded.total_revenue_cents - before.total_revenue_cents, 4000 - out.amount_cents, "net sales = sold - refunded");
+    eq(refunded.profit.cogs_cents - before.profit.cogs_cents, 1334, "a refunded dish still cost its food");
+    const fin = await call("get_finance_revenue_v3", range());
+    eq(fin.total, fin.gross - fin.refunds, "finance revenue is net of refunds");
+
+    // Three kinds of expense: rent, ingredients, a salary.
+    for (const [category, amountCents] of [["إيجار", 1500], ["مشتريات مواد", 700], ["رواتب", 500]]) {
+      await call("create_operational_cost_v3", { category, amountCents, date: localDay, notes: null });
+    }
+    const costed = await call("get_dashboard_summary_v3", range());
+    const p = (k) => costed.profit[k] - refunded.profit[k];
+    eq([p("expenses_cents"), p("food_purchases_cents"), p("operating_expenses_cents"), p("salaries_cents")], [2700, 700, 2000, 500], "expense kinds");
+    eq(costed.profit.expense_profit_cents, costed.profit.net_sales_cents - costed.profit.expenses_cents, "expenses way: sales minus every bill");
+    eq(costed.profit.net_profit_cents, costed.profit.margin_profit_cents - costed.profit.operating_expenses_cents, "net: margin minus rent/salaries, ingredients not counted twice");
+    const trend = await call("get_profit_trend_v3", range());
+    eq(trend.reduce((a, d) => a + d.net_profit_cents, 0), costed.profit.net_profit_cents, "the day table adds up to the total");
+
+    // The dashboard: net sales with its arithmetic, three profit cards, the explanation.
+    // The owner starts on the dashboard: leave and come back so it loads the numbers afresh.
+    await nav("shift");
+    await nav("dashboard");
+    await byId("profit-cards");
+    ok((await textOf("profit-net-sales")).includes("المرتجعات"), `net sales shows the refunds: ${await textOf("profit-net-sales")}`);
+    for (const id of ["profit-margin", "profit-expenses", "profit-net"]) await byId(id);
+    ok((await textOf("profit-margin")).includes("هامش"), "the margin card shows the margin %");
+    await clickId("profit-explain-toggle");
+    const explainer = await textOf("profit-explainer");
+    ok(explainer.includes("ساندويش كلفته 10") && explainer.includes("لا يُعدّ الدجاج مرتين"), `the explainer teaches with an example: ${explainer.slice(0, 160)}`);
+    console.log("  shot:", await reg.shot("dashboard-profit"));
+
+    // Finance: same cards, a day table with the three profits, and a hint under the cost category.
+    await nav("finance");
+    await byId("profit-cards");
+    ok((await reg.text()).includes("صافي الربح الفعلي"), "finance shows the net profit");
+    await reg.click(/^التكاليف$/);
+    await reg.click(/إضافة تكلفة/);
+    const select = await b.$("select");
+    await b.execute((sel) => {
+      const el = document.querySelector("select");
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(el, sel);
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }, "مشتريات مواد");
+    ok(select, "category select");
+    await until(async () => (await textOf("cost-category-hint")).includes("لا تُحسب مرتين"), "the category hint explains ingredients");
+    console.log("  shot:", await reg.shot("finance-cost-hint"));
+    await recover();
+  });
+
+  // Payroll: the owner's guided setup, a person's pay, a month with a late day
+  // and an absence, an accepted excuse, a bonus, approve and pay (which lands
+  // in the expenses as salaries).
+  await step("payroll", "payroll: guided rules, pay set, late/absence/excuse/bonus, approve and pay lands in expenses", async () => {
+    await b.setWindowSize(1366, 768);
+    const staff = await call("list_staff_v3");
+    const person = staff.find((x) => x.role === "CASHIER") ?? staff[0];
+    ok((await call("get_payroll_settings_v3")).configured === false, "a fresh install has no rules chosen");
+
+    // 1) the guided setup, one question at a time
+    await nav("payroll");
+    await byId("rules-wizard");
+    await byId("rules-days");
+    await clickId("rules-next");
+    await byId("rules-late");
+    await clickId("late-rule-PER_MINUTE");
+    await clickId("rules-next");
+    await clickId("absence-rule-DAY_PAY");
+    await clickId("rules-next");
+    await clickId("overtime-rule-PER_HOUR");
+    await clickId("rules-next");
+    await byId("rules-review");
+    const examples = await textOf("examples");
+    ok(examples.includes("تأخر 20 دقيقة") && examples.includes("غاب يوماً"), `the review shows what each rule costs: ${examples.slice(0, 200)}`);
+    console.log("  shot:", await reg.shot("payroll-wizard-review"));
+    await clickId("rules-save");
+    await until(async () => (await call("get_payroll_settings_v3")).configured === true, "rules saved");
+    const saved = await call("get_payroll_settings_v3");
+    eq([saved.late_rule, saved.absence_rule, saved.overtime_rule], ["PER_MINUTE", "DAY_PAY", "PER_HOUR"], "the chosen rules");
+
+    // 2) set the person's pay in the UI
+    await byId("month-tab");
+    await clickId("payroll-tab-people");
+    await clickId(`edit-pay-${person.id}`);
+    await (await byId("pay-rate")).setValue("780000");
+    await clickId("pay-save");
+    await until(async () => (await call("list_payroll_employees_v3")).find((e) => e.user_id === person.id)?.pay?.rate_cents === 780000, "pay saved");
+
+    // 3) last month: every working day on time, one day 20 minutes late, one day missing
+    const now = new Date();
+    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const monthKey = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}`;
+    const workDays = [];
+    for (let d = new Date(prev); d.getMonth() === prev.getMonth(); d.setDate(d.getDate() + 1)) if (d.getDay() !== 5) workDays.push(new Date(d));
+    const dayStr = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const lateDay = workDays[2];
+    const absentDay = workDays[4];
+    const at = (d, hh, mm) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm).toISOString();
+    for (const d of workDays) {
+      if (d === absentDay) continue;
+      await call("add_manual_punch_v3", { userId: person.id, punchedAtIso: at(d, 9, d === lateDay ? 20 : 0), direction: "IN", reason: "اختبار" });
+      await call("add_manual_punch_v3", { userId: person.id, punchedAtIso: at(d, 17, 0), direction: "OUT", reason: "اختبار" });
+    }
+    const tzNow = -new Date().getTimezoneOffset();
+    const draft = await call("get_payslip_v3", { userId: person.id, month: monthKey, tzOffsetMinutes: tzNow });
+    eq([draft.base_cents, draft.late_minutes, draft.late_deduction_cents, draft.absent_days, draft.absence_deduction_cents], [780000, 20, 1250, 1, 30000], "late and absent counted by the owner's rules");
+    eq(draft.earned_cents, 780000 - 1250 - 30000, "earned");
+
+    // 4) the month in the UI
+    await clickId("payroll-tab-month");
+    await byId("month-tab");
+    await (await b.$('[aria-label="الشهر السابق"]')).click();
+    await byId(`month-row-${person.id}`);
+    ok((await textOf("month-label")).length > 0, "month label");
+    await clickId(`open-${person.id}`);
+    await byId("payslip-lines");
+    let lines = await textOf("payslip-lines");
+    ok(lines.includes("خصم التأخير") && lines.includes("خصم الغياب"), `the payslip explains the deductions: ${lines.slice(0, 200)}`);
+    console.log("  shot:", await reg.shot("payroll-payslip"));
+
+    // accepted excuse for the missing day: the absence deduction goes away
+    await clickId(`excuse-${dayStr(absentDay)}`);
+    await until(async () => !(await textOf("payslip-lines")).includes("خصم الغياب"), "the excused day is no longer deducted");
+    // a bonus with a reason
+    await (await byId("adj-amount")).setValue("5000");
+    await (await byId("adj-reason")).setValue("أداء ممتاز");
+    await clickId("adj-add");
+    await until(async () => (await call("get_payslip_v3", { userId: person.id, month: monthKey, tzOffsetMinutes: tzNow })).bonus_cents === 5000, "bonus added");
+    const final = await call("get_payslip_v3", { userId: person.id, month: monthKey, tzOffsetMinutes: tzNow });
+    eq(final.earned_cents, 780000 - 1250 + 5000, "earned after the excuse and the bonus");
+
+    // 5) approve, then pay: the salary lands in the expenses
+    await clickId("payslip-approve");
+    await until(async () => (await textOf("payslip-status")).includes("معتمد"), "approved");
+    eq((await call("get_payslip_v3", { userId: person.id, month: monthKey, tzOffsetMinutes: tzNow })).status, "APPROVED", "frozen");
+    const costsBefore = (await call("list_operational_costs_v3")).filter((c) => c.category === "رواتب").length;
+    await clickId("payslip-pay");
+    await until(async () => (await textOf("payslip-status")).includes("مصروف"), "paid");
+    const salaries = (await call("list_operational_costs_v3")).filter((c) => c.category === "رواتب");
+    eq(salaries.length, costsBefore + 1, "one salary expense recorded");
+    ok(salaries.some((c) => c.amount_cents === 780000 - 1250 + 5000), "the earned amount is the expense");
+    const today = await call("get_dashboard_summary_v3", { startIso: new Date(new Date().setHours(0, 0, 0, 0)).toISOString(), endIso: new Date(Date.now() + 60000).toISOString(), tzOffsetMinutes: tzNow });
+    ok(today.profit.salaries_cents >= 780000 - 1250 + 5000, "salaries show in the profit pages");
+    // a paid month cannot be reopened or changed
+    const reopen = await call("reopen_payslip_v3", { payslipId: final.id ?? (await call("get_payslip_v3", { userId: person.id, month: monthKey, tzOffsetMinutes: tzNow })).id }).then(() => "", (e) => String(e.message));
+    ok(reopen.includes("لا يمكن إعادة فتحه"), `a paid month cannot be reopened: ${reopen.slice(0, 100)}`);
+    await recover();
+    await (await b.$('[aria-label="إغلاق"]')).click().catch(() => {});
+
+    // 6) the rules summary on the rules tab
+    await clickId("payroll-tab-rules");
+    await byId("rules-editor");
+    ok((await textOf("rules-summary")).includes("بالدقيقة"), "the rules summary says what is chosen");
+    console.log("  shot:", await reg.shot("payroll-rules"));
+  });
+
   // POS Lite (licence plan pos_lite): only the till's screens, Full-only
   // commands refused by the backend, no selling on credit or loyalty, a cash
   // sale still prints -- and putting a Full licence back brings everything
@@ -1052,7 +1236,7 @@ try {
     for (const id of ["pos", "shift", "orders", "delivery", "customers", "menu", "staff", "settings"]) ok(lite.includes(id), `${id} missing from the Lite sidebar`);
 
     // the backend refuses Full-only commands, whatever the screen shows
-    for (const cmd of ["get_sales_report_v3", "get_dashboard_summary_v3", "list_debtors_v3", "list_ingredients_v3", "list_loyalty_cards_v3", "ask_assistant_v3", "list_branches_full_v3", "list_attendance_v3", "list_punches_v3", "fingerprint_status_v3", "assistant_insights_v3"]) {
+    for (const cmd of ["get_sales_report_v3", "get_dashboard_summary_v3", "list_debtors_v3", "list_ingredients_v3", "list_loyalty_cards_v3", "ask_assistant_v3", "list_branches_full_v3", "list_attendance_v3", "list_punches_v3", "fingerprint_status_v3", "assistant_insights_v3", "get_profit_trend_v3", "get_payroll_settings_v3", "payroll_month_v3", "add_manual_punch_v3"]) {
       const err = await call(cmd).then(() => "", (e) => String(e.message));
       ok(err.includes("POS Lite"), `${cmd} must be refused on Lite, got: ${err.slice(0, 120) || "ok"}`);
     }

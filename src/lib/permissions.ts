@@ -63,6 +63,7 @@ const OWNER_NAV: SidebarNavItem[] = [
   { id: "schedule", label: "جدول الدوام", icon: "calendar", allowed: true },
   { id: "branches", label: "الفروع", icon: "building-2", allowed: true },
   { id: "finance", label: "المالية", icon: "wallet", allowed: true },
+  { id: "payroll", label: "الرواتب", icon: "wallet", allowed: true },
   { id: "loyalty", label: "برنامج الولاء", icon: "award", allowed: true },
   { id: "ai", label: "المساعد الذكي", icon: "bot", allowed: true },
   { id: "ai-onboarding", label: "إعداد القائمة AI", icon: "scan-line", allowed: true },

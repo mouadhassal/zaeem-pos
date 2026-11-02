@@ -3,7 +3,9 @@ import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 import { useCurrency } from "../../hooks/useCurrency";
-import { IconTrendingUp, IconTrendingDown, IconCash, IconUsers, IconTruck } from "@tabler/icons-react";
+import { IconUsers, IconTruck } from "@tabler/icons-react";
+import ProfitCards from "../../components/ProfitCards";
+import { tzOffsetMinutes, type ProfitSummary } from "../../lib/profit";
 
 interface DashboardBranch {
   branch_id: string;
@@ -15,6 +17,7 @@ interface DashboardBranch {
   avg_ticket_cents: number;
   outstanding_debt_cents: number;
   outstanding_supplier_balance_cents: number;
+  profit: ProfitSummary;
 }
 
 interface DashboardSummary {
@@ -24,6 +27,7 @@ interface DashboardSummary {
   total_profit_cents: number;
   total_outstanding_debt_cents: number;
   total_outstanding_supplier_balance_cents: number;
+  profit: ProfitSummary;
 }
 
 type Range = "today" | "week" | "month";
@@ -61,7 +65,7 @@ export default function DashboardPage() {
     try {
       const startIso = rangeStart(range).toISOString();
       const endIso = new Date().toISOString();
-      const result = await invoke<DashboardSummary>("get_dashboard_summary_v3", { sessionToken: token, startIso, endIso });
+      const result = await invoke<DashboardSummary>("get_dashboard_summary_v3", { sessionToken: token, startIso, endIso, tzOffsetMinutes: tzOffsetMinutes() });
       setSummary(result);
     } catch (err) {
       setLoadError(`تعذر تحميل لوحة التحكم: ${realErrorText(err)}`);
@@ -87,8 +91,7 @@ export default function DashboardPage() {
     );
   }
 
-  const isProfitable = summary.total_profit_cents >= 0;
-  const multiBranch = summary.branches.length > 1;
+    const multiBranch = summary.branches.length > 1;
 
   return (
     <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
@@ -109,24 +112,11 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* KPI row */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="zc-card p-4 space-y-1">
-          <p className="text-ink-400 text-sm font-arabic flex items-center gap-1"><IconTrendingUp className="w-4 h-4" /> الإيرادات</p>
-          <p className="text-2xl font-bold text-saffron-600 font-mono">{fmt(summary.total_revenue_cents)}</p>
-        </div>
-        <div className="zc-card p-4 space-y-1">
-          <p className="text-ink-400 text-sm font-arabic flex items-center gap-1"><IconTrendingDown className="w-4 h-4" /> المصروفات</p>
-          <p className="text-2xl font-bold text-danger font-mono">{fmt(summary.total_costs_cents)}</p>
-        </div>
-        <div className="zc-card p-4 space-y-1">
-          <p className="text-ink-400 text-sm font-arabic flex items-center gap-1"><IconCash className="w-4 h-4" /> صافي الربح</p>
-          <p className={`text-2xl font-bold font-mono ${isProfitable ? "text-ok" : "text-danger"}`}>{fmt(summary.total_profit_cents)}</p>
-        </div>
-        <div className="zc-card p-4 space-y-1">
-          <p className="text-ink-400 text-sm font-arabic">عدد الطلبات</p>
-          <p className="text-2xl font-bold text-ink-900 font-mono">{summary.branches.reduce((a, b) => a + b.order_count, 0)}</p>
-        </div>
+      {/* Net sales and the three ways to count profit, with the explanation */}
+      <ProfitCards profit={summary.profit} fmt={fmt} />
+      <div className="zc-card p-4 flex items-center justify-between">
+        <p className="text-ink-400 text-sm font-arabic">عدد الطلبات</p>
+        <p className="text-2xl font-bold text-ink-900 font-mono">{summary.branches.reduce((a, b) => a + b.order_count, 0)}</p>
       </div>
 
       {/* Debt / supplier widgets */}
@@ -165,9 +155,11 @@ export default function DashboardPage() {
             <thead>
               <tr className="border-b border-ink-200 text-ink-400 font-arabic bg-surface-alt">
                 <th className="text-right p-3 font-medium">الفرع</th>
-                <th className="text-center p-3 font-medium">الإيرادات</th>
+                <th className="text-center p-3 font-medium">صافي المبيعات</th>
                 <th className="text-center p-3 font-medium">المصروفات</th>
-                <th className="text-center p-3 font-medium">الربح</th>
+                <th className="text-center p-3 font-medium">الربح بالمصروفات</th>
+                <th className="text-center p-3 font-medium">ربح الهامش</th>
+                <th className="text-center p-3 font-medium">صافي الربح الفعلي</th>
                 <th className="text-center p-3 font-medium">الطلبات</th>
                 <th className="text-center p-3 font-medium">متوسط الفاتورة</th>
               </tr>
@@ -179,6 +171,8 @@ export default function DashboardPage() {
                   <td className="p-3 text-center font-mono text-saffron-600">{fmt(b.revenue_cents)}</td>
                   <td className="p-3 text-center font-mono text-danger">{fmt(b.costs_cents)}</td>
                   <td className={`p-3 text-center font-mono font-bold ${b.profit_cents >= 0 ? "text-ok" : "text-danger"}`}>{fmt(b.profit_cents)}</td>
+                  <td className={`p-3 text-center font-mono ${b.profit.margin_profit_cents >= 0 ? "text-ok" : "text-danger"}`}>{fmt(b.profit.margin_profit_cents)}</td>
+                  <td className={`p-3 text-center font-mono ${b.profit.net_profit_cents >= 0 ? "text-ok" : "text-danger"}`}>{fmt(b.profit.net_profit_cents)}</td>
                   <td className="p-3 text-center font-mono text-ink-900">{b.order_count}</td>
                   <td className="p-3 text-center font-mono text-ink-900">{fmt(b.avg_ticket_cents)}</td>
                 </tr>
