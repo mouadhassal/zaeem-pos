@@ -11,6 +11,7 @@ import {
   type EarlyRule,
   type LateRule,
   type LateTier,
+  type ManagerAccess,
   type OvertimeRule,
   type PayrollSettings,
 } from "../../lib/payroll";
@@ -29,7 +30,7 @@ interface Props {
   onSaved: (s: PayrollSettings) => void;
 }
 
-const STEP_TITLES = ["أيام العمل والدوام", "التأخير", "الغياب", "الخروج المبكر والوقت الإضافي", "المراجعة والحفظ"];
+const STEP_TITLES = ["أيام العمل والدوام", "التأخير", "الغياب", "الخروج المبكر والوقت الإضافي", "صلاحية المشرفين", "المراجعة والحفظ"];
 
 /**
  * The owner's payroll rules. Nothing is deducted until he chooses here, every choice says in plain words
@@ -243,7 +244,26 @@ export default function RulesPanel({ settings, wizard, onSaved }: Props) {
       </div>
     </div>,
 
-    // 4 -- review
+    // 4 -- what managers may do
+    <div key="managers" className="space-y-4" data-testid="rules-managers">
+      <Hint summary="أنت صاحب القرار: هل يعمل المشرفون في الرواتب، وإلى أي حد؟">
+        <p>المشرف يرى فقط موظفي فرعه الأقل منه رتبة (الكاشير والمطبخ). لا يرى راتبك ولا رواتب المشرفين الآخرين ولا راتب نفسه.</p>
+        <p>تحديد أجر كل موظف وتغيير هذه القواعد يبقيان لك أنت في كل الأحوال.</p>
+        <p>كل ما يفعله المشرف يُسجَّل باسمه في سجل التدقيق.</p>
+      </Hint>
+      <ChoiceCards<ManagerAccess>
+        testId="manager-access"
+        value={s.manager_access}
+        onChange={(v) => patch({ manager_access: v })}
+        options={[
+          { value: "NONE", title: "لا وصول للمشرفين", text: "الرواتب لك وحدك. لا تظهر الصفحة للمشرف بشيء." },
+          { value: "PREPARE", title: "يجهّز الكشف فقط", text: "يرى كشف موظفيه ويضيف عذراً مقبولاً أو مكافأة أو غرامة أو سلفة أو بصمة منسية. أما الاعتماد والصرف فلك." },
+          { value: "FULL", title: "يجهّز ويعتمد ويصرف", text: "كالسابق، ويعتمد الكشف ويصرفه لموظفي فرعه. مناسب لمن تثق به تماماً." },
+        ]}
+      />
+    </div>,
+
+    // 5 -- review
     <div key="review" className="space-y-4" data-testid="rules-review">
       <Hint summary="هكذا ستُحسب الرواتب. جرّب راتباً لترى المبالغ الفعلية لكل قاعدة." />
       <Field label="راتب شهري للتجربة">

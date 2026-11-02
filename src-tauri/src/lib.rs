@@ -118,6 +118,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_attendance_punches_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_order_item_cost_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_payroll_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_payroll_manager_access_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -578,6 +579,7 @@ pub fn run() {
             commands::fingerprint::list_punches_v3,
             commands::fingerprint::get_attendance_settings_v3,
             commands::fingerprint::set_attendance_settings_v3,
+            commands::payroll::get_payroll_access_v3,
             commands::payroll::get_payroll_settings_v3,
             commands::payroll::save_payroll_settings_v3,
             commands::payroll::list_payroll_employees_v3,

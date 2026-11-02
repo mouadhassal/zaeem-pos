@@ -3030,6 +3030,30 @@ pub fn run_payroll_migration(conn: &mut Connection, _db_path: &Path) -> Result<(
     Ok(())
 }
 
+pub const MIGRATION_AL_VERSION: i64 = 44;
+
+/// Migration AL (2026-11-02): what a branch manager may do in payroll is the
+/// owner's choice (`payroll_settings.manager_access`: NONE | PREPARE | FULL,
+/// NONE until he decides). A till that already ran Migration AK gets the column here.
+pub fn run_payroll_manager_access_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AL_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    add_column_if_missing(&tx, "payroll_settings", "manager_access", "TEXT NOT NULL DEFAULT 'NONE'")?;
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AL_VERSION, "0044_payroll_manager_access", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

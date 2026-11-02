@@ -237,6 +237,23 @@ fn build_orders_payload(
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
+        // Every refund of this order, so the cloud counts net sales the way the till does
+        // (a refund lowers the sales of the day it was made). Always the full list, like the items.
+        let mut refund_stmt = conn.prepare(
+            "SELECT id, amount_cents, COALESCE(method, 'CASH'), created_at FROM refunds WHERE order_id = ?1 ORDER BY created_at",
+        )?;
+        let refunds: Vec<serde_json::Value> = refund_stmt
+            .query_map(params![order_id], |r| {
+                let id: String = r.get(0)?;
+                let amount_cents: i64 = r.get(1)?;
+                let method: String = r.get(2)?;
+                let created_at: String = r.get(3)?;
+                Ok(serde_json::json!({
+                    "pos_refund_id": id, "amount_cents": amount_cents, "method": method, "created_at": created_at,
+                }))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
         orders.push(serde_json::json!({
             "pos_order_id": order_id,
             "order_type": map_order_type_to_pos_order(&order_type),
@@ -244,6 +261,7 @@ fn build_orders_payload(
             "total_cents": total_cents,
             "tax_cents": tax_cents,
             "items": items,
+            "refunds": refunds,
             "customer_name": customer_name,
             "customer_phone": customer_phone,
             "delivery_address": delivery_address,
@@ -578,6 +596,10 @@ mod tests {
                 customer_name TEXT, customer_phone TEXT, delivery_address TEXT,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE refunds (
+                id TEXT PRIMARY KEY, order_id TEXT NOT NULL, amount_cents INTEGER NOT NULL,
+                method TEXT, created_at TEXT NOT NULL
+            );
             CREATE TABLE menu_items (id TEXT PRIMARY KEY, name TEXT NOT NULL);
             CREATE TABLE order_items (
                 id TEXT PRIMARY KEY, order_id TEXT NOT NULL, menu_item_id TEXT NOT NULL,
@@ -684,6 +706,30 @@ mod tests {
 
         let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM sync_outbox", [], |r| r.get(0)).unwrap();
         assert_eq!(remaining, 0, "SENT rows are deleted immediately -- no retention window, nothing downstream reads them");
+    }
+
+    #[test]
+    fn an_orders_refunds_travel_with_it_so_the_cloud_can_count_net_sales() {
+        let conn = setup_conn();
+        conn.execute_batch(
+            "INSERT INTO orders (id, table_id, status, order_type, total_cents, tax_cents, created_at) VALUES ('o1', NULL, 'PAID', 'TAKEAWAY', 5000, 0, '2026-11-01T10:00:00Z');
+             INSERT INTO refunds (id, order_id, amount_cents, method, created_at) VALUES ('r1', 'o1', 1500, 'CASH', '2026-11-02T09:00:00Z'), ('r2', 'o1', 500, NULL, '2026-11-03T09:00:00Z');",
+        ).unwrap();
+        enqueue(&conn, "orders", "o1", "t1", "b1", &serde_json::json!({}), 1, "device-1", &active_status()).unwrap();
+        let batch = due_batch(&conn, 10).unwrap();
+        let orders = build_orders_payload(&conn, &batch).unwrap();
+        assert_eq!(orders.len(), 1);
+        let refunds = orders[0]["refunds"].as_array().unwrap();
+        assert_eq!(refunds.len(), 2, "both refunds are sent, with their own dates");
+        assert_eq!(refunds[0]["pos_refund_id"], "r1");
+        assert_eq!(refunds[0]["amount_cents"], 1500);
+        assert_eq!(refunds[0]["created_at"], "2026-11-02T09:00:00Z");
+        assert_eq!(refunds[1]["method"], "CASH", "a refund with no method is a cash one");
+        // An order with no refunds sends an empty list, never a missing field.
+        conn.execute("INSERT INTO orders (id, table_id, status, order_type, total_cents, tax_cents, created_at) VALUES ('o2', NULL, 'PAID', 'TAKEAWAY', 100, 0, '2026-11-01T11:00:00Z')", []).unwrap();
+        enqueue(&conn, "orders", "o2", "t1", "b1", &serde_json::json!({}), 1, "device-1", &active_status()).unwrap();
+        let both = build_orders_payload(&conn, &due_batch(&conn, 10).unwrap()).unwrap();
+        assert_eq!(both.iter().find(|o| o["pos_order_id"] == "o2").unwrap()["refunds"].as_array().unwrap().len(), 0);
     }
 
     #[test]

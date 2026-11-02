@@ -49,7 +49,7 @@ pub const FULL_ONLY_COMMANDS: &[&str] = &[
     "fingerprint_punch_v3", "list_punches_v3", "get_attendance_settings_v3", "set_attendance_settings_v3", "list_roster_entries_v3", "create_roster_entry_v3",
     "update_roster_entry_v3", "delete_roster_entry_v3",
     // payroll
-    "get_payroll_settings_v3", "save_payroll_settings_v3", "list_payroll_employees_v3", "save_payroll_employee_v3",
+    "get_payroll_access_v3", "get_payroll_settings_v3", "save_payroll_settings_v3", "list_payroll_employees_v3", "save_payroll_employee_v3",
     "payroll_month_v3", "get_payslip_v3", "approve_payslip_v3", "pay_payslip_v3",
     "reopen_payslip_v3", "add_payroll_adjustment_v3", "delete_payroll_adjustment_v3", "add_payroll_advance_v3",
     "list_payroll_advances_v3", "cancel_payroll_advance_v3", "set_paid_leave_v3", "add_manual_punch_v3",

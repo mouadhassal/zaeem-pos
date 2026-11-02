@@ -19,7 +19,7 @@ function toLocalInput(day: string, time: string): string {
 }
 
 /** One person's month: where every pound comes from or goes, the days behind it, and what the owner can do about each. */
-export default function PayslipModal({ userId, month, onClose, onChanged }: { userId: string; month: string; onClose: () => void; onChanged: () => void }) {
+export default function PayslipModal({ userId, month, canApprove, onClose, onChanged }: { userId: string; month: string; canApprove: boolean; onClose: () => void; onChanged: () => void }) {
   const token = useAuthStore((s) => s.token);
   const toast = useToast();
   const [p, setP] = useState<Payslip | null>(null);
@@ -144,6 +144,7 @@ export default function PayslipModal({ userId, month, onClose, onChanged }: { us
       <section className="space-y-2">
         <h3 className="font-bold font-arabic text-ink-900">أيام الشهر</h3>
         <Hint summary={editable ? "اضغط «عذر مقبول» على يوم تأخر أو غاب فيه بعذر ليُعفى من الخصم. وإن نسي بصمة خروج أضفها." : "الكشف معتمد، وللتعديل أعد فتحه."} />
+        {!canApprove && <p className="text-xs font-arabic text-ink-500" data-testid="prepare-only-note">أنت تجهّز الكشف فقط. يعتمده المالك ويصرفه.</p>}
         <div className="rounded-md border border-ink-200 max-h-72 overflow-y-auto">
           <table className="w-full text-xs font-arabic">
             <thead className="bg-surface-alt text-ink-400 sticky top-0">
@@ -227,15 +228,15 @@ export default function PayslipModal({ userId, month, onClose, onChanged }: { us
       <div className="flex flex-wrap justify-between gap-3 pt-2 border-t border-ink-100">
         <button onClick={exportPdf} className={btnGhost}>تصدير PDF</button>
         <div className="flex gap-3">
-          {p.status === "APPROVED" && p.id && (
+          {canApprove && p.status === "APPROVED" && p.id && (
             <button className={btnGhost} disabled={busy} data-testid="payslip-reopen"
               onClick={() => run(() => invoke("reopen_payslip_v3", { sessionToken: token, payslipId: p.id }), "أُعيد فتح الكشف")}>إعادة فتح</button>
           )}
-          {p.status === "DRAFT" && (
+          {canApprove && p.status === "DRAFT" && (
             <button className={btnPrimary} disabled={busy} data-testid="payslip-approve"
               onClick={() => run(() => invoke("approve_payslip_v3", { sessionToken: token, userId, month, tzOffsetMinutes: tz }), "اعتُمد الكشف")}>اعتماد الكشف</button>
           )}
-          {p.status === "APPROVED" && p.id && (
+          {canApprove && p.status === "APPROVED" && p.id && (
             <button className={btnPrimary} disabled={busy} data-testid="payslip-pay"
               onClick={() => run(() => invoke("pay_payslip_v3", { sessionToken: token, payslipId: p.id, tzOffsetMinutes: tz }), "تم الصرف وسُجّل مصروفاً")}>تأكيد الصرف</button>
           )}

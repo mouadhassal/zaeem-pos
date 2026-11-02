@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS payroll_settings (
     early_multiplier_pct INTEGER NOT NULL DEFAULT 100,
     overtime_rule TEXT NOT NULL DEFAULT 'NONE',
     overtime_multiplier_pct INTEGER NOT NULL DEFAULT 150,
-    overtime_after_minutes INTEGER NOT NULL DEFAULT 30
+    overtime_after_minutes INTEGER NOT NULL DEFAULT 30,
+    manager_access TEXT NOT NULL DEFAULT 'NONE'
 );
 CREATE TABLE IF NOT EXISTS payroll_employees (
     user_id TEXT PRIMARY KEY REFERENCES staff(id),
@@ -108,6 +109,99 @@ CREATE TABLE IF NOT EXISTS payroll_payslips (
 CREATE INDEX IF NOT EXISTS idx_payroll_punch_lookup ON payroll_payslips (tenant_id, month);";
 
 // ---------------------------------------------------------------------------
+// Who may do what (the hierarchy)
+// ---------------------------------------------------------------------------
+
+/// What the person asking may see and do in payroll. The owner has everything. A branch manager only gets what the
+/// owner switched on (`manager_access`), and only for the staff under them in their own branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PayrollScope {
+    pub is_owner: bool,
+    /// None = every branch.
+    pub branch_id: Option<String>,
+    /// Only people ranked below this (a manager never reaches the owner or other managers).
+    pub below_rank: Option<i64>,
+    /// May edit the rules, the access setting and each person's pay.
+    pub can_edit_rules: bool,
+    /// May approve, pay and re-open payslips.
+    pub can_approve: bool,
+}
+
+impl PayrollScope {
+    /// The owner: everything. Anyone else is refused unless this is a manager the owner has switched payroll on for.
+    pub fn for_actor(role: crate::security::Role, branch_id: Option<&str>, manager_access: &str) -> Result<PayrollScope, String> {
+        use crate::security::Role;
+        match role {
+            Role::Owner | Role::Platform => Ok(PayrollScope { is_owner: true, branch_id: None, below_rank: None, can_edit_rules: true, can_approve: true }),
+            Role::Manager => match manager_access {
+                "PREPARE" | "FULL" => Ok(PayrollScope {
+                    is_owner: false,
+                    branch_id: Some(branch_id.ok_or("المشرف بلا فرع")?.to_string()),
+                    below_rank: Some(Role::Manager.rank() as i64),
+                    can_edit_rules: false,
+                    can_approve: manager_access == "FULL",
+                }),
+                _ => Err("لم يفعّل المالك الرواتب للمشرفين. يستطيع ذلك من الرواتب ← القواعد".to_string()),
+            },
+            _ => Err("الرواتب للمالك والمشرف فقط".to_string()),
+        }
+    }
+}
+
+/// The person must be somebody this scope may deal with: this business, and for a manager their own branch and
+/// ranked below them.
+pub fn person_in_scope(conn: &Connection, tenant_id: &str, user_id: &str, scope: &PayrollScope) -> Result<(), String> {
+    let row: Option<(String, Option<String>, i64)> = conn
+        .query_row("SELECT tenant_id, branch_id, role_rank FROM staff WHERE id = ?1 AND deleted_at IS NULL", params![user_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let refuse = || "هذا الموظف خارج صلاحياتك في الرواتب".to_string();
+    let Some((tenant, branch, rank)) = row else { return Err("الموظف غير موجود".into()) };
+    if tenant != tenant_id {
+        return Err(refuse());
+    }
+    if let Some(b) = scope.branch_id.as_deref() {
+        if branch.as_deref() != Some(b) {
+            return Err(refuse());
+        }
+    }
+    if let Some(r) = scope.below_rank {
+        if rank >= r {
+            return Err(refuse());
+        }
+    }
+    Ok(())
+}
+
+/// The payslip's person must be in scope (a payslip id is only ever looked up by this).
+pub fn payslip_person_in_scope(conn: &Connection, tenant_id: &str, payslip_id: &str, scope: &PayrollScope) -> Result<(), String> {
+    let user: Option<String> = conn
+        .query_row("SELECT user_id FROM payroll_payslips WHERE id = ?1 AND tenant_id = ?2", params![payslip_id, tenant_id], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(user_id) = user else { return Err("كشف الراتب غير موجود".into()) };
+    person_in_scope(conn, tenant_id, &user_id, scope)
+}
+
+pub fn adjustment_person_in_scope(conn: &Connection, tenant_id: &str, adjustment_id: &str, scope: &PayrollScope) -> Result<(), String> {
+    let user: Option<String> = conn
+        .query_row("SELECT user_id FROM payroll_adjustments WHERE id = ?1 AND tenant_id = ?2", params![adjustment_id, tenant_id], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(user_id) = user else { return Err("التسوية غير موجودة".into()) };
+    person_in_scope(conn, tenant_id, &user_id, scope)
+}
+
+pub fn advance_person_in_scope(conn: &Connection, tenant_id: &str, advance_id: &str, scope: &PayrollScope) -> Result<(), String> {
+    let user: Option<String> = conn
+        .query_row("SELECT user_id FROM payroll_advances WHERE id = ?1 AND tenant_id = ?2", params![advance_id, tenant_id], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(user_id) = user else { return Err("السلفة غير موجودة".into()) };
+    person_in_scope(conn, tenant_id, &user_id, scope)
+}
+
+// ---------------------------------------------------------------------------
 // Settings (the owner's rules)
 // ---------------------------------------------------------------------------
 
@@ -152,6 +246,12 @@ pub struct PayrollSettings {
     pub overtime_multiplier_pct: i64,
     /// Extra minutes past the end of the shift that do not count as overtime.
     pub overtime_after_minutes: i64,
+    /// What a branch manager may do in payroll. The owner decides. NONE: nothing (the default).
+    /// PREPARE: see the pay of the staff under them in their branch and prepare it (excused days, bonuses and
+    /// fines, advances, missed punches); the owner approves and pays. FULL: also approve and pay it.
+    /// Pay rates and these rules stay with the owner either way, and a manager never sees the owner's or
+    /// another manager's pay.
+    pub manager_access: String,
 }
 
 impl Default for PayrollSettings {
@@ -174,6 +274,7 @@ impl Default for PayrollSettings {
             overtime_rule: "NONE".into(),
             overtime_multiplier_pct: 150,
             overtime_after_minutes: 30,
+            manager_access: "NONE".into(),
         }
     }
 }
@@ -188,6 +289,7 @@ impl PayrollSettings {
         one_of(&self.absence_rule, &["NONE", "DAY_PAY", "FIXED"], "قاعدة الغياب")?;
         one_of(&self.early_rule, &["NONE", "PER_MINUTE"], "قاعدة الخروج المبكر")?;
         one_of(&self.overtime_rule, &["NONE", "PER_HOUR"], "قاعدة الوقت الإضافي")?;
+        one_of(&self.manager_access, &["NONE", "PREPARE", "FULL"], "صلاحية المشرف")?;
         if self.weekly_off_days.iter().any(|d| *d > 6) || self.weekly_off_days.len() > 6 {
             return Err("أيام العطلة الأسبوعية غير صالحة".into());
         }
@@ -240,14 +342,14 @@ pub fn load_settings(conn: &Connection, tenant_id: &str) -> Result<PayrollSettin
         .query_row(
             "SELECT configured, weekly_off_days, days_per_month, shift_minutes, late_rule, late_counts_from_start, late_multiplier_pct, \
                     late_fixed_cents, late_tiers, absence_rule, absence_multiplier_pct, absence_fixed_cents, early_rule, early_multiplier_pct, \
-                    overtime_rule, overtime_multiplier_pct, overtime_after_minutes FROM payroll_settings WHERE tenant_id = ?1",
+                    overtime_rule, overtime_multiplier_pct, overtime_after_minutes, manager_access FROM payroll_settings WHERE tenant_id = ?1",
             params![tenant_id],
             |r| {
                 Ok((
                     r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, String>(4)?,
                     r.get::<_, i64>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?, r.get::<_, String>(8)?, r.get::<_, String>(9)?,
                     r.get::<_, i64>(10)?, r.get::<_, i64>(11)?, r.get::<_, String>(12)?, r.get::<_, i64>(13)?, r.get::<_, String>(14)?,
-                    r.get::<_, i64>(15)?, r.get::<_, i64>(16)?,
+                    r.get::<_, i64>(15)?, r.get::<_, i64>(16)?, r.get::<_, String>(17)?,
                 ))
             },
         )
@@ -272,6 +374,7 @@ pub fn load_settings(conn: &Connection, tenant_id: &str) -> Result<PayrollSettin
         overtime_rule: r.14,
         overtime_multiplier_pct: r.15,
         overtime_after_minutes: r.16,
+        manager_access: r.17,
     })
 }
 
@@ -283,16 +386,16 @@ pub fn save_settings(conn: &Connection, tenant_id: &str, s: &PayrollSettings) ->
     conn.execute(
         "INSERT INTO payroll_settings (tenant_id, configured, weekly_off_days, days_per_month, shift_minutes, late_rule, late_counts_from_start, \
             late_multiplier_pct, late_fixed_cents, late_tiers, absence_rule, absence_multiplier_pct, absence_fixed_cents, early_rule, early_multiplier_pct, \
-            overtime_rule, overtime_multiplier_pct, overtime_after_minutes) \
-         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17) \
+            overtime_rule, overtime_multiplier_pct, overtime_after_minutes, manager_access) \
+         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18) \
          ON CONFLICT(tenant_id) DO UPDATE SET configured = 1, weekly_off_days = ?2, days_per_month = ?3, shift_minutes = ?4, late_rule = ?5, \
             late_counts_from_start = ?6, late_multiplier_pct = ?7, late_fixed_cents = ?8, late_tiers = ?9, absence_rule = ?10, \
             absence_multiplier_pct = ?11, absence_fixed_cents = ?12, early_rule = ?13, early_multiplier_pct = ?14, overtime_rule = ?15, \
-            overtime_multiplier_pct = ?16, overtime_after_minutes = ?17",
+            overtime_multiplier_pct = ?16, overtime_after_minutes = ?17, manager_access = ?18",
         params![
             tenant_id, off, s.days_per_month, s.shift_minutes, s.late_rule, s.late_counts_from_start as i64, s.late_multiplier_pct, s.late_fixed_cents,
             tiers, s.absence_rule, s.absence_multiplier_pct, s.absence_fixed_cents, s.early_rule, s.early_multiplier_pct, s.overtime_rule,
-            s.overtime_multiplier_pct, s.overtime_after_minutes
+            s.overtime_multiplier_pct, s.overtime_after_minutes, s.manager_access
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -393,12 +496,15 @@ pub struct EmployeeRow {
 }
 
 /// Everyone who could be on the payroll: active staff of this business (not the platform account).
-pub fn list_employees(conn: &Connection, tenant_id: &str, branch_id: Option<&str>) -> Result<Vec<EmployeeRow>, String> {
+pub fn list_employees(conn: &Connection, tenant_id: &str, scope: &PayrollScope) -> Result<Vec<EmployeeRow>, String> {
     let mut sql = String::from("SELECT id, name, role, branch_id FROM staff WHERE tenant_id = ?1 AND is_active = 1 AND deleted_at IS NULL AND role != 'PLATFORM'");
     let mut args = vec![tenant_id.to_string()];
-    if let Some(b) = branch_id {
+    if let Some(b) = scope.branch_id.as_deref() {
         args.push(b.to_string());
         sql.push_str(&format!(" AND branch_id = ?{}", args.len()));
+    }
+    if let Some(rank) = scope.below_rank {
+        sql.push_str(&format!(" AND role_rank < {}", rank));
     }
     sql.push_str(" ORDER BY name");
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -1114,10 +1220,10 @@ pub struct MonthRow {
 }
 
 /// Everyone's month at a glance.
-pub fn month_overview(conn: &Connection, tenant_id: &str, branch_id: Option<&str>, month: &str, tz_offset_minutes: i64, as_of: NaiveDate) -> Result<Vec<MonthRow>, String> {
+pub fn month_overview(conn: &Connection, tenant_id: &str, scope: &PayrollScope, month: &str, tz_offset_minutes: i64, as_of: NaiveDate) -> Result<Vec<MonthRow>, String> {
     month_bounds(month)?;
     let mut out = Vec::new();
-    for e in list_employees(conn, tenant_id, branch_id)? {
+    for e in list_employees(conn, tenant_id, scope)? {
         if e.pay.is_none() {
             out.push(MonthRow { user_id: e.user_id, name: e.name, role: e.role, pay_set: false, pay_type: None, status: "NO_PAY".into(), base_cents: 0, deductions_cents: 0, additions_cents: 0, earned_cents: 0, advance_repaid_cents: 0, net_cents: 0, warnings: 0, payslip_id: None });
             continue;
@@ -1150,13 +1256,13 @@ mod tests {
     fn db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE staff (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, branch_id TEXT, role TEXT NOT NULL, name TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1, deleted_at TEXT);
+            "CREATE TABLE staff (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, branch_id TEXT, role TEXT NOT NULL, role_rank INTEGER NOT NULL DEFAULT 1, name TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1, deleted_at TEXT);
              CREATE TABLE operational_costs (id TEXT PRIMARY KEY, tenant_id TEXT, branch_id TEXT, category TEXT NOT NULL, amount_cents INTEGER NOT NULL, date TEXT NOT NULL, notes TEXT, user_id TEXT NOT NULL, reference_type TEXT, reference_id TEXT, last_modified TEXT, sync_status TEXT);",
         )
         .unwrap();
         conn.execute_batch(crate::attendance::SCHEMA_SQL).unwrap();
         conn.execute_batch(SCHEMA_SQL).unwrap();
-        conn.execute("INSERT INTO staff (id, tenant_id, branch_id, role, name) VALUES ('u1', 't1', 'b1', 'CASHIER', 'Sami'), ('boss', 't1', NULL, 'OWNER', 'Owner')", []).unwrap();
+        conn.execute("INSERT INTO staff (id, tenant_id, branch_id, role, role_rank, name) VALUES ('u1', 't1', 'b1', 'CASHIER', 1, 'Sami'), ('boss', 't1', NULL, 'OWNER', 3, 'Owner'), ('mgr', 't1', 'b1', 'MANAGER', 2, 'Manager'), ('mgr2', 't1', 'b2', 'MANAGER', 2, 'Other Manager'), ('c2', 't1', 'b2', 'CASHIER', 1, 'Other Cashier')", []).unwrap();
         conn
     }
 
@@ -1393,12 +1499,58 @@ mod tests {
     fn the_overview_lists_everyone_and_marks_who_has_no_pay_yet() {
         let conn = db();
         monthly(&conn, 780_000);
-        let rows = month_overview(&conn, "t1", None, MONTH, 0, after_month()).unwrap();
-        assert_eq!(rows.len(), 2);
+        let rows = month_overview(&conn, "t1", &PayrollScope::for_actor(crate::security::Role::Owner, None, "NONE").unwrap(), MONTH, 0, after_month()).unwrap();
+        assert_eq!(rows.len(), 5, "the owner sees everyone");
         assert!(rows.iter().find(|r| r.user_id == "boss").map(|r| !r.pay_set).unwrap());
         assert_eq!(rows.iter().find(|r| r.user_id == "u1").unwrap().status, "DRAFT");
-        // A branch manager's view would only list their branch.
-        assert_eq!(month_overview(&conn, "t1", Some("b1"), MONTH, 0, after_month()).unwrap().len(), 1);
+        // A branch manager only sees the staff under them in their own branch.
+        let mine = month_overview(&conn, "t1", &PayrollScope::for_actor(crate::security::Role::Manager, Some("b1"), "PREPARE").unwrap(), MONTH, 0, after_month()).unwrap();
+        assert_eq!(mine.iter().map(|r| r.user_id.as_str()).collect::<Vec<_>>(), vec!["u1"]);
+    }
+
+    #[test]
+    fn the_owner_decides_what_a_manager_may_do_and_a_manager_never_reaches_up_or_sideways() {
+        use crate::security::Role;
+        // Nothing is switched on by default: a manager is refused with a message that says why.
+        assert!(PayrollScope::for_actor(Role::Manager, Some("b1"), "NONE").unwrap_err().contains("لم يفعّل المالك"));
+        assert!(PayrollScope::for_actor(Role::Cashier, Some("b1"), "FULL").is_err());
+        assert!(PayrollScope::for_actor(Role::Kitchen, Some("b1"), "FULL").is_err());
+        let owner = PayrollScope::for_actor(Role::Owner, None, "NONE").unwrap();
+        assert!(owner.is_owner && owner.can_edit_rules && owner.can_approve && owner.branch_id.is_none());
+        let prepare = PayrollScope::for_actor(Role::Manager, Some("b1"), "PREPARE").unwrap();
+        assert!(!prepare.can_edit_rules && !prepare.can_approve);
+        let full = PayrollScope::for_actor(Role::Manager, Some("b1"), "FULL").unwrap();
+        assert!(!full.can_edit_rules && full.can_approve, "full lets a manager approve and pay, never change the rules");
+
+        let conn = db();
+        // The owner reaches everyone.
+        for id in ["u1", "boss", "mgr", "mgr2", "c2"] {
+            assert!(person_in_scope(&conn, "t1", id, &owner).is_ok(), "{id}");
+        }
+        // A manager reaches only the people under them in their own branch.
+        assert!(person_in_scope(&conn, "t1", "u1", &full).is_ok());
+        for (id, why) in [("boss", "the owner"), ("mgr", "themselves / a peer"), ("mgr2", "another manager"), ("c2", "another branch")] {
+            assert!(person_in_scope(&conn, "t1", id, &full).is_err(), "a manager must not reach {why}");
+        }
+        assert!(person_in_scope(&conn, "other-tenant", "u1", &owner).is_err(), "another business is never in scope");
+        // Ids found through a payslip, an adjustment or an advance are checked the same way.
+        monthly(&conn, 100_000);
+        let adj = add_adjustment(&conn, "t1", "u1", MONTH, "BONUS", 10, "x", "boss").unwrap();
+        let adv = add_advance(&conn, "t1", Some("b1"), "u1", 100, 50, "2026-11-01", None, "boss").unwrap();
+        assert!(adjustment_person_in_scope(&conn, "t1", &adj, &full).is_ok());
+        assert!(advance_person_in_scope(&conn, "t1", &adv, &full).is_ok());
+        conn.execute("UPDATE payroll_adjustments SET user_id = 'mgr2'", []).unwrap();
+        conn.execute("UPDATE payroll_advances SET user_id = 'mgr2'", []).unwrap();
+        assert!(adjustment_person_in_scope(&conn, "t1", &adj, &full).is_err());
+        assert!(advance_person_in_scope(&conn, "t1", &adv, &full).is_err());
+        // The owner's choice is stored with the rules.
+        let mut s = PayrollSettings::default();
+        assert_eq!(s.manager_access, "NONE");
+        s.manager_access = "FULL".into();
+        save_settings(&conn, "t1", &s).unwrap();
+        assert_eq!(load_settings(&conn, "t1").unwrap().manager_access, "FULL");
+        s.manager_access = "EVERYTHING".into();
+        assert!(s.validate().is_err());
     }
 
     #[test]

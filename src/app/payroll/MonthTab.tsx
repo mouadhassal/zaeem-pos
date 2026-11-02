@@ -19,7 +19,7 @@ const BADGE: Record<MonthRow["status"], string> = {
 };
 
 /** Everyone's month on one table; open a person to see where each pound comes from. */
-export default function MonthTab({ configured, onGoRules, refreshKey, onChanged }: { configured: boolean; onGoRules: () => void; refreshKey: number; onChanged: () => void }) {
+export default function MonthTab({ configured, isOwner, canApprove, onGoRules, refreshKey, onChanged }: { configured: boolean; isOwner: boolean; canApprove: boolean; onGoRules: () => void; refreshKey: number; onChanged: () => void }) {
   const token = useAuthStore((s) => s.token);
   const [month, setMonth] = useState(() => monthOf(new Date()));
   const [rows, setRows] = useState<MonthRow[] | null>(null);
@@ -42,7 +42,7 @@ export default function MonthTab({ configured, onGoRules, refreshKey, onChanged 
 
   return (
     <div className="space-y-4" data-testid="month-tab">
-      {!configured && (
+      {!configured && isOwner && (
         <div className="rounded-md border border-warn bg-warn-soft p-3 text-sm font-arabic text-ink-900 flex items-center justify-between gap-3" data-testid="rules-banner">
           <span>لم تحدد قواعد الخصم بعد، لذلك لا يُخصم شيء من أي راتب. حدّدها لتعمل الخصومات والوقت الإضافي كما تريد.</span>
           <button onClick={onGoRules} className="shrink-0 text-saffron-600 font-bold">تحديد القواعد</button>
@@ -53,7 +53,7 @@ export default function MonthTab({ configured, onGoRules, refreshKey, onChanged 
         <span className="font-bold font-arabic text-ink-900 min-w-[150px] text-center" data-testid="month-label">{monthLabel(month)}</span>
         <button onClick={() => setMonth((m) => shiftMonth(m, 1))} aria-label="الشهر التالي" className="w-9 h-9 rounded-sm border border-ink-200 flex items-center justify-center hover:bg-white"><IconChevronLeft className="w-4 h-4" /></button>
       </div>
-      <Hint summary="الأرقام هنا مسودة تتغير مع الحضور حتى تعتمد الكشف. بعد انتهاء الشهر: افتح كل موظف ← اعتماد ← تأكيد الصرف، فيُسجَّل راتبه مصروفاً تلقائياً في المالية.">
+      <Hint summary={canApprove ? "الأرقام هنا مسودة تتغير مع الحضور حتى تعتمد الكشف. بعد انتهاء الشهر: افتح كل موظف ← اعتماد ← تأكيد الصرف، فيُسجَّل راتبه مصروفاً تلقائياً في المالية." : "الأرقام هنا مسودة تتغير مع الحضور. جهّز كشف كل موظف من فرعك (أعذار، مكافآت، غرامات، بصمات منسية) ثم يعتمده المالك."}>
         <p><b>المستحق</b> = الأساسي − الخصومات + الإضافي والمكافآت. <b>الصافي</b> = المستحق − قسط السلفة، وهو ما يُسلَّم للموظف.</p>
         <p>يُسجَّل في المصروفات «المستحق» (لا الصافي)، لأن السلفة سُلّمت سابقاً.</p>
       </Hint>
@@ -110,7 +110,7 @@ export default function MonthTab({ configured, onGoRules, refreshKey, onChanged 
           )}
         </table>
       </div>
-      {open && <PayslipModal userId={open} month={month} onClose={() => setOpen(null)} onChanged={() => { load(); onChanged(); }} />}
+      {open && <PayslipModal userId={open} month={month} canApprove={canApprove} onClose={() => setOpen(null)} onChanged={() => { load(); onChanged(); }} />}
     </div>
   );
 }

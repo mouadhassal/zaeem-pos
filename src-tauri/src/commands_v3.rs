@@ -123,6 +123,7 @@ mod tests {
         migrate_v3::run_attendance_punches_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_order_item_cost_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_payroll_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_payroll_manager_access_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -7439,6 +7440,7 @@ mod tests {
         migrate_v3::run_attendance_punches_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_order_item_cost_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_payroll_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_payroll_manager_access_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("matrix", &conn);
@@ -8114,7 +8116,7 @@ mod tests {
             "list_attendance_v3",
             "list_fingerprint_enrolments_v3", "enrol_fingerprint_v3", "delete_fingerprint_enrolment_v3",
             "list_punches_v3", "get_attendance_settings_v3", "set_attendance_settings_v3",
-            "get_payroll_settings_v3", "save_payroll_settings_v3", "list_payroll_employees_v3", "save_payroll_employee_v3",
+            "get_payroll_access_v3", "get_payroll_settings_v3", "save_payroll_settings_v3", "list_payroll_employees_v3", "save_payroll_employee_v3",
             "payroll_month_v3", "get_payslip_v3", "approve_payslip_v3", "pay_payslip_v3",
             "reopen_payslip_v3", "add_payroll_adjustment_v3", "delete_payroll_adjustment_v3", "add_payroll_advance_v3",
             "list_payroll_advances_v3", "cancel_payroll_advance_v3", "set_paid_leave_v3", "add_manual_punch_v3",

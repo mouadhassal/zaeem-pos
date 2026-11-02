@@ -1572,6 +1572,11 @@ pub(crate) fn refund_order_v3_impl(
             "reason": reason, "lines": lines, "manager_override_used": manager_pin_used,
         })),
     ).map_err(|e| e.to_string())?;
+    // The cloud must hear about it: queue the order so its next push carries the refund.
+    let (tenant_id, branch_id): (String, String) = tx
+        .query_row("SELECT tenant_id, branch_id FROM orders WHERE id = ?1", params![order_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?;
+    sync_enqueue_order(&tx, &tenant_id, &branch_id, &order_id, &actor.device_id, &license.cached_status())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(outcome)
 }

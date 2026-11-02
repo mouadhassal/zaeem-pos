@@ -194,6 +194,10 @@ pub enum Permission {
     /// Owner only: salaries are the most private numbers in the business, and
     /// the owner alone decides the rules.
     ManagePayroll,
+    /// 2026-11-02: working in payroll at all. Manager rank, but a manager is only let in when the OWNER
+    /// switched payroll on for managers (`payroll_settings.manager_access`), and only for the staff
+    /// under them in their own branch -- that part is `payroll::PayrollScope`, not this rank check.
+    UsePayroll,
 }
 
 impl Permission {
@@ -220,6 +224,7 @@ impl Permission {
             Permission::ManageRoster => Role::Manager.rank(),
             Permission::RefundOrder => Role::Manager.rank(),
             Permission::ManagePayroll => Role::Owner.rank(),
+            Permission::UsePayroll => Role::Manager.rank(),
         }
     }
 }
@@ -433,6 +438,7 @@ pub fn authorize(actor: &Actor, perm: Permission) -> Result<(), SecurityError> {
                 Permission::ManageRoster => "ManageRoster",
                 Permission::RefundOrder => "RefundOrder",
                 Permission::ManagePayroll => "ManagePayroll",
+                Permission::UsePayroll => "UsePayroll",
             },
             reason: format!("role {:?} (rank {}) is below the minimum rank {} for this permission", actor.role, actor.role.rank(), perm.minimum_rank()),
         })
@@ -475,6 +481,10 @@ mod tests {
         let owner = Actor { id: "o".into(), tenant_id: "t".into(), branch_id: None, role: Role::Owner, device_id: "d".into() };
         assert!(authorize(&manager, Permission::ManagePayroll).is_err(), "a manager must not see anyone's salary");
         assert!(authorize(&owner, Permission::ManagePayroll).is_ok());
+        // Working in payroll at all starts at manager rank; whether a manager is let in is the owner's switch (payroll.rs).
+        assert!(authorize(&manager, Permission::UsePayroll).is_ok());
+        let cashier = Actor { id: "c".into(), tenant_id: "t".into(), branch_id: Some("b".into()), role: Role::Cashier, device_id: "d".into() };
+        assert!(authorize(&cashier, Permission::UsePayroll).is_err());
     }
 
     const ALL_ROLES: [Role; 6] = [Role::Platform, Role::Owner, Role::Manager, Role::Cashier, Role::Kitchen, Role::Server];

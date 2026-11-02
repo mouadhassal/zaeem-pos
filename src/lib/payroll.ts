@@ -32,6 +32,18 @@ export interface PayrollSettings {
   overtime_rule: OvertimeRule;
   overtime_multiplier_pct: number;
   overtime_after_minutes: number;
+  /** What a branch manager may do: the owner's choice. */
+  manager_access: ManagerAccess;
+}
+
+export type ManagerAccess = "NONE" | "PREPARE" | "FULL";
+
+/** What the signed-in person may do in payroll (the page shows or hides tabs and buttons by this). */
+export interface PayrollAccess {
+  is_owner: boolean;
+  can_edit_rules: boolean;
+  can_approve: boolean;
+  manager_access: ManagerAccess;
 }
 
 export interface EmployeePay {
@@ -155,6 +167,7 @@ export const DEFAULT_SETTINGS: PayrollSettings = {
   overtime_rule: "NONE",
   overtime_multiplier_pct: 150,
   overtime_after_minutes: 30,
+  manager_access: "NONE",
 };
 
 export const WEEKDAYS = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];

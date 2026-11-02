@@ -32,6 +32,7 @@ const MANAGER_NAV: SidebarNavItem[] = [
   { id: "reports", label: "التقارير", icon: "bar-chart-3", allowed: true },
   { id: "staff", label: "الموظفين", icon: "users-round", allowed: true },
   { id: "schedule", label: "جدول الدوام", icon: "calendar", allowed: true },
+  { id: "payroll", label: "الرواتب", icon: "wallet", allowed: true },
   { id: "ai", label: "المساعد الذكي", icon: "bot", allowed: true },
   { id: "guide", label: "الدليل", icon: "book", allowed: true },
   { id: "settings", label: "الإعدادات", icon: "settings", allowed: true },

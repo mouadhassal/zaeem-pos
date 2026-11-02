@@ -1131,6 +1131,10 @@ try {
     await clickId("rules-next");
     await clickId("overtime-rule-PER_HOUR");
     await clickId("rules-next");
+    // the owner decides what managers may do: prepare only, for now
+    await byId("rules-managers");
+    await clickId("manager-access-PREPARE");
+    await clickId("rules-next");
     await byId("rules-review");
     const examples = await textOf("examples");
     ok(examples.includes("تأخر 20 دقيقة") && examples.includes("غاب يوماً"), `the review shows what each rule costs: ${examples.slice(0, 200)}`);
@@ -1138,7 +1142,7 @@ try {
     await clickId("rules-save");
     await until(async () => (await call("get_payroll_settings_v3")).configured === true, "rules saved");
     const saved = await call("get_payroll_settings_v3");
-    eq([saved.late_rule, saved.absence_rule, saved.overtime_rule], ["PER_MINUTE", "DAY_PAY", "PER_HOUR"], "the chosen rules");
+    eq([saved.late_rule, saved.absence_rule, saved.overtime_rule, saved.manager_access], ["PER_MINUTE", "DAY_PAY", "PER_HOUR", "PREPARE"], "the chosen rules");
 
     // 2) set the person's pay in the UI
     await byId("month-tab");
@@ -1214,6 +1218,43 @@ try {
     await byId("rules-editor");
     ok((await textOf("rules-summary")).includes("بالدقيقة"), "the rules summary says what is chosen");
     console.log("  shot:", await reg.shot("payroll-rules"));
+
+    // 7) the hierarchy: a manager works only on the staff under them, and only as far as the owner allowed
+    const ownerToken = await b.execute(() => localStorage.getItem("zaeem_auth_token"));
+    const owner = staff.find((x) => x.role === "OWNER") ?? staff[0];
+    const branchId = (await call("list_branches_v3"))[0][0];
+    const crew = await call("create_staff_v3", { targetBranchId: branchId, role: "CASHIER", name: "كاشير الرواتب", pin: "135790" });
+    const mgr = await call("create_staff_v3", { targetBranchId: branchId, role: "MANAGER", name: "مشرف الرواتب", pin: "246810" });
+    const login = await call("login_pin_v3", { pin: "246810", deviceId: "e2e-payroll" });
+    const mgrToken = login.token;
+    const asManager = (cmd, args = {}) => call(cmd, { sessionToken: mgrToken, ...args });
+    const refused = (p) => p.then(() => "", (e) => String(e.message));
+    await call("save_payroll_employee_v3", { pay: { user_id: crew, pay_type: "DAILY", rate_cents: 30000, shift_start: null, shift_minutes: null, start_date: null, end_date: null, track_attendance: false } });
+
+    // prepare only
+    let access = await asManager("get_payroll_access_v3");
+    eq([access.is_owner, access.can_edit_rules, access.can_approve, access.manager_access], [false, false, false, "PREPARE"], "a manager's access");
+    const seen = (await asManager("list_payroll_employees_v3")).map((e) => e.user_id);
+    ok(seen.includes(crew), "the manager sees the cashier under them");
+    ok(!seen.includes(owner.id) && !seen.includes(mgr), `the manager never sees the owner or themselves: ${seen.join(",")}`);
+    ok((await refused(asManager("get_payroll_settings_v3"))).includes("للمالك وحده"), "the rules are the owner's");
+    ok((await refused(asManager("save_payroll_employee_v3", { pay: { user_id: crew, pay_type: "DAILY", rate_cents: 1, shift_start: null, shift_minutes: null, start_date: null, end_date: null, track_attendance: false } }))).length > 0, "pay rates are the owner's");
+    ok((await refused(asManager("get_payslip_v3", { userId: owner.id, month: monthKey, tzOffsetMinutes: tzNow }))).includes("خارج صلاحياتك"), "the owner's pay is out of reach");
+    ok((await refused(asManager("get_payslip_v3", { userId: mgr, month: monthKey, tzOffsetMinutes: tzNow }))).includes("خارج صلاحياتك"), "a manager's own pay is out of reach");
+    await asManager("add_payroll_adjustment_v3", { userId: crew, month: monthKey, kind: "BONUS", amountCents: 1000, reason: "اختبار المشرف" });
+    eq((await asManager("get_payslip_v3", { userId: crew, month: monthKey, tzOffsetMinutes: tzNow })).bonus_cents, 1000, "the manager prepared a bonus");
+    ok((await refused(asManager("approve_payslip_v3", { userId: crew, month: monthKey, tzOffsetMinutes: tzNow }))).includes("للمالك"), "approving is the owner's when the owner allowed preparing only");
+
+    // the owner switches it off, then on in full
+    const rules = await call("get_payroll_settings_v3");
+    await call("save_payroll_settings_v3", { settings: { ...rules, manager_access: "NONE" } });
+    ok((await refused(asManager("payroll_month_v3", { month: monthKey, tzOffsetMinutes: tzNow }))).includes("لم يفعّل المالك"), "switched off by the owner: the manager is told why");
+    await call("save_payroll_settings_v3", { settings: { ...rules, manager_access: "FULL" } });
+    access = await asManager("get_payroll_access_v3");
+    eq([access.can_approve, access.can_edit_rules], [true, false], "full access lets a manager approve, never edit the rules");
+    ok((await refused(asManager("get_payslip_v3", { userId: owner.id, month: monthKey, tzOffsetMinutes: tzNow }))).includes("خارج صلاحياتك"), "even with full access the owner's pay is out of reach");
+    await call("save_payroll_settings_v3", { settings: { ...rules, manager_access: "PREPARE" } });
+    ok(ownerToken, "owner token present");
   });
 
   // POS Lite (licence plan pos_lite): only the till's screens, Full-only

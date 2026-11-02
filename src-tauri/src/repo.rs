@@ -6445,6 +6445,7 @@ mod tests {
         migrate_v3::run_attendance_punches_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_order_item_cost_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_payroll_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_payroll_manager_access_migration(&mut conn, &db_path).unwrap();
         db_path
     }
 
