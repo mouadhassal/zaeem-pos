@@ -1034,6 +1034,40 @@ try {
     ok(Array.isArray(insights) && insights.every((i) => i.text && i.question && ["up", "down", "warn", "info"].includes(i.kind)), `insights are well-formed: ${JSON.stringify(insights).slice(0, 200)}`);
   });
 
+  // The updater. It used to test `window.__TAURI__` (absent in Tauri 2 here), so it returned early on every
+  // till: no update check ever ran and the Settings button said "preview mode". Two modes:
+  //  * a normal build (current version, nothing newer published): the Settings button must reach the update
+  //    server and say we are up to date;
+  //  * OPS_VERSION=0.0.9 build (believes it is old): the plugin must find the published release. It must
+  //    NEVER download or install it: that runs the real installer on this machine.
+  await step("updater", "check for updates reaches the server; an old build is offered the published release (never installed)", async () => {
+    await b.setWindowSize(1366, 768);
+    const invokeRaw = (cmd, args) => b.executeAsync(async (cmd, args, done) => {
+      try { done({ ok: await window.__TAURI_INTERNALS__.invoke(cmd, args) }); } catch (e) { done({ err: String(e) }); }
+    }, cmd, args);
+    const version = (await invokeRaw("plugin:app|version", {})).ok;
+    console.log("  app version:", version);
+    ok(await b.execute(() => !("__TAURI__" in window) && "__TAURI_INTERNALS__" in window), "the real window has __TAURI_INTERNALS__ and no __TAURI__ -- the guard the updater used to rely on");
+    if (version === "0.0.9") {
+      const meta = await invokeRaw("plugin:updater|check", {});
+      ok(!meta.err, `the updater plugin check works: ${meta.err}`);
+      ok(meta.ok && meta.ok.available !== false && meta.ok.version && meta.ok.version !== "0.0.9", `an old build is offered the published release: ${JSON.stringify(meta.ok).slice(0, 200)}`);
+      console.log("  offered:", meta.ok.version);
+      // Never call download/install here: on Windows the updater runs the downloaded installer, which would
+      // replace the REAL POS installed on this machine (it happened once, 2026-11-02). The published installer's
+      // signature is verified separately against the app's public key (see the release procedure).
+    } else {
+      await nav("settings");
+      await reg.click(/عن النظام/);
+      await reg.click(/تحقق من التحديثات/);
+      await until(async () => (await reg.text()).includes("أحدث إصدار") || (await reg.text()).includes("فشل التحقق"), "the check finished", 40000);
+      const text = await reg.text();
+      ok(!text.includes("وضع المعاينة"), "no 'preview mode' message: the app knows it is the real app");
+      ok(text.includes("أنت تستخدم أحدث إصدار بالفعل"), `the check reached the server and found nothing newer: ${text.slice(text.indexOf("الإصدار"), text.indexOf("الإصدار") + 200)}`);
+      console.log("  shot:", await reg.shot("settings-updates"));
+    }
+  });
+
   // Net sales and the profit views: a refund lowers sales everywhere, the
   // dashboard shows margin / expenses / net profit each with its explanation,
   // and the cost category on the Finance form says how it counts.

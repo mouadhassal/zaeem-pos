@@ -30,7 +30,12 @@ restore() {
 }
 trap restore EXIT
 sed -i "s#LICENSE_PUBLIC_KEY_B64: \&str = \"$REAL\"#LICENSE_PUBLIC_KEY_B64: \&str = \"$PUB\"#" "$MOD"
-echo '{"identifier":"com.wenzdes.pos.e2e.ops","productName":"wenzdes-pos-e2e-ops"}' > "$OUT/conf-ops.json"
+# OPS_VERSION=0.0.9 builds an app that believes it is old, to test update detection (never installs anything).
+if [ -n "${OPS_VERSION:-}" ]; then
+  echo '{"identifier":"com.wenzdes.pos.e2e.ops","productName":"wenzdes-pos-e2e-ops","version":"'"$OPS_VERSION"'"}' > "$OUT/conf-ops.json"
+else
+  echo '{"identifier":"com.wenzdes.pos.e2e.ops","productName":"wenzdes-pos-e2e-ops"}' > "$OUT/conf-ops.json"
+fi
 ok=0
 # Windows sometimes refuses to start rustc for a moment ("Access is denied"); a retry fixes it.
 for i in 1 2 3 4; do

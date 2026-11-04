@@ -2,6 +2,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { logger } from "./logger";
+import { isTauriRuntime } from "./tauriRuntime";
 
 /**
  * Writes to the SAME persisted, rotating log file every other real event
@@ -29,7 +30,7 @@ function logUpdateEvent(message: string) {
  * each of them is cold-booted -- no manual reinstall anywhere.
  */
 export async function checkForUpdatesSilently(): Promise<void> {
-  if (!("__TAURI__" in window)) return; // dev-in-browser has no updater backend
+  if (!isTauriRuntime()) return; // dev-in-browser has no updater backend
   try {
     logUpdateEvent("startup check: contacting update server");
     const update = await check();
@@ -49,6 +50,17 @@ export async function checkForUpdatesSilently(): Promise<void> {
   }
 }
 
+/** The updater's raw English errors as a line a cashier can act on. Anything unrecognised is shown as is. */
+export function friendlyUpdateError(raw: string): string {
+  if (/error sending request|dns|lookup address|connection|timed? ?out|network/i.test(raw)) {
+    return "تعذّر الاتصال بخادم التحديثات. تأكد من الاتصال بالإنترنت ثم حاول مجدداً.";
+  }
+  if (/signature/i.test(raw)) {
+    return "تعذّر التحقق من التوقيع الرقمي للتحديث، لذلك لم يُثبَّت. تواصل مع الدعم.";
+  }
+  return raw;
+}
+
 export type ManualUpdateResult =
   | { kind: "up_to_date" }
   | { kind: "installed"; version: string }
@@ -63,7 +75,7 @@ export type ManualUpdateResult =
  * a log file.
  */
 export async function checkForUpdatesManually(): Promise<ManualUpdateResult> {
-  if (!("__TAURI__" in window)) {
+  if (!isTauriRuntime()) {
     return { kind: "error", message: "التحديثات غير متاحة في وضع المعاينة" };
   }
   try {
@@ -81,6 +93,6 @@ export async function checkForUpdatesManually(): Promise<ManualUpdateResult> {
   } catch (err) {
     const message = String(err);
     logUpdateEvent(`manual check FAILED: ${message}`);
-    return { kind: "error", message };
+    return { kind: "error", message: friendlyUpdateError(message) };
   }
 }
