@@ -4,6 +4,7 @@ import { formatMoney } from "../../lib/money";
 import { realErrorText } from "../../lib/errors";
 import { historyNumber, refundOrder, refundableLines, type HistoryDetail, type RefundOutcome } from "../../lib/orderHistory";
 import { refundPreview } from "../../lib/refund";
+import { useMenuStore } from "../../stores/menuStore";
 
 interface Props {
   order: HistoryDetail;
@@ -35,6 +36,9 @@ export default function RefundModal({ order, isManager, onClose, onDone }: Props
   const [pin, setPin] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A shop that tracks product stock can put returned goods back on the shelf.
+  const shopTracksStock = useMenuStore((s) => s.menuItems.some((i) => i.track_stock));
+  const [restock, setRestock] = useState(false);
 
   const amount = refundPreview(lines, mode === "ALL" ? "ALL" : take, order.total_cents, order.delivery_fee_cents, order.refunded_cents);
   const method = order.payments[0]?.method ?? "CASH";
@@ -49,7 +53,7 @@ export default function RefundModal({ order, isManager, onClose, onDone }: Props
     setError(null);
     try {
       const chosen = mode === "ALL" ? null : Object.entries(take).filter(([, q]) => q > 0).map(([order_item_id, quantity]) => ({ order_item_id, quantity }));
-      const outcome = await refundOrder(order.id, reason.trim(), chosen, isManager ? undefined : pin);
+      const outcome = await refundOrder(order.id, reason.trim(), chosen, isManager ? undefined : pin, shopTracksStock && restock);
       onDone(outcome);
     } catch (e) {
       setError(realErrorText(e));
@@ -114,6 +118,12 @@ export default function RefundModal({ order, isManager, onClose, onDone }: Props
             <p className="mt-0.5 text-xs font-arabic text-text-muted">الطعام المسترد لا يعود إلى المخزون.</p>
           </div>
 
+          {shopTracksStock && (
+            <label className="flex items-start gap-2 text-sm font-arabic text-text" data-testid="refund-restock-label">
+              <input type="checkbox" checked={restock} onChange={(e) => setRestock(e.target.checked)} className="mt-1" data-testid="refund-restock" />
+              <span>إرجاع البضاعة إلى المخزون<span className="block text-xs text-text-muted">للبضاعة السليمة فقط (منتجات مُتتبَّع مخزونها). التالف لا يُعاد.</span></span>
+            </label>
+          )}
           <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="سبب الاسترداد (مطلوب)" data-testid="refund-reason"
             className="w-full h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-sm font-arabic outline-none focus:border-accent" />
           {!isManager && (

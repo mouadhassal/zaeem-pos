@@ -76,6 +76,7 @@ mod tests {
             include_str!("commands/order_history.rs"),
             include_str!("commands/fingerprint.rs"),
             include_str!("commands/payroll.rs"),
+            include_str!("commands/stockroom.rs"),
         ].join("\n")
     }
 
@@ -124,6 +125,7 @@ mod tests {
         migrate_v3::run_order_item_cost_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_payroll_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_payroll_manager_access_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_stockroom_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -1448,6 +1450,195 @@ mod tests {
                 assert!(rows.iter().all(|(_, s)| s == "MANUAL"));
                 assert!(rows.iter().any(|(d, _)| d == "IN") && rows.iter().any(|(d, _)| d == "OUT"));
                 let _ = (f.tenant_id.len(), fs::remove_dir_all(f.db_path.parent().unwrap()));
+            }
+        }
+
+        /// Shop stock on the real schema: products imported from a spreadsheet, a paid sale lowering tracked
+        /// stock, extra barcodes and stock figures reaching the till's menu list, an owner's choice to refuse
+        /// a sale the stock cannot cover (the whole payment is undone), and goods returned to the shelf.
+        mod shop_stock {
+            use super::*;
+            use crate::stockroom::{self, ImportRow, ReceiveLine, RetailSettings};
+
+            struct S {
+                db_path: PathBuf,
+                db: Db,
+                license: crate::license::cloud::CloudLicenseState,
+                session: String,
+                table_id: String,
+                tenant_id: String,
+                branch_id: String,
+                cashier_id: String,
+            }
+
+            fn setup(name: &str) -> S {
+                let (db_path, tenant_id, branch_id, table_id) = seeded_db(name);
+                let cashier_id = {
+                    let conn = Connection::open(&db_path).unwrap();
+                    seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier")
+                };
+                let session = {
+                    let conn = Connection::open(&db_path).unwrap();
+                    security::create_session(&conn, &cashier_id, "device-1").unwrap()
+                };
+                let db = real_db(&db_path);
+                let license = never_checked_license(&db_path);
+                open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+                S { db_path, db, license, session, table_id, tenant_id, branch_id, cashier_id }
+            }
+
+            #[allow(clippy::too_many_arguments)]
+            fn row(n: usize, name: &str, barcode: Option<&str>, price: i64, cost: Option<i64>, category: Option<&str>, stock: Option<f64>, min: Option<f64>, sold_by: Option<&str>) -> ImportRow {
+                ImportRow { row: n, name: name.into(), barcode: barcode.map(str::to_string), price_cents: price, cost_cents: cost, category: category.map(str::to_string), stock, min_stock: min, sold_by: sold_by.map(str::to_string) }
+            }
+
+            fn sell(s: &S, item_id: &str, qty: i64, weight: Option<crate::weighing::LineWeight>) -> Result<String, String> {
+                let order = create_full_order_v3_impl(
+                    &s.db, &s.license, s.session.clone(), s.table_id.clone(), "DINE_IN".to_string(),
+                    vec![OrderItemInput { menu_item_id: item_id.to_string(), name: None, quantity: qty, unit_price_cents: 1, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight }],
+                    1, 0, 1, 0, None, None, None, None, 0, None, None,
+                )?;
+                let total: i64 = Connection::open(&s.db_path).unwrap().query_row("SELECT total_cents FROM orders WHERE id = ?1", params![order], |r| r.get(0)).unwrap();
+                take_payment_v3_impl(&s.db, &s.license, s.session.clone(), order.clone(), "CASH".to_string(), total, 0, None)?;
+                Ok(order)
+            }
+
+            #[test]
+            fn a_spreadsheet_brings_products_in_with_categories_stock_and_clear_problems() {
+                let s = setup("shop_import");
+                let conn = Connection::open(&s.db_path).unwrap();
+                let rows = vec![
+                    row(2, "Biscuits", Some("6001"), 500, Some(300), Some("Snacks"), Some(24.0), Some(6.0), None),
+                    row(3, "Cheese", Some("6002"), 90000, Some(60000), Some("Dairy"), Some(3.5), None, Some("weight")),
+                    row(4, "Tea", None, 1200, None, None, None, None, None),
+                    row(5, "", Some("6003"), 100, None, None, None, None, None),
+                    row(6, "Gum", Some("6004"), -5, None, None, None, None, None),
+                    row(7, "Biscuits copy", Some("6001"), 500, None, None, None, None, None),
+                    row(8, "Soap", Some("6005"), 800, None, None, Some(-1.0), None, None),
+                    row(9, "Odd", Some("6006"), 800, None, None, None, None, Some("litre")),
+                ];
+                let out = stockroom::import_products(&conn, &s.tenant_id, &s.branch_id, &rows, &s.cashier_id, "2026-11-04T10:00:00Z").unwrap();
+                assert_eq!((out.created, out.updated, out.skipped), (3, 0, 5), "{:?}", out.problems);
+                let why = |n: usize| out.problems.iter().find(|p| p.row == n).map(|p| p.message.clone()).unwrap_or_default();
+                assert!(why(5).contains("اسم"), "{}", why(5));
+                assert!(why(6).contains("السعر"), "{}", why(6));
+                assert!(why(7).contains("مكرر"), "{}", why(7));
+                assert!(why(8).contains("الكمية"), "{}", why(8));
+                assert!(why(9).contains("طريقة البيع"), "{}", why(9));
+
+                let stock = stockroom::list_stock(&conn, &s.tenant_id, &s.branch_id, None, false, false, 100).unwrap();
+                let biscuits = stock.iter().find(|r| r.name == "Biscuits").unwrap();
+                assert_eq!((biscuits.quantity, biscuits.min_quantity, biscuits.cost_cents, biscuits.category.as_deref()), (24.0, 6.0, 300, Some("Snacks")));
+                let cheese = stock.iter().find(|r| r.name == "Cheese").unwrap();
+                assert_eq!((cheese.quantity, cheese.sold_by.as_str()), (3.5, "weight"), "a weighed product is counted in kilos");
+                assert!(stock.iter().all(|r| r.name != "Tea"), "no stock column: not tracked");
+                assert_eq!(stockroom::list_log(&conn, &s.tenant_id, &s.branch_id, None, 10).unwrap().iter().filter(|l| l.reason == "OPENING").count(), 2);
+
+                // Importing again updates by barcode (and by name for a product with no barcode) and counts the shelf.
+                let again = vec![
+                    row(2, "Biscuits big", Some("6001"), 550, Some(320), Some("Snacks"), Some(20.0), None, None),
+                    row(3, "tea", None, 1300, None, None, None, None, None),
+                ];
+                let out2 = stockroom::import_products(&conn, &s.tenant_id, &s.branch_id, &again, &s.cashier_id, "2026-11-04T11:00:00Z").unwrap();
+                assert_eq!((out2.created, out2.updated), (0, 2), "{:?}", out2.problems);
+                let (name, price, cost): (String, i64, i64) = conn.query_row("SELECT name, price_cents, cost_cents FROM menu_items WHERE barcode = '6001'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+                assert_eq!((name.as_str(), price, cost), ("Biscuits big", 550, 320));
+                assert_eq!(stockroom::quantity_of(&conn, &s.branch_id, &biscuits.menu_item_id).unwrap(), 20.0);
+                assert_eq!(conn.query_row::<i64, _, _>("SELECT price_cents FROM menu_items WHERE lower(name) = 'tea'", [], |r| r.get(0)).unwrap(), 1300, "matched by name, not duplicated");
+                assert_eq!(conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM categories WHERE name = 'Snacks'", [], |r| r.get(0)).unwrap(), 1, "the category is reused");
+                assert!(stockroom::import_products(&conn, &s.tenant_id, &s.branch_id, &[], &s.cashier_id, "x").is_err(), "an empty file");
+                let _ = fs::remove_dir_all(s.db_path.parent().unwrap());
+            }
+
+            #[test]
+            fn a_sale_lowers_tracked_stock_and_the_till_sees_the_figures_and_extra_barcodes() {
+                let s = setup("shop_sale");
+                let (biscuits, cheese) = {
+                    let conn = Connection::open(&s.db_path).unwrap();
+                    let rows = vec![
+                        row(2, "Biscuits", Some("6001"), 500, Some(300), Some("Snacks"), Some(24.0), Some(6.0), None),
+                        row(3, "Cheese", Some("6002"), 90000, Some(60000), Some("Dairy"), Some(3.5), None, Some("weight")),
+                        row(4, "Tea", Some("6003"), 1200, None, None, None, None, None),
+                    ];
+                    stockroom::import_products(&conn, &s.tenant_id, &s.branch_id, &rows, &s.cashier_id, "2026-11-04T10:00:00Z").unwrap();
+                    let id = |n: &str| conn.query_row::<String, _, _>("SELECT id FROM menu_items WHERE name = ?1", params![n], |r| r.get(0)).unwrap();
+                    stockroom::add_extra_barcode(&conn, &s.tenant_id, &id("Biscuits"), "CARTON-12", 12.0).unwrap();
+                    (id("Biscuits"), id("Cheese"))
+                };
+                sell(&s, &biscuits, 5, None).unwrap();
+                sell(&s, &cheese, 1, Some(crate::weighing::LineWeight { grams: 750, amount_cents: None, price_per_kg_cents: 0, locked: false })).unwrap();
+                let tea = Connection::open(&s.db_path).unwrap().query_row::<String, _, _>("SELECT id FROM menu_items WHERE name = 'Tea'", [], |r| r.get(0)).unwrap();
+                sell(&s, &tea, 2, None).unwrap();
+                let conn = Connection::open(&s.db_path).unwrap();
+                assert_eq!(stockroom::quantity_of(&conn, &s.branch_id, &biscuits).unwrap(), 19.0);
+                assert_eq!(stockroom::quantity_of(&conn, &s.branch_id, &cheese).unwrap(), 2.75, "750 g off 3.5 kg");
+                assert_eq!(stockroom::quantity_of(&conn, &s.branch_id, &tea).unwrap(), 0.0, "an untracked product keeps no stock");
+                assert!(stockroom::list_log(&conn, &s.tenant_id, &s.branch_id, Some(&biscuits), 10).unwrap().iter().any(|l| l.reason == "SALE" && l.change == -5.0 && l.balance_after == 19.0), "the sale is in the movement log with its balance");
+
+                // What the till's menu list carries: stock figures for its branch and the extra barcodes.
+                let items = crate::commands::menu::list_menu_items_v3_impl(&s.db, s.session.clone()).unwrap();
+                let b = items.iter().find(|i| i.id == biscuits).unwrap();
+                assert_eq!((b.track_stock, b.stock_quantity, b.stock_min), (1, Some(19.0), Some(6.0)));
+                assert_eq!(b.extra_barcodes.len(), 1);
+                assert_eq!((b.extra_barcodes[0].barcode.as_str(), b.extra_barcodes[0].units), ("CARTON-12", 12.0));
+                let t = items.iter().find(|i| i.id == tea).unwrap();
+                assert_eq!((t.track_stock, t.stock_quantity), (0, None));
+                let _ = fs::remove_dir_all(s.db_path.parent().unwrap());
+            }
+
+            #[test]
+            fn when_the_owner_refuses_sales_the_stock_cannot_cover_the_whole_payment_is_undone() {
+                let s = setup("shop_block");
+                let item = {
+                    let conn = Connection::open(&s.db_path).unwrap();
+                    stockroom::import_products(&conn, &s.tenant_id, &s.branch_id, &[row(2, "Soap", Some("7001"), 800, Some(500), None, Some(2.0), None, None)], &s.cashier_id, "2026-11-04T10:00:00Z").unwrap();
+                    stockroom::save_settings(&conn, &s.tenant_id, &RetailSettings { block_sale_when_empty: true, ..Default::default() }).unwrap();
+                    conn.query_row::<String, _, _>("SELECT id FROM menu_items WHERE name = 'Soap'", [], |r| r.get(0)).unwrap()
+                };
+                sell(&s, &item, 2, None).unwrap();
+                let err = sell(&s, &item, 1, None).unwrap_err();
+                assert!(err.contains("Soap"), "{err}");
+                let conn = Connection::open(&s.db_path).unwrap();
+                assert_eq!(stockroom::quantity_of(&conn, &s.branch_id, &item).unwrap(), 0.0, "nothing was taken by the refused sale");
+                let unpaid: i64 = conn.query_row("SELECT COUNT(*) FROM orders WHERE status != 'PAID'", [], |r| r.get(0)).unwrap();
+                assert_eq!(unpaid, 1, "the refused sale stays an open order, not a paid one");
+                let payments: i64 = conn.query_row("SELECT COUNT(*) FROM payments", [], |r| r.get(0)).unwrap();
+                assert_eq!(payments, 1, "and no payment was kept for it");
+                // The default is to keep selling: with the switch off the same sale goes through and the stock shows a minus.
+                stockroom::save_settings(&conn, &s.tenant_id, &RetailSettings::default()).unwrap();
+                drop(conn);
+                sell(&s, &item, 1, None).unwrap();
+                let conn = Connection::open(&s.db_path).unwrap();
+                assert_eq!(stockroom::quantity_of(&conn, &s.branch_id, &item).unwrap(), -1.0);
+                let _ = fs::remove_dir_all(s.db_path.parent().unwrap());
+            }
+
+            #[test]
+            fn returned_goods_go_back_on_the_shelf_and_receiving_updates_cost_and_stock() {
+                let s = setup("shop_return");
+                let item = {
+                    let conn = Connection::open(&s.db_path).unwrap();
+                    stockroom::import_products(&conn, &s.tenant_id, &s.branch_id, &[row(2, "Soap", Some("7001"), 800, Some(500), None, Some(10.0), None, None)], &s.cashier_id, "2026-11-04T10:00:00Z").unwrap();
+                    conn.query_row::<String, _, _>("SELECT id FROM menu_items WHERE name = 'Soap'", [], |r| r.get(0)).unwrap()
+                };
+                let order = sell(&s, &item, 4, None).unwrap();
+                let conn = Connection::open(&s.db_path).unwrap();
+                assert_eq!(stockroom::quantity_of(&conn, &s.branch_id, &item).unwrap(), 6.0);
+                let line: String = conn.query_row("SELECT id FROM order_items WHERE order_id = ?1", params![order], |r| r.get(0)).unwrap();
+                let shift_id: String = conn.query_row("SELECT id FROM shifts WHERE closed_at IS NULL", [], |r| r.get(0)).unwrap();
+                let scope = crate::security::Scope::Branch { tenant_id: s.tenant_id.clone(), branch_id: s.branch_id.clone() };
+                let out = Repo::new(&conn)
+                    .refund_order(&scope, &order, &s.cashier_id, Some("اختبار"), Some(&[crate::order_history::RefundLineInput { order_item_id: line, quantity: 1 }]), Some(&shift_id), false)
+                    .unwrap();
+                assert_eq!(stockroom::quantity_of(&conn, &s.branch_id, &item).unwrap(), 6.0, "a refund alone does not touch the shelf");
+                assert_eq!(stockroom::restock_for_refund(&conn, &s.tenant_id, &s.branch_id, &out.refund_id, &s.cashier_id, "2026-11-04T12:00:00Z").unwrap(), 1);
+                assert_eq!(stockroom::quantity_of(&conn, &s.branch_id, &item).unwrap(), 7.0, "the returned piece is back");
+
+                let r = stockroom::receive(&conn, &s.tenant_id, &s.branch_id, &[ReceiveLine { menu_item_id: item.clone(), quantity: 12.0, cost_cents: Some(520) }], Some("فاتورة المورد"), &s.cashier_id, "2026-11-04T13:00:00Z").unwrap();
+                assert_eq!(r.pieces, 12.0);
+                assert_eq!(stockroom::quantity_of(&conn, &s.branch_id, &item).unwrap(), 19.0);
+                assert_eq!(conn.query_row::<i64, _, _>("SELECT cost_cents FROM menu_items WHERE id = ?1", params![item], |r| r.get(0)).unwrap(), 520, "the delivery's cost becomes the cost price, so margins stay right");
+                let _ = fs::remove_dir_all(s.db_path.parent().unwrap());
             }
         }
 
@@ -7441,6 +7632,7 @@ mod tests {
         migrate_v3::run_order_item_cost_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_payroll_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_payroll_manager_access_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_stockroom_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("matrix", &conn);
@@ -8116,6 +8308,7 @@ mod tests {
             "list_attendance_v3",
             "list_fingerprint_enrolments_v3", "enrol_fingerprint_v3", "delete_fingerprint_enrolment_v3",
             "list_punches_v3", "get_attendance_settings_v3", "set_attendance_settings_v3",
+            "list_product_stock_v3", "set_product_tracking_v3", "adjust_product_stock_v3", "count_product_stock_v3", "receive_products_v3", "list_product_stock_log_v3", "import_products_v3", "list_product_barcodes_v3", "add_product_barcode_v3", "delete_product_barcode_v3", "generate_product_barcode_v3", "get_retail_settings_v3", "save_retail_settings_v3",
             "get_payroll_access_v3", "get_payroll_settings_v3", "save_payroll_settings_v3", "list_payroll_employees_v3", "save_payroll_employee_v3",
             "payroll_month_v3", "get_payslip_v3", "approve_payslip_v3", "pay_payslip_v3",
             "reopen_payslip_v3", "add_payroll_adjustment_v3", "delete_payroll_adjustment_v3", "add_payroll_advance_v3",

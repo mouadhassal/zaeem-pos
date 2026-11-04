@@ -103,6 +103,8 @@ export function refundOrder(
   reason: string,
   lines: { order_item_id: string; quantity: number }[] | null,
   managerOverridePin?: string,
+  /** Shop goods that are fine go back on the shelf (only products whose stock is tracked). */
+  restock = false,
 ): Promise<RefundOutcome> {
   return invoke<RefundOutcome>("refund_order_v3", {
     sessionToken: token(),
@@ -110,6 +112,7 @@ export function refundOrder(
     reason,
     lines,
     managerOverridePin: managerOverridePin ?? null,
+    restock,
   });
 }
 

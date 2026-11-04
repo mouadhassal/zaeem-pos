@@ -33,6 +33,12 @@ export interface MenuItem {
   item_kind: string;
   /** 'weight': price_cents is the price of one kilogram and the till asks for a weight or an amount (lib/weight.ts). */
   sold_by: "unit" | "weight";
+  /** The product keeps its own stock (shops): the figures are for this till's branch. */
+  track_stock: boolean;
+  stock_quantity: number | null;
+  stock_min: number | null;
+  /** More barcodes than the main one: a carton code adds several pieces per scan. */
+  extra_barcodes: { barcode: string; units: number }[];
   /** >0 when a happy-hour rule for this item is active right now (see happyHourStore.getActiveHappyHourDiscount). */
   happyHourDiscountPercent: number;
   /** price_cents with the active happy-hour discount already applied -- this, not price_cents, is what the cashier should charge/see right now. */
@@ -81,6 +87,7 @@ export const useMenuStore = create<MenuState>((set) => ({
           id: string; name: string; price_cents: number; category_id: string; image_path: string | null;
           is_combo: number; combo_original_price_cents: number | null; combo_description: string | null;
           barcode: string | null; is_active: number; item_kind: string; sold_by?: string;
+          track_stock?: number; stock_quantity?: number | null; stock_min?: number | null; extra_barcodes?: { id: string; barcode: string; units: number }[];
         }[]>("list_menu_items_v3", { sessionToken: token }),
         // The offers built in Menu Management (combo_meals bundles + happy-hour
         // rules) used to be fetched only by menu/page.tsx's admin screen --
@@ -152,6 +159,10 @@ export const useMenuStore = create<MenuState>((set) => ({
           barcode: item.barcode,
           item_kind: item.item_kind,
           sold_by: item.sold_by === "weight" ? "weight" : "unit",
+          track_stock: item.track_stock === 1,
+          stock_quantity: item.stock_quantity ?? null,
+          stock_min: item.stock_min ?? null,
+          extra_barcodes: (item.extra_barcodes ?? []).map((b) => ({ barcode: b.barcode, units: b.units })),
           happyHourDiscountPercent,
           effectivePriceCents: happyHourDiscountPercent > 0 && item.sold_by !== "weight"
             ? Math.round(item.price_cents * (1 - happyHourDiscountPercent / 100))

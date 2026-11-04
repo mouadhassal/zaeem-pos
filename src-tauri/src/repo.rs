@@ -18,6 +18,8 @@ use std::fmt;
 #[derive(Debug)]
 pub enum RepoError {
     Db(rusqlite::Error),
+    /// Shop stock refused something (the owner chose not to sell what the stock cannot cover); the text is shown as is.
+    Stock(String),
     UnscopedRows { table: String, column: String, count: i64 },
     ItemUnavailable { item_id: String, branch_id: String, reason: String },
     OrderOutOfScope { order_id: String },
@@ -206,6 +208,7 @@ impl fmt::Display for RepoError {
             Self::ShiftAlreadyClosed { shift_id } => write!(f, "shift {shift_id} is already closed -- refusing to overwrite its reconciliation numbers"),
             Self::InvalidLoyaltyPoints { points } => write!(f, "points must be positive, got {points}"),
             Self::OrderNotRefundable { order_id: _, reason } => write!(f, "لا يمكن الاسترداد: {reason}"),
+            Self::Stock(message) => write!(f, "{message}"),
             Self::OrderItemAlreadyVoided { item_id } => write!(f, "order item {item_id} is already voided"),
             Self::StockAdjustmentBelowZero { ingredient_id, current_stock, change_amount } => write!(
                 f, "ingredient {ingredient_id} has {current_stock} in stock -- a change of {change_amount} would drive it below zero"
@@ -712,6 +715,12 @@ pub struct MenuItemRow {
     pub attributes: Option<String>,
     /// 'unit' (a piece, the default) or 'weight' (`price_cents` is the price of one kilogram).
     pub sold_by: String,
+    /// The product keeps its own stock (shops). The figures below are for this till's branch.
+    pub track_stock: i64,
+    pub stock_quantity: Option<f64>,
+    pub stock_min: Option<f64>,
+    /// More barcodes than the main one (a carton code adds several pieces per scan).
+    pub extra_barcodes: Vec<crate::stockroom::ExtraBarcode>,
 }
 
 /// `menuStore.ts`'s combo-component lookup. NOTE: this mirrors an existing
@@ -835,10 +844,16 @@ pub struct ChainConfigRow {
 /// only real behavior); `false`/`false` is a coffee counter or simple
 /// retail shop; the other two combinations cover a takeaway-only kitchen
 /// or a seated place that cooks nothing to order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct BusinessMode {
     pub has_tables: bool,
     pub has_kitchen: bool,
+    /// Shop settings the till needs to read a scale's barcode and to warn about stock (see `stockroom::RetailSettings`).
+    pub scale_prefix: String,
+    pub scale_plu_digits: i64,
+    pub scale_value_digits: i64,
+    pub scale_value_kind: String,
+    pub block_sale_when_empty: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1526,6 +1541,8 @@ impl<'a> Repo<'a> {
         //     failed deduction fails the whole payment rather than leaving
         //     an order marked PAID with stock never touched.
         self.deplete_recipe_stock(tenant_id, branch_id, &input.order_id, &input.actor_id, &now)?;
+        // 2c. Shop stock: tracked products on the order go down (and the owner may have chosen to refuse a sale the stock cannot cover).
+        crate::stockroom::deduct_for_order(self.conn, tenant_id, branch_id, &input.order_id, &input.actor_id, &now).map_err(RepoError::Stock)?;
 
         // 3. Table -> FREE, unconditionally releasing whichever table this
         //    order was occupying (there is exactly one, by `current_order_id`).
@@ -2973,8 +2990,16 @@ impl<'a> Repo<'a> {
         self.conn.query_row(
             "SELECT has_tables, has_kitchen FROM chain_config WHERE tenant_id = ?1",
             params![tenant_id],
-            |r| Ok(BusinessMode { has_tables: r.get::<_, i64>(0)? != 0, has_kitchen: r.get::<_, i64>(1)? != 0 }),
-        ).map_err(RepoError::from)
+            |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, i64>(1)? != 0)),
+        )
+        .map(|(has_tables, has_kitchen)| {
+            let s = crate::stockroom::load_settings(self.conn, tenant_id).unwrap_or_default();
+            BusinessMode {
+                has_tables, has_kitchen, scale_prefix: s.scale_prefix, scale_plu_digits: s.scale_plu_digits,
+                scale_value_digits: s.scale_value_digits, scale_value_kind: s.scale_value_kind, block_sale_when_empty: s.block_sale_when_empty,
+            }
+        })
+        .map_err(RepoError::from)
     }
 
     pub fn update_business_mode(&self, tenant_id: &str, has_tables: bool, has_kitchen: bool) -> Result<(), RepoError> {
@@ -3799,7 +3824,7 @@ impl<'a> Repo<'a> {
         self.assert_scope_populated("menu_items", false)?;
         let mut stmt = self.conn.prepare(
             "SELECT id, name, price_cents, cost_cents, category_id, image_path, description, barcode, is_active, \
-                    is_combo, combo_original_price_cents, combo_description, item_kind, attributes, sold_by \
+                    is_combo, combo_original_price_cents, combo_description, item_kind, attributes, sold_by, track_stock \
              FROM menu_items WHERE tenant_id = ?1 ORDER BY name ASC",
         )?;
         let rows = stmt.query_map(params![tenant_id], |r| {
@@ -3808,6 +3833,7 @@ impl<'a> Repo<'a> {
                 image_path: r.get(5)?, description: r.get(6)?, barcode: r.get(7)?, is_active: r.get(8)?,
                 is_combo: r.get(9)?, combo_original_price_cents: r.get(10)?, combo_description: r.get(11)?,
                 item_kind: r.get(12)?, attributes: r.get(13)?, sold_by: r.get(14)?,
+                track_stock: r.get(15)?, stock_quantity: None, stock_min: None, extra_barcodes: Vec::new(),
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
@@ -6167,6 +6193,7 @@ impl<'a> Repo<'a> {
         ).map_err(RepoError::from)?;
 
         self.deplete_recipe_stock(tenant_id, branch_id, order_id, actor_id, &now)?;
+        crate::stockroom::deduct_for_order(self.conn, tenant_id, branch_id, order_id, actor_id, &now).map_err(RepoError::Stock)?;
 
         self.conn.execute(
             "UPDATE tables SET status = 'FREE', current_order_id = NULL, last_modified = ?1, sync_status = 'pending' WHERE current_order_id = ?2",
@@ -6446,6 +6473,7 @@ mod tests {
         migrate_v3::run_order_item_cost_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_payroll_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_payroll_manager_access_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_stockroom_migration(&mut conn, &db_path).unwrap();
         db_path
     }
 

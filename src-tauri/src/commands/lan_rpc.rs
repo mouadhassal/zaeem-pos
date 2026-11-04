@@ -555,7 +555,8 @@ pub fn dispatch_lan_rpc(
             let reason: Option<String> = lan_arg(&args, "reason")?;
             let lines: Option<Vec<crate::order_history::RefundLineInput>> = lan_arg(&args, "lines")?;
             let manager_override_pin: Option<String> = lan_arg(&args, "managerOverridePin")?;
-            let r = refund_order_v3_impl(db, license, session_token, order_id, reason, lines, manager_override_pin)?;
+            let restock: Option<bool> = lan_arg(&args, "restock")?;
+            let r = refund_order_v3_impl(db, license, session_token, order_id, reason, lines, manager_override_pin, restock)?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
         "list_pickup_orders_v3" => {

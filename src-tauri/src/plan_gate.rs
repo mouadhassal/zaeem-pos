@@ -48,6 +48,8 @@ pub const FULL_ONLY_COMMANDS: &[&str] = &[
     "fingerprint_status_v3", "list_fingerprint_enrolments_v3", "enrol_fingerprint_v3", "delete_fingerprint_enrolment_v3",
     "fingerprint_punch_v3", "list_punches_v3", "get_attendance_settings_v3", "set_attendance_settings_v3", "list_roster_entries_v3", "create_roster_entry_v3",
     "update_roster_entry_v3", "delete_roster_entry_v3",
+    // shop stock (the till, menu and barcode import stay open on Lite)
+    "list_product_stock_v3", "set_product_tracking_v3", "adjust_product_stock_v3", "count_product_stock_v3", "receive_products_v3", "list_product_stock_log_v3",
     // payroll
     "get_payroll_access_v3", "get_payroll_settings_v3", "save_payroll_settings_v3", "list_payroll_employees_v3", "save_payroll_employee_v3",
     "payroll_month_v3", "get_payslip_v3", "approve_payslip_v3", "pay_payslip_v3",

@@ -11,7 +11,7 @@ import {
   IconLogout as LogOut,
   IconCashRegister, IconToolsKitchen2, IconClipboardList, IconBox,
   IconChartBar, IconUsers, IconClock, IconReceipt2, IconWallet,
-  IconBuilding, IconCoin, IconReportMoney, IconGift, IconRobot, IconWand,
+  IconBuilding, IconCoin, IconReportMoney, IconBarcode, IconGift, IconRobot, IconWand,
   IconSettings, IconBook, IconTool, IconLayoutDashboard, IconShoppingCart, IconCalendar, IconTruckDelivery, IconHistory,
   type Icon,
 } from "@tabler/icons-react";
@@ -34,6 +34,7 @@ const ICON_BY_ID: Record<string, Icon> = {
   branches: IconBuilding,
   finance: IconCoin,
   payroll: IconReportMoney,
+  stockroom: IconBarcode,
   loyalty: IconGift,
   ai: IconRobot,
   "ai-onboarding": IconWand,

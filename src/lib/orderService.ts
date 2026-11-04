@@ -110,6 +110,12 @@ export async function listTables(): Promise<TableInfo[]> {
 export interface BusinessMode {
   has_tables: boolean;
   has_kitchen: boolean;
+  /** Shop settings the till reads a scale's barcode with (see lib/shop.ts). Absent on an older backend. */
+  scale_prefix?: string;
+  scale_plu_digits?: number;
+  scale_value_digits?: number;
+  scale_value_kind?: "WEIGHT_G" | "PRICE";
+  block_sale_when_empty?: boolean;
 }
 
 // 2026-08-03 "next phase" (see nextphase.md §2): both default true, so an

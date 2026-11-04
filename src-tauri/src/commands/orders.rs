@@ -1517,6 +1517,7 @@ pub(crate) fn finalize_order_with_payment_v3_impl(
 /// after the sale closed, never mid-service). A manager refunds on their
 /// own; a cashier needs a manager PIN. A reason is always required. Cash
 /// leaves the refunder's open shift drawer. Rules: `Repo::refund_order`.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn refund_order_v3(
     state: State<Db>,
@@ -1526,10 +1527,12 @@ pub fn refund_order_v3(
     reason: Option<String>,
     lines: Option<Vec<crate::order_history::RefundLineInput>>,
     manager_override_pin: Option<String>,
+    restock: Option<bool>,
 ) -> Result<crate::repo::RefundOutcome, String> {
-    refund_order_v3_impl(&state, &license, session_token, order_id, reason, lines, manager_override_pin)
+    refund_order_v3_impl(&state, &license, session_token, order_id, reason, lines, manager_override_pin, restock)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn refund_order_v3_impl(
     state: &Db,
     license: &crate::license::cloud::CloudLicenseState,
@@ -1538,6 +1541,7 @@ pub(crate) fn refund_order_v3_impl(
     reason: Option<String>,
     lines: Option<Vec<crate::order_history::RefundLineInput>>,
     manager_override_pin: Option<String>,
+    restock: Option<bool>,
 ) -> Result<crate::repo::RefundOutcome, String> {
     let actor = authenticate_actor(state, &session_token)?;
     require_license_not_locked(license)?;
@@ -1576,6 +1580,10 @@ pub(crate) fn refund_order_v3_impl(
     let (tenant_id, branch_id): (String, String) = tx
         .query_row("SELECT tenant_id, branch_id FROM orders WHERE id = ?1", params![order_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(|e| e.to_string())?;
+    // Shop goods the cashier chose to return to the shelf go back into stock.
+    if restock == Some(true) {
+        crate::stockroom::restock_for_refund(&tx, &tenant_id, &branch_id, &outcome.refund_id, &actor.id, &chrono::Utc::now().to_rfc3339())?;
+    }
     sync_enqueue_order(&tx, &tenant_id, &branch_id, &order_id, &actor.device_id, &license.cached_status())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(outcome)

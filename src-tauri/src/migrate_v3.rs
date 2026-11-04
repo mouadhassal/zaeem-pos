@@ -3054,6 +3054,32 @@ pub fn run_payroll_manager_access_migration(conn: &mut Connection, _db_path: &Pa
     Ok(())
 }
 
+pub const MIGRATION_AM_VERSION: i64 = 45;
+
+/// Migration AM (2026-11-04): shop stock. `menu_items.track_stock` (a product keeps its own stock),
+/// `product_stock` per branch, `product_stock_log` (every movement with its balance), extra barcodes
+/// per product, and the shop settings (scale barcodes, refuse sales the stock cannot cover). All
+/// additive; nothing tracks stock until someone turns it on. See `stockroom.rs`.
+pub fn run_stockroom_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AM_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    add_column_if_missing(&tx, "menu_items", "track_stock", "INTEGER NOT NULL DEFAULT 0")?;
+    tx.execute_batch(crate::stockroom::SCHEMA_SQL)?;
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AM_VERSION, "0045_stockroom", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

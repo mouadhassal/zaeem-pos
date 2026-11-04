@@ -121,6 +121,15 @@ pub(crate) fn list_menu_items_v3_impl(state: &Db, session_token: String) -> Resu
     let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let mut items = Repo::new(&conn).list_menu_items(&actor.tenant_id).map_err(|e| e.to_string())?;
+    // Shop stock for this till's branch (a signed-in branch role, else the business's only branch) and extra barcodes.
+    let stock_branch: Option<String> = match actor.branch_id.clone() {
+        Some(b) => Some(b),
+        None => {
+            let branches = Repo::new(&conn).list_branches(&actor.tenant_id).map_err(|e| e.to_string())?;
+            if branches.len() == 1 { Some(branches[0].0.clone()) } else { None }
+        }
+    };
+    crate::stockroom::attach_flags(&conn, &actor.tenant_id, stock_branch.as_deref(), &mut items)?;
     // P0 fix (2026-07-18): this used to resolve EVERY item's photo to a
     // full base64 data: URI right here, inside the SAME state.0.lock()
     // guard every one of the app's ~141 other commands also needs for any

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, lazy, Suspense } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef, lazy, Suspense } from "react";
 import { invoke } from "../../lib/invoke";
 import { printableShopName } from "../../lib/shopName";
 import { realErrorText, isNoOpenShiftError } from "../../lib/errors";
@@ -43,6 +43,8 @@ import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
 import { editOrderItem, setOrderItemComp, printKitchenChange, createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, retrieveOpenOrder, addItemsToOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, lookupLoyaltyCard, listActiveLoyaltyRewards, redeemLoyaltyReward, getBusinessMode, listPendingOrdersForTable } from "../../lib/orderService";
 import type { LoyaltyRewardOption } from "../../lib/orderService";
 import { enableBarcodeScanner, disableBarcodeScanner } from "../../lib/barcodeScanner";
+import { NO_SHOP_SETTINGS, resolveScan, stockWarning, type ShopSettings } from "../../lib/shop";
+import { formatWeight } from "../../lib/weight";
 import { retryPrintQueue, printReceipt } from "../../lib/printer";
 import type { ReceiptData, ReceiptItem } from "../../lib/printer";
 import type { SplitItem, CartItem } from "../../stores/cartStore";
@@ -334,6 +336,23 @@ export default function POSPage() {
     if (!openOrderId) setCollectingPickup(false);
   }, [openOrderId]);
 
+  // Shop settings (a scale's barcode layout, refusing sales the stock cannot cover): the scan handler below is
+  // registered once, so it reads them through a ref.
+  const shopSettings = useRef<ShopSettings>(NO_SHOP_SETTINGS);
+  useEffect(() => {
+    getBusinessMode()
+      .then((m) => {
+        shopSettings.current = {
+          scale_prefix: m.scale_prefix ?? "",
+          scale_plu_digits: m.scale_plu_digits ?? NO_SHOP_SETTINGS.scale_plu_digits,
+          scale_value_digits: m.scale_value_digits ?? NO_SHOP_SETTINGS.scale_value_digits,
+          scale_value_kind: m.scale_value_kind ?? "WEIGHT_G",
+          block_sale_when_empty: m.block_sale_when_empty ?? false,
+        };
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     fetchTables();
     activateDelayedOrders();
@@ -363,20 +382,45 @@ export default function POSPage() {
     };
     const handleBarcodeScanned = (e: Event) => {
       const code = (e as CustomEvent).detail as string;
-      const match = useMenuStore.getState().menuItems.find((i) => i.barcode === code);
-      if (match) {
+      const items = useMenuStore.getState().menuItems;
+      // A product's own barcode (main or extra: a carton adds several pieces), else a scale's label (weight or price inside).
+      const scan = resolveScan(items, code, shopSettings.current);
+      if (scan.kind !== "none") {
+        const match = scan.item;
         const cat = useMenuStore.getState().categories.find((c) => c.id === match.category_id);
-        addItem({
-          menuItemId: match.id,
-          name: match.name,
-          categoryName: cat?.name || "",
-          quantity: 1,
-          unitPriceCents: match.price_cents,
-          notes: "",
-          modifiers: [],
-        });
-        setSuccessMsg(`تمت إضافة ${match.name} ✓`);
-        setTimeout(() => setSuccessMsg(null), 2000);
+        if (scan.kind === "weighed") {
+          addItem({
+            menuItemId: match.id,
+            name: `${match.name} — ${formatWeight(scan.grams)}`,
+            categoryName: cat?.name || "",
+            quantity: 1,
+            unitPriceCents: scan.lineCents,
+            notes: "",
+            modifiers: [],
+            weightGrams: scan.grams,
+            pricePerKgCents: match.price_cents,
+            ...(scan.exactAmountCents ? { exactAmountCents: scan.exactAmountCents } : {}),
+          });
+          setSuccessMsg(`تمت إضافة ${match.name} — ${formatWeight(scan.grams)} ✓`);
+        } else {
+          addItem({
+            menuItemId: match.id,
+            name: match.name,
+            categoryName: cat?.name || "",
+            quantity: scan.units,
+            unitPriceCents: match.price_cents,
+            notes: "",
+            modifiers: [],
+          });
+          setSuccessMsg(scan.units > 1 ? `تمت إضافة ${match.name} × ${scan.units} ✓` : `تمت إضافة ${match.name} ✓`);
+        }
+        const warning = stockWarning(scan, shopSettings.current);
+        if (warning) {
+          setSuccessMsg(`⚠️ ${warning}`);
+          setTimeout(() => setSuccessMsg(null), 5000);
+        } else {
+          setTimeout(() => setSuccessMsg(null), 2000);
+        }
       } else {
         setSuccessMsg("لم يتم العثور على صنف بهذا الباركود");
         setTimeout(() => setSuccessMsg(null), 2500);

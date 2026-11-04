@@ -28,4 +28,5 @@ pub mod delivery;
 pub mod pickup;
 pub mod fingerprint;
 pub mod payroll;
+pub mod stockroom;
 pub mod order_history;

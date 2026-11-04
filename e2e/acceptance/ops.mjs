@@ -1034,6 +1034,139 @@ try {
     ok(Array.isArray(insights) && insights.every((i) => i.text && i.question && ["up", "down", "warn", "info"].includes(i.kind)), `insights are well-formed: ${JSON.stringify(insights).slice(0, 200)}`);
   });
 
+  // Shop stock end to end in the real app: a product list pasted from a spreadsheet, scanned barcodes (a main
+  // one, a carton's, a deli scale's label) selling at the till, the sale lowering the stock, goods received by
+  // scanning, and a shelf count.
+  await step("shop", "shop: spreadsheet import, scan to sell (carton + scale label), stock follows sales, receive by scan, count", async () => {
+    await b.setWindowSize(1366, 768);
+    await b.refresh();
+    await byId("sidebar", 30000);
+    const setText = (testid, text) => b.execute((id, t) => {
+      const el = document.querySelector(`[data-testid="${id}"]`);
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, t);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }, testid, text);
+    // what a barcode scanner does: types the digits fast and presses Enter, with no field focused
+    const scan = async (code) => {
+      await b.execute(() => document.activeElement?.blur?.());
+      await b.execute((c) => {
+        for (const ch of c) window.dispatchEvent(new KeyboardEvent("keydown", { key: ch, bubbles: true }));
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      }, code);
+      await pause(250);
+    };
+    const eanLabel = (plu, value) => {
+      const body = `2${plu}${value}`;
+      let sum = 0;
+      for (let i = 0; i < 12; i++) sum += Number(body[i]) * (i % 2 === 0 ? 1 : 3);
+      return body + String((10 - (sum % 10)) % 10);
+    };
+    const stockOf = async (name) => (await call("list_product_stock_v3", { includeUntracked: true })).find((r) => r.name === name);
+
+    // 1) import from pasted spreadsheet cells
+    await nav("stockroom");
+    await byId("stockroom-page");
+    await clickId("stockroom-tab-import");
+    await setText("import-text", [
+      "اسم الصنف\tالباركود\tسعر البيع\tالتكلفة\tالفئة\tالكمية\tالحد الأدنى\tطريقة البيع",
+      "بسكويت\t6001\t1500\t1000\tحلويات\t24\t6\tقطعة",
+      "جبنة\t000123\t90000\t60000\tألبان\t3.5\t1\tوزن",
+      "شاي\t6003\t12000\t\tمشروبات\t\t\t",
+      "\t6004\t100\t\t\t\t\t",
+    ].join("\n"));
+    await byId("import-preview");
+    const count = await textOf("import-count");
+    ok(count.includes("3 صنف") && count.includes("1 سطر فيه خطأ"), `the preview counts the good rows and the bad one: ${count}`);
+    ok((await textOf("import-problems")).includes("السطر 5"), "the bad line is named with its number");
+    console.log("  shot:", await reg.shot("stockroom-import-preview"));
+    await clickId("import-run");
+    await byId("import-result");
+    ok((await textOf("import-result")).includes("3 جديد"), `imported: ${await textOf("import-result")}`);
+    const tracked = (await call("list_product_stock_v3", {})).map((r) => `${r.name}:${r.quantity}`).sort();
+    eq(tracked, ["بسكويت:24", "جبنة:3.5"], "only products with a quantity are tracked");
+
+    // 2) a carton barcode, added in the product's dialog
+    await reg.click(/عرض المخزون/);
+    await byId("stock-tab");
+    const biscuits = await stockOf("بسكويت");
+    await clickId(`stock-settings-${biscuits.menu_item_id}`);
+    await (await byId("extra-code")).setValue("CARTON-12");
+    await (await byId("extra-units")).setValue("12");
+    await clickId("extra-add");
+    await until(async () => (await call("list_product_barcodes_v3", { itemId: biscuits.menu_item_id })).length === 1, "the carton barcode is saved");
+    await recover();
+    await b.keys("Escape");
+
+    // 3) a deli scale's labels are read: prefix 2, 6 digits of item code, 5 of weight in grams
+    await call("save_retail_settings_v3", { settings: { scale_prefix: "2", scale_plu_digits: 6, scale_value_digits: 5, scale_value_kind: "WEIGHT_G", block_sale_when_empty: false } });
+    await b.refresh();
+    await byId("sidebar", 30000);
+
+    // 4) the till: scan a biscuit, a carton, a cheese label
+    await call("open_shift_v3", { startingCashCents: 0, branchId: null }).catch(() => {});
+    await nav("pos");
+    await clickId("order-type-TAKEAWAY");
+    await pause(500);
+    await scan("6001");
+    await until(async () => (await reg.text()).includes("تمت إضافة بسكويت"), "a main barcode adds the product");
+    await scan("CARTON-12");
+    await until(async () => (await reg.text()).includes("× 12"), "a carton barcode adds 12 pieces");
+    await scan(eanLabel("000123", "00750"));
+    await until(async () => (await reg.text()).includes("جبنة — 750 غ"), "a scale label adds the cheese at its weight");
+    await scan("no-such-code");
+    await until(async () => (await reg.text()).includes("لم يتم العثور"), "an unknown code says so");
+    // 13 biscuits (19,500) + 750 g of cheese at 90,000/kg (67,500)
+    ok((await reg.text()).includes("87,000"), "the bill is 13 x 1,500 + 750 g of cheese = 87,000");
+    console.log("  shot:", await reg.shot("shop-cart"));
+    const receiptsBefore = jobs("receipt").length;
+    ok(await b.execute(() => { const x = [...document.querySelectorAll("button")].find((e) => e.offsetParent !== null && e.innerText.trim() === "دفع"); x?.click(); return !!x; }), "pay button");
+    await byId("pay-exact");
+    await clickId("pay-exact");
+    await reg.click(/تأكيد وطباعة/);
+    await until(async () => jobs("receipt").length > receiptsBefore, "the sale printed its receipt", 20000);
+
+    // 5) the sale lowered the shelf
+    await until(async () => (await stockOf("بسكويت")).quantity === 11, "24 - 13 biscuits = 11", 20000);
+    eq((await stockOf("جبنة")).quantity, 2.75, "3.5 kg - 750 g = 2.75 kg");
+    eq((await stockOf("شاي")).track_stock, false, "an untracked product keeps no stock");
+
+    // 6) receive goods by scanning: two scans of the tea = 2 pieces, tracking starts
+    await nav("stockroom");
+    await clickId("stockroom-tab-receive");
+    const code = await byId("receive-code");
+    await code.setValue("6003");
+    await b.keys("Enter");
+    await code.setValue("6003");
+    await b.keys("Enter");
+    const tea = (await call("list_menu_items_v3")).find((i) => i.name === "شاي");
+    await until(async () => (await b.$(`[data-testid="receive-qty-${tea.id}"]`)).isExisting(), "the scanned product is a line");
+    eq(await (await byId(`receive-qty-${tea.id}`)).getValue(), "2", "each scan counts up");
+    await clickId("receive-confirm");
+    await until(async () => (await stockOf("شاي")).quantity === 2, "received: tea tracked at 2", 15000);
+
+    // 7) a shelf count sets the quantity and logs the difference
+    await byId("stock-tab");
+    const cheese = await stockOf("جبنة");
+    await clickId(`stock-count-${cheese.menu_item_id}`);
+    await (await byId("count-input")).setValue("2.5");
+    await clickId("count-save");
+    await until(async () => (await stockOf("جبنة")).quantity === 2.5, "the count set 2.5 kg", 15000);
+    const log = await call("list_product_stock_log_v3", { itemId: cheese.menu_item_id });
+    ok(log.some((l) => l.reason === "COUNT" && Math.abs(l.change + 0.25) < 1e-9 && l.balance_after === 2.5), `the count's difference is in the log: ${JSON.stringify(log.map((l) => [l.reason, l.change])).slice(0, 200)}`);
+    ok(log.some((l) => l.reason === "SALE" && l.balance_after === 2.75), "and the earlier sale");
+    console.log("  shot:", await reg.shot("stockroom-stock"));
+
+    // 8) low-stock alert: raise the biscuits' alert level above what is left
+    await call("set_product_tracking_v3", { itemId: biscuits.menu_item_id, track: true, minQuantity: 20, openingQuantity: null });
+    const low = await call("list_product_stock_v3", { onlyLow: true });
+    ok(low.some((r) => r.name === "بسكويت" && r.low), "the biscuits are now flagged as running low");
+
+    // 9) Lite refuses the stock screens' commands but keeps selling (see the lite step); here the barcode data reaches the till's menu list
+    const menu = (await call("list_menu_items_v3")).find((i) => i.id === biscuits.menu_item_id);
+    eq([menu.track_stock, menu.stock_quantity, menu.extra_barcodes.length], [1, 11, 1], "the till's menu list carries stock and the carton barcode");
+  });
+
   // The updater. It used to test `window.__TAURI__` (absent in Tauri 2 here), so it returned early on every
   // till: no update check ever ran and the Settings button said "preview mode". Two modes:
   //  * a normal build (current version, nothing newer published): the Settings button must reach the update
@@ -1311,7 +1444,7 @@ try {
     for (const id of ["pos", "shift", "orders", "delivery", "customers", "menu", "staff", "settings"]) ok(lite.includes(id), `${id} missing from the Lite sidebar`);
 
     // the backend refuses Full-only commands, whatever the screen shows
-    for (const cmd of ["get_sales_report_v3", "get_dashboard_summary_v3", "list_debtors_v3", "list_ingredients_v3", "list_loyalty_cards_v3", "ask_assistant_v3", "list_branches_full_v3", "list_attendance_v3", "list_punches_v3", "fingerprint_status_v3", "assistant_insights_v3", "get_profit_trend_v3", "get_payroll_settings_v3", "payroll_month_v3", "add_manual_punch_v3"]) {
+    for (const cmd of ["get_sales_report_v3", "get_dashboard_summary_v3", "list_debtors_v3", "list_ingredients_v3", "list_loyalty_cards_v3", "ask_assistant_v3", "list_branches_full_v3", "list_attendance_v3", "list_punches_v3", "fingerprint_status_v3", "assistant_insights_v3", "get_profit_trend_v3", "get_payroll_settings_v3", "payroll_month_v3", "add_manual_punch_v3", "list_product_stock_v3", "receive_products_v3"]) {
       const err = await call(cmd).then(() => "", (e) => String(e.message));
       ok(err.includes("POS Lite"), `${cmd} must be refused on Lite, got: ${err.slice(0, 120) || "ok"}`);
     }

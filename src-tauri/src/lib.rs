@@ -38,6 +38,7 @@ mod weighing;
 mod attendance;
 mod profit;
 mod payroll;
+mod stockroom;
 
 // Only the debug-build staff seeding (seed_default_staff) hashes PINs here.
 #[cfg(debug_assertions)]
@@ -119,6 +120,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_order_item_cost_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_payroll_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_payroll_manager_access_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_stockroom_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -579,6 +581,19 @@ pub fn run() {
             commands::fingerprint::list_punches_v3,
             commands::fingerprint::get_attendance_settings_v3,
             commands::fingerprint::set_attendance_settings_v3,
+            commands::stockroom::list_product_stock_v3,
+            commands::stockroom::set_product_tracking_v3,
+            commands::stockroom::adjust_product_stock_v3,
+            commands::stockroom::count_product_stock_v3,
+            commands::stockroom::receive_products_v3,
+            commands::stockroom::list_product_stock_log_v3,
+            commands::stockroom::import_products_v3,
+            commands::stockroom::list_product_barcodes_v3,
+            commands::stockroom::add_product_barcode_v3,
+            commands::stockroom::delete_product_barcode_v3,
+            commands::stockroom::generate_product_barcode_v3,
+            commands::stockroom::get_retail_settings_v3,
+            commands::stockroom::save_retail_settings_v3,
             commands::payroll::get_payroll_access_v3,
             commands::payroll::get_payroll_settings_v3,
             commands::payroll::save_payroll_settings_v3,
