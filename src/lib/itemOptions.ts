@@ -100,3 +100,24 @@ export function customModifiers(groups: readonly OptionGroup[], modifiers: reado
   const known = new Set(groups.flatMap((g) => g.choices.map((c) => c.name)));
   return modifiers.filter((m) => !known.has(m.name));
 }
+
+export type ChoiceKind = "without" | "with" | "other";
+
+/**
+ * Which side of the "without / with" table a choice belongs to, read from its name: "بدون بصل" is a
+ * without, "زيادة جبنة" / "إضافة جبنة" / "مع جبنة" is a with. Anything else stays in a plain list.
+ */
+export function choiceKind(name: string): ChoiceKind {
+  const t = name.trim();
+  if (t.startsWith("بدون")) return "without";
+  if (/^(زيادة|إضافة|اضافة|مع|extra|with)(\s|$)/i.test(t)) return "with";
+  return "other";
+}
+
+/** The part after the prefix, for the compact table ("بدون بصل" under Without shows just "بصل"). */
+export function choiceShortName(name: string): string {
+  const t = name.trim();
+  const kind = choiceKind(t);
+  if (kind === "other") return t;
+  return t.replace(/^(بدون|زيادة|إضافة|اضافة|مع|extra|with)\s*/i, "") || t;
+}

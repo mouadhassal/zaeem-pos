@@ -1,7 +1,7 @@
 // Setup presets on top of chain_config's has_tables/has_kitchen switches.
 import type { SidebarNavItem } from "./permissions";
 
-export type BusinessPreset = "restaurant" | "retail";
+export type BusinessPreset = "restaurant" | "retail" | "supplier";
 
 export interface ModeFlags {
   has_tables: boolean;
@@ -11,8 +11,10 @@ export interface ModeFlags {
 export const PRESETS: { id: BusinessPreset; label: string; hint: string }[] = [
   { id: "restaurant", label: "مطعم / مقهى", hint: "طاولات، تذاكر مطبخ، إضافات على الأصناف" },
   { id: "retail", label: "بقالة / متجر", hint: "باركود أولاً، دفع سريع، دفتر ديون — بدون طاولات أو شاشة مطبخ" },
+  { id: "supplier", label: "مورّد / جملة", hint: "مثل المتجر، ومخزونك مربوط بسوق WENZDES: طلبات عملائك تُخصم من الرف وما على الرف يظهر في السوق" },
 ];
 
+/** A supplier is a shop (no tables, no kitchen) that is also linked to the marketplace; the flags are the shop's. */
 export function presetToMode(preset: BusinessPreset): ModeFlags {
   return preset === "restaurant" ? { has_tables: true, has_kitchen: true } : { has_tables: false, has_kitchen: false };
 }

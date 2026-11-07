@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import { IconMinus, IconPlus, IconX } from "@tabler/icons-react";
 import { useCurrency } from "../../hooks/useCurrency";
-import { missingRequired, selectionToModifiers, toggleChoice, type Modifier, type OptionGroup, type Selection } from "../../lib/itemOptions";
+import { choiceKind, choiceShortName, missingRequired, selectionToModifiers, toggleChoice, type Modifier, type OptionGroup, type Selection } from "../../lib/itemOptions";
+import { usePrefsStore } from "../../stores/prefsStore";
 
 export interface PickerResult {
   modifiers: Modifier[];
@@ -57,6 +58,9 @@ export default function OptionPickerModal({
   const [customReason, setCustomReason] = useState("");
   const [pin, setPin] = useState("");
   const [showMissing, setShowMissing] = useState(false);
+  // "table" layout: which side of the Without / With table is open.
+  const layout = usePrefsStore((s) => s.optionsLayout);
+  const [openKind, setOpenKind] = useState<"without" | "with" | null>(null);
 
   const missing = useMemo(() => missingRequired(groups, selection), [groups, selection]);
   const modifiers = useMemo(() => selectionToModifiers(groups, selection), [groups, selection]);
@@ -98,7 +102,11 @@ export default function OptionPickerModal({
             </div>
           )}
 
-          {groups.map((g) => (
+          {layout === "table" && (
+            <WithoutWithTable groups={groups} selection={selection} openKind={openKind} onOpen={setOpenKind} onToggle={(g, id) => setSelection((s) => toggleChoice(g, s, id))} fmt={fmt} />
+          )}
+
+          {groups.map((g) => layout === "table" ? { ...g, choices: g.choices.filter((c) => choiceKind(c.name) === "other") } : g).filter((g) => g.choices.length > 0).map((g) => (
             <div key={g.id} className="space-y-2" data-testid="option-picker-group">
               <div className="flex items-center gap-2">
                 <span className="font-arabic text-sm font-bold text-ink-700">{g.name}</span>
@@ -201,6 +209,80 @@ export default function OptionPickerModal({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The options as a small table: two big buttons, "Without" and "With" (extra), and the one you tap opens
+ * its own choices ("without" -> onion, tomato; "with" -> cheese, sauce). The same picks and prices as the
+ * plain list, just not all on screen at once. Choices whose name does not start with without/with stay in the list.
+ */
+function WithoutWithTable({
+  groups, selection, openKind, onOpen, onToggle, fmt,
+}: {
+  groups: OptionGroup[];
+  selection: Selection;
+  openKind: "without" | "with" | null;
+  onOpen: (k: "without" | "with" | null) => void;
+  onToggle: (g: OptionGroup, choiceId: string) => void;
+  fmt: (cents: number) => string;
+}) {
+  const entries = groups.flatMap((g) => g.choices.map((c) => ({ g, c, kind: choiceKind(c.name) })));
+  const of = (k: "without" | "with") => entries.filter((e) => e.kind === k);
+  const picked = (k: "without" | "with") => of(k).filter((e) => (selection[e.g.id] ?? []).includes(e.c.id));
+  if (of("without").length === 0 && of("with").length === 0) return null;
+  const sides: { kind: "without" | "with"; label: string }[] = [
+    { kind: "without", label: "بدون" },
+    { kind: "with", label: "مع / زيادة" },
+  ];
+  return (
+    <div className="space-y-3" data-testid="option-table">
+      <div className="grid grid-cols-2 gap-2">
+        {sides.map(({ kind, label }) => {
+          const count = picked(kind).length;
+          const active = openKind === kind;
+          return (
+            <button
+              key={kind}
+              type="button"
+              disabled={of(kind).length === 0}
+              onClick={() => onOpen(active ? null : kind)}
+              aria-expanded={active}
+              data-testid={`option-table-${kind}`}
+              className={`min-h-[56px] rounded-md border-2 font-arabic text-base font-bold transition-colors disabled:opacity-40 ${active ? "border-saffron-600 bg-saffron-50 text-saffron-700" : "border-ink-200 text-ink-800 hover:border-saffron-400"}`}
+            >
+              {label}
+              {count > 0 && <span className="ms-2 inline-flex min-w-6 h-6 px-1.5 rounded-full bg-saffron-600 text-white text-xs items-center justify-center">{count}</span>}
+            </button>
+          );
+        })}
+      </div>
+      {openKind && (
+        <div className="flex flex-wrap gap-2 rounded-md bg-surface-alt p-3" data-testid="option-table-choices">
+          {of(openKind).map(({ g, c }) => {
+            const on = (selection[g.id] ?? []).includes(c.id);
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => onToggle(g, c.id)}
+                className={`min-h-[44px] px-4 rounded-full font-arabic text-sm transition-colors ${on ? "bg-saffron-600 text-white" : "bg-white text-ink-700 border border-ink-200 hover:bg-ink-100"}`}
+                data-testid="option-choice"
+                aria-pressed={on}
+              >
+                {choiceShortName(c.name)}
+                {c.price_cents > 0 && <span className="ms-1 opacity-80">+{fmt(c.price_cents)}</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {(picked("without").length > 0 || picked("with").length > 0) && (
+        <p className="font-arabic text-xs text-ink-500" data-testid="option-table-summary">
+          {[...picked("without"), ...picked("with")].map((e) => e.c.name).join("، ")}
+        </p>
+      )}
     </div>
   );
 }

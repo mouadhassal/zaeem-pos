@@ -5850,9 +5850,26 @@ impl<'a> Repo<'a> {
             "UPDATE orders SET status = 'CANCELLED', last_modified = ?1, sync_status = 'pending' WHERE id = ?2",
             params![now, order_id],
         )?;
+        // A dine-in tab being cancelled must give its table back.
+        self.conn.execute(
+            "UPDATE tables SET status = 'FREE', current_order_id = NULL, last_modified = ?1, sync_status = 'pending' WHERE current_order_id = ?2",
+            params![now, order_id],
+        )?;
         self.append_order_status_event(&tenant_id, &branch_id, order_id, "CANCELLED", actor_id, device_id)?;
         self.rebuild_order_current(order_id)?;
         Ok(())
+    }
+
+    /// What an open order is worth right now (its non-voided lines), for the manager-threshold check on cancelling it whole.
+    pub fn open_order_total_cents(&self, scope: &Scope, order_id: &str) -> Result<i64, RepoError> {
+        self.assert_order_in_scope(order_id, scope)?;
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(SUM((i.unit_price_cents + \
+                 (SELECT COALESCE(SUM(m.price_cents), 0) FROM order_modifiers m WHERE m.order_item_id = i.id)) * i.quantity), 0) \
+             FROM order_items i WHERE i.order_id = ?1 AND i.voided = 0",
+            params![order_id],
+            |r| r.get(0),
+        )?)
     }
 
     /// Marks a line of an OPEN order as a gift ("on the house") or takes the
@@ -6474,6 +6491,8 @@ mod tests {
         migrate_v3::run_payroll_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_payroll_manager_access_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_stockroom_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_ops_settings_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_role_access_migration(&mut conn, &db_path).unwrap();
         db_path
     }
 

@@ -29,4 +29,6 @@ pub mod pickup;
 pub mod fingerprint;
 pub mod payroll;
 pub mod stockroom;
+pub mod supplier_link;
 pub mod order_history;
+pub mod role_access;

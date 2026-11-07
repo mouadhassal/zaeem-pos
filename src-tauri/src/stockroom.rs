@@ -63,7 +63,8 @@ CREATE TABLE IF NOT EXISTS retail_settings (
 );";
 
 /// Why a quantity changed.
-pub const REASONS: &[&str] = &["SALE", "RECEIVE", "ADJUST", "COUNT", "OPENING", "RETURN"];
+/// MARKET_SALE: a marketplace order for a supplier took it out of the stock (see supplier_link.rs).
+pub const REASONS: &[&str] = &["SALE", "RECEIVE", "ADJUST", "COUNT", "OPENING", "RETURN", "MARKET_SALE"];
 
 fn round3(x: f64) -> f64 {
     (x * 1000.0).round() / 1000.0

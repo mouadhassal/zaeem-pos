@@ -195,6 +195,8 @@ pub fn list_day(conn: &Connection, tenant_id: &str, branch_id: &str, business_da
 pub struct HistoryItem {
     pub id: String,
     pub name: String,
+    /// The menu category (a bill can print a generic word for chosen categories, e.g. drinks).
+    pub category_name: Option<String>,
     pub quantity: i64,
     pub unit_price_cents: i64,
     pub modifiers: Vec<HeldOrderModifier>,
@@ -251,6 +253,8 @@ pub struct HistoryDetail {
     pub discount_reason: Option<String>,
     pub delivery_fee_cents: i64,
     pub delivery_address: Option<String>,
+    /// Delivery orders: who took it to the customer.
+    pub driver_name: Option<String>,
     pub items: Vec<HistoryItem>,
     pub cancelled: Vec<CancelledLine>,
     pub payments: Vec<PaymentLine>,
@@ -283,20 +287,20 @@ pub fn detail(conn: &Connection, tenant_id: &str, branch_id: &str, order_id: &st
     {
         let lines_sql = format!(
             "SELECT oi.id, COALESCE(m.name, '') || {weight_suffix}, oi.quantity, oi.unit_price_cents, oi.notes, COALESCE(oi.comped, 0), oi.comp_reason, oi.voided, oi.void_reason, \
-             (SELECT COALESCE(SUM(ri.quantity), 0) FROM refund_items ri WHERE ri.order_item_id = oi.id) \
-             FROM order_items oi LEFT JOIN menu_items m ON m.id = oi.menu_item_id WHERE oi.order_id = ?1 ORDER BY oi.rowid",
+             (SELECT COALESCE(SUM(ri.quantity), 0) FROM refund_items ri WHERE ri.order_item_id = oi.id), c.name \
+             FROM order_items oi LEFT JOIN menu_items m ON m.id = oi.menu_item_id LEFT JOIN categories c ON c.id = m.category_id WHERE oi.order_id = ?1 ORDER BY oi.rowid",
             weight_suffix = crate::weighing::weight_suffix_sql("oi.weight_grams"),
         );
         let mut stmt = conn.prepare(&lines_sql).map_err(e)?;
         #[allow(clippy::type_complexity)]
-        let raw: Vec<(String, String, i64, i64, Option<String>, i64, Option<String>, i64, Option<String>, i64)> = stmt
+        let raw: Vec<(String, String, i64, i64, Option<String>, i64, Option<String>, i64, Option<String>, i64, Option<String>)> = stmt
             .query_map(params![order_id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?))
             })
             .map_err(e)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(e)?;
-        for (id, name, quantity, unit_price_cents, notes, comped, comp_reason, voided, void_reason, refunded_quantity) in raw {
+        for (id, name, quantity, unit_price_cents, notes, comped, comp_reason, voided, void_reason, refunded_quantity, category_name) in raw {
             if voided != 0 {
                 cancelled.push(CancelledLine { name, quantity, reason: void_reason });
                 continue;
@@ -310,6 +314,7 @@ pub fn detail(conn: &Connection, tenant_id: &str, branch_id: &str, order_id: &st
             items.push(HistoryItem {
                 id,
                 name,
+                category_name,
                 quantity,
                 unit_price_cents,
                 modifiers,
@@ -365,6 +370,15 @@ pub fn detail(conn: &Connection, tenant_id: &str, branch_id: &str, order_id: &st
         }
     }
 
+    let driver_name: Option<String> = conn
+        .query_row(
+            "SELECT dr.name FROM order_deliveries d JOIN delivery_drivers dr ON dr.id = d.driver_id WHERE d.order_id = ?1",
+            params![order_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(e)?;
+
     let business_date = numbers_for(conn, tenant_id, std::slice::from_ref(&row.id))
         .map_err(e)?
         .remove(&row.id)
@@ -379,6 +393,7 @@ pub fn detail(conn: &Connection, tenant_id: &str, branch_id: &str, order_id: &st
         discount_reason,
         delivery_fee_cents,
         delivery_address,
+        driver_name,
         items,
         cancelled,
         payments,

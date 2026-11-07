@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
-import { IconBell as Bell } from "@tabler/icons-react";
+import NotificationBell from "./NotificationBell";
+import HelpChat from "./HelpChat";
+import { useMarketSync } from "../../hooks/useMarketSync";
 import { useAuthStore } from "../../stores/authStore";
 import { BrandLockup } from "../BrandLogo";
 
@@ -9,6 +11,7 @@ const ROLE_LABEL: Record<string, string> = {
 
 export default function TopBar() {
   const user = useAuthStore((s) => s.user);
+  useMarketSync();
   const [logo, setLogo] = useState<string | null>(null);
 
   useEffect(() => {
@@ -31,9 +34,8 @@ export default function TopBar() {
         )}
       </div>
       <div className="flex items-center gap-3">
-        <button className="w-9 h-9 rounded-[10px] flex items-center justify-center text-text-muted hover:bg-surface-alt transition-colors">
-          <Bell className="w-[18px] h-[18px]" />
-        </button>
+        <HelpChat />
+        <NotificationBell />
         <div className="flex items-center gap-2.5">
           <div
             className="w-8 h-8 rounded-[9px] flex items-center justify-center text-white text-sm font-bold"

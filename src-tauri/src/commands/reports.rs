@@ -153,6 +153,22 @@ pub fn get_sales_report_v3(state: State<Db>, license: State<crate::license::clou
     Repo::new(&conn).sales_report(&actor.scope(), &today_start_iso, range_end_iso.as_deref()).map_err(|e| e.to_string())
 }
 
+/// Everything sold in a period, item by item, with the totals and how the money came in: the data of
+/// the report printed as a long strip on the receipt printer.
+#[tauri::command]
+pub fn get_sales_strip_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String) -> Result<crate::sales_strip::SalesStrip, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    // Seeing the reports and printing them on the receipt printer are two boxes in the owner's table.
+    if !actor.access.allows(crate::role_access::Feature::ReportPrint, true) {
+        return Err("طباعة التقرير غير مسموحة لدورك (حسب إعداد المالك)".to_string());
+    }
+    require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::sales_strip::strip(&conn, &actor.scope(), &start_iso, &end_iso).map_err(|e| e.to_string())
+}
+
 /// 2026-08-04: the business assistant -- "you ask, it answers from your
 /// own real data, and gives an actual recommendation, not just a number."
 /// Same Manager+ rank as every other report (real revenue data). Two
@@ -203,6 +219,33 @@ pub fn ask_assistant_v3(
     };
 
     ai_state.provider.answer(&question, &snapshot, &history).map_err(|e| e.user_message())
+}
+
+/// The help chat: any signed-in person (a cashier too) asks how to use the system. The till
+/// sends the few guide excerpts that matched the question; the model answers only from them.
+/// No business data leaves the till here, so no reports permission is needed. The caller falls
+/// back to showing the matched guide text itself when this fails (no internet, no licence).
+#[tauri::command]
+pub fn ask_help_v3(
+    state: State<Db>,
+    ai_state: State<crate::ai::commands::AppState>,
+    session_token: String,
+    question: String,
+    guide: String,
+    history: Option<Vec<crate::ai::ChatTurn>>,
+) -> Result<crate::ai::Answer, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    let question = question.trim().to_string();
+    if question.is_empty() {
+        return Err("السؤال فارغ".into());
+    }
+    if question.chars().count() > 500 {
+        return Err("السؤال طويل جداً، اختصره (الحد 500 حرف)".into());
+    }
+    let guide: String = guide.chars().take(crate::ai::MAX_HELP_GUIDE_CHARS).collect();
+    let history = crate::ai::clean_history(history.unwrap_or_default());
+    let role = format!("{:?}", actor.role);
+    ai_state.provider.help(&question, &guide, &role, &history).map_err(|e| e.user_message())
 }
 
 /// Plain findings the assistant page shows when it opens (sales up/down vs the

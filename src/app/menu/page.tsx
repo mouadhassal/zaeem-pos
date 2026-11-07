@@ -1,9 +1,10 @@
+import UsdHelper from "../../components/ui/UsdHelper";
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
 import { getBusinessMode } from "../../lib/orderService";
 import { useAuthStore } from "../../stores/authStore";
 import { invalidateMenuItemPhotoCache } from "../../hooks/useMenuItemPhoto";
-import { formatMoney, parseMoneyInput } from "../../lib/money";
+import { formatMoney, minorToInputValue, parseMoneyInput } from "../../lib/money";
 import { z } from "zod";
 import { realErrorText, friendlyDeleteErrorText } from "../../lib/errors";
 import { IconPencil, IconTrash, IconX } from "@tabler/icons-react";
@@ -1402,6 +1403,7 @@ export default function MenuPage() {
                 </div>
                 <div>
                   <label className="block text-sm font-arabic text-ink-900 mb-1">التكلفة</label>
+                  <div className="flex items-center gap-2">
                   <input
                     type="number"
                     min="0"
@@ -1410,6 +1412,8 @@ export default function MenuPage() {
                     onChange={(e) => setItemForm((p) => ({ ...p, cost_cents: e.target.value }))}
                     className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                   />
+                  <UsdHelper onConvert={(minor) => setItemForm((p) => ({ ...p, cost_cents: minorToInputValue(minor) }))} />
+                  </div>
                   {itemErrors.cost_cents && (
                     <p className="text-xs text-danger mt-1 font-arabic">
                       {itemErrors.cost_cents}

@@ -1,16 +1,19 @@
 import { useState } from "react";
 import ImportTab from "./ImportTab";
+import MarketTab from "./MarketTab";
 import LogTab from "./LogTab";
 import ReceiveTab from "./ReceiveTab";
 import SettingsTab from "./SettingsTab";
 import StockTab from "./StockTab";
+import { usePrefsStore } from "../../stores/prefsStore";
 
-type Tab = "stock" | "receive" | "import" | "log" | "settings";
+type Tab = "stock" | "receive" | "import" | "market" | "log" | "settings";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "stock", label: "المخزون" },
   { id: "receive", label: "استلام بضاعة" },
   { id: "import", label: "استيراد من ملف" },
+  { id: "market", label: "السوق" },
   { id: "log", label: "الحركات" },
   { id: "settings", label: "الباركود والإعدادات" },
 ];
@@ -21,7 +24,8 @@ const TABS: { id: Tab; label: string }[] = [
  * spreadsheet, goods are received by scanning their barcodes.
  */
 export default function StockroomPage() {
-  const [tab, setTab] = useState<Tab>("stock");
+  const supplierMode = usePrefsStore((s) => s.supplierMode);
+  const [tab, setTab] = useState<Tab>(supplierMode ? "market" : "stock");
   const [refreshKey, setRefreshKey] = useState(0);
   const changed = () => setRefreshKey((k) => k + 1);
 
@@ -46,6 +50,7 @@ export default function StockroomPage() {
       {tab === "stock" && <StockTab refreshKey={refreshKey} onChanged={changed} onGoImport={() => setTab("import")} />}
       {tab === "receive" && <ReceiveTab onDone={() => { changed(); setTab("stock"); }} />}
       {tab === "import" && <ImportTab onDone={() => { changed(); setTab("stock"); }} />}
+      {tab === "market" && <MarketTab onChanged={changed} />}
       {tab === "log" && <LogTab refreshKey={refreshKey} />}
       {tab === "settings" && <SettingsTab />}
     </div>

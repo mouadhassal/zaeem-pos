@@ -17,6 +17,8 @@ interface LineItem {
   compReason?: string;
   weightGrams?: number;
   pricePerKgCents?: number;
+  /** A special price: how much cheaper each unit is than the menu price. */
+  cutPerUnitCents?: number;
   /** Already sent to the kitchen: changed through the order-edit flow, not by editing the cart line. */
   sent?: boolean;
 }
@@ -47,12 +49,16 @@ interface Props {
   onVoidLine?: (id: string) => void;
   onEditLine?: (id: string) => void;
   onGiftLine?: (id: string) => void;
+  /** A typed quantity or the "+N" button. */
+  onSetQuantityLine?: (id: string, quantity: number) => void;
+  /** Opens the special-price dialog; undefined hides the button (the owner turned price changes off). */
+  onEditPriceLine?: (id: string) => void;
 }
 
 export default function OrderPanel({
   tableLabel, lines, subtotalCents, discountCents, deliveryFeeCents = 0,
   totalCents, currencySymbol, onEditOrder, orderTypeIcon, orderTypeLabel, children, toolbar,
-  onIncrementLine, onDecrementLine, onVoidLine, onEditLine, onGiftLine, emptyMessage,
+  onIncrementLine, onDecrementLine, onVoidLine, onEditLine, onGiftLine, onSetQuantityLine, onEditPriceLine, emptyMessage,
 }: Props) {
   // Currency-scale-aware -- was raw cents.toLocaleString(), which silently
   // assumed scale 0 (see lib/money.ts's formatAmount doc comment).
@@ -97,6 +103,8 @@ export default function OrderPanel({
             currencySymbol={currencySymbol}
             onIncrement={sent ? undefined : onIncrementLine}
             onDecrement={sent ? undefined : onDecrementLine}
+            onSetQuantity={sent ? undefined : onSetQuantityLine}
+            onEditPrice={sent || line.comped || line.weightGrams ? undefined : onEditPriceLine}
             onVoid={onVoidLine}
             onEdit={onEditLine}
             onGift={onGiftLine}

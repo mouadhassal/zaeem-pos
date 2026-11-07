@@ -12,6 +12,10 @@ export interface PendingItem {
   line_total_cents: number;
   suggested_local_ingredient_id: string | null;
   suggested_ingredient_name: string | null;
+  suggested_match_score?: number | null;
+  /** A shop product with the same name (when no kitchen ingredient matches). */
+  suggested_local_menu_item_id?: string | null;
+  suggested_menu_item_name?: string | null;
   suggested_stock_added: number | null;
 }
 
@@ -39,6 +43,8 @@ export interface ReceiptLine {
   received_qty: number;
   local_ingredient_id: string | null;
   stock_added: number | null;
+  /** A shop product that gets the goods when no kitchen ingredient does. */
+  local_menu_item_id?: string | null;
 }
 
 export function initialEdit(item: PendingItem): LineEdit {

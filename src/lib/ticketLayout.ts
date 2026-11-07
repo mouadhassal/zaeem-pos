@@ -46,6 +46,8 @@ export interface ReceiptData {
   customerPhone?: string;
   deliveryAddress?: string;
   deliveryFeeCents?: number;
+  /** Delivery: who took the order to the customer. */
+  driverName?: string;
   /** Who served: printed so a disputed receipt can be traced to a person. */
   cashier?: string;
   /** When the order was taken (ISO). Falls back to "now" for a new sale. */
@@ -136,6 +138,17 @@ export function isSeatedTable(name: string | undefined): name is string {
   return !!name && name !== "المنضدة";
 }
 
+/**
+ * A text field worth printing: not empty and not the word "null" / "undefined" that leaks out when
+ * a missing value is turned into text somewhere upstream (a delivery turned into a pickup used to
+ * print "null" for the driver and customer).
+ */
+export function present(v: string | null | undefined): v is string {
+  if (typeof v !== "string") return false;
+  const t = v.trim();
+  return t !== "" && t.toLowerCase() !== "null" && t.toLowerCase() !== "undefined";
+}
+
 const dateTime = (d: Date) => `${formatArabicDate(d)} ${formatArabicTime(d)}`;
 const parse = (iso: string | undefined, fallback: Date) => {
   if (!iso) return fallback;
@@ -181,8 +194,8 @@ export function kitchenTicketRows(data: KitchenTicketData, now: Date = new Date(
 
   if (isSeatedTable(data.tableName)) rows.push({ t: "two", right: "طاولة", left: data.tableName });
   rows.push({ t: "two", right: "النوع", left: ORDER_TYPE_LABELS[data.orderType] ?? data.orderType });
-  if (data.customerName) rows.push({ t: "two", right: "العميل", left: data.customerName });
-  if (data.cashier) rows.push({ t: "two", right: "الكاشير", left: data.cashier });
+  if (present(data.customerName)) rows.push({ t: "two", right: "العميل", left: data.customerName });
+  if (present(data.cashier)) rows.push({ t: "two", right: "الكاشير", left: data.cashier });
   rows.push({ t: "two", right: "وقت الطلب", left: dateTime(parse(data.createdAt, now)) });
   rows.push({ t: "two", right: "وقت الطباعة", left: formatArabicTime(now) });
   if (data.scheduledAt) {
@@ -246,16 +259,17 @@ export function receiptRows(data: ReceiptData, now: Date = new Date()): Row[] {
   if (data.createdAt) rows.push({ t: "two", right: "وقت الطلب", left: formatArabicTime(parse(data.createdAt, now)) });
   rows.push({ t: "two", right: data.createdAt ? "وقت الدفع" : "الوقت", left: formatArabicTime(paidAt) });
   if (data.isCopy) rows.push({ t: "two", right: "وقت الطباعة", left: dateTime(now) });
-  if (data.cashier) rows.push({ t: "two", right: "الكاشير", left: data.cashier });
+  if (present(data.cashier)) rows.push({ t: "two", right: "الكاشير", left: data.cashier });
   // 2026-08-13 generalization fix: was drawn unconditionally -- a takeaway/
   // delivery order (tableName = "") or ANY order from a has_tables=false
   // business printed a "طاولة" row with nothing next to it, on every
   // single receipt for a non-table business.
   if (isSeatedTable(data.tableName)) rows.push({ t: "two", right: "طاولة", left: data.tableName });
   rows.push({ t: "two", right: "النوع", left: ORDER_TYPE_LABELS[data.orderType] ?? data.orderType });
-  if (data.customerName) rows.push({ t: "two", right: "العميل", left: data.customerName });
-  if (data.customerPhone) rows.push({ t: "two", right: "الهاتف", left: data.customerPhone });
-  if (data.deliveryAddress) rows.push({ t: "two", right: "العنوان", left: data.deliveryAddress });
+  if (present(data.customerName)) rows.push({ t: "two", right: "العميل", left: data.customerName });
+  if (present(data.customerPhone)) rows.push({ t: "two", right: "الهاتف", left: data.customerPhone });
+  if (present(data.deliveryAddress)) rows.push({ t: "two", right: "العنوان", left: data.deliveryAddress });
+  if (data.orderType === "DELIVERY" && present(data.driverName)) rows.push({ t: "two", right: "السائق", left: data.driverName, bold: true });
   rows.push({ t: "rule" });
 
   let giftValue = 0;
@@ -348,10 +362,10 @@ export function deliverySlipRows(d: DeliverySlip, now: Date = new Date()): Row[]
   rows.push({ t: "rule" });
   rows.push({ t: "two", right: "رقم الطلب", left: d.orderNumber, bold: true });
   rows.push({ t: "two", right: "وقت الطلب", left: dateTime(parse(d.createdAt, now)) });
-  if (d.driverName) rows.push({ t: "two", right: "السائق", left: d.driverName });
+  if (present(d.driverName)) rows.push({ t: "two", right: "السائق", left: d.driverName });
   rows.push({ t: "rule" });
-  if (d.customerName) rows.push({ t: "two", right: "العميل", left: d.customerName, bold: true });
-  if (d.customerPhone) rows.push({ t: "two", right: "الهاتف", left: d.customerPhone, bold: true });
+  if (present(d.customerName)) rows.push({ t: "two", right: "العميل", left: d.customerName, bold: true });
+  if (present(d.customerPhone)) rows.push({ t: "two", right: "الهاتف", left: d.customerPhone, bold: true });
   rows.push({ t: "line", text: "العنوان:", size: 24 });
   rows.push({ t: "line", text: d.address, size: 30, bold: true });
   rows.push({ t: "rule" });
@@ -441,6 +455,96 @@ export function driverStatementRows(
   rows.push({ t: "two", right: "الصافي (نقد - أجرة)", left: fmt(totals.cash_unsettled_cents - totals.pay_unsettled_cents), size: 28, bold: true });
   rows.push({ t: "gap", h: 40 });
   rows.push({ t: "line", text: "توقيع السائق: ____________", size: 24 });
+  rows.push({ t: "gap", h: 24 });
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
+// The sales report as a long strip for the receipt printer.
+// ---------------------------------------------------------------------------
+
+export interface SalesStripData {
+  order_count: number;
+  gross_cents: number;
+  refunds_cents: number;
+  net_cents: number;
+  discounts_cents: number;
+  tax_cents: number;
+  delivery_fees_cents: number;
+  gifts_count: number;
+  gifts_cents: number;
+  cancelled_lines: number;
+  cancelled_orders: number;
+  items: { name: string; category: string; quantity: number; by_weight: boolean; amount_cents: number }[];
+  categories: { name: string; count: number; amount_cents: number }[];
+  payments: { name: string; count: number; amount_cents: number }[];
+  order_types: { name: string; count: number; amount_cents: number }[];
+}
+
+const QTY_FORMAT = (q: number, byWeight: boolean) => {
+  if (!byWeight) return String(Math.round(q));
+  return `${Number(q.toFixed(3))} كغ`;
+};
+
+/**
+ * Everything sold in a period as rows: the totals first (the number the owner wants on top), then how
+ * the money came in, then every item with its quantity and money, then categories. Long on purpose.
+ */
+export function salesStripRows(
+  d: SalesStripData,
+  meta: { chainName: string; periodLabel: string; printedBy?: string },
+  now: Date = new Date(),
+): Row[] {
+  const fmt = formatMoney;
+  const rows: Row[] = [];
+  rows.push({ t: "line", text: meta.chainName, size: 34, bold: true, align: "center" });
+  rows.push({ t: "line", text: "تقرير المبيعات", size: 30, bold: true, align: "center" });
+  rows.push({ t: "rule" });
+  rows.push({ t: "two", right: "الفترة", left: meta.periodLabel });
+  rows.push({ t: "two", right: "طُبع", left: dateTime(now) });
+  if (present(meta.printedBy)) rows.push({ t: "two", right: "بواسطة", left: meta.printedBy });
+  rows.push({ t: "rule" });
+
+  rows.push({ t: "two", right: "عدد الطلبات", left: String(d.order_count), size: 26 });
+  rows.push({ t: "two", right: "إجمالي المبيعات", left: fmt(d.gross_cents), size: 26 });
+  if (d.refunds_cents > 0) rows.push({ t: "two", right: "المرتجعات", left: `-${fmt(d.refunds_cents)}`, size: 26 });
+  rows.push({ t: "two", right: "صافي المبيعات", left: fmt(d.net_cents), size: 32, bold: true });
+  if (d.discounts_cents > 0) rows.push({ t: "two", right: "منها خصومات", left: fmt(d.discounts_cents), size: 22 });
+  if (d.tax_cents > 0) rows.push({ t: "two", right: "منها ضرائب ورسوم", left: fmt(d.tax_cents), size: 22 });
+  if (d.delivery_fees_cents > 0) rows.push({ t: "two", right: "منها رسوم توصيل", left: fmt(d.delivery_fees_cents), size: 22 });
+  rows.push({ t: "rule" });
+
+  if (d.payments.length > 0) {
+    rows.push({ t: "line", text: "طرق الدفع", size: 26, bold: true });
+    for (const p of d.payments) rows.push({ t: "two", right: `${PAYMENT_LABELS[p.name] ?? p.name} (${p.count})`, left: fmt(p.amount_cents), size: 24 });
+    rows.push({ t: "rule", dashed: true });
+  }
+  if (d.order_types.length > 0) {
+    rows.push({ t: "line", text: "أنواع الطلبات", size: 26, bold: true });
+    for (const t of d.order_types) rows.push({ t: "two", right: `${ORDER_TYPE_LABELS[t.name] ?? t.name} (${t.count})`, left: fmt(t.amount_cents), size: 24 });
+    rows.push({ t: "rule", dashed: true });
+  }
+
+  rows.push({ t: "line", text: "كل ما بِيع", size: 26, bold: true });
+  if (d.items.length === 0) rows.push({ t: "line", text: "لا مبيعات في هذه الفترة", size: 22 });
+  for (const i of d.items) {
+    rows.push({ t: "two", right: `${QTY_FORMAT(i.quantity, i.by_weight)} × ${i.name}`, left: fmt(i.amount_cents), size: 22 });
+  }
+  rows.push({ t: "rule", dashed: true });
+
+  if (d.categories.length > 0) {
+    rows.push({ t: "line", text: "حسب الفئة", size: 26, bold: true });
+    for (const c of d.categories) rows.push({ t: "two", right: `${c.name} (${c.count})`, left: fmt(c.amount_cents), size: 24 });
+    rows.push({ t: "rule", dashed: true });
+  }
+
+  if (d.gifts_count > 0 || d.cancelled_lines > 0 || d.cancelled_orders > 0) {
+    rows.push({ t: "line", text: "غير محتسب في المبيعات", size: 26, bold: true });
+    if (d.gifts_count > 0) rows.push({ t: "two", right: `ضيافة (${d.gifts_count})`, left: fmt(d.gifts_cents), size: 22 });
+    if (d.cancelled_lines > 0) rows.push({ t: "two", right: "أصناف ملغاة", left: String(d.cancelled_lines), size: 22 });
+    if (d.cancelled_orders > 0) rows.push({ t: "two", right: "طلبات ملغاة", left: String(d.cancelled_orders), size: 22 });
+    rows.push({ t: "rule" });
+  }
   rows.push({ t: "gap", h: 24 });
   return rows;
 }

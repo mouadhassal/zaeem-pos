@@ -166,7 +166,15 @@ pub trait AiProvider: Send + Sync {
     fn menu_from_media(&self, media: &[Media]) -> Result<DraftMenu, AiError>;
     fn anomalies(&self, w: &ShiftWindow) -> Result<Vec<Anomaly>, AiError>;
     fn answer(&self, q: &str, s: &Snapshot, history: &[ChatTurn]) -> Result<Answer, AiError>;
+    /// The help chat: answers a how-to question from the guide excerpts the till sends along.
+    /// Providers without a model behind them have nothing to say (the till then shows the guide itself).
+    fn help(&self, _q: &str, _guide: &str, _role: &str, _history: &[ChatTurn]) -> Result<Answer, AiError> {
+        Err(AiError::Unavailable("المساعد الذكي غير متاح الآن".into()))
+    }
 }
+
+/// The most guide text the help chat may send with a question.
+pub const MAX_HELP_GUIDE_CHARS: usize = 14_000;
 
 mod null;
 mod mock;

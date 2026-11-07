@@ -74,6 +74,7 @@ mod tests {
             include_str!("commands/delivery.rs"),
             include_str!("commands/pickup.rs"),
             include_str!("commands/order_history.rs"),
+            include_str!("commands/role_access.rs"),
             include_str!("commands/fingerprint.rs"),
             include_str!("commands/payroll.rs"),
             include_str!("commands/stockroom.rs"),
@@ -126,6 +127,8 @@ mod tests {
         migrate_v3::run_payroll_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_payroll_manager_access_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_stockroom_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_ops_settings_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_role_access_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -2277,6 +2280,66 @@ mod tests {
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
+        /// Cancelling a whole big order is one command: every line voided, the order
+        /// CANCELLED, the table free again, and a cashier needs the manager's PIN once
+        /// for the order's whole value (not once per line).
+        #[test]
+        fn cancel_order_v3_cancels_every_line_frees_the_table_and_asks_a_manager_once() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("cancel_whole_order");
+            let pin_hash = bcrypt::hash("1234", bcrypt::DEFAULT_COST).unwrap();
+            let (cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                Repo::new(&conn).create_staff(&tenant_id, Some(&branch_id), Some(&branch_id), "MANAGER", Role::Manager.rank(), "Manager", Some(&pin_hash), None).unwrap();
+                let repo = Repo::new(&conn);
+                let category_id = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Burger", &category_id, 400, 200, None, None).unwrap();
+                (cashier_id, item_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+            let line = |qty: i64| OrderItemInput {
+                menu_item_id: item_id.clone(), name: None, quantity: qty, unit_price_cents: 400,
+                notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
+            };
+            // 12 burgers on two lines: 4,800, over the default 500 threshold.
+            let order_id = create_full_order_v3_impl(
+                &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(), vec![line(5), line(7)],
+                4800, 0, 4800, 0, None, None, None, None, 0, None, None,
+            ).unwrap();
+
+            let no_pin = cancel_order_v3_impl(&db, &license, session.clone(), order_id.clone(), None, None);
+            assert!(no_pin.is_err(), "a cashier cancelling a big order needs the manager's PIN");
+            let wrong = cancel_order_v3_impl(&db, &license, session.clone(), order_id.clone(), None, Some("0000".to_string()));
+            assert!(wrong.is_err());
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                let status: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+                assert_ne!(status, "CANCELLED", "still open after both refusals");
+            }
+
+            cancel_order_v3_impl(&db, &license, session.clone(), order_id.clone(), Some("الزبون غادر".to_string()), Some("1234".to_string()))
+                .expect("with the manager PIN the whole order is cancelled in one call");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let status: String = conn.query_row("SELECT status FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(status, "CANCELLED");
+            let live: i64 = conn.query_row("SELECT COUNT(*) FROM order_items WHERE order_id = ?1 AND voided = 0", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(live, 0, "no line is left");
+            let reasons: i64 = conn.query_row("SELECT COUNT(*) FROM order_items WHERE order_id = ?1 AND void_reason = 'الزبون غادر'", params![order_id], |r| r.get(0)).unwrap();
+            assert_eq!(reasons, 2, "both lines carry the reason");
+            let table_state: (String, Option<String>) = conn.query_row("SELECT status, current_order_id FROM tables WHERE id = ?1", params![table_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            assert_eq!(table_state, ("FREE".to_string(), None), "the table is free again");
+            // A second cancel of the same order is refused (it is no longer open).
+            assert!(cancel_order_v3_impl(&db, &license, session, order_id, None, Some("1234".to_string())).is_err());
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
         /// 2026-08-02: proves the manager thresholds are real, per-tenant,
         /// Owner-configurable values -- not just a struct that always
         /// echoes the migration's hardcoded defaults.
@@ -2758,8 +2821,8 @@ mod tests {
             let flour = Repo::new(&conn).create_ingredient(&tenant_id, &branch_id, "طحين", "kg", 30, 10.0).unwrap();
             let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
             let lines = vec![
-                crate::goods_receipt::ReceiptLine { order_item_id: "i1".into(), received_qty: 3.0, local_ingredient_id: Some(flour.clone()), stock_added: Some(30.0) },
-                crate::goods_receipt::ReceiptLine { order_item_id: "i2".into(), received_qty: 1.0, local_ingredient_id: None, stock_added: None },
+                crate::goods_receipt::ReceiptLine { order_item_id: "i1".into(), received_qty: 3.0, local_ingredient_id: Some(flour.clone()), stock_added: Some(30.0), local_menu_item_id: None },
+                crate::goods_receipt::ReceiptLine { order_item_id: "i2".into(), received_qty: 1.0, local_ingredient_id: None, stock_added: None, local_menu_item_id: None },
             ];
             let stock = |c: &Connection| -> f64 { c.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![flour], |r| r.get(0)).unwrap() };
             let before = stock(&conn);
@@ -2796,7 +2859,7 @@ mod tests {
                         order_item_id: "x".into(), supplier_product_id: None, product_name: "طحين".into(), unit: None,
                         unit_size: Some(10.0), unit_measure: Some("kg".into()), qty: 2.0, unit_price_cents: 0, line_total_cents: 0,
                         suggested_local_ingredient_id: Some(flour.clone()), suggested_ingredient_name: None, suggested_ingredient_unit: None,
-                        suggested_match_score: Some(0.8), suggested_stock_added: None,
+                        suggested_match_score: Some(0.8), suggested_local_menu_item_id: None, suggested_menu_item_name: None, suggested_stock_added: None,
                     }],
                 }).collect(),
             };
@@ -5088,7 +5151,7 @@ mod tests {
         let offline = crate::license::store::LicenseState::init(dir.clone(), key.verifying_key());
         let license = crate::license::cloud::CloudLicenseState::new(offline, dir.clone(), None, Box::new(NeverCalledTransport));
 
-        let owner = Actor { id: "owner-1".into(), tenant_id: "t1".into(), branch_id: None, role: Role::Owner, device_id: "dev-1".into() };
+        let owner = Actor { id: "owner-1".into(), tenant_id: "t1".into(), branch_id: None, role: Role::Owner, device_id: "dev-1".into(), access: Default::default() };
 
         // Pre-activation, with a SECOND branch also on file so there's a
         // genuine ambiguity: no license yet to auto-resolve from, and more
@@ -5123,7 +5186,7 @@ mod tests {
         // A Branch-scoped actor (Manager/Cashier/Kitchen/Server) is
         // unaffected -- always their own branch, the device's license is
         // never even consulted for them.
-        let cashier = Actor { id: "c1".into(), tenant_id: "t1".into(), branch_id: Some("branch-b".into()), role: Role::Cashier, device_id: "dev-1".into() };
+        let cashier = Actor { id: "c1".into(), tenant_id: "t1".into(), branch_id: Some("branch-b".into()), role: Role::Cashier, device_id: "dev-1".into(), access: Default::default() };
         assert_eq!(
             resolve_operating_branch(&conn, &cashier, &license, None).unwrap(),
             ("t1".to_string(), "branch-b".to_string()),
@@ -6836,9 +6899,9 @@ mod tests {
 
         // Owner (tenant scope, no branch) and Platform can force-close any
         // branch's stuck shift; Cashier can't.
-        let owner = Actor { id: "owner-x".into(), tenant_id: tenant_id.clone(), branch_id: None, role: Role::Owner, device_id: "dev".into() };
-        let platform = Actor { id: "plat-x".into(), tenant_id: tenant_id.clone(), branch_id: None, role: Role::Platform, device_id: "dev".into() };
-        let cashier = Actor { id: cashier_a.clone(), tenant_id: tenant_id.clone(), branch_id: Some(branch_a.clone()), role: Role::Cashier, device_id: "dev".into() };
+        let owner = Actor { id: "owner-x".into(), tenant_id: tenant_id.clone(), branch_id: None, role: Role::Owner, device_id: "dev".into(), access: Default::default() };
+        let platform = Actor { id: "plat-x".into(), tenant_id: tenant_id.clone(), branch_id: None, role: Role::Platform, device_id: "dev".into(), access: Default::default() };
+        let cashier = Actor { id: cashier_a.clone(), tenant_id: tenant_id.clone(), branch_id: Some(branch_a.clone()), role: Role::Cashier, device_id: "dev".into(), access: Default::default() };
         authorize(&owner, Permission::UpdateStaff).expect("owner may force-close");
         authorize(&platform, Permission::UpdateStaff).expect("platform may force-close");
         assert!(authorize(&cashier, Permission::UpdateStaff).is_err());
@@ -7633,6 +7696,8 @@ mod tests {
         migrate_v3::run_payroll_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_payroll_manager_access_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_stockroom_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_ops_settings_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_role_access_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("matrix", &conn);
@@ -8302,13 +8367,13 @@ mod tests {
         /// admin, purchase orders/suppliers, and order analytics (AI page).
         /// Every one of these must be BLOCKED when back-office is locked.
         const GATED: &[&str] = &[
-            "list_staff_v3", "get_sales_report_v3", "gifts_report_v3", "list_pickup_no_shows_v3", "ask_assistant_v3", "assistant_insights_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
+            "list_staff_v3", "get_sales_report_v3", "get_sales_strip_v3", "gifts_report_v3", "list_pickup_no_shows_v3", "ask_assistant_v3", "assistant_insights_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
             "create_branch_v3", "create_staff_v3", "update_staff_v3", "update_staff_profile_v3",
             "set_staff_active_v3", "list_branches_v3", "list_shifts_v3", "force_close_shift_v3",
             "list_attendance_v3",
             "list_fingerprint_enrolments_v3", "enrol_fingerprint_v3", "delete_fingerprint_enrolment_v3",
             "list_punches_v3", "get_attendance_settings_v3", "set_attendance_settings_v3",
-            "list_product_stock_v3", "set_product_tracking_v3", "adjust_product_stock_v3", "count_product_stock_v3", "receive_products_v3", "list_product_stock_log_v3", "import_products_v3", "list_product_barcodes_v3", "add_product_barcode_v3", "delete_product_barcode_v3", "generate_product_barcode_v3", "get_retail_settings_v3", "save_retail_settings_v3",
+            "list_product_stock_v3", "set_product_tracking_v3", "adjust_product_stock_v3", "count_product_stock_v3", "receive_products_v3", "list_product_stock_log_v3", "import_products_v3", "list_product_barcodes_v3", "add_product_barcode_v3", "delete_product_barcode_v3", "generate_product_barcode_v3", "get_retail_settings_v3", "save_retail_settings_v3", "get_history_access_v3", "save_history_access_v3", "get_role_access_v3", "save_role_access_v3",
             "get_payroll_access_v3", "get_payroll_settings_v3", "save_payroll_settings_v3", "list_payroll_employees_v3", "save_payroll_employee_v3",
             "payroll_month_v3", "get_payslip_v3", "approve_payslip_v3", "pay_payslip_v3",
             "reopen_payslip_v3", "add_payroll_adjustment_v3", "delete_payroll_adjustment_v3", "add_payroll_advance_v3",
@@ -8366,7 +8431,7 @@ mod tests {
         /// locked -- a dinner service is never interrupted.
         const NOT_GATED: &[&str] = &[
             "login_v3", "login_pin_v3", "setup_owner_v3", "needs_setup_v3", "logout_v3",
-            "change_own_password_v3",
+            "change_own_password_v3", "get_my_access_v3",
             "get_cached_license_status_v3", "check_license_v3", "renew_license_v3", "activate_license_v3", "get_device_id_v3",
             "backup_database_v3", "list_backups_v3", "send_diagnostics_report_v3",
             // Same reasoning as backup_database_v3/list_backups_v3 right
@@ -8384,7 +8449,7 @@ mod tests {
             // to it (fires a kitchen ticket) are both mid-service actions
             // that must never be interrupted by a lapsed back-office license.
             "retrieve_open_order_v3", "add_items_to_order_v3",
-            "split_bill_v3", "merge_tables_v3", "unmerge_tables_v3", "void_order_item_v3",
+            "split_bill_v3", "merge_tables_v3", "unmerge_tables_v3", "void_order_item_v3", "cancel_order_v3",
             "edit_order_item_v3", "set_order_item_comp_v3",
             "get_delivery_settings_v3", "list_delivery_drivers_v3", "list_deliveries_v3", "assign_delivery_driver_v3",
             "set_delivery_status_v3", "get_driver_statement_v3", "list_driver_settlements_v3", "settle_driver_v3",
@@ -8418,7 +8483,7 @@ mod tests {
             "lookup_loyalty_card_v3", "redeem_loyalty_reward_v3",
             "list_kitchen_orders_v3", "register_kds_terminal_v3", "toggle_menu_item_availability_v3",
             "export_pdf_v3",
-            "get_active_shift_v3", "open_shift_v3", "close_shift_v3", "get_shift_stats_v3",
+            "ask_help_v3", "get_active_shift_v3", "open_shift_v3", "close_shift_v3", "get_shift_stats_v3",
             "list_shift_orders_v3", "clock_in_v3", "clock_out_v3",
             // Putting a finger on the reader is floor work (like clock_in_v3), and the
             // reader's status is only what the Staff screen shows beside the button.

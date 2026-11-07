@@ -1,7 +1,7 @@
 use crate::Db;
 use super::shared::*;
 use super::auth::{login_pin_v3_impl, logout_v3_impl};
-use super::orders::{list_tables_v3_impl, list_kitchen_orders_v3_impl, update_order_status_v3_impl, void_order_item_v3_impl, take_payment_v3_impl};
+use super::orders::{list_tables_v3_impl, list_kitchen_orders_v3_impl, update_order_status_v3_impl, void_order_item_v3_impl, cancel_order_v3_impl, take_payment_v3_impl};
 use super::shifts::{get_active_shift_v3_impl, clock_in_v3_impl, clock_out_v3_impl, open_shift_v3_impl, close_shift_v3_impl, get_shift_stats_v3_impl};
 use super::debt::{create_debtor_v3_impl, list_debtors_v3_impl};
 use super::delivery::{assign_delivery_driver_v3_impl, get_delivery_settings_v3_impl, get_driver_statement_v3_impl, list_deliveries_v3_impl, list_delivery_drivers_v3_impl, list_driver_settlements_v3_impl, set_delivery_status_v3_impl, settle_driver_v3_impl};
@@ -47,6 +47,7 @@ pub fn lan_rpc_mutates_orders(command: &str) -> bool {
             | "mark_pickup_no_show_v3"
             | "update_order_status_v3"
             | "void_order_item_v3"
+            | "cancel_order_v3"
             | "take_payment_v3"
             | "finalize_order_with_payment_v3"
             | "hold_order_v3"
@@ -161,6 +162,14 @@ pub fn dispatch_lan_rpc(
             let reason: String = lan_arg(&args, "reason")?;
             let manager_override_pin: Option<String> = lan_arg(&args, "managerOverridePin")?;
             void_order_item_v3_impl(db, license, session_token, item_id, reason, manager_override_pin)?;
+            serde_json::Value::Null
+        }
+        "cancel_order_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            let reason: Option<String> = lan_arg(&args, "reason")?;
+            let manager_override_pin: Option<String> = lan_arg(&args, "managerOverridePin")?;
+            cancel_order_v3_impl(db, license, session_token, order_id, reason, manager_override_pin)?;
             serde_json::Value::Null
         }
         "take_payment_v3" => {

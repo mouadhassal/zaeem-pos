@@ -238,6 +238,8 @@ pub struct Actor {
     /// The device_id of the session that authenticated this Actor -- used by
     /// `audit::append` to attribute the entry to the right per-device chain.
     pub device_id: String,
+    /// What the owner switched on or off for this role (`role_access`). Empty = the rank rules alone.
+    pub access: crate::role_access::Access,
 }
 
 impl Actor {
@@ -397,7 +399,8 @@ fn load_actor(conn: &Connection, actor_id: &str, device_id: &str) -> Result<Acto
         return Err(SecurityError::InvalidSession);
     }
 
-    Ok(Actor { id: actor_id.to_string(), tenant_id, branch_id, role, device_id: device_id.to_string() })
+    let access = crate::role_access::load_access(conn, &tenant_id, role);
+    Ok(Actor { id: actor_id.to_string(), tenant_id, branch_id, role, device_id: device_id.to_string(), access })
 }
 
 /// authz step 1: does this role hold the permission at all (rank check).
@@ -406,7 +409,13 @@ fn load_actor(conn: &Connection, actor_id: &str, device_id: &str) -> Result<Acto
 /// blocked from another branch's orders -- the permission being present does
 /// not imply the target is in scope.
 pub fn authorize(actor: &Actor, perm: Permission) -> Result<(), SecurityError> {
-    if actor.role.rank() >= perm.minimum_rank() {
+    let rank_allows = actor.role.rank() >= perm.minimum_rank();
+    // The owner's "who can do what" table decides the areas it covers; everything else is rank alone.
+    let allowed = match crate::role_access::Feature::of(perm) {
+        Some(feature) => actor.access.allows(feature, rank_allows),
+        None => rank_allows,
+    };
+    if allowed {
         Ok(())
     } else {
         Err(SecurityError::Forbidden {
@@ -440,7 +449,11 @@ pub fn authorize(actor: &Actor, perm: Permission) -> Result<(), SecurityError> {
                 Permission::ManagePayroll => "ManagePayroll",
                 Permission::UsePayroll => "UsePayroll",
             },
-            reason: format!("role {:?} (rank {}) is below the minimum rank {} for this permission", actor.role, actor.role.rank(), perm.minimum_rank()),
+            reason: if crate::role_access::Feature::of(perm).is_some_and(|f| actor.access.decision(f).is_some()) {
+                format!("role {:?} is not allowed this area (set by the owner)", actor.role)
+            } else {
+                format!("role {:?} (rank {}) is below the minimum rank {} for this permission", actor.role, actor.role.rank(), perm.minimum_rank())
+            },
         })
     }
 }
@@ -477,13 +490,13 @@ mod tests {
     #[test]
     fn payroll_is_for_the_owner_alone() {
         assert_eq!(Permission::ManagePayroll.minimum_rank(), Role::Owner.rank());
-        let manager = Actor { id: "m".into(), tenant_id: "t".into(), branch_id: Some("b".into()), role: Role::Manager, device_id: "d".into() };
-        let owner = Actor { id: "o".into(), tenant_id: "t".into(), branch_id: None, role: Role::Owner, device_id: "d".into() };
+        let manager = Actor { id: "m".into(), tenant_id: "t".into(), branch_id: Some("b".into()), role: Role::Manager, device_id: "d".into(), access: Default::default() };
+        let owner = Actor { id: "o".into(), tenant_id: "t".into(), branch_id: None, role: Role::Owner, device_id: "d".into(), access: Default::default() };
         assert!(authorize(&manager, Permission::ManagePayroll).is_err(), "a manager must not see anyone's salary");
         assert!(authorize(&owner, Permission::ManagePayroll).is_ok());
         // Working in payroll at all starts at manager rank; whether a manager is let in is the owner's switch (payroll.rs).
         assert!(authorize(&manager, Permission::UsePayroll).is_ok());
-        let cashier = Actor { id: "c".into(), tenant_id: "t".into(), branch_id: Some("b".into()), role: Role::Cashier, device_id: "d".into() };
+        let cashier = Actor { id: "c".into(), tenant_id: "t".into(), branch_id: Some("b".into()), role: Role::Cashier, device_id: "d".into(), access: Default::default() };
         assert!(authorize(&cashier, Permission::UsePayroll).is_err());
     }
 
@@ -499,7 +512,7 @@ mod tests {
     ];
 
     fn actor_for(role: Role, tenant: &str, branch: Option<&str>) -> Actor {
-        Actor { id: format!("actor-{role:?}"), tenant_id: tenant.to_string(), branch_id: branch.map(|s| s.to_string()), role, device_id: "test-device".to_string() }
+        Actor { id: format!("actor-{role:?}"), tenant_id: tenant.to_string(), branch_id: branch.map(|s| s.to_string()), role, device_id: "test-device".to_string(), access: Default::default() }
     }
 
     /// T1.3's headline requirement: every permission x every role. This is

@@ -62,6 +62,7 @@ export const LAN_REDIRECT_COMMANDS = new Set([
   "edit_order_item_v3",
   "set_order_item_comp_v3",
   "void_order_item_v3",
+  "cancel_order_v3",
   "transfer_order_v3",
   "split_bill_v3",
   "merge_tables_v3",

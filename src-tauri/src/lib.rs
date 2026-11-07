@@ -37,8 +37,12 @@ mod plan_gate;
 mod weighing;
 mod attendance;
 mod profit;
+mod sales_strip;
 mod payroll;
 mod stockroom;
+mod ops_settings;
+mod role_access;
+mod supplier_link;
 
 // Only the debug-build staff seeding (seed_default_staff) hashes PINs here.
 #[cfg(debug_assertions)]
@@ -121,6 +125,8 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_payroll_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_payroll_manager_access_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_stockroom_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_ops_settings_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_role_access_migration(conn, db_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -593,6 +599,11 @@ pub fn run() {
             commands::stockroom::delete_product_barcode_v3,
             commands::stockroom::generate_product_barcode_v3,
             commands::stockroom::get_retail_settings_v3,
+            commands::order_history::get_history_access_v3,
+            commands::order_history::save_history_access_v3,
+            commands::role_access::get_role_access_v3,
+            commands::role_access::save_role_access_v3,
+            commands::role_access::get_my_access_v3,
             commands::stockroom::save_retail_settings_v3,
             commands::payroll::get_payroll_access_v3,
             commands::payroll::get_payroll_settings_v3,
@@ -649,6 +660,8 @@ pub fn run() {
             commands::reports::create_invoice_v3,
             commands::reports::mark_invoice_paid_v3,
             commands::reports::get_sales_report_v3,
+            commands::reports::get_sales_strip_v3,
+            commands::reports::ask_help_v3,
             commands::reports::gifts_report_v3,
             commands::reports::ask_assistant_v3,
             commands::reports::assistant_insights_v3,
@@ -720,6 +733,10 @@ pub fn run() {
             commands::suppliers::list_reorder_suggestions_v3,
             commands::marketplace::get_marketplace_context_v3,
             commands::marketplace::list_marketplace_receipts_v3,
+            commands::supplier_link::supplier_market_state_v3,
+            commands::supplier_link::link_supplier_product_v3,
+            commands::supplier_link::apply_supplier_order_v3,
+            commands::supplier_link::supplier_market_sync_v3,
             commands::marketplace::receive_marketplace_order_v3,
             commands::suppliers::create_printer_v3,
             commands::suppliers::list_printers_v3,
@@ -739,6 +756,7 @@ pub fn run() {
             commands::orders::merge_tables_v3,
             commands::orders::unmerge_tables_v3,
             commands::orders::void_order_item_v3,
+            commands::orders::cancel_order_v3,
             commands::orders::transfer_order_v3,
             commands::orders::schedule_delayed_order_v3,
             commands::orders::activate_delayed_orders_v3,

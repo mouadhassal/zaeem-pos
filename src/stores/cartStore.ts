@@ -40,6 +40,12 @@ export interface CartItem {
   pricePerKgCents?: number;
   /** Set when the customer asked for an exact amount ("give me 10,000 of it"): charged exactly. */
   exactAmountCents?: number;
+  /**
+   * A special price for this line (a friend, a regular): how much cheaper each unit is than the
+   * menu price. It is never sent as a lower price (the server prices from the menu): it is added
+   * to the order's discount, so the discount cap, the manager's PIN and the audit all still apply.
+   */
+  cutPerUnitCents?: number;
 }
 
 export interface SplitItem {
@@ -53,8 +59,12 @@ interface CartState {
   items: CartItem[];
   tableId: string | null;
   tableName: string | null;
+  /** The whole discount the order is sent with: `manualDiscountCents` plus every line's special price. */
   discountCents: number;
   discountReason: string;
+  /** The discount typed for the order itself (a loyalty reward, a manager's discount). */
+  manualDiscountCents: number;
+  manualDiscountReason: string;
   taxConfig: TaxConfig | undefined;
   splits: SplitItem[];
   /** DELIVERY only: the fee charged on top of the food (untaxed). */
@@ -63,6 +73,10 @@ interface CartState {
   addItem: (item: Omit<CartItem, "id">) => void;
   removeItem: (id: string) => void;
   updateQuantity: (id: string, delta: number) => void;
+  /** Sets a line's quantity to a typed number (1 or more; weighed lines keep theirs). */
+  setQuantity: (id: string, quantity: number) => void;
+  /** A special price for one line: `cutPerUnitCents` off each unit (0 takes it back). Only for lines not yet sent. */
+  setLineCut: (id: string, cutPerUnitCents: number) => void;
   voidItem: (id: string, reason: string) => void;
   /** Replaces the options and note of one line (cashier edited it before sending). */
   setLineOptions: (id: string, modifiers: CartModifier[], notes: string) => void;
@@ -84,12 +98,31 @@ interface CartState {
 
 let nextId = 1;
 
+/** What the lines' special prices add up to. */
+export function lineCutsTotal(items: CartItem[]): number {
+  return items
+    .filter((i) => !i.voided && !i.comped)
+    .reduce((sum, i) => sum + (i.cutPerUnitCents ?? 0) * i.quantity, 0);
+}
+
+/** The discount the order carries: the typed one plus the lines' special prices. */
+function withDiscount(items: CartItem[], manualCents: number, manualReason: string) {
+  const cuts = lineCutsTotal(items);
+  return {
+    items,
+    discountCents: manualCents + cuts,
+    discountReason: cuts > 0 ? (manualReason ? `${manualReason} + سعر خاص` : "سعر خاص") : manualReason,
+  };
+}
+
 export const useCartStore = create<CartState>((set, get) => ({
   items: [],
   tableId: null,
   tableName: null,
   discountCents: 0,
   discountReason: "",
+  manualDiscountCents: 0,
+  manualDiscountReason: "",
   taxConfig: { mode: "exclusive", taxRateCents: 1500, secondaryTaxRateCents: 0, serviceChargeRateCents: 0 },
   splits: [],
   deliveryFeeCents: 0,
@@ -99,46 +132,66 @@ export const useCartStore = create<CartState>((set, get) => ({
       // Same item with different options, note or gift status is a different line,
       // and a line that already exists on the server is never merged into or out of.
       // A weighed portion is always its own line: two 285 g portions are not "2 of" anything.
+      // A line with a special price is not topped up either: the new unit is at the menu price.
       const existing = item.weightGrams ? undefined : state.items.find(
-        (i) => i.menuItemId === item.menuItemId && !i.comboId && !i.voided && !i.dbItemId && !item.dbItemId && !i.weightGrams && lineKey(i) === lineKey(item)
+        (i) => i.menuItemId === item.menuItemId && !i.comboId && !i.voided && !i.dbItemId && !item.dbItemId && !i.weightGrams && !i.cutPerUnitCents && lineKey(i) === lineKey(item)
       );
       if (existing && !item.comboId) {
-        return {
-          items: state.items.map((i) =>
+        return withDiscount(
+          state.items.map((i) =>
             i.id === existing.id
               ? { ...i, quantity: i.quantity + Math.max(1, item.quantity || 1) }
               : i
           ),
-        };
+          state.manualDiscountCents, state.manualDiscountReason,
+        );
       }
-      return {
-        items: [
-          ...state.items,
-          { ...item, id: `cart-${nextId++}` },
-        ],
-      };
+      return withDiscount(
+        [...state.items, { ...item, id: `cart-${nextId++}` }],
+        state.manualDiscountCents, state.manualDiscountReason,
+      );
     }),
 
   removeItem: (id) =>
-    set((state) => ({
-      items: state.items.filter((i) => i.id !== id),
-    })),
+    set((state) => withDiscount(state.items.filter((i) => i.id !== id), state.manualDiscountCents, state.manualDiscountReason)),
 
   updateQuantity: (id, delta) =>
-    set((state) => ({
-      items: state.items
+    set((state) => withDiscount(
+      state.items
         .map((i) =>
           i.id === id && !i.weightGrams ? { ...i, quantity: Math.max(0, i.quantity + delta) } : i
         )
         .filter((i) => i.quantity > 0),
-    })),
+      state.manualDiscountCents, state.manualDiscountReason,
+    )),
+
+  setQuantity: (id, quantity) =>
+    set((state) => withDiscount(
+      state.items.map((i) =>
+        i.id === id && !i.weightGrams && Number.isInteger(quantity) && quantity >= 1 ? { ...i, quantity } : i
+      ),
+      state.manualDiscountCents, state.manualDiscountReason,
+    )),
+
+  setLineCut: (id, cutPerUnitCents) =>
+    set((state) => withDiscount(
+      state.items.map((i) => {
+        if (i.id !== id || i.weightGrams || i.dbItemId || i.comped) return i;
+        const unit = i.unitPriceCents + i.modifiers.reduce((sum, m) => sum + m.priceCents, 0);
+        const cut = Math.min(Math.max(0, Math.round(cutPerUnitCents || 0)), unit);
+        const { cutPerUnitCents: _drop, ...rest } = i;
+        return cut > 0 ? { ...rest, cutPerUnitCents: cut } : rest;
+      }),
+      state.manualDiscountCents, state.manualDiscountReason,
+    )),
 
   voidItem: (id, reason) =>
-    set((state) => ({
-      items: state.items.map((i) =>
+    set((state) => withDiscount(
+      state.items.map((i) =>
         i.id === id ? { ...i, voided: 1, voidReason: reason } : i
       ),
-    })),
+      state.manualDiscountCents, state.manualDiscountReason,
+    )),
 
   setLineOptions: (id, modifiers, notes) =>
     set((state) => ({
@@ -161,16 +214,17 @@ export const useCartStore = create<CartState>((set, get) => ({
     })),
 
   setLineComp: (id, comped, reason) =>
-    set((state) => ({
-      items: state.items.map((i) => {
+    set((state) => withDiscount(
+      state.items.map((i) => {
         if (i.id !== id) return i;
         const { compReason: _drop, ...rest } = i;
         return comped ? { ...rest, comped: true, compReason: reason } : { ...rest, comped: false };
       }),
-    })),
+      state.manualDiscountCents, state.manualDiscountReason,
+    )),
 
   setDiscount: (cents, reason) =>
-    set({ discountCents: cents, discountReason: reason }),
+    set((state) => ({ ...withDiscount(state.items, cents, reason), manualDiscountCents: cents, manualDiscountReason: reason })),
 
   setTable: (id, name) => set({ tableId: id, tableName: name }),
 
@@ -187,6 +241,8 @@ export const useCartStore = create<CartState>((set, get) => ({
       tableName: null,
       discountCents: 0,
       discountReason: "",
+      manualDiscountCents: 0,
+      manualDiscountReason: "",
       splits: [],
       deliveryFeeCents: 0,
       taxConfig: undefined,

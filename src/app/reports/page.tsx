@@ -10,6 +10,12 @@ import GiftsReport from "./GiftsReport";
 import NoShowReport from "./NoShowReport";
 import { orderStatusLabel } from "../../lib/orderStatus";
 import { realErrorText } from "../../lib/errors";
+import { useToast } from "../../hooks/useToast";
+import { getReceiptConfig } from "../../lib/orderService";
+import { printRows } from "../../lib/printer";
+import { useAccessStore } from "../../stores/accessStore";
+import { printableShopName } from "../../lib/shopName";
+import { salesStripRows, type SalesStripData } from "../../lib/ticketLayout";
 
 interface SalesSummary {
   totalSales: number;
@@ -210,6 +216,8 @@ const MARGIN_FLOOR_PCT = 40;
 export default function ReportsPage() {
   const { fmt } = useCurrency();
   const token = useAuthStore((s) => s.token);
+  // Printing the report is its own box in the owner's table (Settings > الصلاحيات).
+  const canPrintStrip = useAccessStore((s) => s.features?.report_print) !== false;
   const [dateRange, setDateRange] = useState<DateRange>("today");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
@@ -346,6 +354,30 @@ export default function ReportsPage() {
     return [start.toISOString(), end.toISOString()];
   }, [dateRange, customStart, customEnd]);
 
+  // The whole report as a long strip on the receipt printer (every item sold, the money, the totals).
+  const toast = useToast();
+  const [printingStrip, setPrintingStrip] = useState(false);
+  const printStrip = async () => {
+    setPrintingStrip(true);
+    try {
+      const [startIso, endIso] = currentRangeIso();
+      const strip = await invoke<SalesStripData>("get_sales_strip_v3", { sessionToken: token, startIso, endIso });
+      const cfg = await getReceiptConfig();
+      const from = formatArabicDate(new Date(startIso));
+      const to = formatArabicDate(new Date(endIso));
+      await printRows(salesStripRows(strip, {
+        chainName: printableShopName(cfg.chain_name, cfg.branch_name),
+        periodLabel: from === to ? from : `${from} - ${to}`,
+        ...(useAuthStore.getState().user?.name ? { printedBy: useAuthStore.getState().user!.name } : {}),
+      }));
+      toast.success("طُبع التقرير ✓");
+    } catch (e) {
+      toast.error(`تعذرت طباعة التقرير: ${realErrorText(e)}`);
+    } finally {
+      setPrintingStrip(false);
+    }
+  };
+
   const runVarianceReport = async () => {
     setVarianceLoading(true);
     setVarianceError(null);
@@ -460,6 +492,17 @@ export default function ReportsPage() {
     <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-ink-900">التقارير</h1>
+        <div className="flex items-center gap-2">
+{canPrintStrip && (
+        <button
+          onClick={() => void printStrip()}
+          disabled={printingStrip}
+          data-testid="report-print-strip"
+          className="h-10 px-4 rounded-sm bg-saffron-50 text-saffron-700 border border-saffron-200 text-sm font-bold font-arabic hover:bg-saffron-100 transition-colors disabled:opacity-50"
+        >
+          {printingStrip ? "جاري الطباعة..." : "طباعة على الطابعة"}
+        </button>
+)}
         <button
           onClick={exportPdf}
           disabled={exportingPdf}
@@ -467,6 +510,7 @@ export default function ReportsPage() {
         >
           {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
         </button>
+        </div>
       </div>
 
       <div className="space-y-3">

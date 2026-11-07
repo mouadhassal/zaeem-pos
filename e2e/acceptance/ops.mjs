@@ -381,6 +381,9 @@ try {
 
   await step("delivery-flow", "out, delivered, statement, settle: cash taken, order paid, balance cleared", async () => {
     await nav("delivery");
+    // The order cards are small; the order opens in the side panel on the left, where its actions are.
+    await clickId("delivery-card");
+    await byId("delivery-panel");
     {
       const before = jobs("receipt").length;
       await clickId("delivery-print");
@@ -393,6 +396,7 @@ try {
     const d = (await call("list_deliveries_v3", { filter: { statuses: [] } }))[0];
     eq(d.pay_cents, ids.payValue, "driver pay frozen from the setting");
     ok(d.cash_due_cents > 0, "driver carries cash");
+    await clickId("delivery-panel-close");
     await clickId("delivery-tab-statement");
     await until(async () => (await b.$$('[data-testid="statement-row"]')).length === 1, "statement row");
     eq(await textOf("statement-delivered"), "1", "delivered count");
@@ -650,6 +654,7 @@ try {
       }, cartItem);
     const setPerRow = async (n) => {
       await nav("settings");
+      await reg.click(/التفضيلات والتصميم/);
       await clickId(`products-per-row-${n}`);
       await nav("pos");
       await pause(600);
@@ -1167,6 +1172,143 @@ try {
     eq([menu.track_stock, menu.stock_quantity, menu.extra_barcodes.length], [1, 11, 1], "the till's menu list carries stock and the carton barcode");
   });
 
+  // The restaurants' new requests, end to end in the real app: the preferences tiles, typed quantity, the +5
+  // button, a special price, instant pickup, cancelling a whole order in one step, the report printed as a strip on
+  // the receipt printer, the help chat (offline: straight from the guide), the bell, and the marketplace tab.
+  await step("newreq", "preferences, typed quantity, +5, special price, instant pickup, cancel whole order, report strip, help chat, bell, market tab", async () => {
+    await b.setWindowSize(1366, 768);
+    await b.refresh();
+    await byId("sidebar", 30000);
+    const prefsOf = () => b.execute(() => JSON.parse(localStorage.getItem("zaeem_pos_prefs") ?? "{}"));
+
+    // 1) the Preferences and design tab writes the owner's choices
+    await nav("settings");
+    await reg.click(/التفضيلات والتصميم/);
+    await byId("prefs-tab");
+    await clickId("pref-panel-compact");
+    await clickId("pref-qty-step-5");
+    await clickId("pref-price-everyone");
+    await clickId("pref-delivery-small");
+    await clickId("pref-options-layout-table");
+    const prefs = await prefsOf();
+    eq([prefs.orderPanelSize, prefs.quantityStep, prefs.priceEdit, prefs.deliveryCardSize, prefs.optionsLayout], ["compact", 5, "everyone", "small", "table"], "the tiles are saved");
+    console.log("  shot:", await reg.shot("prefs-tab"));
+    // the cola got an options group in an earlier step: adding it opens the picker; in the table layout
+    // it shows two big buttons, Without and With
+    const addCola = async () => {
+      await reg.addItem("كولا");
+      await byId("option-picker");
+      await byId("option-table");
+      await clickId("option-table-without");
+      await pause(300);
+      await until(async () => b.execute(() => { const c = document.querySelector('[data-testid="option-choice"]'); c?.click(); return !!c; }), "an option to pick");
+      await until(async () => (await textOf("option-table-summary")).includes("بدون"), "the pick shows in the summary line");
+      await clickId("option-confirm");
+      await until(async () => !(await exists("option-picker")), "picker closed");
+    };
+
+    // 2) the till: compact lines, typed quantity, +5, special price
+    await nav("pos");
+    await clickId("order-type-TAKEAWAY");
+    await pause(400);
+    await addCola();
+    await until(async () => (await b.$$('[data-testid="order-line"]')).length === 1, "the cola is in the cart");
+    eq(await (await byId("order-line")).getAttribute("data-size"), "compact", "the order panel is compact");
+    await clickId("order-line-qty");
+    // (WebDriver's setValue clears the field first, which blurs it and closes the editor: type like a person instead)
+    await byId("order-line-qty-input");
+    await b.execute((val) => {
+      const el = document.querySelector('[data-testid="order-line-qty-input"]');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, val);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    }, "10");
+    await until(async () => (await textOf("order-line-qty")) === "10", "a typed 10 sets the quantity");
+    await clickId("order-line-step");
+    await until(async () => (await textOf("order-line-qty")) === "15", "+5 makes 15");
+    await clickId("order-line-price");
+    await (await byId("line-price-input")).setValue("1500");
+    await clickId("line-price-confirm");
+    await byId("order-line-cut");
+    console.log("  shot:", await reg.shot("newreq-cart"));
+    // pay: the cut is recorded as an order discount of (2000 - 1500) x 15
+    ok(await b.execute(() => { const x = [...document.querySelectorAll("button")].find((e) => e.offsetParent !== null && e.innerText.trim() === "دفع"); x?.click(); return !!x; }), "pay button");
+    await byId("pay-exact");
+    await clickId("pay-exact");
+    await reg.click(/تأكيد وطباعة/);
+    await until(async () => {
+      const day = await call("list_order_history_v3", { businessDate: null });
+      return day.rows.some((r) => r.item_count >= 15 && r.status === "PAID");
+    }, "the 15 colas were paid", 25000);
+    const day = await call("list_order_history_v3", { businessDate: null });
+    const sale = day.rows.find((r) => r.item_count >= 15 && r.status === "PAID");
+    const detail = await call("get_order_history_detail_v3", { orderId: sale.id });
+    eq(detail.discount_cents, 7500, "the special price became a discount of 500 x 15");
+    eq(detail.total_cents, 22500, "15 x 1500");
+
+    // 3) instant pickup: no time typed, the kitchen gets it at once
+    await clickId("order-type-TAKEAWAY");
+    await byId("pickup-fields");
+    await addCola();
+    const slipsBefore = jobs("bar").length;
+    await clickId("pickup-in-0");
+    await reg.type('input[placeholder="اسم العميل"]', "ليلى");
+    await clickId("pay-send-kitchen");
+    await until(async () => (await call("list_pickup_orders_v3")).some((p) => p.customer_name === "ليلى"), "the instant pickup is in the queue", 20000);
+    const instant = (await call("list_pickup_orders_v3")).find((p) => p.customer_name === "ليلى");
+    ok(instant.kitchen_sent, "an instant pickup goes to the kitchen straight away");
+    await until(async () => jobs("bar").length > slipsBefore, "the bar printer got the slip", 20000);
+
+    // 4) cancel the whole order in one step: load it from the queue, then the red bin
+    await clickId("pickup-queue-button");
+    await reg.click(/استلام ودفع/);
+    await pause(800);
+    await recover(); // close the payment dialog that opens for a collected pickup
+    await until(async () => (await b.$$('[data-testid="order-line"]')).length >= 1, "the pickup order is in the cart");
+    await clickId("cancel-whole-order");
+    await byId("cancel-order-modal");
+    await clickId("cancel-reason-الزبون غادر");
+    await clickId("cancel-order-confirm");
+    await until(async () => {
+      const q = await call("list_pickup_orders_v3");
+      return !q.some((p) => p.customer_name === "ليلى");
+    }, "the cancelled order left the pickup queue", 20000);
+    const hist = await call("list_order_history_v3", { businessDate: null });
+    ok(hist.rows.some((r) => r.id === instant.order_id && r.status === "CANCELLED"), "the order is CANCELLED in the history");
+
+    // 5) the report on the receipt printer
+    const beforeStrip = jobs("receipt").length;
+    await nav("reports");
+    await clickId("report-print-strip");
+    await until(async () => jobs("receipt").length > beforeStrip, "the report strip printed on the receipt printer", 25000);
+
+    // 6) the help chat answers from the guide, with no AI (a test licence has none)
+    await clickId("help-button");
+    await byId("help-panel");
+    await (await byId("help-input")).setValue("كيف ألغي طلباً كاملاً؟");
+    await clickId("help-send");
+    await until(async () => (await b.$$('[data-testid="help-msg-assistant"]')).length >= 2, "the help chat answered", 25000);
+    const answer = await b.execute(() => [...document.querySelectorAll('[data-testid="help-msg-assistant"]')].at(-1).innerText);
+    ok(answer.includes("إلغاء"), `the answer is about cancelling: ${answer.slice(0, 120)}`);
+    console.log("  shot:", await reg.shot("help-chat"));
+    await clickId("help-button");
+
+    // 7) the bell opens
+    await clickId("notification-bell");
+    await byId("notification-list");
+    await clickId("notification-bell");
+
+    // 8) the market tab explains itself when there is no cloud link
+    await nav("stockroom");
+    await clickId("stockroom-tab-market");
+    await until(async () => (await exists("market-error")) || (await exists("market-not-supplier")), "the market tab answers");
+
+    // 9) the delivery page opens a side panel
+    await nav("delivery");
+    await byId("delivery-grid");
+    eq(await (await byId("delivery-grid")).getAttribute("data-size"), "small", "the delivery cards follow the preference");
+  });
+
   // The updater. It used to test `window.__TAURI__` (absent in Tauri 2 here), so it returned early on every
   // till: no update check ever ran and the Settings button said "preview mode". Two modes:
   //  * a normal build (current version, nothing newer published): the Settings button must reach the update
@@ -1422,6 +1564,73 @@ try {
     ok((await refused(asManager("get_payslip_v3", { userId: owner.id, month: monthKey, tzOffsetMinutes: tzNow }))).includes("خارج صلاحياتك"), "even with full access the owner's pay is out of reach");
     await call("save_payroll_settings_v3", { settings: { ...rules, manager_access: "PREPARE" } });
     ok(ownerToken, "owner token present");
+  });
+
+  // The owner's "who can open what" table: Settings > الصلاحيات, enforced by the server for a real cashier and
+  // manager, printing the report as its own box, and a change reaching the person without a restart.
+  await step("access", "owner access table: cashier/manager reports + print, finance, menu, owner never locked out", async () => {
+    await b.setWindowSize(1366, 768);
+    await nav("settings");
+    await reg.click(/الصلاحيات/);
+    await byId("access-tab");
+    console.log("  shot:", await reg.shot("access-tab"));
+
+    const branchId = (await call("list_branches_v3"))[0][0];
+    await call("create_staff_v3", { targetBranchId: branchId, role: "CASHIER", name: "كاشير الصلاحيات", pin: "112233" });
+    await call("create_staff_v3", { targetBranchId: branchId, role: "MANAGER", name: "مدير الصلاحيات", pin: "445566" });
+    const cashierToken = (await call("login_pin_v3", { pin: "112233", deviceId: "e2e-access-c" })).token;
+    const managerToken = (await call("login_pin_v3", { pin: "445566", deviceId: "e2e-access-m" })).token;
+    const as = (token, cmd, args = {}) => call(cmd, { sessionToken: token, ...args });
+    const refused = (p) => p.then(() => "", (e) => String(e.message));
+    const day = { todayStartIso: "2020-01-01T00:00:00.000Z", rangeEndIso: null };
+    const strip = { startIso: "2020-01-01T00:00:00.000Z", endIso: "2099-01-01T00:00:00.000Z" };
+
+    // 1) the defaults are what the system always did
+    ok((await refused(as(cashierToken, "get_sales_report_v3", day))).includes("forbidden"), "a cashier cannot open the reports by default");
+    await as(managerToken, "get_sales_report_v3", day);
+    await as(managerToken, "get_sales_strip_v3", strip);
+    ok((await refused(as(managerToken, "list_operational_costs_v3", { startIso: strip.startIso, endIso: strip.endIso }))).includes("forbidden"), "finance is not a manager page by default");
+    const mine = await as(cashierToken, "get_my_access_v3");
+    eq(Object.keys(mine).sort(), ["finance", "inventory", "menu", "refund", "report_print", "reports", "settings", "staff"], "the areas in a cashier's own answer");
+    ok(Object.values(mine).every((v) => v === false), "a cashier has none of them by default");
+    ok((await refused(as(cashierToken, "get_role_access_v3"))).includes("للمالك"), "only the owner reads the table");
+    ok((await refused(as(managerToken, "save_role_access_v3", { cells: [] }))).includes("للمالك"), "only the owner changes the table");
+
+    // 2) the owner ticks the cashier's reports box on the real screen
+    await clickId("access-CASHIER-reports");
+    await byId("access-saved");
+    let table = await call("get_role_access_v3");
+    const cell = (role, f) => table.find((c) => c.role === role && c.feature === f).allowed;
+    ok(cell("CASHIER", "reports") && !cell("CASHIER", "report_print"), "the screen saved the cashier's reports box only");
+
+    // 3) the cashier reads the reports at once, without logging in again, but cannot print the strip
+    await as(cashierToken, "get_sales_report_v3", day);
+    eq((await as(cashierToken, "get_my_access_v3")).reports, true, "the cashier's own answer follows");
+    ok((await refused(as(cashierToken, "get_sales_strip_v3", strip))).includes("طباعة التقرير غير مسموحة"), "reading is not printing");
+    ok((await refused(as(cashierToken, "get_sales_strip_v3", strip))).length > 0, "print refused");
+    ok((await refused(as(cashierToken, "create_menu_item_v3", { name: "x", categoryId: "x", priceCents: 1, costCents: 0 }))).includes("forbidden"), "and nothing else opened");
+
+    // 4) print is its own box; then the owner takes the reports from the manager
+    await clickId("access-CASHIER-report_print");
+    await until(async () => (await call("get_role_access_v3")).find((c) => c.role === "CASHIER" && c.feature === "report_print").allowed, "print box saved");
+    await as(cashierToken, "get_sales_strip_v3", strip);
+    await clickId("access-MANAGER-reports");
+    await until(async () => !(await call("get_role_access_v3")).find((c) => c.role === "MANAGER" && c.feature === "reports").allowed, "manager box saved");
+    ok((await refused(as(managerToken, "get_sales_report_v3", day))).includes("owner"), "the manager is told the owner decided");
+    ok((await refused(as(managerToken, "get_sales_strip_v3", strip))).length > 0, "the manager cannot print either");
+
+    // 5) selling is never switched off, the owner is never locked out
+    await call("get_sales_report_v3", day);
+    await call("get_sales_strip_v3", strip);
+    ok((await refused(as(cashierToken, "list_tables_v3"))) === "", "the cashier still sees the tables");
+
+    // 6) put everything back: the shop is as it was
+    await clickId("access-CASHIER-reports");
+    await clickId("access-CASHIER-report_print");
+    await clickId("access-MANAGER-reports");
+    await until(async () => (await call("get_role_access_v3")).every((c) => c.allowed === (c.role === "MANAGER" && c.feature !== "finance")), "defaults restored");
+    ok((await refused(as(cashierToken, "get_sales_report_v3", day))).includes("forbidden"), "the cashier is locked out again");
+    await as(managerToken, "get_sales_report_v3", day);
   });
 
   // POS Lite (licence plan pos_lite): only the till's screens, Full-only

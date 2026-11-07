@@ -27,7 +27,10 @@ export const MARKETPLACE_URL: string = (import.meta.env.VITE_MARKETPLACE_URL as 
 // link to a dead destination. Gate every call site behind this flag
 // instead of ripping the integration out; flip it once marketplace is
 // actually deployed.
-export const MARKETPLACE_ENABLED = false;
+// 2026-11-05: market.wenzdes.com is live (checked), so the buttons are on. The user signs in on the
+// site themselves, with their own account; the POS-side link (goods received, supplier stock) needs no
+// session from the browser: it talks to the cloud with this till's licence.
+export const MARKETPLACE_ENABLED = true;
 
 export async function openMarketplace(): Promise<void> {
   await open(`${MARKETPLACE_URL}/buyer`);

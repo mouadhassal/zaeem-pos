@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { IconPrinter } from "@tabler/icons-react";
+import { IconPrinter, IconX } from "@tabler/icons-react";
 import { printableShopName } from "../../lib/shopName";
 import {
   assignDriver, listDeliveries, listDrivers, setDeliveryStatus, toCollectCents,
@@ -13,6 +13,8 @@ import { formatMoney } from "../../lib/money";
 import { formatArabicTime } from "../../lib/dateLocal";
 import { realErrorText } from "../../lib/errors";
 import { useToast } from "../../hooks/useToast";
+import { usePrefsStore } from "../../stores/prefsStore";
+import type { DeliveryCardSize } from "../../lib/prefs";
 
 const OPEN: DeliveryStatus[] = ["NEW", "ASSIGNED", "OUT"];
 
@@ -24,9 +26,19 @@ const STATUS_STYLE: Record<DeliveryStatus, string> = {
   FAILED: "bg-danger-soft text-danger",
 };
 
+/** How the order cards are laid out for each size the owner can pick in the preferences. */
+const GRID: Record<DeliveryCardSize, string> = {
+  large: "grid gap-3 lg:grid-cols-2",
+  medium: "grid gap-2 grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
+  small: "grid gap-1.5 grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6",
+};
+
+interface OrderLineInfo { name: string; quantity: number; modifiers: string[]; notes: string | null }
+
 /** Orders waiting for a driver, with a driver, or on the road; plus what finished today. */
 export default function LiveTab() {
   const toast = useToast();
+  const cardSize = usePrefsStore((s) => s.deliveryCardSize);
   const [open, setOpen] = useState<Delivery[]>([]);
   const [done, setDone] = useState<Delivery[]>([]);
   const labelOf = useOrderLabels([...open, ...done].map((d) => d.order_id));
@@ -34,6 +46,9 @@ export default function LiveTab() {
   const [busy, setBusy] = useState<string | null>(null);
   const [failing, setFailing] = useState<string | null>(null);
   const [failReason, setFailReason] = useState("");
+  // The order whose details are open in the side panel.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [lines, setLines] = useState<OrderLineInfo[] | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -56,6 +71,28 @@ export default function LiveTab() {
     const t = setInterval(() => void load(), 15_000);
     return () => clearInterval(t);
   }, [load]);
+
+  const selected = [...open, ...done].find((d) => d.order_id === selectedId) ?? null;
+
+  // The panel shows what is in the order, read when it is opened.
+  useEffect(() => {
+    setLines(null);
+    if (!selectedId) return;
+    let alive = true;
+    retrieveOpenOrder(selectedId)
+      .then((o) => {
+        if (alive) setLines((o?.items ?? []).map((i) => ({ name: i.name, quantity: i.quantity, modifiers: i.modifiers.map((m) => m.name), notes: i.notes || null })));
+      })
+      .catch(() => { if (alive) setLines([]); });
+    return () => { alive = false; };
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") setSelectedId(null); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selectedId]);
 
   const act = async (orderId: string, fn: () => Promise<unknown>, ok?: string) => {
     setBusy(orderId);
@@ -99,59 +136,38 @@ export default function LiveTab() {
     setFailReason("");
   };
 
+  const isOpen = (d: Delivery) => OPEN.includes(d.status);
+
   return (
     <div className="space-y-6">
       {open.length === 0 && <div className="text-center text-ink-500 font-arabic py-10" data-testid="delivery-empty">لا توجد طلبات توصيل مفتوحة</div>}
 
-      <div className="grid gap-3 lg:grid-cols-2">
+      <div className={GRID[cardSize]} data-testid="delivery-grid" data-size={cardSize}>
         {open.map((d) => (
-          <div key={d.order_id} className="rounded-md border border-ink-200 bg-white p-4 space-y-3" data-testid="delivery-card" data-status={d.status}>
+          <button
+            type="button"
+            key={d.order_id}
+            onClick={() => setSelectedId(d.order_id)}
+            className={`text-start rounded-md border bg-white transition-colors hover:border-saffron-500 ${selectedId === d.order_id ? "border-saffron-600 ring-2 ring-saffron-200" : "border-ink-200"} ${cardSize === "large" ? "p-4 space-y-3" : cardSize === "medium" ? "p-3 space-y-1.5" : "p-2 space-y-1"}`}
+            data-testid="delivery-card"
+            data-status={d.status}
+          >
             <div className="flex items-start justify-between gap-2">
-              <div>
-                <div className="font-arabic font-bold text-ink-900"><span dir="ltr">{labelOf(d.order_id)}</span> · {d.customer_name || "—"}</div>
-                <div className="text-xs text-ink-500 font-mono" dir="ltr">{d.customer_phone}</div>
+              <div className="min-w-0">
+                <div className={`font-arabic font-bold text-ink-900 truncate ${cardSize === "small" ? "text-xs" : ""}`}><span dir="ltr">{labelOf(d.order_id)}</span>{cardSize !== "small" && <> · {d.customer_name || "—"}</>}</div>
+                {cardSize === "large" && <div className="text-xs text-ink-500 font-mono" dir="ltr">{d.customer_phone}</div>}
               </div>
-              <span className={`px-2.5 py-1 rounded-full text-xs font-arabic font-bold ${STATUS_STYLE[d.status]}`}>{deliveryStatusLabel(d.status)}</span>
+              <span className={`shrink-0 rounded-full font-arabic font-bold ${STATUS_STYLE[d.status]} ${cardSize === "small" ? "px-1.5 py-0.5 text-[10px]" : "px-2.5 py-1 text-xs"}`}>{deliveryStatusLabel(d.status)}</span>
             </div>
-            <div className="font-arabic text-sm text-ink-800">{d.address}</div>
-            <div className="flex items-center justify-between text-sm font-arabic">
+            {cardSize !== "small" && <div className={`font-arabic text-ink-800 ${cardSize === "medium" ? "text-xs truncate" : "text-sm"}`}>{d.address}</div>}
+            <div className={`flex items-center justify-between font-arabic ${cardSize === "large" ? "text-sm" : "text-xs"}`}>
               <span className="text-ink-500">{formatArabicTime(new Date(d.created_at))}</span>
               <span className="font-bold" data-testid="delivery-collect">
-                {toCollectCents(d) > 0 ? `يُحصَّل ${formatMoney(toCollectCents(d))}` : "مدفوع"}
+                {toCollectCents(d) > 0 ? (cardSize === "large" ? `يُحصَّل ${formatMoney(toCollectCents(d))}` : formatMoney(toCollectCents(d))) : "مدفوع"}
               </span>
             </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={d.driver_id ?? ""}
-                disabled={busy === d.order_id}
-                onChange={(e) => act(d.order_id, () => assignDriver(d.order_id, e.target.value || null))}
-                className="h-10 px-3 rounded-sm bg-white border-2 border-ink-200 font-arabic text-sm outline-none focus:border-saffron-600"
-                data-testid="delivery-driver-select"
-              >
-                <option value="">اختر سائقاً...</option>
-                {drivers.map((dr) => <option key={dr.id} value={dr.id}>{dr.name}</option>)}
-              </select>
-              {d.status === "ASSIGNED" && (
-                <button onClick={() => act(d.order_id, () => setDeliveryStatus(d.order_id, "OUT"))} disabled={busy === d.order_id} className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold font-arabic" data-testid="delivery-out">خرج للتوصيل</button>
-              )}
-              {(d.status === "ASSIGNED" || d.status === "OUT") && (
-                <button onClick={() => act(d.order_id, () => setDeliveryStatus(d.order_id, "DELIVERED"), "تم التسليم ✓")} disabled={busy === d.order_id} className="h-10 px-4 rounded-sm bg-green-600 text-white text-sm font-bold font-arabic" data-testid="delivery-delivered">تم التسليم</button>
-              )}
-              <button onClick={() => setFailing(d.order_id)} className="h-10 px-3 rounded-sm bg-danger-soft text-danger text-sm font-bold font-arabic" data-testid="delivery-fail">فشل</button>
-              <button onClick={() => printSlip(d)} className="h-10 w-10 rounded-sm bg-ink-100 text-ink-700 flex items-center justify-center" title="طباعة ورقة التوصيل" data-testid="delivery-print">
-                <IconPrinter className="w-4 h-4" />
-              </button>
-            </div>
-
-            {failing === d.order_id && (
-              <div className="flex gap-2" data-testid="delivery-fail-form">
-                <input value={failReason} onChange={(e) => setFailReason(e.target.value)} placeholder="سبب الفشل (العميل لم يرد، عنوان خاطئ...)" className="flex-1 h-10 px-3 rounded-sm border-2 border-ink-200 font-arabic text-sm outline-none focus:border-danger" data-testid="delivery-fail-reason" />
-                <button onClick={() => submitFail(d.order_id)} className="h-10 px-4 rounded-sm bg-danger text-white text-sm font-bold font-arabic" data-testid="delivery-fail-confirm">تأكيد</button>
-                <button onClick={() => { setFailing(null); setFailReason(""); }} className="h-10 px-3 rounded-sm bg-ink-100 text-ink-700 text-sm font-arabic">إلغاء</button>
-              </div>
-            )}
-          </div>
+            {cardSize === "large" && <div className="text-xs font-arabic text-ink-500">{d.driver_name ? `السائق: ${d.driver_name}` : "بلا سائق بعد"}</div>}
+          </button>
         ))}
       </div>
 
@@ -168,7 +184,7 @@ export default function LiveTab() {
               </thead>
               <tbody>
                 {done.map((d) => (
-                  <tr key={d.order_id} className="border-t border-ink-100" data-testid="delivery-done-row">
+                  <tr key={d.order_id} onClick={() => setSelectedId(d.order_id)} className="border-t border-ink-100 cursor-pointer hover:bg-surface-alt" data-testid="delivery-done-row">
                     <td className="p-2"><span dir="ltr">{labelOf(d.order_id)}</span></td>
                     <td className="p-2">{d.address}</td>
                     <td className="p-2">{d.driver_name ?? "—"}</td>
@@ -180,6 +196,104 @@ export default function LiveTab() {
             </table>
           </div>
         </div>
+      )}
+
+      {/* Details: slides in from the left edge over the page. */}
+      {selected && (
+        <>
+          <div className="fixed inset-0 bg-black/20 z-30" onClick={() => setSelectedId(null)} aria-hidden="true" />
+          <aside
+            className="fixed top-0 bottom-0 left-0 w-[400px] max-w-[92vw] bg-white border-r border-ink-200 shadow-2xl z-40 flex flex-col animate-[slideInLeft_180ms_ease-out]"
+            dir="rtl"
+            data-testid="delivery-panel"
+          >
+            <div className="flex items-start justify-between gap-2 p-4 border-b border-ink-200">
+              <div className="min-w-0">
+                <div className="font-arabic font-bold text-lg text-ink-900"><span dir="ltr">{labelOf(selected.order_id)}</span> · {selected.customer_name || "—"}</div>
+                <div className="text-sm text-ink-500 font-mono" dir="ltr">{selected.customer_phone}</div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className={`px-2.5 py-1 rounded-full text-xs font-arabic font-bold ${STATUS_STYLE[selected.status]}`}>{deliveryStatusLabel(selected.status)}</span>
+                <button type="button" onClick={() => setSelectedId(null)} aria-label="إغلاق" data-testid="delivery-panel-close" className="w-8 h-8 rounded-lg hover:bg-surface-alt flex items-center justify-center text-ink-500"><IconX className="w-4 h-4" /></button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 font-arabic">
+              <div>
+                <div className="text-xs text-ink-500 mb-0.5">العنوان</div>
+                <div className="text-ink-900">{selected.address || "—"}</div>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-ink-500">{formatArabicTime(new Date(selected.created_at))}</span>
+                <span className="font-bold">{toCollectCents(selected) > 0 ? `يُحصَّل ${formatMoney(toCollectCents(selected))}` : "مدفوع"}</span>
+              </div>
+              <div className="text-sm"><span className="text-ink-500">السائق: </span><b>{selected.driver_name ?? "—"}</b></div>
+              {selected.note && <div className="text-sm text-danger bg-danger-soft rounded-sm px-3 py-2">{selected.note}</div>}
+
+              <div>
+                <div className="text-xs text-ink-500 mb-1">الأصناف</div>
+                {lines === null ? (
+                  <div className="text-sm text-ink-400">…</div>
+                ) : lines.length === 0 ? (
+                  <div className="text-sm text-ink-400">لا تتوفر تفاصيل الأصناف</div>
+                ) : (
+                  <ul className="space-y-1.5" data-testid="delivery-panel-lines">
+                    {lines.map((l, i) => (
+                      <li key={i} className="text-sm">
+                        <span className="font-bold">{l.quantity} ×</span> {l.name}
+                        {l.modifiers.length > 0 && <div className="text-xs text-ink-500 ps-5">{l.modifiers.join("، ")}</div>}
+                        {l.notes && <div className="text-xs text-ink-500 ps-5 italic">«{l.notes}»</div>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="flex justify-between text-sm border-t border-ink-100 pt-3">
+                <span className="text-ink-500">رسوم التوصيل {formatMoney(selected.fee_cents)}</span>
+                <span className="font-bold">الإجمالي {formatMoney(selected.total_cents)}</span>
+              </div>
+            </div>
+
+            {isOpen(selected) && (
+              <div className="p-4 border-t border-ink-200 space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={selected.driver_id ?? ""}
+                    disabled={busy === selected.order_id}
+                    onChange={(e) => act(selected.order_id, () => assignDriver(selected.order_id, e.target.value || null))}
+                    className="h-10 px-3 rounded-sm bg-white border-2 border-ink-200 font-arabic text-sm outline-none focus:border-saffron-600"
+                    data-testid="delivery-driver-select"
+                  >
+                    <option value="">اختر سائقاً...</option>
+                    {drivers.map((dr) => <option key={dr.id} value={dr.id}>{dr.name}</option>)}
+                  </select>
+                  {selected.status === "ASSIGNED" && (
+                    <button onClick={() => act(selected.order_id, () => setDeliveryStatus(selected.order_id, "OUT"))} disabled={busy === selected.order_id} className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold font-arabic" data-testid="delivery-out">خرج للتوصيل</button>
+                  )}
+                  {(selected.status === "ASSIGNED" || selected.status === "OUT") && (
+                    <button onClick={() => act(selected.order_id, () => setDeliveryStatus(selected.order_id, "DELIVERED"), "تم التسليم ✓")} disabled={busy === selected.order_id} className="h-10 px-4 rounded-sm bg-green-600 text-white text-sm font-bold font-arabic" data-testid="delivery-delivered">تم التسليم</button>
+                  )}
+                  <button onClick={() => setFailing(selected.order_id)} className="h-10 px-3 rounded-sm bg-danger-soft text-danger text-sm font-bold font-arabic" data-testid="delivery-fail">فشل</button>
+                  <button onClick={() => printSlip(selected)} className="h-10 w-10 rounded-sm bg-ink-100 text-ink-700 flex items-center justify-center" title="طباعة ورقة التوصيل" data-testid="delivery-print">
+                    <IconPrinter className="w-4 h-4" />
+                  </button>
+                </div>
+                {failing === selected.order_id && (
+                  <div className="flex gap-2" data-testid="delivery-fail-form">
+                    <input value={failReason} onChange={(e) => setFailReason(e.target.value)} placeholder="سبب الفشل (العميل لم يرد، عنوان خاطئ...)" className="flex-1 h-10 px-3 rounded-sm border-2 border-ink-200 font-arabic text-sm outline-none focus:border-danger" data-testid="delivery-fail-reason" />
+                    <button onClick={() => submitFail(selected.order_id)} className="h-10 px-4 rounded-sm bg-danger text-white text-sm font-bold font-arabic" data-testid="delivery-fail-confirm">تأكيد</button>
+                    <button onClick={() => { setFailing(null); setFailReason(""); }} className="h-10 px-3 rounded-sm bg-ink-100 text-ink-700 text-sm font-arabic">إلغاء</button>
+                  </div>
+                )}
+              </div>
+            )}
+            {!isOpen(selected) && (
+              <div className="p-4 border-t border-ink-200">
+                <button onClick={() => printSlip(selected)} className="h-10 px-4 rounded-sm bg-ink-100 text-ink-700 text-sm font-arabic flex items-center gap-2" data-testid="delivery-print"><IconPrinter className="w-4 h-4" />طباعة ورقة التوصيل</button>
+              </div>
+            )}
+          </aside>
+        </>
       )}
     </div>
   );

@@ -20,6 +20,8 @@ const VoidItemModal = lazy(() => import("../../components/modals/VoidItemModal")
 const TransferOrderModal = lazy(() => import("../../components/modals/TransferOrderModal"));
 const OnScreenReceiptModal = lazy(() => import("../../components/modals/OnScreenReceiptModal"));
 const DebtSelectModal = lazy(() => import("../../components/modals/DebtSelectModal"));
+const CancelOrderModal = lazy(() => import("../../components/modals/CancelOrderModal"));
+const LinePriceModal = lazy(() => import("../../components/modals/LinePriceModal"));
 import MenuGridContainer from "./MenuGridContainer";
 import OrderPanel from "../../components/ui/OrderPanel";
 import WeightModal from "../../components/modals/WeightModal";
@@ -53,8 +55,10 @@ import { assignDriver, listDrivers, type Driver } from "../../lib/deliveryServic
 import OptionPickerModal from "../../components/modals/OptionPickerModal";
 import GiftModal from "../../components/modals/GiftModal";
 import PickupQueueModal from "../../components/modals/PickupQueueModal";
-import { listPickupOrders, sendDuePickupsToKitchen, sendPickupToKitchenNow, markPickupNoShow, type PickupOrder } from "../../lib/orderService";
-import { PICKUP_MINUTES, pickupAtFromClock, pickupAtFromMinutes } from "../../lib/pickup";
+import { cancelOrder, listPickupOrders, sendDuePickupsToKitchen, sendPickupToKitchenNow, markPickupNoShow, type PickupOrder } from "../../lib/orderService";
+import { pickupAtFromClock, pickupAtFromMinutes } from "../../lib/pickup";
+import { billItemName, pickupChoiceLabel } from "../../lib/prefs";
+import { getPrefs, usePrefsStore } from "../../stores/prefsStore";
 import { formatArabicTime } from "../../lib/dateLocal";
 import { useOptionsStore } from "../../stores/optionsStore";
 import { customModifiers, groupsForItem, selectionFromModifiers } from "../../lib/itemOptions";
@@ -76,8 +80,10 @@ import { customModifiers, groupsForItem, selectionFromModifiers } from "../../li
  */
 /** The order's lines as the receipt prints them: options, kitchen note, gift status. */
 function receiptLines(items: CartItem[]): ReceiptItem[] {
+  // Some owners want the bill to say "مشروب" for every drink (the price is still the real drink price).
+  const prefs = getPrefs();
   return items.filter((i) => !i.voided).map((i) => ({
-    name: i.name,
+    name: billItemName(i.name, i.categoryName ?? "", prefs),
     quantity: i.quantity,
     priceCents: i.unitPriceCents,
     modifiers: i.modifiers,
@@ -135,6 +141,10 @@ export default function POSPage() {
   const [showSplit, setShowSplit] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
   const [showVoid, setShowVoid] = useState(false);
+  // Cancel the whole order (one step instead of line by line) and the special-price dialog.
+  const [cancelDialog, setCancelDialog] = useState<null | { needsPin: boolean; error: string | null }>(null);
+  const [priceTargetId, setPriceTargetId] = useState<string | null>(null);
+  const prefs = usePrefsStore();
   const [showTransfer, setShowTransfer] = useState(false);
   const [showOnScreenReceipt, setShowOnScreenReceipt] = useState(false);
   const [showLoyaltyScan, setShowLoyaltyScan] = useState(false);
@@ -653,6 +663,7 @@ export default function POSPage() {
         ...(orderType !== "DINE_IN" && orderType !== "DEBT" && customerPhone ? { customerPhone } : {}),
         ...(referenceCode ? { referenceCode } : {}),
         ...(orderType === "DELIVERY" ? { deliveryAddress: deliveryAddress.trim(), deliveryFeeCents: state.deliveryFeeCents } : {}),
+        ...(orderType === "DELIVERY" && driverId && drivers.find((d) => d.id === driverId)?.name ? { driverName: drivers.find((d) => d.id === driverId)!.name } : {}),
       };
       let pointsEarned: number | null = null;
       try {
@@ -909,9 +920,11 @@ export default function POSPage() {
     }
   };
 
-  const handleVoidConfirm = async (reason: string, managerOverridePin?: string) => {
-    if (!voidTargetItem) return;
-    const target = items.find((i) => i.id === voidTargetItem);
+  // Removes one line. A line already on the server is voided there (and the kitchen is told);
+  // one still only in the cart just leaves it. "needs-pin" means the server wants a manager's
+  // PIN for a line this valuable, so the caller shows the dialog.
+  const voidLineNow = async (itemId: string, reason: string, managerOverridePin?: string): Promise<"ok" | "needs-pin" | "failed"> => {
+    const target = items.find((i) => i.id === itemId);
     if (target) {
       if (target.dbItemId) {
         try {
@@ -935,15 +948,20 @@ export default function POSPage() {
             }
           }
         } catch (err) {
+          if (/manager/i.test(String(err))) return "needs-pin";
           setSuccessMsg(`تعذر حفظ الإلغاء: ${realErrorText(err)}`);
           setTimeout(() => setSuccessMsg(null), 4000);
-          setShowVoid(false);
-          setVoidTargetItem(null);
-          return;
+          return "failed";
         }
       }
-      voidItem(voidTargetItem, reason);
+      voidItem(itemId, reason);
     }
+    return "ok";
+  };
+
+  const handleVoidConfirm = async (reason: string, managerOverridePin?: string) => {
+    if (!voidTargetItem) return;
+    await voidLineNow(voidTargetItem, reason, managerOverridePin);
     setShowVoid(false);
     setVoidTargetItem(null);
   };
@@ -979,6 +997,7 @@ export default function POSPage() {
       notes: i.notes,
       comped: !!i.comped,
       compReason: i.compReason ?? "",
+      ...(i.cutPerUnitCents ? { cutPerUnitCents: i.cutPerUnitCents } : {}),
       ...(i.weightGrams ? { weightGrams: i.weightGrams, ...(i.pricePerKgCents ? { pricePerKgCents: i.pricePerKgCents } : {}) } : {}),
       sent: !!i.dbItemId,
     })),
@@ -1080,7 +1099,8 @@ export default function POSPage() {
   const handleSendPickup = async () => {
     if (!user || orderType !== "TAKEAWAY" || pickupAtMs === null || items.length === 0) return;
     if (!shiftId) { setShowOpenShift(true); return; }
-    if (!customerName.trim()) { flash("اكتب اسم الزبون لطلب الاستلام"); return; }
+    if (prefs.pickupNameRequired && !customerName.trim()) { flash("اكتب اسم الزبون لطلب الاستلام"); return; }
+    const pickupName = customerName.trim() || "زبون";
     try {
       const state = useCartStore.getState();
       const t = state.tax();
@@ -1089,7 +1109,7 @@ export default function POSPage() {
         items.map((i) => ({ menuItemId: i.menuItemId, name: i.name, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers, ...compFields(i) })),
         state.subtotal(), t.taxCents, t.secondaryTaxCents, t.serviceChargeCents,
         state.total(), state.discountCents, state.discountReason,
-        customerName.trim(), customerPhone.trim() || undefined, undefined,
+        pickupName, customerPhone.trim() || undefined, undefined,
         state.savings(), shiftId ?? undefined, discountOverridePin ?? undefined, 0, pickupAtMs,
       );
       setDiscountOverridePin(null);
@@ -1135,6 +1155,46 @@ export default function POSPage() {
 
   const handleIncrementLine = (id: string) => updateQuantity(id, 1);
   const handleDecrementLine = (id: string) => updateQuantity(id, -1);
+  const handleSetQuantityLine = (id: string, quantity: number) => useCartStore.getState().setQuantity(id, quantity);
+
+  // Special price for a line (a friend, a regular): who may do it is the owner's choice (preferences).
+  const isManagerRole = ["MANAGER", "OWNER", "PLATFORM", "ADMIN"].includes(String(user?.role ?? "").toUpperCase());
+  const canEditPrice = prefs.priceEdit === "everyone" || (prefs.priceEdit === "manager" && isManagerRole);
+  const priceTarget = priceTargetId ? items.find((i) => i.id === priceTargetId) : undefined;
+
+  // Cancels the whole order. One that was already sent to the kitchen is cancelled on the server in
+  // a single step (every line, the table, the kitchen queue); one still only in the cart is just cleared.
+  const resetAfterCancel = () => {
+    clearCart();
+    setOpenOrderId(null);
+    setOpenOrderTotals(null);
+    setSentQuantities({});
+  };
+  const runCancelWholeOrder = async (reason: string, pin?: string) => {
+    if (!openOrderId) { resetAfterCancel(); return; }
+    const lines = items.filter((i) => !i.voided);
+    await cancelOrder(openOrderId, reason, pin);
+    try {
+      await printKitchenChange({
+        kind: "CANCEL", tableName: tableName ?? "", orderNumber: await orderLabel(openOrderId), orderType: ticketOrderType,
+        items: lines.map((l) => slipItem(l)), cancelReason: reason,
+      });
+    } catch { /* the order is cancelled; a missing slip is already announced by printKitchenChange */ }
+    resetAfterCancel();
+    fetchTables();
+    refreshPickups();
+    flash("أُلغي الطلب كاملاً ✓", 3000);
+  };
+  const handleCancelWholeOrderClick = async () => {
+    if (items.length === 0) return;
+    if (prefs.askCancelOrderReason || prefs.confirmCancelOrder) { setCancelDialog({ needsPin: false, error: null }); return; }
+    try {
+      await runCancelWholeOrder("إلغاء الطلب");
+    } catch (err) {
+      // Too valuable for this person without a manager: ask for the PIN.
+      setCancelDialog({ needsPin: /رمز المدير|manager/i.test(String(err)), error: realErrorText(err) });
+    }
+  };
 
   // Edit a line's options/note, or give it away ("on the house"), before it
   // is sent. Lines already sent to the kitchen are changed through the
@@ -1249,9 +1309,15 @@ export default function POSPage() {
     }
   };
 
-  const handleVoidLineClick = (id: string) => {
+  const handleVoidLineClick = async (id: string) => {
     const target = items.find((i) => i.id === id);
     if (!target) return;
+    if (!prefs.askVoidReason) {
+      // The owner turned the question off: remove it at once. Only a line worth more than the
+      // manager threshold still opens the dialog (for the PIN), because the server insists.
+      const result = await voidLineNow(id, "حذف سريع");
+      if (result !== "needs-pin") return;
+    }
     setVoidTargetItem(id);
     setVoidTargetName(target.name);
     setVoidTargetPrice((target.unitPriceCents + target.modifiers.reduce((sum, m) => sum + m.priceCents, 0)) * target.quantity);
@@ -1361,6 +1427,8 @@ export default function POSPage() {
           onVoidLine={handleVoidLineClick}
           onEditLine={handleEditLine}
           onGiftLine={handleGiftClick}
+          onSetQuantityLine={handleSetQuantityLine}
+          {...(canEditPrice ? { onEditPriceLine: (id: string) => setPriceTargetId(id) } : {})}
           toolbar={
             <div className="grid grid-cols-4 gap-1.5">
               <button
@@ -1392,25 +1460,8 @@ export default function POSPage() {
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  if (items.length === 0) return;
-                  // Sat next to Split/Transfer/Print with identical styling
-                  // and a hover-only danger cue (useless on a touch screen)
-                  // -- one mistimed tap wiped the whole in-progress order
-                  // with no undo. Every other destructive action in this
-                  // app (void item, cancel PO, suspend staff, force-close
-                  // shift) already confirms first; this one didn't.
-                  if (window.confirm("هل تريد إلغاء الطلبية الحالية بالكامل؟ لا يمكن التراجع عن ذلك.")) {
-                    // Only clears the LOCAL cart view -- if openOrderId is
-                    // set, the real order already sent to the kitchen is
-                    // untouched in the DB (kitchen keeps cooking what it
-                    // already has; nothing here cancels that order itself).
-                    clearCart();
-                    setOpenOrderId(null);
-                    setOpenOrderTotals(null);
-                    setSentQuantities({});
-                  }
-                }}
+                onClick={() => void handleCancelWholeOrderClick()}
+                data-testid="cancel-whole-order"
                 disabled={items.length === 0}
                 title="إلغاء الطلبية"
                 className="h-9 rounded-[9px] bg-danger-100 text-danger-600 flex items-center justify-center hover:bg-danger-600 hover:text-white transition-colors disabled:opacity-30 disabled:pointer-events-none"
@@ -1590,7 +1641,7 @@ export default function POSPage() {
             >
               الدفع الآن
             </button>
-            {PICKUP_MINUTES.map((m) => {
+            {prefs.pickupChoices.map((m) => {
               const active = pickupAtMs !== null && !pickupClock && Math.abs(pickupAtMs - pickupAtFromMinutes(Date.now(), m)) < 60_000;
               return (
                 <button
@@ -1599,7 +1650,7 @@ export default function POSPage() {
                   onClick={() => { setPickupAtMs(pickupAtFromMinutes(Date.now(), m)); setPickupClock(""); }}
                   className={`h-8 px-2.5 rounded-[7px] text-xs font-bold font-arabic ${active ? "bg-accent text-white" : "bg-surface text-text-3 border border-line"}`}
                 >
-                  بعد {m} د
+                  {pickupChoiceLabel(m)}
                 </button>
               );
             })}
@@ -1617,7 +1668,7 @@ export default function POSPage() {
             />
             {pickupAtMs !== null && (
               <span className="text-xs font-arabic text-accent-text font-bold" data-testid="pickup-at">
-                يأتي الساعة {formatArabicTime(new Date(pickupAtMs))}{!customerName.trim() ? " — اكتب اسم الزبون" : ""}
+                {pickupAtMs - Date.now() < 60_000 ? "للمطبخ الآن" : `يأتي الساعة ${formatArabicTime(new Date(pickupAtMs))}`}{prefs.pickupNameRequired && !customerName.trim() ? " — اكتب اسم الزبون" : ""}
               </span>
             )}
           </div>
@@ -1941,6 +1992,36 @@ export default function POSPage() {
 
       {showMerge && (
         <MergeTablesModal tables={tables} selectedTableId={tableId} onMerge={handleMergeConfirm} onCancel={() => setShowMerge(false)} />
+      )}
+
+      {cancelDialog && (
+        <CancelOrderModal
+          lineCount={items.filter((i) => !i.voided).length}
+          totalCents={openOrderId ? (openOrderTotals?.totalCents ?? cartTotalCents) : cartTotalCents}
+          askReason={prefs.askCancelOrderReason}
+          needsPin={cancelDialog.needsPin}
+          error={cancelDialog.error}
+          onCancel={() => setCancelDialog(null)}
+          onConfirm={async (reason, pin) => {
+            await runCancelWholeOrder(reason, pin);
+            setCancelDialog(null);
+          }}
+        />
+      )}
+
+      {priceTarget && (
+        <LinePriceModal
+          itemName={priceTarget.name}
+          unitCents={priceTarget.unitPriceCents + priceTarget.modifiers.reduce((sum, m) => sum + m.priceCents, 0)}
+          currentPriceCents={priceTarget.cutPerUnitCents ? priceTarget.unitPriceCents + priceTarget.modifiers.reduce((sum, m) => sum + m.priceCents, 0) - priceTarget.cutPerUnitCents : null}
+          onCancel={() => setPriceTargetId(null)}
+          onReset={() => { useCartStore.getState().setLineCut(priceTarget.id, 0); setPriceTargetId(null); }}
+          onConfirm={(price) => {
+            const unit = priceTarget.unitPriceCents + priceTarget.modifiers.reduce((sum, m) => sum + m.priceCents, 0);
+            useCartStore.getState().setLineCut(priceTarget.id, unit - price);
+            setPriceTargetId(null);
+          }}
+        />
       )}
 
       {showVoid && (

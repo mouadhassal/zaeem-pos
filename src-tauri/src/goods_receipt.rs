@@ -34,6 +34,11 @@ pub struct PendingItem {
     pub suggested_ingredient_unit: Option<String>,
     #[serde(default)]
     pub suggested_match_score: Option<f64>,
+    /// Filled locally for a shop: the POS product whose name matches (when no kitchen ingredient does).
+    #[serde(default)]
+    pub suggested_local_menu_item_id: Option<String>,
+    #[serde(default)]
+    pub suggested_menu_item_name: Option<String>,
     /// Filled locally: packages converted to the suggested ingredient's unit.
     #[serde(default)]
     pub suggested_stock_added: Option<f64>,
@@ -73,6 +78,9 @@ pub struct ReceiptLine {
     pub received_qty: f64,
     pub local_ingredient_id: Option<String>,
     pub stock_added: Option<f64>,
+    /// A shop product that gets the goods (its piece/kg stock), when no kitchen ingredient does.
+    #[serde(default)]
+    pub local_menu_item_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +139,14 @@ pub fn prepare_pending(conn: &Connection, mut resp: PendingReceipts) -> Result<P
             };
             let unit = unit.or_else(|| item.suggested_ingredient_unit.clone());
             item.suggested_stock_added = Some(suggested_stock(item, unit.as_deref()));
+            if item.suggested_local_ingredient_id.is_none() {
+                if let Some(tenant_id) = resp.tenant_id.as_deref() {
+                    if let Ok(Some((id, name))) = crate::supplier_link::suggest_match(conn, tenant_id, &item.product_name) {
+                        item.suggested_local_menu_item_id = Some(id);
+                        item.suggested_menu_item_name = Some(name);
+                    }
+                }
+            }
         }
         kept.push(order);
     }
@@ -172,7 +188,17 @@ pub fn apply_receipt(
     let repo = Repo::new(conn);
     let reason = format!("استلام طلبية السوق #{}", order_id.chars().take(8).collect::<String>());
     let mut touched = Vec::new();
+    let now = chrono::Utc::now().to_rfc3339();
     for line in lines {
+        if line.local_ingredient_id.is_none() {
+            if let (Some(item_id), Some(added)) = (line.local_menu_item_id.as_deref(), line.stock_added.or(Some(line.received_qty))) {
+                if added > 0.0 {
+                    conn.execute("UPDATE menu_items SET track_stock = 1 WHERE id = ?1 AND tenant_id = ?2", params![item_id, tenant_id]).map_err(|e| e.to_string())?;
+                    crate::stockroom::apply_change(conn, tenant_id, branch_id, item_id, added, "RECEIVE", Some(&reason), None, Some(actor_id), &now)?;
+                }
+            }
+            continue;
+        }
         let (Some(ingredient_id), Some(added)) = (line.local_ingredient_id.as_deref(), line.stock_added) else { continue };
         if added <= 0.0 {
             continue;
@@ -326,7 +352,7 @@ mod tests {
             order_item_id: "oi-1".into(), supplier_product_id: None, product_name: "طحين".into(), unit: Some("كيس 10 كجم".into()),
             unit_size: size, unit_measure: measure.map(str::to_string), qty, unit_price_cents: 400, line_total_cents: 1200,
             suggested_local_ingredient_id: None, suggested_ingredient_name: None, suggested_ingredient_unit: None,
-            suggested_match_score: None, suggested_stock_added: None,
+            suggested_match_score: None, suggested_local_menu_item_id: None, suggested_menu_item_name: None, suggested_stock_added: None,
         }
     }
 

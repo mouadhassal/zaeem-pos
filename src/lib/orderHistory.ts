@@ -8,6 +8,7 @@ import { orderNo } from "./orderNumber";
 import { printableShopName } from "./shopName";
 import type { ReceiptData } from "./ticketLayout";
 import type { RefundableLine } from "./refund";
+import { billItemName, type Prefs } from "./prefs";
 
 function token(): string {
   return useAuthStore.getState().token ?? "";
@@ -36,12 +37,15 @@ export interface HistoryDay {
   business_date: string;
   today: string;
   own_only: boolean;
+  /** How many days before today this person may open (0 = today only). */
+  back_days: number;
   rows: HistoryRow[];
 }
 
 export interface HistoryItem {
   id: string;
   name: string;
+  category_name?: string | null;
   quantity: number;
   unit_price_cents: number;
   modifiers: { name: string; price_cents: number }[];
@@ -70,6 +74,7 @@ export interface HistoryDetail extends HistoryRow {
   discount_reason: string | null;
   delivery_fee_cents: number;
   delivery_address: string | null;
+  driver_name?: string | null;
   items: HistoryItem[];
   cancelled: { name: string; quantity: number; reason: string | null }[];
   payments: { method: string; amount_cents: number; change_cents: number; created_at: string; reference_code: string | null }[];
@@ -131,8 +136,30 @@ export function refundableLines(d: HistoryDetail): RefundableLine[] {
   }));
 }
 
-/** The receipt as it was paid, marked as a copy, with any refund under the total. */
-export function receiptFromHistory(d: HistoryDetail, cfg: { chain_name: string; branch_name: string; currency: string }): ReceiptData {
+export interface HistoryAccess {
+  /** 0 = a cashier sees today only; N = today and the N days before. */
+  cashier_history_days: number;
+  /** A cashier also sees what other staff took. */
+  cashier_sees_all: boolean;
+}
+
+export function getHistoryAccess(): Promise<HistoryAccess> {
+  return invoke<HistoryAccess>("get_history_access_v3", { sessionToken: token() });
+}
+
+export function saveHistoryAccess(access: HistoryAccess): Promise<void> {
+  return invoke<void>("save_history_access_v3", { sessionToken: token(), access });
+}
+
+/**
+ * The receipt as it was paid, with its own date, time, number and cashier, and any refund under the
+ * total. Marked "copy" (and the time it was printed again) unless the owner turned that off.
+ */
+export function receiptFromHistory(
+  d: HistoryDetail,
+  cfg: { chain_name: string; branch_name: string; currency: string },
+  prefs: Pick<Prefs, "reprintCopyMark" | "drinkLabelOn" | "drinkLabel" | "drinkCategories"> = { reprintCopyMark: true, drinkLabelOn: false, drinkLabel: "", drinkCategories: [] },
+): ReceiptData {
   const pay = d.payments[0];
   const paidAt = d.closed_at ?? pay?.created_at;
   return {
@@ -143,7 +170,7 @@ export function receiptFromHistory(d: HistoryDetail, cfg: { chain_name: string; 
     tableName: d.table_name ?? "",
     orderType: d.order_type,
     items: d.items.map((i) => ({
-      name: i.name,
+      name: billItemName(i.name, i.category_name ?? "", prefs),
       quantity: i.quantity,
       priceCents: i.unit_price_cents,
       modifiers: i.modifiers.map((m) => ({ name: m.name, priceCents: m.price_cents })),
@@ -166,10 +193,11 @@ export function receiptFromHistory(d: HistoryDetail, cfg: { chain_name: string; 
     ...(d.customer_phone ? { customerPhone: d.customer_phone } : {}),
     ...(d.delivery_address ? { deliveryAddress: d.delivery_address } : {}),
     ...(d.delivery_fee_cents > 0 ? { deliveryFeeCents: d.delivery_fee_cents } : {}),
+    ...(d.driver_name ? { driverName: d.driver_name } : {}),
     ...(d.cashier_name ? { cashier: d.cashier_name } : {}),
     createdAt: d.created_at,
     ...(paidAt ? { paidAt } : {}),
-    isCopy: true,
+    ...(prefs.reprintCopyMark ? { isCopy: true } : {}),
     ...(d.refunded_cents > 0 ? { refundedCents: d.refunded_cents } : {}),
   };
 }

@@ -3,6 +3,7 @@ import {
   kitchenTicketRows,
   receiptLineCents,
   receiptRows,
+  salesStripRows,
   rowsText,
   type KitchenTicketData,
   type ReceiptData,
@@ -219,6 +220,25 @@ describe("receipt", () => {
     expect(t).toContain("رسوم التوصيل");
   });
 
+  it("names the driver on a delivery bill, and only on a delivery bill", () => {
+    const delivery = rtext(receipt({ orderType: "DELIVERY", tableName: "", deliveryAddress: "المزة", driverName: "سامر" }));
+    expect(delivery).toContain("السائق | سامر");
+    expect(rtext(receipt({ orderType: "TAKEAWAY", tableName: "", driverName: "سامر" }))).not.toContain("السائق");
+  });
+
+  it("never prints the word null for a missing driver, customer, phone or address", () => {
+    const t = rtext(receipt({
+      orderType: "TAKEAWAY", tableName: "", customerName: "null", customerPhone: "undefined", deliveryAddress: " ",
+      driverName: "null", cashier: "null",
+    }));
+    expect(t).not.toContain("null");
+    expect(t).not.toContain("undefined");
+    expect(t).not.toContain("السائق");
+    expect(t).not.toContain("العميل");
+    const k = text(ticket({ orderType: "TAKEAWAY", customerName: "null" }));
+    expect(k).not.toContain("null");
+  });
+
   it("a plain sale has none of the extra sections", () => {
     const t = rtext(receipt({
       items: [{ name: "كولا", quantity: 1, priceCents: 3_000 }], subtotalCents: 3_000, totalCents: 3_000, changeCents: 0,
@@ -290,5 +310,42 @@ describe("driver statement slip", () => {
   it("marks settled lines and leaves room for a signature", () => {
     expect(text).toContain("✓");
     expect(text).toContain("توقيع السائق");
+  });
+});
+
+describe("sales strip", () => {
+  const strip: import("./ticketLayout").SalesStripData = {
+    order_count: 2, gross_cents: 20_000, refunds_cents: 1_000, net_cents: 19_000, discounts_cents: 500, tax_cents: 0, delivery_fees_cents: 1_000,
+    gifts_count: 1, gifts_cents: 1_000, cancelled_lines: 2, cancelled_orders: 1,
+    items: [
+      { name: "برغر", category: "وجبات", quantity: 4, by_weight: false, amount_cents: 17_000 },
+      { name: "جبنة", category: "وجبات", quantity: 0.75, by_weight: true, amount_cents: 1_500 },
+    ],
+    categories: [{ name: "وجبات", count: 5, amount_cents: 18_500 }],
+    payments: [{ name: "CASH", count: 1, amount_cents: 11_000 }, { name: "CARD", count: 1, amount_cents: 9_000 }],
+    order_types: [{ name: "DINE_IN", count: 1, amount_cents: 11_000 }, { name: "DELIVERY", count: 1, amount_cents: 9_000 }],
+  };
+  const lines = (over = {}) => rowsText(salesStripRows({ ...strip, ...over }, { chainName: "مطعم", periodLabel: "اليوم" }, NOW)).join("\n");
+
+  it("lists every item with its quantity, kilos for weighed goods, and the net total on top", () => {
+    const t = lines();
+    expect(t).toContain("4 × برغر");
+    expect(t).toContain("0.75 كغ × جبنة");
+    expect(t).toContain("صافي المبيعات");
+    expect(t.indexOf("صافي المبيعات")).toBeLessThan(t.indexOf("4 × برغر"));
+    expect(t).toContain("نقداً (1)");
+    expect(t).toContain("بطاقة (1)");
+    expect(t).toContain("توصيل (1)");
+  });
+
+  it("says what is not counted, and omits that block when there is nothing", () => {
+    expect(lines()).toContain("غير محتسب في المبيعات");
+    const none = lines({ gifts_count: 0, cancelled_lines: 0, cancelled_orders: 0, refunds_cents: 0 });
+    expect(none).not.toContain("غير محتسب");
+    expect(none).not.toContain("المرتجعات");
+  });
+
+  it("an empty period still prints a clear report", () => {
+    expect(lines({ items: [], payments: [], categories: [], order_types: [], order_count: 0, gross_cents: 0, net_cents: 0 })).toContain("لا مبيعات في هذه الفترة");
   });
 });

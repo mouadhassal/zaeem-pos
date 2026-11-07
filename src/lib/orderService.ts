@@ -723,6 +723,16 @@ export async function voidOrderItem(
   });
 }
 
+/** Cancels a whole unpaid order in one step (every line, the table, the kitchen queue). */
+export async function cancelOrder(orderId: string, reason?: string, managerOverridePin?: string): Promise<void> {
+  return invoke("cancel_order_v3", {
+    sessionToken: token(),
+    orderId,
+    reason: reason ?? null,
+    managerOverridePin: managerOverridePin ?? null,
+  });
+}
+
 export async function transferOrder(
   orderId: string,
   fromTableId: string,

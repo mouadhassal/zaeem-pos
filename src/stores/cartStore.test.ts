@@ -28,3 +28,53 @@ describe("addItem", () => {
     expect(useCartStore.getState().items).toHaveLength(2);
   });
 });
+
+describe("typed quantity and special prices", () => {
+  beforeEach(() => useCartStore.getState().clearCart());
+
+  it("sets a typed quantity, never below one, never on a non-integer", () => {
+    const s = useCartStore.getState();
+    s.addItem({ ...base, quantity: 1 });
+    const id = useCartStore.getState().items[0]!.id;
+    s.setQuantity(id, 10);
+    expect(useCartStore.getState().items[0]!.quantity).toBe(10);
+    s.setQuantity(id, 0);
+    s.setQuantity(id, 2.5);
+    expect(useCartStore.getState().items[0]!.quantity).toBe(10);
+  });
+
+  it("a special price becomes part of the order discount and follows the quantity", () => {
+    const s = useCartStore.getState();
+    s.addItem({ ...base, quantity: 2 });
+    const id = useCartStore.getState().items[0]!.id;
+    s.setLineCut(id, 500);
+    expect(useCartStore.getState().discountCents).toBe(1000);
+    expect(useCartStore.getState().discountReason).toBe("سعر خاص");
+    s.updateQuantity(id, 1);
+    expect(useCartStore.getState().discountCents).toBe(1500);
+    s.setQuantity(id, 5);
+    expect(useCartStore.getState().discountCents).toBe(2500);
+    s.removeItem(id);
+    expect(useCartStore.getState().discountCents).toBe(0);
+  });
+
+  it("adds to a typed discount instead of replacing it, and cannot cut below zero", () => {
+    const s = useCartStore.getState();
+    s.addItem({ ...base, quantity: 1 });
+    const id = useCartStore.getState().items[0]!.id;
+    s.setDiscount(300, "مكافأة ولاء");
+    s.setLineCut(id, 99999);
+    expect(useCartStore.getState().discountCents).toBe(300 + 1500);
+    expect(useCartStore.getState().discountReason).toBe("مكافأة ولاء + سعر خاص");
+    s.setLineCut(id, 0);
+    expect(useCartStore.getState().discountCents).toBe(300);
+  });
+
+  it("does not top up a line that has a special price", () => {
+    const s = useCartStore.getState();
+    s.addItem({ ...base, quantity: 1 });
+    s.setLineCut(useCartStore.getState().items[0]!.id, 200);
+    s.addItem({ ...base, quantity: 1 });
+    expect(useCartStore.getState().items).toHaveLength(2);
+  });
+});

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  choiceKind,
+  choiceShortName,
   customModifiers,
   groupsForItem,
   lineKey,
@@ -113,5 +115,22 @@ describe("editing a line", () => {
       { name: "خيار قديم", priceCents: 500 },
     ]);
     expect(left).toEqual([{ name: "خيار قديم", priceCents: 500 }]);
+  });
+});
+
+describe("choiceKind", () => {
+  it("sorts a choice into without / with / other by its name", () => {
+    expect(choiceKind("بدون بصل")).toBe("without");
+    expect(choiceKind("زيادة جبنة")).toBe("with");
+    expect(choiceKind("إضافة جبنة")).toBe("with");
+    expect(choiceKind("مع صوص")).toBe("with");
+    expect(choiceKind("وسط")).toBe("other");
+    expect(choiceKind("مع")).toBe("with");
+    expect(choiceKind("مشوي")).toBe("other");
+  });
+  it("shortens a name for the table", () => {
+    expect(choiceShortName("بدون بصل")).toBe("بصل");
+    expect(choiceShortName("زيادة جبنة")).toBe("جبنة");
+    expect(choiceShortName("حار")).toBe("حار");
   });
 });

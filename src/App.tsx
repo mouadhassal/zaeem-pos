@@ -1,5 +1,6 @@
 import { useState, lazy, Suspense, useEffect } from "react";
 import { useAuthStore } from "./stores/authStore";
+import { useAccessStore } from "./stores/accessStore";
 import { APP_NAVIGATE_EVENT } from "./lib/appNav";
 import LoginPage from "./components/LoginPage";
 import SetupWizard from "./components/SetupWizard";
@@ -11,6 +12,7 @@ import LicenseBanner from "./components/LicenseBanner";
 import { backOfficeLocked, type LicenseStatus } from "./lib/license";
 import { IconLock } from "@tabler/icons-react";
 import { usePermissions } from "./hooks/usePermissions";
+import { PAGE_FEATURE } from "./lib/permissions";
 import { usePlanStore, LITE_PAGES } from "./stores/planStore";
 
 const DashboardPage = lazy(() => import("./app/dashboard/page"));
@@ -75,6 +77,25 @@ function PosLayout({ children }: { children: React.ReactNode }) {
   });
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
   const { navItems } = usePermissions();
+
+  // The owner's "who can open what" table: asked at sign-in and every half minute, so a change the owner makes
+  // reaches an open till without a restart. A page that gets closed under someone sends them back to the till.
+  const userId = useAuthStore((s) => s.user?.id);
+  useEffect(() => {
+    if (!userId) return;
+    void useAccessStore.getState().load();
+    const t = setInterval(() => void useAccessStore.getState().load(), 30000);
+    return () => {
+      clearInterval(t);
+      useAccessStore.getState().reset();
+    };
+  }, [userId]);
+  useEffect(() => {
+    // Only the pages the owner's table can close, and only once the table has been read.
+    if (!PAGE_FEATURE[activeView] || !useAccessStore.getState().features) return;
+    const item = navItems.find((n) => n.id === activeView);
+    if (!item || !item.allowed) setActiveView("pos");
+  }, [navItems, activeView]);
 
   const handleNavigate = (id: string) => {
     if (id === "debug") {

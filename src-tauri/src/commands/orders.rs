@@ -1260,6 +1260,62 @@ pub(crate) fn void_order_item_v3_impl(state: &Db, license: &crate::license::clou
     Ok(())
 }
 
+/// Cancels a whole unpaid order in one step (a big order the customer
+/// dropped): every line is voided with the reason, the order becomes
+/// CANCELLED, the table is freed, and the sync outbox gets the order. The same
+/// manager rule as voiding a line applies to the order's whole value: above the
+/// owner's void threshold a manager's PIN is needed (a manager himself is not asked).
+#[tauri::command]
+pub fn cancel_order_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, order_id: String, reason: Option<String>, manager_override_pin: Option<String>) -> Result<(), String> {
+    cancel_order_v3_impl(&state, &license, session_token, order_id, reason, manager_override_pin)
+}
+
+pub(crate) fn cancel_order_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, order_id: String, reason: Option<String>, manager_override_pin: Option<String>) -> Result<(), String> {
+    crate::lan::reject_if_local_kitchen_satellite("cancel_order_v3")?;
+    let actor = authenticate_actor(state, &session_token)?;
+    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    let scope = actor.scope();
+    let reason = reason.as_deref().map(str::trim).filter(|r| !r.is_empty()).unwrap_or("إلغاء الطلب").to_string();
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let total_cents = Repo::new(&conn).open_order_total_cents(&scope, &order_id).map_err(|e| e.to_string())?;
+    let thresholds = Repo::new(&conn).get_manager_thresholds(&actor.tenant_id).map_err(|e| e.to_string())?;
+    let override_used = if actor.role.rank() < Role::Manager.rank() && thresholds.void_requires_manager(total_cents) {
+        let Some(pin) = manager_override_pin.as_deref() else {
+            return Err("إلغاء طلب بهذه القيمة يحتاج رمز المدير".to_string());
+        };
+        if !verify_manager_override_impl(&mut conn, &actor, pin)? {
+            return Err("رمز المدير غير صحيح".to_string());
+        }
+        true
+    } else {
+        false
+    };
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).cancel_open_order(&scope, &order_id, &reason, &actor.id, &actor.device_id).map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
+        audit::Action::OrderStatusChanged, "order", &order_id,
+        None, Some(&serde_json::json!({ "action": "cancel_order", "reason": reason, "value_cents": total_cents, "manager_override_used": override_used })),
+    ).map_err(|e| e.to_string())?;
+    let (tenant_id, branch_id): (String, String) = tx.query_row(
+        "SELECT tenant_id, branch_id FROM orders WHERE id = ?1", params![order_id], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).map_err(|e| e.to_string())?;
+    let license_status = license.cached_status();
+    let item_ids: Vec<String> = {
+        let mut stmt = tx.prepare("SELECT id FROM order_items WHERE order_id = ?1 AND voided = 1").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![order_id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    };
+    for item_id in &item_ids {
+        sync_enqueue_single_order_item(&tx, &tenant_id, &branch_id, item_id, &actor.device_id, &license_status)?;
+    }
+    sync_enqueue_order(&tx, &tenant_id, &branch_id, &order_id, &actor.device_id, &license_status)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Transfer an order from one table to another.
 #[tauri::command]
 pub fn transfer_order_v3(state: State<Db>, session_token: String, order_id: String, from_table_id: String, to_table_id: String) -> Result<(), String> {

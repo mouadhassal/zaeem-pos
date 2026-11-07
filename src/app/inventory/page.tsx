@@ -1,3 +1,4 @@
+import UsdHelper from "../../components/ui/UsdHelper";
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
 import { realErrorText, friendlyDeleteErrorText } from "../../lib/errors";
@@ -858,7 +859,10 @@ function AddIngredientModal({
           {errors.unit && <p className="text-danger text-xs mt-1">{errors.unit}</p>}
         </div>
         <div>
-          <input type="number" value={cost || ""} onChange={(e) => setCost(Number(e.target.value))} placeholder="التكلفة لكل وحدة (هللة)" className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
+          <div className="flex items-center gap-2">
+            <input type="number" value={cost || ""} onChange={(e) => setCost(Number(e.target.value))} placeholder="التكلفة لكل وحدة (هللة)" className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
+            <UsdHelper onConvert={(minor) => setCost(minor)} />
+          </div>
           {errors.cost_cents_per_unit && <p className="text-danger text-xs mt-1">{errors.cost_cents_per_unit}</p>}
         </div>
         <div>
@@ -970,6 +974,7 @@ function EditIngredientModal({
           )}
         </div>
         <div>
+          <div className="flex items-center gap-2">
           <input
             type="number"
             value={cost || ""}
@@ -977,6 +982,8 @@ function EditIngredientModal({
             placeholder="التكلفة لكل وحدة (هللة)"
             className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
+          <UsdHelper onConvert={(minor) => setCost(minor)} />
+          </div>
           {errors.cost_cents_per_unit && (
             <p className="text-danger text-xs mt-1">
               {errors.cost_cents_per_unit}
@@ -1787,6 +1794,7 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId, prefill }: { onClo
                 </select>
                 <input type="number" min="0" step="0.01" value={item.quantity_ordered || ""} onChange={(e) => updateItem(idx, "quantity_ordered", Number(e.target.value))} placeholder="الكمية" className="w-24 h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
                 <input type="number" min="0" value={item.unit_cost_cents || ""} onChange={(e) => updateItem(idx, "unit_cost_cents", Number(e.target.value))} placeholder="سعر الوحدة" className="w-28 h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
+                <UsdHelper onConvert={(minor) => updateItem(idx, "unit_cost_cents", minor)} />
                 <button onClick={() => removeItem(idx)} className="h-10 px-3 rounded-sm text-danger hover:bg-danger-soft transition-colors"><IconX className="w-4 h-4" /></button>
               </div>
             ))}

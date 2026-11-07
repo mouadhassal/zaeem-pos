@@ -80,7 +80,42 @@ const KITCHEN_NAV: SidebarNavItem[] = [
   { id: "guide", label: "الدليل", icon: "book", allowed: true },
 ];
 
-export function getNavForRole(role: UserRole | undefined): SidebarNavItem[] {
+/**
+ * The pages the owner can open or close per role (Settings > الصلاحيات), and the feature each belongs to.
+ * Must match `Feature::key` in `src-tauri/src/role_access.rs`.
+ */
+export const PAGE_FEATURE: Record<string, string> = {
+  reports: "reports",
+  ai: "reports",
+  finance: "finance",
+  inventory: "inventory",
+  stockroom: "inventory",
+  menu: "menu",
+  "ai-onboarding": "menu",
+  staff: "staff",
+  schedule: "staff",
+  settings: "settings",
+};
+
+/** What the owner's choices do to a role's normal pages: close the ones taken away, open the ones given. */
+export function applyAccess(nav: SidebarNavItem[], features: Record<string, boolean> | null | undefined): SidebarNavItem[] {
+  if (!features) return nav;
+  const kept = nav.filter((n) => {
+    const f = PAGE_FEATURE[n.id];
+    return f === undefined || features[f] !== false;
+  });
+  const have = new Set(kept.map((n) => n.id));
+  const added = OWNER_NAV.filter((n) => {
+    const f = PAGE_FEATURE[n.id];
+    return f !== undefined && features[f] === true && !have.has(n.id);
+  });
+  if (added.length === 0) return kept;
+  const guideAt = kept.findIndex((n) => n.id === "guide");
+  const at = guideAt === -1 ? kept.length : guideAt;
+  return [...kept.slice(0, at), ...added, ...kept.slice(at)];
+}
+
+export function getNavForRole(role: UserRole | undefined, features?: Record<string, boolean> | null): SidebarNavItem[] {
   const nav = (() => {
     switch (role) {
       case "OWNER":
@@ -96,10 +131,11 @@ export function getNavForRole(role: UserRole | undefined): SidebarNavItem[] {
         return CASHIER_NAV;
     }
   })();
+  const shown = role === "OWNER" ? nav : applyAccess(nav, features);
   if (import.meta.env.DEV) {
-    return [...nav, { id: "debug", label: "التشخيص", icon: "terminal", allowed: true }];
+    return [...shown, { id: "debug", label: "التشخيص", icon: "terminal", allowed: true }];
   }
-  return nav;
+  return shown;
 }
 
 export function getMaxDiscountPercent(role: UserRole | undefined): number {

@@ -149,6 +149,50 @@ impl AiProvider for RemoteAiProvider {
         // The edge function has no confidence signal; report none rather than a fake number.
         Ok(Answer { text: parsed.answer, confidence: None })
     }
+
+    fn help(&self, q: &str, guide: &str, role: &str, history: &[ChatTurn]) -> Result<Answer, AiError> {
+        self.help_request(q, guide, role, history)
+    }
+}
+
+impl RemoteAiProvider {
+    /// The help chat's round trip: same edge function, `mode: "help"`.
+    fn help_request(&self, q: &str, guide: &str, role: &str, history: &[ChatTurn]) -> Result<Answer, AiError> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| AiError::Unavailable(e.to_string()))?;
+        let resp = client
+            .post(format!("{}/functions/v1/ai-assistant", self.supabase_url))
+            .header("apikey", &self.supabase_anon_key)
+            .header("Authorization", format!("Bearer {}", self.supabase_anon_key))
+            .json(&serde_json::json!({
+                "mode": "help",
+                "device_token": self.device_token(),
+                "question": q,
+                "guide": guide,
+                "role": role,
+                "history": history,
+            }))
+            .send()
+            .map_err(|e| AiError::Unavailable(friendly_transport_error(e.is_timeout(), e.is_connect())))?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().unwrap_or_default();
+            return Err(AiError::Unavailable(friendly_failure(status, &body)));
+        }
+        #[derive(serde::Deserialize)]
+        struct HelpResponse {
+            answer: String,
+        }
+        let parsed: HelpResponse = resp
+            .json()
+            .map_err(|_| AiError::Unavailable("وصل رد غير مفهوم من خدمة الذكاء الاصطناعي، حاول مجدداً".into()))?;
+        if parsed.answer.trim().is_empty() {
+            return Err(AiError::Unavailable("لم يستطع المساعد صياغة جواب لهذا السؤال، جرّب صياغة أخرى".into()));
+        }
+        Ok(Answer { text: parsed.answer, confidence: None })
+    }
 }
 
 /// Arabic text for a network-level failure (no HTTP status at all).

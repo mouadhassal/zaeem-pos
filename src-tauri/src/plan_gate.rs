@@ -38,10 +38,11 @@ pub const FULL_ONLY_COMMANDS: &[&str] = &[
     "list_low_stock_ingredients_v3",
     // supplier marketplace
     "get_marketplace_context_v3", "list_marketplace_receipts_v3", "receive_marketplace_order_v3",
+    "supplier_market_state_v3", "link_supplier_product_v3", "apply_supplier_order_v3", "supplier_market_sync_v3",
     // dashboard, finance, reports
     "get_finance_revenue_v3", "get_dashboard_summary_v3", "get_profit_trend_v3", "get_tax_collected_v3", "list_operational_costs_v3",
     "create_operational_cost_v3", "list_invoices_v3", "create_invoice_v3", "mark_invoice_paid_v3",
-    "gifts_report_v3", "get_sales_report_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
+    "gifts_report_v3", "get_sales_report_v3", "get_sales_strip_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
     "list_pickup_no_shows_v3",
     // HR
     "list_attendance_v3", "clock_in_v3", "clock_out_v3",

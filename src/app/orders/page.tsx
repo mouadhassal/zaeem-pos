@@ -1,3 +1,4 @@
+import { getPrefs } from "../../stores/prefsStore";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { IconPrinter, IconReceiptRefund, IconRefresh, IconSearch } from "@tabler/icons-react";
 import { useAuthStore } from "../../stores/authStore";
@@ -154,7 +155,7 @@ export default function OrdersPage() {
     if (!detail) return;
     setPrinting(true);
     try {
-      const receipt = receiptFromHistory(detail, await getReceiptConfig());
+      const receipt = receiptFromHistory(detail, await getReceiptConfig(), getPrefs());
       await recordReceiptReprint(detail.id);
       try {
         await printReceipt(receipt);
@@ -180,11 +181,11 @@ export default function OrdersPage() {
             <h1 className="text-xl font-bold text-text">سجل الطلبات</h1>
             <p className="text-sm text-text-3 font-arabic mt-0.5" data-testid="history-day">
               {day ? dayLabel(day.business_date) : "…"}
-              {day?.own_only && <span className="text-text-muted"> · طلباتك اليوم فقط</span>}
+              {day?.own_only && <span className="text-text-muted"> · {(day.back_days ?? 0) > 0 ? "طلباتك فقط" : "طلباتك اليوم فقط"}</span>}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {isManager && (
+            {(isManager || (day?.back_days ?? 0) > 0) && (
               <>
                 <button onClick={() => shiftDay(-1)} className="h-9 px-3 rounded-sm border border-line bg-white text-sm font-arabic text-text-2 hover:bg-surface-alt">اليوم السابق</button>
                 <button onClick={() => shiftDay(1)} disabled={isToday} className="h-9 px-3 rounded-sm border border-line bg-white text-sm font-arabic text-text-2 hover:bg-surface-alt disabled:opacity-40">اليوم التالي</button>

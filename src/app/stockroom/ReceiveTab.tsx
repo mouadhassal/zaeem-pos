@@ -1,3 +1,4 @@
+import UsdHelper from "../../components/ui/UsdHelper";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
@@ -138,7 +139,7 @@ export default function ReceiveTab({ onDone }: { onDone: () => void }) {
               <tr key={l.id} className="border-b border-ink-100" data-testid={`receive-line-${l.id}`}>
                 <td className="p-3 font-arabic font-medium">{l.name}<span className="block text-[11px] text-ink-400">{l.sold_by === "weight" ? "بالكيلوغرام" : "بالقطعة"} · تكلفة حالية {l.oldCost ? formatMoney(l.oldCost) : "غير مُدخلة"}</span></td>
                 <td className="p-3 text-center"><input value={l.quantity} onChange={(e) => setLines((p) => p.map((x) => (x.id === l.id ? { ...x, quantity: e.target.value } : x)))} className={`${inputCls} max-w-[110px] mx-auto text-center`} dir="ltr" inputMode="decimal" data-testid={`receive-qty-${l.id}`} /></td>
-                <td className="p-3 text-center"><input value={l.cost} onChange={(e) => setLines((p) => p.map((x) => (x.id === l.id ? { ...x, cost: e.target.value } : x)))} className={`${inputCls} max-w-[130px] mx-auto text-center`} dir="ltr" inputMode="decimal" /></td>
+                <td className="p-3 text-center"><div className="flex items-center justify-center gap-1"><input value={l.cost} onChange={(e) => setLines((p) => p.map((x) => (x.id === l.id ? { ...x, cost: e.target.value } : x)))} className={`${inputCls} max-w-[130px] text-center`} dir="ltr" inputMode="decimal" data-testid={`receive-cost-${l.id}`} /><UsdHelper onConvert={(minor) => setLines((p) => p.map((x) => (x.id === l.id ? { ...x, cost: minorToInputValue(minor) } : x)))} /></div></td>
                 <td className="p-3 text-left"><button className="text-danger text-xs font-arabic" onClick={() => setLines((p) => p.filter((x) => x.id !== l.id))}>حذف</button></td>
               </tr>
             ))}

@@ -920,6 +920,8 @@ fn resolve_actor_via_hub_with_config(config: &LanConfig, session_token: &str) ->
             branch_id: wire.branch_id,
             role: wire.role,
             device_id: wire.device_id,
+            // The Hub confirmed who this is; the owner's table lives on the Hub and back-office work is done there.
+            access: Default::default(),
         }))
     } else {
         Err(body.get("error").and_then(Value::as_str).unwrap_or("hub rejected request").to_string())
