@@ -228,6 +228,10 @@ export default function PreferencesTab() {
         <Switch on={p.confirmCancelOrder} onChange={(v) => p.setPref("confirmCancelOrder", v)} label="اطلب تأكيداً قبل إلغاء الطلب كاملاً" testid="pref-confirm-cancel" />
       </Card>
 
+      <Card title="الدفع" hint="للمطاعم المزدحمة: زر «دفع» ينهي البيع فوراً دون شاشة اختيار الطريقة والآلة الحاسبة">
+        <Switch on={p.skipPaymentScreen} onChange={(v) => p.setPref("skipPaymentScreen", v)} label="ادفع مباشرة بدون شاشة الدفع" hint="يُسجَّل البيع نقداً بالمبلغ بالضبط (بدون باقٍ) ويُفتح الدرج ويُطبع الإيصال. الدفع بالبطاقة أو الدين يحتاج إيقاف هذا الخيار. الفواتير الآجلة (الدين) تبقى تفتح شاشتها" testid="pref-skip-payment" />
+      </Card>
+
       <Card title="تغيير سعر صنف في الطلب" hint="لصديق أو زبون خاص: زر «السعر» يظهر على كل سطر. كل تغيير يُسجَّل باسم من فعله">
         <Tiles value={p.priceEdit} options={PRICE_MODES} onChange={(v) => p.setPref("priceEdit", v)} testid="pref-price" label="من يغيّر السعر" />
       </Card>

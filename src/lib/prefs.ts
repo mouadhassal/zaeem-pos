@@ -40,6 +40,8 @@ export interface Prefs {
   askCancelOrderReason: boolean;
   /** Ask "are you sure" before cancelling a whole order. */
   confirmCancelOrder: boolean;
+  /** Pay straight away: no cash/card/calculator screen. The sale is recorded as cash, the exact amount. */
+  skipPaymentScreen: boolean;
   /** Who may change the price of a line on the order. */
   priceEdit: PriceEditMode;
   /** The bill shows a generic word for drinks instead of the drink's name. */
@@ -74,6 +76,7 @@ export const DEFAULT_PREFS: Prefs = {
   askVoidReason: true,
   askCancelOrderReason: true,
   confirmCancelOrder: true,
+  skipPaymentScreen: false,
   priceEdit: "manager",
   drinkLabelOn: false,
   drinkLabel: "مشروب",
@@ -111,6 +114,7 @@ export function normalizePrefs(raw: unknown): Prefs {
     askVoidReason: bool(r.askVoidReason, DEFAULT_PREFS.askVoidReason),
     askCancelOrderReason: bool(r.askCancelOrderReason, DEFAULT_PREFS.askCancelOrderReason),
     confirmCancelOrder: bool(r.confirmCancelOrder, DEFAULT_PREFS.confirmCancelOrder),
+    skipPaymentScreen: bool(r.skipPaymentScreen, DEFAULT_PREFS.skipPaymentScreen),
     priceEdit: oneOf(r.priceEdit, ["off", "manager", "everyone"], DEFAULT_PREFS.priceEdit),
     drinkLabelOn: bool(r.drinkLabelOn, DEFAULT_PREFS.drinkLabelOn),
     drinkLabel: label,

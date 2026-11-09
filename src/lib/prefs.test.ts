@@ -47,3 +47,11 @@ describe("misc", () => {
     expect(usdToLocalMinor(1, 0, 1)).toBe(0);
   });
 });
+
+describe("skipPaymentScreen", () => {
+  it("is off until the owner turns it on, and only a real boolean counts", () => {
+    expect(DEFAULT_PREFS.skipPaymentScreen).toBe(false);
+    expect(normalizePrefs({ skipPaymentScreen: true }).skipPaymentScreen).toBe(true);
+    expect(normalizePrefs({ skipPaymentScreen: "yes" }).skipPaymentScreen).toBe(false);
+  });
+});

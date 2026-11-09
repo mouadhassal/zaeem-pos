@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useAuthStore } from "../stores/authStore";
 import { BrandLockup } from "./BrandLogo";
+import { usePinKeyboard } from "../hooks/usePinKeyboard";
 
 export default function LoginPage() {
   const [pin, setPin] = useState("");
@@ -28,6 +29,9 @@ export default function LoginPage() {
     setPin((p) => p.slice(0, -1));
     setError("");
   }
+
+  // The keyboard types the PIN too (it used to be mouse-only). Ignored while a check is running.
+  usePinKeyboard(true, (d) => { if (!loading) void handleDigit(d); }, handleBackspace);
 
   return (
     <div className="min-h-screen w-full bg-canvas flex items-center justify-center" dir="rtl">

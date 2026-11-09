@@ -1637,6 +1637,46 @@ try {
   // commands refused by the backend, no selling on credit or loyalty, a cash
   // sale still prints -- and putting a Full licence back brings everything
   // back without a restart.
+  await step("quickpay", "owner setting: Pay ends the sale at once (no cash/card screen); PIN typed on the keyboard", async () => {
+    const PREFS = "zaeem_pos_prefs";
+    const prefsBefore = await b.execute((k) => localStorage.getItem(k), PREFS);
+    await b.execute((k) => { const p = JSON.parse(localStorage.getItem(k) || "{}"); p.skipPaymentScreen = true; localStorage.setItem(k, JSON.stringify(p)); }, PREFS);
+    await b.refresh();
+    await byId("sidebar", 30000);
+    await call("open_shift_v3", { startingCashCents: 0, branchId: null }).catch(() => {});
+    await nav("pos");
+    await clickId("order-type-TAKEAWAY");
+    await pause(400);
+    await reg.addItem("شيش طاووق");
+    const receiptsBefore = jobs("receipt").length;
+    ok(await b.execute(() => { const x = [...document.querySelectorAll("button")].find((e) => e.offsetParent !== null && e.innerText.trim() === "دفع"); x?.click(); return !!x; }), "pay button");
+    await until(async () => jobs("receipt").length > receiptsBefore, "the sale finished and printed with no pay screen", 20000);
+    ok(!(await exists("pay-exact")), "the cash/card/calculator screen must not appear");
+    console.log("  shot:", await reg.shot("quickpay-done"));
+
+    // switched off again: the normal screen is back
+    await b.execute((k) => { const p = JSON.parse(localStorage.getItem(k) || "{}"); p.skipPaymentScreen = false; localStorage.setItem(k, JSON.stringify(p)); }, PREFS);
+    await b.refresh();
+    await byId("sidebar", 30000);
+    await nav("pos");
+    await clickId("order-type-TAKEAWAY");
+    await pause(400);
+    await reg.addItem("شيش طاووق");
+    ok(await b.execute(() => { const x = [...document.querySelectorAll("button")].find((e) => e.offsetParent !== null && e.innerText.trim() === "دفع"); x?.click(); return !!x; }), "pay button");
+    await byId("pay-exact");
+    await reg.click(/إلغاء/);
+    await pause(400);
+    await b.execute((k, v) => { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); }, PREFS, prefsBefore);
+
+    // the PIN pad answers the keyboard (it used to be mouse-only)
+    await b.execute(() => { localStorage.removeItem("zaeem_auth_token"); localStorage.removeItem("zaeem_user"); });
+    await b.refresh();
+    await byId("login-page", 30000);
+    await b.keys(["1", "2", "3", "4", "5", "6"]);
+    await byId("sidebar", 30000);
+    console.log("  shot:", await reg.shot("keyboard-pin-in"));
+  });
+
   await step("lite", "POS Lite: till screens only, Full-only commands refused, cash sale prints, upgrade restores", async () => {
     const mint = (plan) =>
       execFileSync(process.execPath, [path.join(ROOT, "scripts/e2e/mint-pos-license.mjs"), "--key", process.env.OPS_TEST_KEY, "--tenant", "t-ops", "--branch", "b-ops", "--device", "this", "--days", "3", "--plan", plan], { encoding: "utf8" }).trim();

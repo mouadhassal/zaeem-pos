@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useAuthStore } from "../stores/authStore";
 import { useSessionStore } from "../stores/sessionStore";
+import { usePinKeyboard } from "../hooks/usePinKeyboard";
 
 /**
  * P0 fix (2026-07-23): shown as a full-screen overlay (not a route change)
@@ -19,6 +20,8 @@ export default function SessionExpiredOverlay() {
   const [pin, setPin] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  usePinKeyboard(expired, (d) => { if (!loading) void handleDigit(d); }, () => handleBackspace());
 
   if (!expired) return null;
 

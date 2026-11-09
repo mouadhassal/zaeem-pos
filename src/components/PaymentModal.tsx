@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { usePrefsStore } from "../stores/prefsStore";
 import { invoke } from "../lib/invoke";
 import { IconX, IconCash, IconCreditCard, IconWallet, IconCircleCheck } from "@tabler/icons-react";
 import { useCartStore } from "../stores/cartStore";
@@ -84,6 +85,33 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
     ((method === "CARD" || method === "WALLET") && referenceCodeProvided) ||
     (method === "CREDIT" && !!debtorId) ||
     (method === "CASH" && receivedCents >= totalCents);
+
+  // Owner setting "pay straight away" (Settings > التفضيلات والتصميم > الدفع): no cash/card/calculator
+  // screen. The sale is cash, exactly the total, once. Debt invoices (initialMethod set) still show
+  // their screen, and if the sale fails the normal screen is shown so the cashier can retry or pick
+  // another method.
+  const skipScreen = usePrefsStore((s) => s.skipPaymentScreen);
+  const autoPay = skipScreen && initialMethod === undefined;
+  const autoStarted = useRef(false);
+  const [autoFailed, setAutoFailed] = useState(false);
+  useEffect(() => {
+    if (!autoPay || autoStarted.current) return;
+    autoStarted.current = true;
+    setProcessing(true);
+    void (async () => {
+      try {
+        try { await openCashDrawer(); } catch { /* drawer may not be connected */ }
+        await onSuccess("CASH", totalCents, 0);
+      } catch (err) {
+        setError(realErrorText(err));
+        setAutoFailed(true);
+      } finally {
+        setProcessing(false);
+      }
+    })();
+    // Runs once per opening of the modal (it is keyed by the order being paid).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 2026-08-18 numpad double-digit fix: this used to also handle digit and
   // backspace keys, which duplicated the controlled `<input onChange>`
@@ -171,6 +199,16 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
       setProcessing(false);
     }
   };
+
+  if (autoPay && !autoFailed) {
+    return (
+      <div className="fixed inset-0 bg-black/20 flex items-center justify-center z-50" data-testid="pay-quick">
+        <div className="bg-white rounded-md border border-line shadow-sh-3 px-8 py-5 font-arabic text-ink-900" dir="rtl">
+          ...جارٍ الدفع
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50">
