@@ -36,6 +36,7 @@ const SettingsPage = lazy(() => import("./app/settings/page"));
 const AIPage = lazy(() => import("./app/ai/page"));
 const AiOnboardingPage = lazy(() => import("./app/ai-onboarding/page"));
 const LoyaltyPage = lazy(() => import("./app/loyalty/page"));
+const JobsPage = lazy(() => import("./app/jobs/page"));
 const GuidePage = lazy(() => import("./app/guide/page"));
 
 const DebugPage = import.meta.env.DEV
@@ -181,6 +182,7 @@ function PosLayout({ children }: { children: React.ReactNode }) {
       case "loyalty": return <LoyaltyPage />;
       case "ai": return <AIPage />;
       case "ai-onboarding": return <AiOnboardingPage />;
+      case "jobs": return <JobsPage />;
       case "guide": return <GuidePage />;
       case "settings": return <SettingsPage initialTab={settingsInitialTab} />;
       case "debug": return DebugPage ? <DebugPage /> : null;

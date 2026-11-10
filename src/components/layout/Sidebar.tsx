@@ -12,7 +12,7 @@ import {
   IconCashRegister, IconToolsKitchen2, IconClipboardList, IconBox,
   IconChartBar, IconUsers, IconClock, IconReceipt2, IconWallet,
   IconBuilding, IconCoin, IconReportMoney, IconBarcode, IconGift, IconRobot, IconWand,
-  IconSettings, IconBook, IconTool, IconLayoutDashboard, IconShoppingCart, IconCalendar, IconTruckDelivery, IconHistory,
+  IconSettings, IconBook, IconTool, IconLayoutDashboard, IconShoppingCart, IconCalendar, IconTruckDelivery, IconHistory, IconBriefcase,
   type Icon,
 } from "@tabler/icons-react";
 
@@ -39,6 +39,7 @@ const ICON_BY_ID: Record<string, Icon> = {
   ai: IconRobot,
   "ai-onboarding": IconWand,
   settings: IconSettings,
+  jobs: IconBriefcase,
   guide: IconBook,
   debug: IconTool,
 };

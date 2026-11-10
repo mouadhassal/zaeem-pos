@@ -35,6 +35,7 @@ const MANAGER_NAV: SidebarNavItem[] = [
   { id: "schedule", label: "جدول الدوام", icon: "calendar", allowed: true },
   { id: "payroll", label: "الرواتب", icon: "wallet", allowed: true },
   { id: "ai", label: "المساعد الذكي", icon: "bot", allowed: true },
+  { id: "jobs", label: "شواغر", icon: "briefcase", allowed: true },
   { id: "guide", label: "الدليل", icon: "book", allowed: true },
   { id: "settings", label: "الإعدادات", icon: "settings", allowed: true },
 ];
@@ -70,6 +71,7 @@ const OWNER_NAV: SidebarNavItem[] = [
   { id: "loyalty", label: "برنامج الولاء", icon: "award", allowed: true },
   { id: "ai", label: "المساعد الذكي", icon: "bot", allowed: true },
   { id: "ai-onboarding", label: "إعداد القائمة AI", icon: "scan-line", allowed: true },
+  { id: "jobs", label: "شواغر", icon: "briefcase", allowed: true },
   { id: "guide", label: "الدليل", icon: "book", allowed: true },
   { id: "settings", label: "الإعدادات", icon: "settings", allowed: true },
 ];
