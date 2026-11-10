@@ -162,7 +162,7 @@ export default function RulesPanel({ settings, wizard, onSaved }: Props) {
             </div>
           ))}
           {s.late_tiers.length < 8 && (
-            <button type="button" onClick={() => patch({ late_tiers: [...s.late_tiers, { from_minutes: (s.late_tiers.at(-1)?.from_minutes ?? 0) + 30, day_pct: 50 }] })} className="text-sm text-saffron-600 font-bold font-arabic">+ إضافة شريحة</button>
+            <button type="button" onClick={() => patch({ late_tiers: [...s.late_tiers, { from_minutes: (s.late_tiers[s.late_tiers.length - 1]?.from_minutes ?? 0) + 30, day_pct: 50 }] })} className="text-sm text-saffron-600 font-bold font-arabic">+ إضافة شريحة</button>
           )}
         </div>
       )}
