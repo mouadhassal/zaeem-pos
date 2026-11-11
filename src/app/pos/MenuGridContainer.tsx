@@ -18,6 +18,7 @@ import { formatWeight } from "../../lib/weight";
 import { navigateTo } from "../../lib/appNav";
 import { useMenuGridStore } from "../../stores/menuGridStore";
 import { menuGridLayout } from "../../lib/menuGridLayout";
+import { usePrefsStore } from "../../stores/prefsStore";
 
 // list_menu_items_v3 returns "HAS_PHOTO" (not a real path/URL, see its
 // P0-fix doc comment) when an item has a photo, null otherwise -- this
@@ -118,6 +119,8 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
     return () => observer.disconnect();
   }, []);
   const layout = menuGridLayout(productsPerRow, gridWidth);
+  // Category buttons per row (Settings > التفضيلات): 0 keeps the one scrolling row.
+  const categoryColumns = usePrefsStore((s) => s.categoryColumns);
   const gridStyle = {
     gap: layout.gapPx,
     gridTemplateColumns: layout.columns
@@ -244,7 +247,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
           }}
         />
       )}
-      <div className="h-12 shrink-0 flex items-center gap-2 px-3 border-b border-line">
+      <div className={`shrink-0 flex gap-2 px-3 border-b border-line ${categoryColumns > 0 ? "items-start py-1.5" : "h-12 items-center"}`}>
         <button
           onClick={() => setShowSearch((v) => !v)}
           className="w-11 h-11 rounded-[9px] bg-surface-alt flex items-center justify-center text-text-muted transition-transform active:scale-95"
@@ -253,12 +256,19 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
           <IconSearch className="w-4 h-4" stroke={1.75} />
         </button>
 
-        <div className="flex gap-1.5 overflow-x-auto no-scrollbar flex-1">
+        <div
+          className={categoryColumns > 0 ? "grid gap-1.5 flex-1 min-w-0 overflow-y-auto" : "flex gap-1.5 overflow-x-auto no-scrollbar flex-1"}
+          style={categoryColumns > 0 ? { gridTemplateColumns: `repeat(${categoryColumns}, minmax(0, 1fr))`, maxHeight: "36vh" } : undefined}
+          data-testid="category-bar"
+          data-columns={categoryColumns}
+        >
           <CategoryChip
             label={`الكل · ${allItems.length}`}
             icon={IconLayoutGrid}
             active={activeCategory === null}
             onClick={() => setActiveCategory(null)}
+            compact={categoryColumns > 0}
+            testid="category-all"
           />
           {categories.map((cat) => (
             <CategoryChip
@@ -267,6 +277,8 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
               icon={getCategoryStyle(cat.name).icon}
               active={activeCategory === cat.name}
               onClick={() => setActiveCategory(activeCategory === cat.name ? null : cat.name)}
+              compact={categoryColumns > 0}
+              testid="category-chip"
             />
           ))}
         </div>

@@ -4,7 +4,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useCurrency } from "../../hooks/useCurrency";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 import DatePicker from "../../components/ui/DatePicker";
-import { toLocalDateStr, parseLocalDateStr, formatArabicDate, formatArabicDateTime } from "../../lib/dateLocal";
+import { toLocalDateStr, parseLocalDateStr, formatArabicDate, formatArabicDateTime, formatArabicTime } from "../../lib/dateLocal";
 import { useOrderLabels } from "../../lib/orderLabels";
 import GiftsReport from "./GiftsReport";
 import NoShowReport from "./NoShowReport";
@@ -16,6 +16,8 @@ import { printRows } from "../../lib/printer";
 import { useAccessStore } from "../../stores/accessStore";
 import { printableShopName } from "../../lib/shopName";
 import { salesStripRows, type SalesStripData } from "../../lib/ticketLayout";
+import { usePrefsStore } from "../../stores/prefsStore";
+import ReportOptionsForm from "../settings/ReportOptionsForm";
 
 interface SalesSummary {
   totalSales: number;
@@ -354,23 +356,40 @@ export default function ReportsPage() {
     return [start.toISOString(), end.toISOString()];
   }, [dateRange, customStart, customEnd]);
 
-  // The whole report as a long strip on the receipt printer (every item sold, the money, the totals).
+  // The whole report as a long strip on the receipt printer (every item sold under its category, the money,
+  // the totals). A dialog first: the owner picks the period down to the hour and which blocks to print.
   const toast = useToast();
   const [printingStrip, setPrintingStrip] = useState(false);
+  const [showPrintDialog, setShowPrintDialog] = useState(false);
+  const [printFrom, setPrintFrom] = useState("");
+  const [printTo, setPrintTo] = useState("");
+  const toInputValue = (d: Date) => `${toLocalDateStr(d)}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const openPrintDialog = () => {
+    const [startIso, endIso] = currentRangeIso();
+    setPrintFrom(toInputValue(new Date(startIso)));
+    setPrintTo(toInputValue(new Date(endIso)));
+    setShowPrintDialog(true);
+  };
   const printStrip = async () => {
+    const from = new Date(printFrom);
+    const to = new Date(printTo);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) { toast.error("اختر تاريخ البداية والنهاية"); return; }
+    if (to <= from) { toast.error("نهاية الفترة يجب أن تكون بعد بدايتها"); return; }
     setPrintingStrip(true);
     try {
-      const [startIso, endIso] = currentRangeIso();
-      const strip = await invoke<SalesStripData>("get_sales_strip_v3", { sessionToken: token, startIso, endIso });
+      const strip = await invoke<SalesStripData>("get_sales_strip_v3", { sessionToken: token, startIso: from.toISOString(), endIso: to.toISOString() });
       const cfg = await getReceiptConfig();
-      const from = formatArabicDate(new Date(startIso));
-      const to = formatArabicDate(new Date(endIso));
+      const sameDay = toLocalDateStr(from) === toLocalDateStr(to);
+      const periodLabel = sameDay
+        ? `${formatArabicDate(from)} ${formatArabicTime(from)} - ${formatArabicTime(to)}`
+        : `${formatArabicDate(from)} ${formatArabicTime(from)} - ${formatArabicDate(to)} ${formatArabicTime(to)}`;
       await printRows(salesStripRows(strip, {
         chainName: printableShopName(cfg.chain_name, cfg.branch_name),
-        periodLabel: from === to ? from : `${from} - ${to}`,
+        periodLabel,
         ...(useAuthStore.getState().user?.name ? { printedBy: useAuthStore.getState().user!.name } : {}),
-      }));
+      }, new Date(), usePrefsStore.getState().reportOptions));
       toast.success("طُبع التقرير ✓");
+      setShowPrintDialog(false);
     } catch (e) {
       toast.error(`تعذرت طباعة التقرير: ${realErrorText(e)}`);
     } finally {
@@ -490,17 +509,46 @@ export default function ReportsPage() {
 
   return (
     <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
+      {showPrintDialog && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" role="dialog" aria-modal="true" data-testid="report-print-dialog">
+          <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-md bg-white border border-ink-200 shadow-2xl p-5 space-y-4 font-arabic">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-ink-900">طباعة تقرير المبيعات</h2>
+              <button type="button" onClick={() => setShowPrintDialog(false)} className="text-ink-500 text-sm" aria-label="إغلاق">✕</button>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="space-y-1 text-xs text-ink-500">
+                من
+                <input type="datetime-local" value={printFrom} onChange={(e) => setPrintFrom(e.target.value)} dir="ltr" data-testid="report-print-from" className="w-full h-10 px-2 rounded-sm border-2 border-ink-200 text-sm text-ink-900 outline-none focus:border-saffron-600" />
+              </label>
+              <label className="space-y-1 text-xs text-ink-500">
+                إلى
+                <input type="datetime-local" value={printTo} onChange={(e) => setPrintTo(e.target.value)} dir="ltr" data-testid="report-print-to" className="w-full h-10 px-2 rounded-sm border-2 border-ink-200 text-sm text-ink-900 outline-none focus:border-saffron-600" />
+              </label>
+            </div>
+            <div className="border-t border-ink-100 pt-3">
+              <div className="text-sm font-bold text-ink-900 mb-2">ما يُطبع في التقرير</div>
+              <ReportOptionsForm />
+            </div>
+            <div className="flex gap-2 justify-end border-t border-ink-100 pt-3">
+              <button type="button" onClick={() => setShowPrintDialog(false)} className="h-10 px-4 rounded-sm bg-ink-100 text-ink-700 text-sm">إلغاء</button>
+              <button type="button" onClick={() => void printStrip()} disabled={printingStrip} data-testid="report-print-go" className="h-10 px-5 rounded-sm bg-saffron-600 text-white text-sm font-bold disabled:opacity-50">
+                {printingStrip ? "جاري الطباعة..." : "طباعة"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-ink-900">التقارير</h1>
         <div className="flex items-center gap-2">
 {canPrintStrip && (
         <button
-          onClick={() => void printStrip()}
-          disabled={printingStrip}
+          onClick={openPrintDialog}
           data-testid="report-print-strip"
           className="h-10 px-4 rounded-sm bg-saffron-50 text-saffron-700 border border-saffron-200 text-sm font-bold font-arabic hover:bg-saffron-100 transition-colors disabled:opacity-50"
         >
-          {printingStrip ? "جاري الطباعة..." : "طباعة على الطابعة"}
+          طباعة على الطابعة
         </button>
 )}
         <button

@@ -1280,6 +1280,8 @@ try {
     const beforeStrip = jobs("receipt").length;
     await nav("reports");
     await clickId("report-print-strip");
+    await byId("report-print-dialog");
+    await clickId("report-print-go");
     await until(async () => jobs("receipt").length > beforeStrip, "the report strip printed on the receipt printer", 25000);
 
     // 6) the help chat answers from the guide, with no AI (a test licence has none)
@@ -1675,6 +1677,80 @@ try {
     await b.keys(["1", "2", "3", "4", "5", "6"]);
     await byId("sidebar", 30000);
     console.log("  shot:", await reg.shot("keyboard-pin-in"));
+  });
+
+  await step("editorder", "change a delivery by phone: open it from the Delivery page, add an item, send the addition, then cancel it; categories as a grid", async () => {
+    await b.refresh();
+    await byId("sidebar", 30000);
+    await call("open_shift_v3", { startingCashCents: 0, branchId: null }).catch(() => {});
+    await nav("pos");
+    await clickId("order-type-DELIVERY");
+    await pause(400);
+    await reg.addItem("شيش طاووق");
+    await (await byId("delivery-address")).setValue("حي التجربة - بناء 5");
+    await reg.type('input[placeholder="رقم الجوال"]', "0933555666");
+    await reg.type('input[placeholder="اسم العميل"]', "خالد");
+    await (await byId("delivery-fee")).setValue("500");
+    await pause(300);
+    await clickId("pay-send-kitchen");
+    const created = await until(async () => {
+      const l = await call("list_deliveries_v3", { filter: { statuses: ["NEW", "ASSIGNED", "OUT"] } });
+      return l.find((d) => d.customer_name === "خالد") ?? null;
+    }, "the delivery was created", 20000);
+    const before = await call("retrieve_open_order_v3", { orderId: created.order_id });
+    const linesBefore = before.items.length;
+
+    // open it from the Delivery page: the till loads it as an open order
+    await nav("delivery");
+    await until(async () => (await b.$$('[data-testid="delivery-card"]')).length >= 1, "delivery cards");
+    await b.execute(() => { document.querySelector('[data-testid="delivery-card"]')?.click(); });
+    await clickId("delivery-edit");
+    await byId("edit-order-banner", 20000);
+    await until(async () => (await b.$$('[data-testid="order-line"]')).length === linesBefore, "the order's lines are in the cart");
+    ok(!(await exists("delivery-fields")), "the new-order delivery fields are hidden while editing");
+
+    // add something and send it to the kitchen as an addition
+    await reg.addItem("شيش طاووق");
+    await clickId("pay-send-kitchen");
+    await until(async () => {
+      const o = await call("retrieve_open_order_v3", { orderId: created.order_id });
+      return o.items.length === linesBefore + 1 && o.total_cents > before.total_cents;
+    }, "the added item is on the order and the total followed", 20000);
+    console.log("  shot:", await reg.shot("edit-delivery"));
+    await clickId("edit-order-done");
+    await byId("delivery-grid", 20000);
+
+    // the same order cancelled from the Delivery page: gone from the waiting list, CANCELLED on the server
+    await b.execute(() => { document.querySelector('[data-testid="delivery-card"]')?.click(); });
+    await clickId("delivery-cancel-order");
+    await byId("cancel-order-modal");
+    await clickId("cancel-reason-خطأ في الطلب");
+    await clickId("cancel-order-confirm");
+    await until(async () => {
+      const l = await call("list_deliveries_v3", { filter: { statuses: ["NEW", "ASSIGNED", "OUT"] } });
+      const row = l.find((d) => d.customer_name === "خالد");
+      return row && row.order_status === "CANCELLED";
+    }, "the delivery order is cancelled", 20000);
+    await until(async () => (await b.$$('[data-testid="delivery-card"]')).length === 0, "the cancelled order left the waiting list");
+
+    // categories as a grid: 5 per row, all visible without sideways scrolling
+    const PREFS = "zaeem_pos_prefs";
+    const prefsBefore = await b.execute((k) => localStorage.getItem(k), PREFS);
+    await b.execute((k) => { const p = JSON.parse(localStorage.getItem(k) || "{}"); p.categoryColumns = 5; localStorage.setItem(k, JSON.stringify(p)); }, PREFS);
+    await b.refresh();
+    await byId("sidebar", 30000);
+    await nav("pos");
+    const bar = await byId("category-bar");
+    eq(await bar.getAttribute("data-columns"), "5", "the category bar follows the preference");
+    const geo = await b.execute(() => {
+      const el = document.querySelector('[data-testid="category-bar"]');
+      return { sw: el.scrollWidth, cw: el.clientWidth, n: el.children.length, cols: getComputedStyle(el).gridTemplateColumns.split(" ").length };
+    });
+    ok(geo.sw <= geo.cw + 1, `no sideways scroll in the category grid (${geo.sw} > ${geo.cw})`);
+    eq(geo.cols, 5, "five columns");
+    ok(geo.n >= 2, "categories are listed");
+    console.log("  shot:", await reg.shot("category-grid"));
+    await b.execute((k, v) => { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); }, PREFS, prefsBefore);
   });
 
   await step("lite", "POS Lite: till screens only, Full-only commands refused, cash sale prints, upgrade restores", async () => {

@@ -10,6 +10,8 @@
  * Pure functions here; the zustand store in stores/prefsStore.ts persists.
  */
 
+import { DEFAULT_REPORT_OPTIONS, normalizeReportOptions, type ReportOptions } from "./reportOptions";
+
 export type OrderPanelSize = "comfortable" | "compact" | "tiny";
 export type DeliveryCardSize = "large" | "medium" | "small";
 export type PriceEditMode = "off" | "manager" | "everyone";
@@ -18,6 +20,8 @@ export type OptionsLayout = "list" | "table";
 
 export const PICKUP_CHOICE_MINUTES = [0, 10, 15, 20, 30, 45, 60, 90] as const;
 export const QUANTITY_STEPS = [0, 2, 3, 5, 10] as const;
+/** Category buttons per row on the till; 0 = one scrolling row (the original look). */
+export const CATEGORY_COLUMN_CHOICES = [0, 3, 4, 5, 6, 7, 8] as const;
 
 export interface Prefs {
   /** How tall the order lines in the side panel are. */
@@ -63,6 +67,10 @@ export interface Prefs {
   notifyLowStock: boolean;
   /** Notify when a shift has been open for a long time. */
   notifyLongShift: boolean;
+  /** Category buttons per row on the till (0 = one scrolling row). More per row = smaller buttons, fewer scrolls. */
+  categoryColumns: number;
+  /** What the long printed sales report contains. */
+  reportOptions: ReportOptions;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -88,6 +96,8 @@ export const DEFAULT_PREFS: Prefs = {
   marketAutoApply: true,
   notifyLowStock: true,
   notifyLongShift: true,
+  categoryColumns: 0,
+  reportOptions: DEFAULT_REPORT_OPTIONS,
 };
 
 const oneOf = <T extends string>(v: unknown, allowed: readonly T[], fallback: T): T =>
@@ -126,6 +136,8 @@ export function normalizePrefs(raw: unknown): Prefs {
     marketAutoApply: bool(r.marketAutoApply, DEFAULT_PREFS.marketAutoApply),
     notifyLowStock: bool(r.notifyLowStock, DEFAULT_PREFS.notifyLowStock),
     notifyLongShift: bool(r.notifyLongShift, DEFAULT_PREFS.notifyLongShift),
+    categoryColumns: typeof r.categoryColumns === "number" && (CATEGORY_COLUMN_CHOICES as readonly number[]).includes(r.categoryColumns) ? r.categoryColumns : DEFAULT_PREFS.categoryColumns,
+    reportOptions: normalizeReportOptions(r.reportOptions),
   };
 }
 

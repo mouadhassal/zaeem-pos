@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import { usePrefsStore } from "../../stores/prefsStore";
 import { useMenuStore } from "../../stores/menuStore";
 import ProductsPerRowSetting from "./ProductsPerRowSetting";
+import ReportOptionsForm from "./ReportOptionsForm";
 import { getHistoryAccess, saveHistoryAccess, type HistoryAccess } from "../../lib/orderHistory";
 import { realErrorText } from "../../lib/errors";
 import {
+  CATEGORY_COLUMN_CHOICES,
   PICKUP_CHOICE_MINUTES,
   QUANTITY_STEPS,
   pickupChoiceLabel,
@@ -146,6 +148,32 @@ export default function PreferencesTab() {
       <h3 className="text-base font-bold text-ink-900 font-arabic">أحجام الشاشة</h3>
       <ProductsPerRowSetting />
 
+      <Card title="عدد الفئات في كل صف" hint="كلما زاد العدد صغرت أزرار الفئات في شاشة البيع فتظهر كلها دون تمرير. «تلقائي» صف واحد يُمرَّر جانباً">
+        <Tiles
+          value={p.categoryColumns}
+          options={CATEGORY_COLUMN_CHOICES.map((n) => ({ value: n as number, label: n === 0 ? "تلقائي" : String(n) }))}
+          onChange={(v) => p.setPref("categoryColumns", v)}
+          testid="pref-category-columns"
+          label="عدد الفئات في كل صف"
+        />
+        <div className="rounded-sm bg-ink-50 border border-ink-200 p-2" aria-hidden="true">
+          {p.categoryColumns === 0 ? (
+            <div className="flex gap-1 overflow-hidden">
+              {Array.from({ length: 5 }, (_, i) => <div key={i} className="h-5 w-16 shrink-0 rounded-[4px] bg-white border border-ink-200" />)}
+            </div>
+          ) : (
+            <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${p.categoryColumns}, minmax(0, 1fr))` }}>
+              {Array.from({ length: p.categoryColumns * 2 }, (_, i) => (
+                <div key={i} className="h-7 rounded-[4px] bg-white border border-ink-200 flex flex-col items-center justify-center gap-0.5">
+                  <div className="h-1.5 w-2 rounded-full bg-saffron-300" />
+                  <div className="h-1 w-3/5 rounded-full bg-ink-200" />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </Card>
+
       <Card title="حجم قائمة الطلب (الجانب)" hint="اختر «مضغوط» أو «صغير جداً» لتظهر الطلبية الطويلة كاملة دون تمرير">
         <Tiles value={p.orderPanelSize} options={PANEL_SIZES} onChange={(v) => p.setPref("orderPanelSize", v)} testid="pref-panel" label="حجم قائمة الطلب" />
         <div className="rounded-sm bg-ink-50 border border-ink-200 p-2 space-y-1" aria-hidden="true">
@@ -170,6 +198,10 @@ export default function PreferencesTab() {
             ))}
           </div>
         </div>
+      </Card>
+
+      <Card title="الورقة الطويلة لتقرير المبيعات" hint="اختر ما يُطبع فيها. الأصناف تُطبع تحت فئاتها (ساندويشات، مشروبات...) وتحت كل فئة مجموعها، ثم إجمالي الأصناف في النهاية">
+        <ReportOptionsForm />
       </Card>
 
       <h3 className="text-base font-bold text-ink-900 font-arabic">سرعة العمل على الصندوق</h3>

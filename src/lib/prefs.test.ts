@@ -55,3 +55,29 @@ describe("skipPaymentScreen", () => {
     expect(normalizePrefs({ skipPaymentScreen: "yes" }).skipPaymentScreen).toBe(false);
   });
 });
+
+describe("categoryColumns", () => {
+  it("is one scrolling row until the owner picks a count the settings can produce", () => {
+    expect(DEFAULT_PREFS.categoryColumns).toBe(0);
+    expect(normalizePrefs({ categoryColumns: 6 }).categoryColumns).toBe(6);
+    expect(normalizePrefs({ categoryColumns: 2 }).categoryColumns).toBe(0);
+    expect(normalizePrefs({ categoryColumns: "6" }).categoryColumns).toBe(0);
+  });
+});
+
+describe("reportOptions", () => {
+  it("starts with every block on except the extra category list", () => {
+    const o = DEFAULT_PREFS.reportOptions;
+    expect(o.showItems && o.showCategoryTotals && o.showPayments && o.showOrderTypes && o.showTotals).toBe(true);
+    expect(o.showCategorySummary).toBe(false);
+  });
+  it("keeps what the owner switched off, ignores anything that is not a real boolean", () => {
+    const o = normalizePrefs({ reportOptions: { showPayments: false, showItems: "no", bogus: true } }).reportOptions;
+    expect(o.showPayments).toBe(false);
+    expect(o.showItems).toBe(true);
+    expect(o).not.toHaveProperty("bogus");
+  });
+  it("survives a stored value that is not an object", () => {
+    expect(normalizePrefs({ reportOptions: 5 }).reportOptions).toEqual(DEFAULT_PREFS.reportOptions);
+  });
+});

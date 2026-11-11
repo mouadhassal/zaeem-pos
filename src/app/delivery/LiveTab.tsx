@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { IconPrinter, IconX } from "@tabler/icons-react";
+import { IconPencil, IconPrinter, IconTrash, IconX } from "@tabler/icons-react";
 import { printableShopName } from "../../lib/shopName";
 import {
   assignDriver, listDeliveries, listDrivers, setDeliveryStatus, toCollectCents,
   type Delivery, type DeliveryStatus, type Driver,
 } from "../../lib/deliveryService";
-import { getReceiptConfig, retrieveOpenOrder } from "../../lib/orderService";
+import { cancelOrder, getReceiptConfig, printKitchenChange, retrieveOpenOrder } from "../../lib/orderService";
+import CancelOrderModal from "../../components/modals/CancelOrderModal";
+import { useEditOrderStore } from "../../stores/editOrderStore";
+import { navigateTo } from "../../lib/appNav";
 import { printRows } from "../../lib/printer";
 import { deliverySlipRows, deliveryStatusLabel } from "../../lib/ticketLayout";
 import { useOrderLabels } from "../../lib/orderLabels";
@@ -17,6 +20,11 @@ import { usePrefsStore } from "../../stores/prefsStore";
 import type { DeliveryCardSize } from "../../lib/prefs";
 
 const OPEN: DeliveryStatus[] = ["NEW", "ASSIGNED", "OUT"];
+
+/** A cancelled order keeps its delivery row; it is shown as cancelled, never as waiting. */
+const isCancelled = (d: Delivery) => d.order_status === "CANCELLED";
+const statusLabel = (d: Delivery) => (isCancelled(d) ? "ملغى" : deliveryStatusLabel(d.status));
+const statusStyle = (d: Delivery) => (isCancelled(d) ? "bg-ink-100 text-ink-500" : STATUS_STYLE[d.status]);
 
 const STATUS_STYLE: Record<DeliveryStatus, string> = {
   NEW: "bg-warn/15 text-warn",
@@ -49,17 +57,20 @@ export default function LiveTab() {
   // The order whose details are open in the side panel.
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [lines, setLines] = useState<OrderLineInfo[] | null>(null);
+  const askCancelReason = usePrefsStore((s) => s.askCancelOrderReason);
+  const [cancelling, setCancelling] = useState<Delivery | null>(null);
 
   const load = useCallback(async () => {
     try {
       const today = new Date().toLocaleDateString("en-CA");
-      const [o, d, dr] = await Promise.all([
+      const [o, d, dr, openToday] = await Promise.all([
         listDeliveries({ statuses: OPEN }),
         listDeliveries({ statuses: ["DELIVERED", "FAILED"], from: today, to: today }),
         listDrivers(false),
+        listDeliveries({ statuses: OPEN, from: today, to: today }),
       ]);
-      setOpen([...o].reverse()); // oldest first: the one waiting longest is on top
-      setDone(d);
+      setOpen([...o].filter((x) => !isCancelled(x)).reverse()); // oldest first: the one waiting longest is on top
+      setDone([...d, ...openToday.filter(isCancelled)]);
       setDrivers(dr);
     } catch (e) {
       toast.error(`تعذر تحميل التوصيل: ${realErrorText(e)}`);
@@ -136,7 +147,39 @@ export default function LiveTab() {
     setFailReason("");
   };
 
-  const isOpen = (d: Delivery) => OPEN.includes(d.status);
+  const isOpen = (d: Delivery) => OPEN.includes(d.status) && !isCancelled(d);
+  // Something the customer changes by phone: allowed while the order is still open and unpaid.
+  const isEditable = (d: Delivery) => isOpen(d) && d.order_status !== "PAID";
+
+  const editOrder = (d: Delivery) => {
+    useEditOrderStore.getState().begin({
+      orderId: d.order_id, orderType: "DELIVERY", deliveryFeeCents: d.fee_cents, address: d.address,
+      customerName: d.customer_name, customerPhone: d.customer_phone, returnTo: "delivery",
+    });
+    navigateTo("pos");
+  };
+
+  // Cancels the whole order (the kitchen is told); the delivery leaves the list.
+  const cancelDelivery = async (reason: string, pin?: string) => {
+    const d = cancelling;
+    if (!d) return;
+    const order = await retrieveOpenOrder(d.order_id).catch(() => null);
+    await cancelOrder(d.order_id, reason, pin);
+    try {
+      await printKitchenChange({
+        kind: "CANCEL", tableName: "", orderNumber: labelOf(d.order_id), orderType: "DELIVERY", cancelReason: reason,
+        items: (order?.items ?? []).map((i) => ({
+          name: i.name, quantity: i.quantity, menuItemId: i.menuItemId,
+          ...(i.modifiers.length ? { modifiers: i.modifiers.map((m) => m.name) } : {}),
+          ...(i.notes ? { notes: i.notes } : {}),
+        })),
+      });
+    } catch { /* the order is cancelled; a missing slip is announced by printKitchenChange */ }
+    toast.success("أُلغي الطلب ✓");
+    setCancelling(null);
+    setSelectedId(null);
+    await load();
+  };
 
   return (
     <div className="space-y-6">
@@ -157,7 +200,7 @@ export default function LiveTab() {
                 <div className={`font-arabic font-bold text-ink-900 truncate ${cardSize === "small" ? "text-xs" : ""}`}><span dir="ltr">{labelOf(d.order_id)}</span>{cardSize !== "small" && <> · {d.customer_name || "—"}</>}</div>
                 {cardSize === "large" && <div className="text-xs text-ink-500 font-mono" dir="ltr">{d.customer_phone}</div>}
               </div>
-              <span className={`shrink-0 rounded-full font-arabic font-bold ${STATUS_STYLE[d.status]} ${cardSize === "small" ? "px-1.5 py-0.5 text-[10px]" : "px-2.5 py-1 text-xs"}`}>{deliveryStatusLabel(d.status)}</span>
+              <span className={`shrink-0 rounded-full font-arabic font-bold ${statusStyle(d)} ${cardSize === "small" ? "px-1.5 py-0.5 text-[10px]" : "px-2.5 py-1 text-xs"}`}>{statusLabel(d)}</span>
             </div>
             {cardSize !== "small" && <div className={`font-arabic text-ink-800 ${cardSize === "medium" ? "text-xs truncate" : "text-sm"}`}>{d.address}</div>}
             <div className={`flex items-center justify-between font-arabic ${cardSize === "large" ? "text-sm" : "text-xs"}`}>
@@ -188,7 +231,7 @@ export default function LiveTab() {
                     <td className="p-2"><span dir="ltr">{labelOf(d.order_id)}</span></td>
                     <td className="p-2">{d.address}</td>
                     <td className="p-2">{d.driver_name ?? "—"}</td>
-                    <td className="p-2"><span className={`px-2 py-0.5 rounded-full text-xs font-bold ${STATUS_STYLE[d.status]}`}>{deliveryStatusLabel(d.status)}</span></td>
+                    <td className="p-2"><span className={`px-2 py-0.5 rounded-full text-xs font-bold ${statusStyle(d)}`}>{statusLabel(d)}</span></td>
                     <td className="p-2 tabular">{formatMoney(d.total_cents)}</td>
                   </tr>
                 ))}
@@ -196,6 +239,16 @@ export default function LiveTab() {
             </table>
           </div>
         </div>
+      )}
+
+      {cancelling && (
+        <CancelOrderModal
+          lineCount={lines?.length ?? 0}
+          totalCents={cancelling.total_cents}
+          askReason={askCancelReason}
+          onCancel={() => setCancelling(null)}
+          onConfirm={cancelDelivery}
+        />
       )}
 
       {/* Details: slides in from the left edge over the page. */}
@@ -213,7 +266,7 @@ export default function LiveTab() {
                 <div className="text-sm text-ink-500 font-mono" dir="ltr">{selected.customer_phone}</div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <span className={`px-2.5 py-1 rounded-full text-xs font-arabic font-bold ${STATUS_STYLE[selected.status]}`}>{deliveryStatusLabel(selected.status)}</span>
+                <span className={`px-2.5 py-1 rounded-full text-xs font-arabic font-bold ${statusStyle(selected)}`}>{statusLabel(selected)}</span>
                 <button type="button" onClick={() => setSelectedId(null)} aria-label="إغلاق" data-testid="delivery-panel-close" className="w-8 h-8 rounded-lg hover:bg-surface-alt flex items-center justify-center text-ink-500"><IconX className="w-4 h-4" /></button>
               </div>
             </div>
@@ -256,6 +309,16 @@ export default function LiveTab() {
 
             {isOpen(selected) && (
               <div className="p-4 border-t border-ink-200 space-y-3">
+                {isEditable(selected) && (
+                  <div className="flex gap-2">
+                    <button onClick={() => editOrder(selected)} className="flex-1 h-10 rounded-sm bg-saffron-50 text-saffron-700 border border-saffron-200 text-sm font-bold font-arabic flex items-center justify-center gap-2" data-testid="delivery-edit">
+                      <IconPencil className="w-4 h-4" />تعديل الطلب
+                    </button>
+                    <button onClick={() => setCancelling(selected)} className="h-10 px-4 rounded-sm bg-danger-soft text-danger text-sm font-bold font-arabic flex items-center justify-center gap-2" data-testid="delivery-cancel-order">
+                      <IconTrash className="w-4 h-4" />إلغاء الطلب
+                    </button>
+                  </div>
+                )}
                 <div className="flex flex-wrap items-center gap-2">
                   <select
                     value={selected.driver_id ?? ""}

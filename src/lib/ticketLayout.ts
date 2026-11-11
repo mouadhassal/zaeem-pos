@@ -5,6 +5,7 @@
 
 import { formatMoney } from "./money";
 import { formatArabicDate, formatArabicTime } from "./dateLocal";
+import { DEFAULT_REPORT_OPTIONS, type ReportOptions } from "./reportOptions";
 
 export type Row =
   | { t: "line"; text: string; size?: number; bold?: boolean; align?: "right" | "left" | "center" }
@@ -487,58 +488,95 @@ const QTY_FORMAT = (q: number, byWeight: boolean) => {
 };
 
 /**
- * Everything sold in a period as rows: the totals first (the number the owner wants on top), then how
- * the money came in, then every item with its quantity and money, then categories. Long on purpose.
+ * Pieces of an item for a total line: kilograms are not pieces, so a weighed
+ * item counts as one sale (same rule as the category roll-up in Rust).
+ */
+const piecesOf = (i: { quantity: number; by_weight: boolean }) => (i.by_weight ? 1 : Math.round(i.quantity));
+
+/**
+ * Everything sold in a period as rows. The owner picks the blocks (see
+ * lib/reportOptions.ts): totals first, then how the money came in, then every
+ * item with its quantity and money UNDER ITS CATEGORY (each category with its
+ * own total), then what is not counted. Long on purpose.
  */
 export function salesStripRows(
   d: SalesStripData,
   meta: { chainName: string; periodLabel: string; printedBy?: string },
   now: Date = new Date(),
+  options: ReportOptions = DEFAULT_REPORT_OPTIONS,
 ): Row[] {
   const fmt = formatMoney;
+  const o = options;
   const rows: Row[] = [];
   rows.push({ t: "line", text: meta.chainName, size: 34, bold: true, align: "center" });
   rows.push({ t: "line", text: "تقرير المبيعات", size: 30, bold: true, align: "center" });
   rows.push({ t: "rule" });
   rows.push({ t: "two", right: "الفترة", left: meta.periodLabel });
   rows.push({ t: "two", right: "طُبع", left: dateTime(now) });
-  if (present(meta.printedBy)) rows.push({ t: "two", right: "بواسطة", left: meta.printedBy });
+  if (o.showPrintedBy && present(meta.printedBy)) rows.push({ t: "two", right: "بواسطة", left: meta.printedBy });
   rows.push({ t: "rule" });
 
-  rows.push({ t: "two", right: "عدد الطلبات", left: String(d.order_count), size: 26 });
-  rows.push({ t: "two", right: "إجمالي المبيعات", left: fmt(d.gross_cents), size: 26 });
-  if (d.refunds_cents > 0) rows.push({ t: "two", right: "المرتجعات", left: `-${fmt(d.refunds_cents)}`, size: 26 });
-  rows.push({ t: "two", right: "صافي المبيعات", left: fmt(d.net_cents), size: 32, bold: true });
-  if (d.discounts_cents > 0) rows.push({ t: "two", right: "منها خصومات", left: fmt(d.discounts_cents), size: 22 });
-  if (d.tax_cents > 0) rows.push({ t: "two", right: "منها ضرائب ورسوم", left: fmt(d.tax_cents), size: 22 });
-  if (d.delivery_fees_cents > 0) rows.push({ t: "two", right: "منها رسوم توصيل", left: fmt(d.delivery_fees_cents), size: 22 });
-  rows.push({ t: "rule" });
+  if (o.showTotals) {
+    rows.push({ t: "two", right: "عدد الطلبات", left: String(d.order_count), size: 26 });
+    rows.push({ t: "two", right: "إجمالي المبيعات", left: fmt(d.gross_cents), size: 26 });
+    if (d.refunds_cents > 0) rows.push({ t: "two", right: "المرتجعات", left: `-${fmt(d.refunds_cents)}`, size: 26 });
+    rows.push({ t: "two", right: "صافي المبيعات", left: fmt(d.net_cents), size: 32, bold: true });
+    if (o.showBreakdown) {
+      if (d.discounts_cents > 0) rows.push({ t: "two", right: "منها خصومات", left: fmt(d.discounts_cents), size: 22 });
+      if (d.tax_cents > 0) rows.push({ t: "two", right: "منها ضرائب ورسوم", left: fmt(d.tax_cents), size: 22 });
+      if (d.delivery_fees_cents > 0) rows.push({ t: "two", right: "منها رسوم توصيل", left: fmt(d.delivery_fees_cents), size: 22 });
+    }
+    rows.push({ t: "rule" });
+  }
 
-  if (d.payments.length > 0) {
+  if (o.showPayments && d.payments.length > 0) {
     rows.push({ t: "line", text: "طرق الدفع", size: 26, bold: true });
     for (const p of d.payments) rows.push({ t: "two", right: `${PAYMENT_LABELS[p.name] ?? p.name} (${p.count})`, left: fmt(p.amount_cents), size: 24 });
     rows.push({ t: "rule", dashed: true });
   }
-  if (d.order_types.length > 0) {
+  if (o.showOrderTypes && d.order_types.length > 0) {
     rows.push({ t: "line", text: "أنواع الطلبات", size: 26, bold: true });
     for (const t of d.order_types) rows.push({ t: "two", right: `${ORDER_TYPE_LABELS[t.name] ?? t.name} (${t.count})`, left: fmt(t.amount_cents), size: 24 });
     rows.push({ t: "rule", dashed: true });
   }
 
-  rows.push({ t: "line", text: "كل ما بِيع", size: 26, bold: true });
-  if (d.items.length === 0) rows.push({ t: "line", text: "لا مبيعات في هذه الفترة", size: 22 });
-  for (const i of d.items) {
-    rows.push({ t: "two", right: `${QTY_FORMAT(i.quantity, i.by_weight)} × ${i.name}`, left: fmt(i.amount_cents), size: 22 });
+  if (o.showItems) {
+    rows.push({ t: "line", text: "كل ما بِيع", size: 26, bold: true });
+    if (d.items.length === 0) rows.push({ t: "line", text: "لا مبيعات في هذه الفترة", size: 22 });
+    // Items under their category; the biggest category first, and inside it the biggest earner first.
+    const byCategory = new Map<string, SalesStripData["items"]>();
+    for (const i of d.items) {
+      const key = i.category.trim() === "" ? "بدون فئة" : i.category;
+      byCategory.set(key, [...(byCategory.get(key) ?? []), i]);
+    }
+    const groups = [...byCategory.entries()]
+      .map(([name, items]) => ({ name, items, amount: items.reduce((a, i) => a + i.amount_cents, 0), count: items.reduce((a, i) => a + piecesOf(i), 0) }))
+      .sort((a, b) => b.amount - a.amount || a.name.localeCompare(b.name, "ar"));
+    for (const g of groups) {
+      rows.push({ t: "line", text: `◆ ${g.name}`, size: 24, bold: true });
+      for (const i of [...g.items].sort((a, b) => b.amount_cents - a.amount_cents)) {
+        rows.push({ t: "two", right: `${QTY_FORMAT(i.quantity, i.by_weight)} × ${i.name}`, left: o.showItemAmounts ? fmt(i.amount_cents) : "", size: 22 });
+      }
+      if (o.showCategoryTotals) {
+        rows.push({ t: "two", right: `مجموع ${g.name} (${g.count})`, left: fmt(g.amount), size: 22, bold: true });
+      }
+      rows.push({ t: "rule", dashed: true });
+    }
+    if (d.items.length > 0) {
+      const total = groups.reduce((a, g) => a + g.amount, 0);
+      const count = groups.reduce((a, g) => a + g.count, 0);
+      rows.push({ t: "two", right: `إجمالي الأصناف (${count})`, left: fmt(total), size: 26, bold: true });
+    }
+    rows.push({ t: "rule" });
   }
-  rows.push({ t: "rule", dashed: true });
 
-  if (d.categories.length > 0) {
+  if (o.showCategorySummary && d.categories.length > 0) {
     rows.push({ t: "line", text: "حسب الفئة", size: 26, bold: true });
     for (const c of d.categories) rows.push({ t: "two", right: `${c.name} (${c.count})`, left: fmt(c.amount_cents), size: 24 });
     rows.push({ t: "rule", dashed: true });
   }
 
-  if (d.gifts_count > 0 || d.cancelled_lines > 0 || d.cancelled_orders > 0) {
+  if (o.showNotCounted && (d.gifts_count > 0 || d.cancelled_lines > 0 || d.cancelled_orders > 0)) {
     rows.push({ t: "line", text: "غير محتسب في المبيعات", size: 26, bold: true });
     if (d.gifts_count > 0) rows.push({ t: "two", right: `ضيافة (${d.gifts_count})`, left: fmt(d.gifts_cents), size: 22 });
     if (d.cancelled_lines > 0) rows.push({ t: "two", right: "أصناف ملغاة", left: String(d.cancelled_lines), size: 22 });

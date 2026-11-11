@@ -14,6 +14,8 @@ interface Props {
   onClose: () => void;
   /** Loads the order into the cart and opens payment. */
   onCollect: (order: PickupOrder) => void;
+  /** Change the order (add or remove something) before the customer comes. */
+  onEdit: (order: PickupOrder) => void;
   onSendNow: (orderId: string) => Promise<void>;
   onNoShow: (orderId: string, reason: string, managerPin?: string) => Promise<void>;
 }
@@ -24,7 +26,7 @@ interface Props {
  * is here (collect and pay), they came early (send to the kitchen now), or
  * they never came (cancel, with a reason and a manager).
  */
-export default function PickupQueueModal({ orders, isManager, onClose, onCollect, onSendNow, onNoShow }: Props) {
+export default function PickupQueueModal({ orders, isManager, onClose, onCollect, onEdit, onSendNow, onNoShow }: Props) {
   const [now, setNow] = useState(() => Date.now());
   const [noShowFor, setNoShowFor] = useState<string | null>(null);
   const [reason, setReason] = useState("");
@@ -125,6 +127,8 @@ export default function PickupQueueModal({ orders, isManager, onClose, onCollect
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button onClick={() => onCollect(o)} disabled={busy} data-testid="pickup-collect"
                         className="h-9 px-4 rounded-sm bg-accent text-white text-sm font-bold font-arabic disabled:opacity-50">استلام ودفع</button>
+                      <button onClick={() => onEdit(o)} disabled={busy} data-testid="pickup-edit"
+                        className="h-9 px-3 rounded-sm border border-line bg-white text-text-2 text-sm font-arabic hover:bg-surface-alt disabled:opacity-50">تعديل</button>
                       {!o.kitchen_sent && (
                         <button onClick={() => run(() => onSendNow(o.order_id))} disabled={busy}
                           className="h-9 px-3 rounded-sm border border-line bg-white text-text-2 text-sm font-arabic flex items-center gap-1 hover:bg-surface-alt disabled:opacity-50">

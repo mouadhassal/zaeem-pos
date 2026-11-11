@@ -1,6 +1,8 @@
 import { getPrefs } from "../../stores/prefsStore";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { IconPrinter, IconReceiptRefund, IconRefresh, IconSearch } from "@tabler/icons-react";
+import { IconPencil, IconPrinter, IconReceiptRefund, IconRefresh, IconSearch } from "@tabler/icons-react";
+import { useEditOrderStore } from "../../stores/editOrderStore";
+import { navigateTo } from "../../lib/appNav";
 import { useAuthStore } from "../../stores/authStore";
 import { useToast } from "../../hooks/useToast";
 import { formatMoney } from "../../lib/money";
@@ -292,6 +294,9 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
+/** Orders that can still take changes: sent to the kitchen and not paid (a table's tab is changed from its table). */
+const EDITABLE_STATUSES = ["PENDING", "PREPARING", "READY", "SERVED"];
+
 function OrderDetail({ d, printing, canRefund, onReprint, onRefund }: { d: HistoryDetail; printing: boolean; canRefund: boolean; onReprint: () => void; onRefund: () => void }) {
   const pill = statusPill(d);
   const money = (c: number) => <span className="font-mono tabular" dir="ltr">{formatMoney(c)}</span>;
@@ -312,6 +317,21 @@ function OrderDetail({ d, printing, canRefund, onReprint, onRefund }: { d: Histo
           <button onClick={onReprint} disabled={printing} data-testid="history-reprint"
             className="flex-1 h-10 rounded-sm border border-line bg-white text-sm font-arabic text-text-2 flex items-center justify-center gap-1.5 hover:bg-surface-alt disabled:opacity-50">
             <IconPrinter className="w-4 h-4" /> {printing ? "جارٍ..." : "طباعة نسخة"}
+          </button>
+        )}
+        {EDITABLE_STATUSES.includes(d.status) && (d.order_type === "DELIVERY" || d.order_type === "TAKEAWAY") && (
+          <button
+            onClick={() => {
+              useEditOrderStore.getState().begin({
+                orderId: d.id, orderType: d.order_type as "DELIVERY" | "TAKEAWAY", deliveryFeeCents: d.delivery_fee_cents,
+                address: d.delivery_address, customerName: d.customer_name, customerPhone: d.customer_phone, returnTo: "orders",
+              });
+              navigateTo("pos");
+            }}
+            data-testid="history-edit"
+            className="flex-1 h-10 rounded-sm border border-saffron-200 bg-saffron-50 text-saffron-700 text-sm font-bold font-arabic flex items-center justify-center gap-1.5"
+          >
+            <IconPencil className="w-4 h-4" /> تعديل الطلب
           </button>
         )}
         {canRefund && (

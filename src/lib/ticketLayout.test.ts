@@ -9,6 +9,7 @@ import {
   type ReceiptData,
 } from "./ticketLayout";
 import { formatArabicDate } from "./dateLocal";
+import { DEFAULT_REPORT_OPTIONS } from "./reportOptions";
 
 const NOW = new Date("2026-10-20T14:30:00");
 const EARLIER = new Date("2026-10-20T14:05:00").toISOString();
@@ -343,6 +344,59 @@ describe("sales strip", () => {
     const none = lines({ gifts_count: 0, cancelled_lines: 0, cancelled_orders: 0, refunds_cents: 0 });
     expect(none).not.toContain("غير محتسب");
     expect(none).not.toContain("المرتجعات");
+  });
+
+  describe("customised report", () => {
+    const multi: import("./ticketLayout").SalesStripData = {
+      ...strip,
+      items: [
+        { name: "برغر", category: "ساندويشات", quantity: 20, by_weight: false, amount_cents: 20_000 },
+        { name: "شاورما", category: "ساندويشات", quantity: 5, by_weight: false, amount_cents: 7_500 },
+        { name: "كولا", category: "مشروبات", quantity: 8, by_weight: false, amount_cents: 4_000 },
+        { name: "سر", category: "", quantity: 1, by_weight: false, amount_cents: 100 },
+      ],
+    };
+    const opt = (over: Partial<import("./reportOptions").ReportOptions> = {}) =>
+      rowsText(salesStripRows(multi, { chainName: "مطعم", periodLabel: "اليوم", printedBy: "سامي" }, NOW, { ...DEFAULT_REPORT_OPTIONS, ...over })).join("\n");
+
+    it("lists the items under their category, biggest category first, each with its own total", () => {
+      const t = opt();
+      expect(t.indexOf("◆ ساندويشات")).toBeLessThan(t.indexOf("20 × برغر"));
+      expect(t.indexOf("20 × برغر")).toBeLessThan(t.indexOf("5 × شاورما"));
+      expect(t.indexOf("5 × شاورما")).toBeLessThan(t.indexOf("◆ مشروبات"));
+      expect(t).toContain("مجموع ساندويشات (25)");
+      expect(t).toContain("مجموع مشروبات (8)");
+      expect(t).toContain("◆ بدون فئة");
+    });
+
+    it("ends the items with the total of all of them", () => {
+      expect(opt()).toContain("إجمالي الأصناف (34)");
+    });
+
+    it("leaves out exactly the blocks the owner switched off", () => {
+      const off = opt({ showPayments: false, showOrderTypes: false, showNotCounted: false, showBreakdown: false, showPrintedBy: false });
+      expect(off).not.toContain("طرق الدفع");
+      expect(off).not.toContain("أنواع الطلبات");
+      expect(off).not.toContain("غير محتسب");
+      expect(off).not.toContain("منها خصومات");
+      expect(off).not.toContain("بواسطة");
+      expect(off).toContain("صافي المبيعات");
+      expect(off).toContain("20 × برغر");
+    });
+
+    it("can print the quantities without the money, and without category totals", () => {
+      const bare = opt({ showItemAmounts: false, showCategoryTotals: false });
+      expect(bare).toContain("20 × برغر");
+      expect(bare).not.toContain("مجموع ساندويشات");
+      const line = rowsText(salesStripRows(multi, { chainName: "م", periodLabel: "ا" }, NOW, { ...DEFAULT_REPORT_OPTIONS, showItemAmounts: false })).find((l) => l.includes("× برغر"));
+      expect(line?.replace(/[^\d٠-٩]/g, "")).toBe("20");
+    });
+
+    it("can drop the items altogether, or add the short category list", () => {
+      expect(opt({ showItems: false })).not.toContain("كل ما بِيع");
+      expect(opt({ showCategorySummary: true })).toContain("حسب الفئة");
+      expect(opt()).not.toContain("حسب الفئة");
+    });
   });
 
   it("an empty period still prints a clear report", () => {

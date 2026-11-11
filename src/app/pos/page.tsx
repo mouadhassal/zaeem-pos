@@ -60,6 +60,8 @@ import { pickupAtFromClock, pickupAtFromMinutes } from "../../lib/pickup";
 import { billItemName, pickupChoiceLabel } from "../../lib/prefs";
 import { getPrefs, usePrefsStore } from "../../stores/prefsStore";
 import { formatArabicTime } from "../../lib/dateLocal";
+import { useEditOrderStore, type EditOrderRequest } from "../../stores/editOrderStore";
+import { navigateTo } from "../../lib/appNav";
 import { useOptionsStore } from "../../stores/optionsStore";
 import { customModifiers, groupsForItem, selectionFromModifiers } from "../../lib/itemOptions";
 
@@ -200,6 +202,11 @@ export default function POSPage() {
   const [pickupOrders, setPickupOrders] = useState<PickupOrder[]>([]);
   const [showPickupQueue, setShowPickupQueue] = useState(false);
   const [collectingPickup, setCollectingPickup] = useState(false);
+  // An order from the Delivery page / pickup queue / order history opened here to be changed
+  // (see stores/editOrderStore.ts). While set, the cart IS that open order.
+  const [editingOrder, setEditingOrder] = useState<EditOrderRequest | null>(null);
+  const editingRef = useRef<EditOrderRequest | null>(null);
+  editingRef.current = editingOrder;
   const [pickupClock, setPickupClock] = useState("");
   const [loyaltyCard, setLoyaltyCard] = useState<{ card_number: string; customer_name: string; points: number; tier: string } | null>(null);
   const [loyaltyRewards, setLoyaltyRewards] = useState<LoyaltyRewardOption[]>([]);
@@ -344,6 +351,8 @@ export default function POSPage() {
 
   useEffect(() => {
     if (!openOrderId) setCollectingPickup(false);
+    // The edited order is gone from the cart (paid, cancelled): editing is over.
+    if (!openOrderId) setEditingOrder(null);
   }, [openOrderId]);
 
   // Shop settings (a scale's barcode layout, refusing sales the stock cannot cover): the scan handler below is
@@ -712,7 +721,9 @@ export default function POSPage() {
   // list -- avoids hand-patching dbItemId/ids locally and guarantees the
   // cart matches exactly what's now in the DB.
   const handleSendToKitchen = async () => {
-    if (!user || !tableId || orderType !== "DINE_IN" || items.length === 0) return;
+    const editing = editingRef.current;
+    if (!user || items.length === 0) return;
+    if (!editing && (!tableId || orderType !== "DINE_IN")) return;
     if (!shiftId) { setShowOpenShift(true); return; }
     try {
       let orderId = openOrderId;
@@ -720,7 +731,7 @@ export default function POSPage() {
         const state = useCartStore.getState();
         const t = state.tax();
         orderId = await createOrder(
-          tableId, user.id, "DINE_IN",
+          tableId ?? "", user.id, "DINE_IN",
           items.map((i) => ({ menuItemId: i.menuItemId, name: i.name, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers, ...compFields(i) })),
           state.subtotal(), t.taxCents, t.secondaryTaxCents, t.serviceChargeCents,
           state.total(), state.discountCents, state.discountReason,
@@ -735,14 +746,20 @@ export default function POSPage() {
         const newItems = unsentCartLines(items, sentQuantities);
         if (newItems.length === 0) return;
         await addItemsToOrder(
-          orderId, "DINE_IN",
+          orderId, editing ? editing.orderType : "DINE_IN",
           newItems.map((i) => ({ menuItemId: i.menuItemId, name: i.name, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers, ...compFields(i) })),
         );
       }
 
+      if (editing) {
+        // The order is not a table's: reload it as it is stored now (new lines have their ids), nothing else changes.
+        await reloadOpenOrder(orderId);
+        flash("أُرسلت الإضافة للمطبخ ✓", 2500);
+        return;
+      }
       const open = await retrieveOpenOrder(orderId);
       clearCart();
-      if (open) {
+      if (open && tableId) {
         setTable(tableId, tableName ?? "");
         for (const item of open.items) {
           addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
@@ -1153,6 +1170,77 @@ export default function POSPage() {
     }
   };
 
+  // ---- Editing an order that is not a table's (delivery, phone takeaway) ----
+  const startEditingOrder = async (req: EditOrderRequest) => {
+    if (useCartStore.getState().items.length > 0 && openOrderId !== req.orderId) {
+      flash("أنهِ الطلب الحالي أو أفرغ السلة أولاً ثم افتح الطلب للتعديل");
+      return;
+    }
+    try {
+      const open = await retrieveOpenOrder(req.orderId);
+      if (!open) { flash("الطلب لم يعد مفتوحاً (دُفع أو أُلغي)، لا يمكن تعديله"); return; }
+      clearCart();
+      resetOrderInfo();
+      setOrderType(req.orderType);
+      for (const item of open.items) addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
+      const info = useOrderTypeStore.getState();
+      info.setCustomerName(open.customerName ?? req.customerName ?? "");
+      info.setCustomerPhone(open.customerPhone ?? req.customerPhone ?? "");
+      if (req.orderType === "DELIVERY") {
+        info.setDeliveryAddress(open.deliveryAddress ?? req.address ?? "");
+        setDeliveryFee(req.deliveryFeeCents ?? 0);
+        setFeeInput(req.deliveryFeeCents ? String(req.deliveryFeeCents / 100) : "");
+      }
+      setOpenOrderId(req.orderId);
+      setOpenOrderTotals({
+        subtotalCents: open.subtotalCents, taxCents: open.taxCents,
+        discountCents: open.discountCents, totalCents: open.totalCents,
+      });
+      setSentQuantities(Object.fromEntries(open.items.map((i) => [i.dbItemId, i.quantity])));
+      setEditingOrder(req);
+      // A phone takeaway edited here is paid like a collected pickup (same bill wording).
+      if (req.orderType === "TAKEAWAY") setCollectingPickup(true);
+    } catch (err) {
+      flash(`تعذر فتح الطلب للتعديل: ${realErrorText(err)}`);
+    }
+  };
+
+  // The till takes an order handed over by another screen as soon as it is open.
+  const editRequest = useEditOrderStore((s) => s.request);
+  useEffect(() => {
+    if (!editRequest) return;
+    const req = useEditOrderStore.getState().take();
+    if (req) void startEditingOrder(req);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editRequest]);
+
+  // Leaving the till with an edited order still in the cart would leave its lines behind for the next sale.
+  useEffect(() => () => {
+    if (editingRef.current) {
+      useCartStore.getState().clearCart();
+      useOrderTypeStore.getState().resetOrderInfo();
+    }
+  }, []);
+
+  const leaveEditing = () => {
+    const back = editingRef.current?.returnTo;
+    clearCart();
+    resetOrderInfo();
+    setOpenOrderId(null);
+    setOpenOrderTotals(null);
+    setSentQuantities({});
+    setEditingOrder(null);
+    setFeeInput("");
+    if (back) navigateTo(back);
+  };
+  const handleFinishEditing = () => {
+    if (openOrderId && unsentCartLines(items, sentQuantities).length > 0) {
+      flash("في الطلب أصناف لم تُرسل للمطبخ بعد: أرسل الإضافة أو احذفها ثم اضغط «تم»");
+      return;
+    }
+    leaveEditing();
+  };
+
   const handleIncrementLine = (id: string) => updateQuantity(id, 1);
   const handleDecrementLine = (id: string) => updateQuantity(id, -1);
   const handleSetQuantityLine = (id: string, quantity: number) => useCartStore.getState().setQuantity(id, quantity);
@@ -1165,10 +1253,17 @@ export default function POSPage() {
   // Cancels the whole order. One that was already sent to the kitchen is cancelled on the server in
   // a single step (every line, the table, the kitchen queue); one still only in the cart is just cleared.
   const resetAfterCancel = () => {
+    const wasEditing = editingRef.current;
     clearCart();
     setOpenOrderId(null);
     setOpenOrderTotals(null);
     setSentQuantities({});
+    if (wasEditing) {
+      resetOrderInfo();
+      setEditingOrder(null);
+      setFeeInput("");
+      if (wasEditing.returnTo) navigateTo(wasEditing.returnTo);
+    }
   };
   const runCancelWholeOrder = async (reason: string, pin?: string) => {
     if (!openOrderId) { resetAfterCancel(); return; }
@@ -1236,9 +1331,11 @@ export default function POSPage() {
   // the cart always shows exactly what is stored (after an edit, a gift, ...).
   const reloadOpenOrder = async (orderId: string) => {
     const open = await retrieveOpenOrder(orderId);
-    if (!open || !tableId) return;
+    const editing = editingRef.current;
+    if (!open || (!tableId && !editing)) return;
     clearCart();
-    setTable(tableId, tableName ?? "");
+    if (tableId) setTable(tableId, tableName ?? "");
+    if (editing?.orderType === "DELIVERY") setDeliveryFee(editing.deliveryFeeCents ?? 0);
     for (const item of open.items) addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
     if (open.customerName) useOrderTypeStore.getState().setCustomerName(open.customerName);
     setOpenOrderId(orderId);
@@ -1488,6 +1585,7 @@ export default function POSPage() {
               (!!openOrderId && unsentLines.length > 0)
             }
             onClick={() => {
+              if (editingOrder?.orderType === "DELIVERY") { flash("طلب التوصيل يُدفع للسائق عند التسليم. اضغط «تم» عند انتهاء التعديل"); return; }
               const deliveryIssue = deliveryProblem();
               if (deliveryIssue) { flash(deliveryIssue); return; }
               if (!shiftId) { setShowOpenShift(true); return; }
@@ -1515,7 +1613,13 @@ export default function POSPage() {
             // DINE_IN with a table picked -- TAKEAWAY (and DINE_IN quick
             // service, if the cashier just hits Pay directly) keeps the
             // exact fast pay-first flow unchanged, this is purely additive.
-            {...(orderType === "DINE_IN" && tableId
+            {...(editingOrder
+              ? {
+                  onSendToKitchen: shiftId ? handleSendToKitchen : () => setShowOpenShift(true),
+                  sendToKitchenDisabled: unsentLines.length === 0,
+                  sendToKitchenLabel: "إرسال الإضافة للمطبخ",
+                }
+              : orderType === "DINE_IN" && tableId
               ? {
                   onSendToKitchen: shiftId ? handleSendToKitchen : () => setShowOpenShift(true),
                   sendToKitchenDisabled: items.length === 0 || (!!openOrderId && unsentLines.length === 0),
@@ -1553,7 +1657,9 @@ export default function POSPage() {
               <button
                 key={t}
                 data-testid={`order-type-${t}`}
+                disabled={!!editingOrder}
                 onClick={() => {
+                  if (editingOrder) return;
                   setOrderType(t);
                   if (t !== "DELIVERY") { setDeliveryFee(0); setFeeInput(""); }
                   if (t === "DEBT") {
@@ -1564,7 +1670,7 @@ export default function POSPage() {
                     }
                   }
                 }}
-                className={`h-8 px-3 rounded-[9px] text-xs font-bold font-arabic transition-all flex items-center gap-1.5 ${
+                className={`h-8 px-3 rounded-[9px] text-xs font-bold font-arabic transition-all flex items-center gap-1.5 disabled:opacity-60 disabled:pointer-events-none ${
                   isActive
                     ? "bg-accent text-white"
                     : "bg-surface-alt text-text-3 hover:text-text-2 hover:bg-line"
@@ -1590,7 +1696,7 @@ export default function POSPage() {
           </button>
           <div className="flex-1" />
           {/* Customer info for non-DINE_IN types */}
-          {orderType !== "DINE_IN" && orderType !== "DEBT" && (
+          {orderType !== "DINE_IN" && orderType !== "DEBT" && !editingOrder && (
             <>
               <input
                 value={customerName}
@@ -1631,6 +1737,25 @@ export default function POSPage() {
             </div>
           )}
         </div>
+
+        {editingOrder && (
+          <div className="shrink-0 bg-warn/15 border-b border-warn/40 flex flex-wrap items-center gap-2 px-3 py-1.5" dir="rtl" data-testid="edit-order-banner">
+            <span className="text-xs font-arabic text-text">
+              <b>تعديل الطلب {orderNumber ? `#${orderNumber}` : ""}</b>
+              {customerName ? ` · ${customerName}` : ""}{deliveryAddress ? ` · ${deliveryAddress}` : ""}
+              {" — "}الأصناف المرسلة تُعدَّل بالقلم وتُحذف بسبب (والمطبخ يُبلَّغ)، وما تضيفه يُرسل للمطبخ كإضافة.
+            </span>
+            <span className="flex-1" />
+            <button
+              type="button"
+              onClick={handleFinishEditing}
+              data-testid="edit-order-done"
+              className="h-8 px-4 rounded-[9px] bg-accent text-white text-xs font-bold font-arabic active:scale-[0.98]"
+            >
+              تم
+            </button>
+          </div>
+        )}
 
         {orderType === "TAKEAWAY" && !openOrderId && (
           <div className="min-h-12 shrink-0 bg-surface-alt border-b border-line flex flex-wrap items-center gap-1.5 px-2 py-1.5" dir="rtl" data-testid="pickup-fields">
@@ -1674,7 +1799,7 @@ export default function POSPage() {
           </div>
         )}
 
-        {orderType === "DELIVERY" && (
+        {orderType === "DELIVERY" && !editingOrder && (
           <div className="h-12 shrink-0 bg-surface-alt border-b border-line flex items-center gap-2 px-2" dir="rtl" data-testid="delivery-fields">
             <input
               value={deliveryAddress}
@@ -1964,6 +2089,10 @@ export default function POSPage() {
           isManager={["MANAGER", "OWNER", "PLATFORM", "ADMIN"].includes(String(user?.role ?? "").toUpperCase())}
           onClose={() => setShowPickupQueue(false)}
           onCollect={handleCollectPickup}
+          onEdit={(o) => {
+            setShowPickupQueue(false);
+            void startEditingOrder({ orderId: o.order_id, orderType: "TAKEAWAY", customerName: o.customer_name, customerPhone: o.customer_phone });
+          }}
           onSendNow={async (id) => { await sendPickupToKitchenNow(id); await refreshPickups(); }}
           onNoShow={async (id, reason, pin) => { await markPickupNoShow(id, reason, pin); await refreshPickups(); flash("أُلغي الطلب (لم يحضر الزبون)"); }}
         />
