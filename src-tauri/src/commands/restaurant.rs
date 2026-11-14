@@ -57,7 +57,7 @@ pub fn delete_option_group_v3(state: State<Db>, license: State<crate::license::c
 
 use crate::repo::{OrderItemInput, OrderModifierInput, Repo};
 use crate::security::Scope;
-use super::orders::{price_order_authoritatively, sync_enqueue_order, sync_enqueue_single_order_item, verify_manager_override_impl};
+use super::orders::{sync_enqueue_order, totals_for_lines, sync_enqueue_single_order_item, verify_manager_override_impl};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct EditedItem {
@@ -69,9 +69,9 @@ pub struct EditedItem {
 fn reprice_open_order(tx: &rusqlite::Transaction, scope: &Scope, order_id: &str) -> Result<i64, String> {
     let (tenant_id, _branch, _status, discount_cents, delivery_fee_cents) =
         Repo::new(tx).get_order_pricing_context(scope, order_id).map_err(|e| e.to_string())?;
+    // The remaining lines keep the price they were sold at (an offer, an older menu price).
     let remaining = Repo::new(tx).list_order_items_as_input(order_id).map_err(|e| e.to_string())?;
-    let (_, subtotal_cents, tax_cents, total_cents) =
-        price_order_authoritatively(tx, &tenant_id, &remaining, discount_cents, delivery_fee_cents)?;
+    let (subtotal_cents, tax_cents, total_cents) = totals_for_lines(tx, &tenant_id, &remaining, discount_cents, delivery_fee_cents)?;
     Repo::new(tx).update_order_totals(order_id, subtotal_cents, tax_cents, total_cents).map_err(|e| e.to_string())?;
     Ok(total_cents)
 }
@@ -131,13 +131,20 @@ pub(crate) fn edit_order_item_v3_impl(
         weight: weight.or_else(|| old.weight.clone()),
     };
     let priced = Repo::new(&conn).price_authoritative_items(&tenant_id, std::slice::from_ref(&candidate)).map_err(|e| e.to_string())?;
-    let new_item = priced.into_iter().next().ok_or("empty pricing result")?;
+    let mut new_item = priced.into_iter().next().ok_or("empty pricing result")?;
+    // A piece line keeps the unit price it was sold at (happy hour, combo, a menu price changed
+    // since): editing the note or the quantity must not re-price it. A weighed line is priced
+    // from its weight above (unchanged weight = unchanged price).
+    if new_item.weight.is_none() {
+        new_item.unit_price_cents = old.unit_price_cents;
+    }
     let new_total = Repo::line_total_cents(&new_item);
 
     // Value taken off the bill by this edit. Adding value never needs approval.
     let removed = if old.comped { 0 } else { (old_total - new_total).max(0) };
     let thresholds = Repo::new(&conn).get_manager_thresholds(&actor.tenant_id).map_err(|e| e.to_string())?;
-    let override_used = if removed > 0 && thresholds.void_requires_manager(removed) {
+    let closed = removed > 0 && !crate::security::till_action_allowed(&actor, crate::role_access::Feature::VoidSent);
+    let override_used = if closed || (removed > 0 && thresholds.void_requires_manager(removed)) {
         let Some(pin) = manager_override_pin.as_deref() else {
             return Err("هذا التعديل يتجاوز حد موافقة المدير ويتطلب رمز المدير".to_string());
         };
@@ -207,6 +214,9 @@ pub(crate) fn set_order_item_comp_v3_impl(
     let reason = reason.map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
     if comped && reason.is_none() {
         return Err("سبب الضيافة مطلوب".to_string());
+    }
+    if comped && !crate::security::till_action_allowed(&actor, crate::role_access::Feature::Gift) {
+        return Err("ليست لديك صلاحية الضيافة (صنف مجاني) -- اطلب من المدير".to_string());
     }
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;

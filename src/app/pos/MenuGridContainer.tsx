@@ -1,3 +1,5 @@
+import { useBusinessStore } from "../../stores/businessStore";
+import { moduleOn } from "../../lib/businessModules";
 import { useEffect, useRef, useState, useMemo, type ComponentProps } from "react";
 import { IconSearch, IconLayoutGrid } from "@tabler/icons-react";
 import { useMenuStore, useFilteredMenuItems } from "../../stores/menuStore";
@@ -19,6 +21,7 @@ import { navigateTo } from "../../lib/appNav";
 import { useMenuGridStore } from "../../stores/menuGridStore";
 import { menuGridLayout } from "../../lib/menuGridLayout";
 import { usePrefsStore } from "../../stores/prefsStore";
+import { opensOptionsOnTap } from "../../lib/prefs";
 
 // list_menu_items_v3 returns "HAS_PHOTO" (not a real path/URL, see its
 // P0-fix doc comment) when an item has a photo, null otherwise -- this
@@ -85,6 +88,8 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
     cartItems.reduce((sum, i) => sum + (i.menuItemId === itemId ? i.quantity : 0), 0);
 
   const combos = useComboStore((s) => s.combos);
+  // The offers module (Settings > نوع النشاط والوحدات): off = no combos row and no happy hour.
+  const offersOn = useBusinessStore((s) => moduleOn(s.modules, "offers"));
 
   // Item options ("without onion", "extra cheese"): tapping an item that has
   // option groups opens a picker first; items without any add straight away.
@@ -103,6 +108,12 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
   useEffect(() => {
     fetchMenu();
   }, [fetchMenu]);
+
+  // A happy hour starts or ends while the till is open: prices on the cards follow the clock.
+  useEffect(() => {
+    const t = setInterval(() => useMenuStore.getState().refreshOffers(), 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   // Products per row (Settings > عام): the grid's width decides how small
   // the cards must be to fit the chosen count.
@@ -128,7 +139,10 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
       : "repeat(auto-fill, minmax(180px, 1fr))",
   };
 
-  const handleAdd = (item: (typeof allItems)[0]) => {
+  const handleAdd = (tapped: (typeof allItems)[0]) => {
+    // The happy-hour price at the moment of the tap (the card may be up to 30 s old).
+    useMenuStore.getState().refreshOffers();
+    const item = useMenuStore.getState().menuItems.find((m) => m.id === tapped.id) ?? tapped;
     const cat = categories.find((c) => c.id === item.category_id);
     const comboSavings = item.is_combo && item.combo_original_price_cents
       ? item.combo_original_price_cents - item.price_cents
@@ -157,7 +171,9 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
       setWeighing({ payload, groups, name: item.name, pricePerKgCents: item.price_cents });
       return;
     }
-    if (groups.length > 0) setPicker({ payload, groups, name: item.name });
+    // The owner decides (Settings > التفضيلات) whether the options window opens on tap; when it
+    // does not, the item goes in at once and options are added from its line ("إضافات").
+    if (opensOptionsOnTap(usePrefsStore.getState().optionsOnTap, groups)) setPicker({ payload, groups, name: item.name });
     else onAddItem(payload);
   };
 
@@ -230,7 +246,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
               savingsCents: 0,
             };
             // A weighed item can still have options ("without onion"): pick them after the weight.
-            if (weighing.groups.length > 0) setPicker({ payload, groups: weighing.groups, name: weighing.name });
+            if (opensOptionsOnTap(usePrefsStore.getState().optionsOnTap, weighing.groups)) setPicker({ payload, groups: weighing.groups, name: weighing.name });
             else onAddItem(payload);
             setWeighing(null);
           }}
@@ -315,7 +331,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
         </div>
       )}
 
-      {combos.length > 0 && (
+      {offersOn && combos.length > 0 && (
         <div className="px-3 pt-2 pb-1 shrink-0 border-b border-line">
           <div className="text-[11px] font-semibold text-text-muted mb-1.5">العروض</div>
           <div className="flex gap-2 overflow-x-auto no-scrollbar">

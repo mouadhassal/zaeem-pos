@@ -32,6 +32,12 @@ export interface Modifier {
   priceCents: number;
 }
 
+/** One ingredient typed once ("بصل") as both its choices: "بدون بصل" and "زيادة بصل". */
+export function quickPair(text: string): { name: string }[] {
+  if (!text.trim()) return [];
+  return [quickChoice("without", text), quickChoice("extra", text)];
+}
+
 /** What the owner typed plus which button they pressed, as a choice name. */
 export function quickChoice(kind: "without" | "extra" | "plain", text: string): { name: string } {
   const t = text.trim();
@@ -120,4 +126,50 @@ export function choiceShortName(name: string): string {
   const kind = choiceKind(t);
   if (kind === "other") return t;
   return t.replace(/^(بدون|زيادة|إضافة|اضافة|مع|extra|with)\s*/i, "") || t;
+}
+
+/** A group's choices as the till lists them: an ingredient with both "بدون" and "زيادة/مع" is one row. */
+export type ChoiceRow =
+  | { kind: "pair"; label: string; without: OptionChoice; extra: OptionChoice }
+  | { kind: "single"; choice: OptionChoice };
+
+export function choiceRows(choices: readonly OptionChoice[]): ChoiceRow[] {
+  const withouts = new Map<string, OptionChoice>();
+  const extras = new Map<string, OptionChoice>();
+  for (const c of choices) {
+    const k = choiceKind(c.name);
+    const base = choiceShortName(c.name);
+    if (k === "without" && !withouts.has(base)) withouts.set(base, c);
+    if (k === "with" && !extras.has(base)) extras.set(base, c);
+  }
+  const rows: ChoiceRow[] = [];
+  const done = new Set<string>();
+  for (const c of choices) {
+    if (done.has(c.id)) continue;
+    const base = choiceShortName(c.name);
+    const w = withouts.get(base);
+    const e = extras.get(base);
+    if (w && e && (c.id === w.id || c.id === e.id)) {
+      rows.push({ kind: "pair", label: base, without: w, extra: e });
+      done.add(w.id);
+      done.add(e.id);
+    } else {
+      rows.push({ kind: "single", choice: c });
+      done.add(c.id);
+    }
+  }
+  return rows;
+}
+
+/**
+ * Picks one side of an ingredient row: "بدون بصل" and "زيادة بصل" can never both be on, and
+ * tapping the side that is already on takes it off (the ingredient comes as normal).
+ */
+export function pickPairSide(group: OptionGroup, selection: Selection, pick: OptionChoice, other: OptionChoice): Selection {
+  const current = (selection[group.id] ?? []).filter((id) => id !== other.id);
+  const has = current.includes(pick.id);
+  let next: string[];
+  if (group.selection === "SINGLE") next = has ? [] : [pick.id];
+  else next = has ? current.filter((id) => id !== pick.id) : [...current, pick.id];
+  return { ...selection, [group.id]: next };
 }

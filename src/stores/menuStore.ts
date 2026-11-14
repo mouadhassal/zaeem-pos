@@ -1,3 +1,5 @@
+import { useBusinessStore } from "./businessStore";
+import { moduleOn } from "../lib/businessModules";
 import { create } from "zustand";
 import { invoke } from "../lib/invoke";
 import { useAuthStore } from "./authStore";
@@ -55,6 +57,22 @@ interface MenuState {
   fetchMenu: () => Promise<void>;
   setSelectedCategory: (id: string | null) => void;
   setSearchQuery: (q: string) => void;
+  /** Re-applies the happy-hour rules to the clock now (a happy hour that started or ended since the menu was loaded). */
+  refreshOffers: () => void;
+}
+
+/** The offers module is on (the server applies no offer when it is off, so neither does the till). */
+const offersOn = () => moduleOn(useBusinessStore.getState().modules, "offers");
+
+/** The happy-hour price right now; the server applies the same rule and rounding (offers.rs). */
+function withHappyHour<T extends { id: string; price_cents: number; sold_by: string }>(item: T, rules: Parameters<typeof getActiveHappyHourDiscount>[1]) {
+  const happyHourDiscountPercent = getActiveHappyHourDiscount(item.id, rules);
+  return {
+    happyHourDiscountPercent,
+    effectivePriceCents: happyHourDiscountPercent > 0 && item.sold_by !== "weight"
+      ? Math.round(item.price_cents * (1 - happyHourDiscountPercent / 100))
+      : item.price_cents,
+  };
 }
 
 export const useMenuStore = create<MenuState>((set) => ({
@@ -145,7 +163,7 @@ export const useMenuStore = create<MenuState>((set) => ({
       );
 
       const itemsWithCombo: MenuItem[] = activeItems.map((item, i) => {
-        const happyHourDiscountPercent = getActiveHappyHourDiscount(item.id, happyHourRules);
+        const sold_by = item.sold_by === "weight" ? "weight" : "unit";
         return {
           id: item.id,
           name: item.name,
@@ -163,10 +181,7 @@ export const useMenuStore = create<MenuState>((set) => ({
           stock_quantity: item.stock_quantity ?? null,
           stock_min: item.stock_min ?? null,
           extra_barcodes: (item.extra_barcodes ?? []).map((b) => ({ barcode: b.barcode, units: b.units })),
-          happyHourDiscountPercent,
-          effectivePriceCents: happyHourDiscountPercent > 0 && item.sold_by !== "weight"
-            ? Math.round(item.price_cents * (1 - happyHourDiscountPercent / 100))
-            : item.price_cents,
+          ...withHappyHour({ id: item.id, price_cents: item.price_cents, sold_by }, offersOn() ? happyHourRules : []),
         };
       });
 
@@ -179,6 +194,19 @@ export const useMenuStore = create<MenuState>((set) => ({
 
   setSelectedCategory: (id) => set({ selectedCategoryId: id }),
   setSearchQuery: (q) => set({ searchQuery: q }),
+
+  refreshOffers: () =>
+    set((state) => {
+      const rules = offersOn() ? useHappyHourStore.getState().rules : [];
+      let changed = false;
+      const menuItems = state.menuItems.map((item) => {
+        const next = withHappyHour(item, rules);
+        if (next.effectivePriceCents === item.effectivePriceCents && next.happyHourDiscountPercent === item.happyHourDiscountPercent) return item;
+        changed = true;
+        return { ...item, ...next };
+      });
+      return changed ? { menuItems } : {};
+    }),
 }));
 
 export function useFilteredMenuItems() {

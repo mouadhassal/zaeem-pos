@@ -341,8 +341,10 @@ pub fn build_rich_snapshot(
 
     // ---- when / how ----
     let sales_by_day: Vec<DaySalesRow> = {
+        // Business days: a sale at 01:30 belongs to the day before (the day starts at 05:00, as in
+        // order_history.rs), so one night's sales are not split across two dates.
         let mut stmt = conn.prepare(&format!(
-            "SELECT date(closed_at, '{off}'), COALESCE(SUM(total_cents), 0), COUNT(*) FROM orders \
+            "SELECT date(closed_at, '{off}', '-5 hours'), COALESCE(SUM(total_cents), 0), COUNT(*) FROM orders \
              WHERE {pred} AND status = 'PAID' AND closed_at >= ?{ia} AND closed_at <= ?{ib} \
              GROUP BY 1 ORDER BY 1"
         ))?;

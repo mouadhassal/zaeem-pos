@@ -80,6 +80,12 @@ interface CartState {
   voidItem: (id: string, reason: string) => void;
   /** Replaces the options and note of one line (cashier edited it before sending). */
   setLineOptions: (id: string, modifiers: CartModifier[], notes: string) => void;
+  /**
+   * Gives `count` units of a line (not yet sent) these options: 1 of 3 burgers "without onion"
+   * becomes its own line of 1 and the other 2 stay as they were. `count` >= the line's quantity
+   * changes the whole line.
+   */
+  setLineOptionsFor: (id: string, modifiers: CartModifier[], notes: string, count: number) => void;
   /** Changes the portion of a line sold by weight (one that is not on the server yet). */
   setLineWeight: (id: string, portion: { weightGrams: number; unitPriceCents: number; exactAmountCents?: number }) => void;
   /** Marks a line as a gift (or takes the gift back). */
@@ -197,6 +203,31 @@ export const useCartStore = create<CartState>((set, get) => ({
     set((state) => ({
       items: state.items.map((i) => (i.id === id ? { ...i, modifiers, notes } : i)),
     })),
+
+  setLineOptionsFor: (id, modifiers, notes, count) =>
+    set((state) => {
+      const line = state.items.find((i) => i.id === id);
+      if (!line) return {};
+      if (line.dbItemId || count >= line.quantity || line.quantity <= 1) {
+        return { items: state.items.map((i) => (i.id === id ? { ...i, modifiers, notes } : i)) };
+      }
+      const n = Math.max(1, Math.floor(count));
+      const changed = { ...line, modifiers, notes, quantity: n };
+      // Another line may already have exactly these options: the units join it.
+      const twin = state.items.find(
+        (i) => i.id !== id && i.menuItemId === line.menuItemId && !i.comboId && !i.voided && !i.dbItemId && !i.weightGrams && !i.cutPerUnitCents && !line.cutPerUnitCents && lineKey(i) === lineKey(changed)
+      );
+      const rest = state.items.map((i) => (i.id === id ? { ...i, quantity: i.quantity - n } : i));
+      const items = twin
+        ? rest.map((i) => (i.id === twin.id ? { ...i, quantity: i.quantity + n } : i))
+        : (() => {
+            const at = rest.findIndex((i) => i.id === id);
+            const copy = [...rest];
+            copy.splice(at + 1, 0, { ...changed, id: `cart-${nextId++}` });
+            return copy;
+          })();
+      return withDiscount(items, state.manualDiscountCents, state.manualDiscountReason);
+    }),
 
   setLineWeight: (id, portion) =>
     set((state) => ({

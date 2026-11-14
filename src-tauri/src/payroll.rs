@@ -493,6 +493,8 @@ pub struct EmployeeRow {
     pub role: String,
     pub branch_id: Option<String>,
     pub pay: Option<EmployeePay>,
+    /// What the person is (cleaner, chef...). None on a database before Migration AP.
+    pub job_title: Option<String>,
 }
 
 /// Everyone who could be on the payroll: active staff of this business (not the platform account).
@@ -517,7 +519,11 @@ pub fn list_employees(conn: &Connection, tenant_id: &str, scope: &PayrollScope) 
     let mut out = Vec::with_capacity(rows.len());
     for (user_id, name, role, branch_id) in rows {
         let pay = load_employee_pay(conn, &user_id)?;
-        out.push(EmployeeRow { user_id, name, role, branch_id, pay });
+        // Read on its own so an older database (no job_title column) still lists everyone.
+        let job_title: Option<String> = conn
+            .query_row("SELECT job_title FROM staff WHERE id = ?1", rusqlite::params![user_id], |r| r.get(0))
+            .unwrap_or(None);
+        out.push(EmployeeRow { user_id, name, role, branch_id, pay, job_title });
     }
     Ok(out)
 }

@@ -10,6 +10,8 @@ interface Props {
   itemPriceCents: number;
   onConfirm: (reason: string, managerOverridePin?: string) => void;
   onCancel: () => void;
+  /** The owner closed "delete a sent item" for this person: always ask the manager's PIN. */
+  requirePin?: boolean;
 }
 
 // 2026-08-02: this used to be a hardcoded `itemPriceCents > 2000` -- a
@@ -19,7 +21,7 @@ interface Props {
 // tenant's real, Owner-configurable threshold (chain_config, see
 // pricing.rs's ManagerThresholds). Rust re-checks this server-side
 // regardless of what this modal decides -- this is UI affordance only.
-export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onCancel }: Props) {
+export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onCancel, requirePin = false }: Props) {
   const { fmt } = useCurrency();
   const [reason, setReason] = useState("");
   const [customReason, setCustomReason] = useState("");
@@ -42,7 +44,7 @@ export default function VoidItemModal({ itemName, itemPriceCents, onConfirm, onC
   // manager (fail-safe, not fail-open) -- a false "needs manager" prompt
   // that resolves itself in a moment is far better than a window where a
   // large void could look like it needs no approval at all.
-  const needsManager = thresholdCents === null ? true : itemPriceCents >= thresholdCents;
+  const needsManager = requirePin || (thresholdCents === null ? true : itemPriceCents >= thresholdCents);
 
   const handleConfirm = async () => {
     const finalReason = reason === "أخرى" ? customReason.trim() : reason.trim();

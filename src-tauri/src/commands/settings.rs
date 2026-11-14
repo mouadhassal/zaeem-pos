@@ -88,7 +88,7 @@ pub(crate) fn get_discount_caps_v3_impl(state: &Db, session_token: String) -> Re
     let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let caps = Repo::new(&conn).get_discount_caps(&actor.tenant_id).map_err(|e| e.to_string())?;
-    let your_cap_percent = caps.for_role(actor.role);
+    let your_cap_percent = if crate::security::till_action_allowed(&actor, crate::role_access::Feature::Discount) { caps.for_role(actor.role) } else { 0 };
     Ok(DiscountCapsResponse { caps, your_cap_percent })
 }
 

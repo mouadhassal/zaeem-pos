@@ -7,7 +7,7 @@ import { useToast } from "../../hooks/useToast";
 import { formatMoney, minorToInputValue, parseMoneyInput } from "../../lib/money";
 import { realErrorText } from "../../lib/errors";
 import type { OptionGroup } from "../../lib/itemOptions";
-import { quickChoice } from "../../lib/itemOptions";
+import { quickChoice, quickPair } from "../../lib/itemOptions";
 
 interface CategoryLite { id: string; name: string }
 interface ItemLite { id: string; name: string; category_id: string }
@@ -127,11 +127,14 @@ export default function OptionsTab({ categories, items }: { categories: Category
     }
   };
 
-  const addQuick = (kind: "without" | "extra" | "plain") => {
+  const addQuick = (kind: "without" | "extra" | "plain" | "both") => {
     if (!draft || !quick.trim()) return;
-    const c = quickChoice(kind, quick);
-    if (draft.choices.some((x) => x.name === c.name)) return toast.error("هذا الخيار موجود");
-    setDraft({ ...draft, choices: [...draft.choices, { name: c.name, price: "" }] });
+    // "both": the ingredient is typed once and gets its two choices, "بدون بصل" and "زيادة بصل";
+    // the till shows them as one row (بصل: بدون / زيادة).
+    const wanted = kind === "both" ? quickPair(quick) : [quickChoice(kind, quick)];
+    const fresh = wanted.filter((c) => !draft.choices.some((x) => x.name === c.name));
+    if (fresh.length === 0) return toast.error("هذا الخيار موجود");
+    setDraft({ ...draft, choices: [...draft.choices, ...fresh.map((c) => ({ name: c.name, price: "" }))] });
     setQuick("");
   };
 
@@ -183,8 +186,17 @@ export default function OptionsTab({ categories, items }: { categories: Category
 
           <div className="space-y-2">
             <span className="text-xs text-ink-500 font-arabic">الخيارات</span>
+            <p className="text-[11px] text-ink-400 font-arabic">اكتب «بصل» واضغط «+ بدون وزيادة» (أو Enter): يُضاف «بدون بصل» و«زيادة بصل» معاً، ويظهران عند البيع في سطر واحد. ضع سعراً للزيادة إن كانت مدفوعة.</p>
             <div className="flex gap-2 flex-wrap">
-              <input className={`${input} flex-1 min-w-[10rem]`} value={quick} onChange={(e) => setQuick(e.target.value)} placeholder="اكتب مكوّناً: بصل، كاتشب، جبنة..." data-testid="option-quick-input" />
+              <input
+                className={`${input} flex-1 min-w-[10rem]`}
+                value={quick}
+                onChange={(e) => setQuick(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addQuick("both"); } }}
+                placeholder="اكتب المكوّن مرة واحدة: بصل، كاتشب، جبنة..."
+                data-testid="option-quick-input"
+              />
+              <button onClick={() => addQuick("both")} className="h-10 px-3 rounded-sm bg-saffron-600 text-white text-sm font-arabic font-bold hover:bg-saffron-700" data-testid="option-quick-both">+ بدون وزيادة</button>
               <button onClick={() => addQuick("without")} className="h-10 px-3 rounded-sm bg-ink-100 text-ink-800 text-sm font-arabic hover:bg-ink-200" data-testid="option-quick-without">+ بدون</button>
               <button onClick={() => addQuick("extra")} className="h-10 px-3 rounded-sm bg-ink-100 text-ink-800 text-sm font-arabic hover:bg-ink-200" data-testid="option-quick-extra">+ زيادة</button>
               <button onClick={() => addQuick("plain")} className="h-10 px-3 rounded-sm bg-ink-100 text-ink-800 text-sm font-arabic hover:bg-ink-200">+ كما هو</button>

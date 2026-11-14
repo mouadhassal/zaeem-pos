@@ -3128,6 +3128,41 @@ pub fn run_role_access_migration(conn: &mut Connection, _db_path: &Path) -> Resu
     Ok(())
 }
 
+pub const MIGRATION_AP_VERSION: i64 = 48;
+
+/// Migration AP (2026-11-14): workers and the shape of the business. Adds a job title for everyone
+/// and `app_access` (0 = a worker who never uses the app: cleaner, guard...) to `staff`, the
+/// per-person access exceptions (`staff_access`) and the business type + switched-off modules
+/// (`business_profile`). Additive: existing staff keep app access, no exceptions, every module on.
+pub fn run_workforce_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AP_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    let has_column = |tx: &rusqlite::Transaction, col: &str| -> Result<bool, rusqlite::Error> {
+        tx.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('staff') WHERE name = ?1", params![col], |r| r.get(0))
+    };
+    if !has_column(&tx, "job_title")? {
+        tx.execute_batch("ALTER TABLE staff ADD COLUMN job_title TEXT;")?;
+    }
+    if !has_column(&tx, "app_access")? {
+        tx.execute_batch("ALTER TABLE staff ADD COLUMN app_access INTEGER NOT NULL DEFAULT 1;")?;
+    }
+    tx.execute_batch(crate::role_access::PERSON_SCHEMA_SQL)?;
+    tx.execute_batch(crate::business::SCHEMA_SQL)?;
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AP_VERSION, "0048_workforce", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

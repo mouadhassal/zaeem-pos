@@ -22,7 +22,7 @@ pub fn login_v3(state: State<Db>, name: String, password_or_pin: String, device_
 
     let (actor_id, tenant_id, branch_id, role_str, password_hash, pin_hash): (String, String, Option<String>, String, Option<String>, Option<String>) = conn
         .query_row(
-            "SELECT id, tenant_id, branch_id, role, password_hash, pin_hash FROM staff WHERE name = ?1 AND is_active = 1",
+            "SELECT id, tenant_id, branch_id, role, password_hash, pin_hash FROM staff WHERE name = ?1 AND is_active = 1 AND COALESCE(app_access, 1) = 1",
             params![name],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
         )
@@ -96,7 +96,7 @@ pub(crate) fn login_pin_v3_impl(state: &Db, pin: String, device_id: String) -> R
         .optional().map_err(|e| e.to_string())?;
 
     let mut stmt = conn
-        .prepare("SELECT id, name, tenant_id, branch_id, role, pin_hash FROM staff WHERE pin_hash IS NOT NULL AND is_active = 1 AND (?1 IS NULL OR tenant_id = ?1)")
+        .prepare("SELECT id, name, tenant_id, branch_id, role, pin_hash FROM staff WHERE pin_hash IS NOT NULL AND is_active = 1 AND COALESCE(app_access, 1) = 1 AND (?1 IS NULL OR tenant_id = ?1)")
         .map_err(|e| e.to_string())?;
     let candidates: Vec<(String, String, String, Option<String>, String, String)> = stmt
         .query_map(params![tenant_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
@@ -369,6 +369,7 @@ pub fn update_staff_v3(state: State<Db>, license: State<crate::license::cloud::C
         Repo::new(&conn).get_staff_scope(&target_staff_id).map_err(|e| e.to_string())?;
 
     authorize_scope(&actor, &target_tenant_id, target_branch_id.as_deref()).map_err(|e| e.to_string())?;
+    super::workforce::refuse_if_worker(&conn, &target_staff_id)?;
 
     // 2026-08-22 QA re-audit: both of these raw English messages reached
     // the Arabic Staff page verbatim -- same class of bug as
@@ -431,6 +432,9 @@ pub fn update_staff_profile_v3(state: State<Db>, license: State<crate::license::
     let (target_tenant_id, target_branch_id, target_current_rank) =
         Repo::new(&conn).get_staff_scope(&target_staff_id).map_err(|e| e.to_string())?;
     authorize_scope(&actor, &target_tenant_id, target_branch_id.as_deref()).map_err(|e| e.to_string())?;
+    if new_pin.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+        super::workforce::refuse_if_worker(&conn, &target_staff_id)?;
+    }
     // A Manager may edit their own profile (rank equal to self is fine here --
     // this isn't a rank-elevation action) but never someone who outranks them.
     // 2026-08-22 QA re-audit: same raw-English-reaches-Arabic-UI bug as

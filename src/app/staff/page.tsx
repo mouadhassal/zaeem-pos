@@ -1,3 +1,4 @@
+import WorkersPanel from "./WorkersPanel";
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
@@ -29,6 +30,10 @@ interface Employee {
   branch_id: string | null;
   is_active: number;
   created_at: string;
+  /** What the person is (chef, cleaner...); the role is only the permission level. */
+  job_title: string | null;
+  /** false = a worker who never uses the app (listed under «العمال بدون تطبيق»). */
+  app_access: boolean;
 }
 
 interface Shift {
@@ -501,6 +506,7 @@ export default function StaffPage() {
                 <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
                   <th className="text-right p-3 font-medium">الاسم</th>
                   <th className="text-right p-3 font-medium">الدور</th>
+                  <th className="text-right p-3 font-medium">المسمى الوظيفي</th>
                   <th className="text-center p-3 font-medium">الحالة</th>
                   <th className="text-right p-3 font-medium">تاريخ التسجيل</th>
                   <th className="text-center p-3 font-medium">إجراءات</th>
@@ -508,6 +514,7 @@ export default function StaffPage() {
               </thead>
               <tbody>
                 {employees
+                  .filter((emp) => emp.app_access !== false)
                   .filter((emp) => !employeeSearch.trim() || emp.name.toLowerCase().includes(employeeSearch.trim().toLowerCase()))
                   .map((emp) => (
                   <tr key={emp.id} className="border-b border-ink-200 hover:bg-saffron-50">
@@ -520,6 +527,23 @@ export default function StaffPage() {
                       >
                         {ROLE_NAMES[emp.role] ?? emp.role}
                       </span>
+                    </td>
+                    <td className="p-3">
+                      <input
+                        defaultValue={emp.job_title ?? ""}
+                        list="job-title-suggestions"
+                        placeholder="—"
+                        aria-label={`المسمى الوظيفي: ${emp.name}`}
+                        data-testid="staff-job-title"
+                        onBlur={(e) => {
+                          const v = e.target.value.trim();
+                          if (v === (emp.job_title ?? "")) return;
+                          invoke("set_staff_job_title_v3", { sessionToken: token, staffId: emp.id, jobTitle: v || null })
+                            .then(() => fetchEmployees())
+                            .catch((err) => setError(realErrorText(err)));
+                        }}
+                        className="h-8 w-36 px-2 rounded-sm border border-transparent hover:border-ink-200 focus:border-saffron-500 bg-transparent font-arabic text-xs text-ink-700 outline-none"
+                      />
                     </td>
                     <td className="p-3 text-center">
                       <span className={`inline-flex items-center gap-1.5 text-xs font-arabic ${emp.is_active ? "text-ok" : "text-danger"}`}>
@@ -596,6 +620,13 @@ export default function StaffPage() {
               </tbody>
             </table>
           </div>
+          {!posLite && (
+            <WorkersPanel
+              workers={employees.filter((e) => e.app_access === false)}
+              branches={branches}
+              onChanged={() => void fetchEmployees()}
+            />
+          )}
         </div>
       )}
 

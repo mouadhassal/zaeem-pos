@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildPeriods, rangeToIso, nowLocalLabel, toHistory, parseAnswer, inlineSegments, errorText, tzOffsetMinutes, type ChatMessage } from "./assistant";
+import { buildPeriods, rangeForQuestion, rangeToIso, nowLocalLabel, toHistory, parseAnswer, inlineSegments, errorText, tzOffsetMinutes, type ChatMessage } from "./assistant";
 
 // A fixed local moment: Wednesday 11 March 2026, 14:30 (local time of the test machine).
 const NOW = new Date(2026, 2, 11, 14, 30, 0);
@@ -15,45 +15,52 @@ describe("buildPeriods", () => {
     ]);
   });
 
-  it("today runs from local midnight to now; yesterday is the whole local day before", () => {
-    expect(local(by("today").start_iso)).toEqual(new Date(2026, 2, 11, 0, 0, 0, 0));
+  it("today runs from 05:00 (the business day) to now; yesterday is the whole business day before", () => {
+    expect(local(by("today").start_iso)).toEqual(new Date(2026, 2, 11, 5, 0, 0, 0));
     expect(local(by("today").end_iso)).toEqual(NOW);
-    expect(local(by("yesterday").start_iso)).toEqual(new Date(2026, 2, 10, 0, 0, 0, 0));
-    expect(local(by("yesterday").end_iso)).toEqual(new Date(2026, 2, 10, 23, 59, 59, 999));
+    expect(local(by("yesterday").start_iso)).toEqual(new Date(2026, 2, 10, 5, 0, 0, 0));
+    expect(local(by("yesterday").end_iso)).toEqual(new Date(2026, 2, 11, 4, 59, 59, 999));
+  });
+
+  it("after midnight, today is still the night's business day (the 12 a.m. reset)", () => {
+    const night = new Date(2026, 2, 12, 1, 30, 0);
+    const p = buildPeriods(night);
+    expect(local(p.find((x) => x.label === "today")!.start_iso)).toEqual(new Date(2026, 2, 11, 5, 0, 0, 0));
+    expect(nowLocalLabel(night)).toContain("ما زال يوم عمل 2026-03-11 (الأربعاء)");
   });
 
   it("the last 7 days and the 7 before never overlap and touch exactly", () => {
     const last = by("last_7_days");
     const prev = by("previous_7_days");
-    expect(local(last.start_iso)).toEqual(new Date(2026, 2, 5, 0, 0, 0, 0));
-    expect(local(prev.start_iso)).toEqual(new Date(2026, 1, 26, 0, 0, 0, 0));
+    expect(local(last.start_iso)).toEqual(new Date(2026, 2, 5, 5, 0, 0, 0));
+    expect(local(prev.start_iso)).toEqual(new Date(2026, 1, 26, 5, 0, 0, 0));
     expect(local(prev.end_iso).getTime() + 1).toBe(local(last.start_iso).getTime());
   });
 
   it("the same weekday last week is one whole day", () => {
     const d = by("same_weekday_last_week");
-    expect(local(d.start_iso)).toEqual(new Date(2026, 2, 4, 0, 0, 0, 0));
-    expect(local(d.end_iso)).toEqual(new Date(2026, 2, 4, 23, 59, 59, 999));
+    expect(local(d.start_iso)).toEqual(new Date(2026, 2, 4, 5, 0, 0, 0));
+    expect(local(d.end_iso)).toEqual(new Date(2026, 2, 5, 4, 59, 59, 999));
   });
 
   it("this month starts on the 1st; the 30-day windows touch exactly", () => {
-    expect(local(by("this_month").start_iso)).toEqual(new Date(2026, 2, 1, 0, 0, 0, 0));
+    expect(local(by("this_month").start_iso)).toEqual(new Date(2026, 2, 1, 5, 0, 0, 0));
     expect(local(by("previous_30_days").end_iso).getTime() + 1).toBe(local(by("last_30_days").start_iso).getTime());
   });
 });
 
 describe("rangeToIso", () => {
-  it("maps the chips to local-day windows", () => {
-    expect(new Date(rangeToIso("today", NOW).startIso)).toEqual(new Date(2026, 2, 11));
-    expect(new Date(rangeToIso("week", NOW).startIso)).toEqual(new Date(2026, 2, 5));
-    expect(new Date(rangeToIso("month", NOW).startIso)).toEqual(new Date(2026, 1, 10));
+  it("maps the chips to business-day windows (from 05:00)", () => {
+    expect(new Date(rangeToIso("today", NOW).startIso)).toEqual(new Date(2026, 2, 11, 5));
+    expect(new Date(rangeToIso("week", NOW).startIso)).toEqual(new Date(2026, 2, 5, 5));
+    expect(new Date(rangeToIso("month", NOW).startIso)).toEqual(new Date(2026, 1, 10, 5));
     expect(new Date(rangeToIso("week", NOW).endIso)).toEqual(NOW);
   });
 });
 
 describe("clock labels", () => {
   it("names the local date, weekday and time", () => {
-    expect(nowLocalLabel(NOW)).toBe("2026-03-11 (الأربعاء) 14:30");
+    expect(nowLocalLabel(NOW)).toMatch(/^2026-03-11 \(الأربعاء\) 14:30 — يوم العمل يبدأ الساعة 05:00/);
   });
   it("offset is minutes east of UTC", () => {
     expect(tzOffsetMinutes(NOW)).toBe(-NOW.getTimezoneOffset());
@@ -106,5 +113,17 @@ describe("parseAnswer", () => {
     expect(inlineSegments("a ** b")).toEqual([{ text: "a ** b", bold: false }]);
     const b = parseAnswer("<script>alert(1)</script>")[0] as { segments: { text: string }[] };
     expect(b.segments[0].text).toBe("<script>alert(1)</script>");
+  });
+});
+
+describe("rangeForQuestion", () => {
+  it("widens the detailed window to what the question is about", () => {
+    expect(rangeForQuestion("ما أكثر صنف مبيعاً هذا الشهر؟", "today")).toBe("month");
+    expect(rangeForQuestion("قارن مع الأسبوع الماضي", "today")).toBe("week");
+    expect(rangeForQuestion("كم بعنا أمس؟", "today")).toBe("week");
+    expect(rangeForQuestion("كم بعنا اليوم؟", "today")).toBe("today");
+  });
+  it("never narrows below the chip the owner chose", () => {
+    expect(rangeForQuestion("كم بعنا أمس؟", "month")).toBe("month");
   });
 });

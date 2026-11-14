@@ -7,6 +7,7 @@ import { checkLicense, activateLicense, getDeviceId, backOfficeLocked, type Lice
 import { IconPencil as Pencil, IconTrash as Trash, IconPhotoPlus as ImagePlus, IconX as X } from "@tabler/icons-react";
 import NetworkTab from "./NetworkTab";
 import AccessTab from "./AccessTab";
+import BusinessTab from "./BusinessTab";
 import PreferencesTab from "./PreferencesTab";
 import { checkForUpdatesManually } from "../../lib/autoUpdate";
 import { createBackup, listBackups, getBackupSettings, updateBackupSettings, type BackupInfo, type BackupSettings } from "../../lib/backup";
@@ -16,7 +17,7 @@ import PresetPicker from "../../components/ui/PresetPicker";
 import { presetToMode } from "../../lib/businessPreset";
 import { formatArabicDate, formatArabicDateTime } from "../../lib/dateLocal";
 
-export type SettingsTab = "general" | "prefs" | "access" | "printer" | "tax" | "branch" | "license" | "network" | "backup" | "about";
+export type SettingsTab = "general" | "business" | "prefs" | "access" | "printer" | "tax" | "branch" | "license" | "network" | "backup" | "about";
 
 interface ChainConfig {
   currency: string;
@@ -83,6 +84,7 @@ const CURRENCY_NAMES: Record<string, string> = {
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: "general", label: "عام" },
+  { id: "business", label: "نوع النشاط والوحدات" },
   { id: "prefs", label: "التفضيلات والتصميم" },
   { id: "access", label: "الصلاحيات" },
   { id: "printer", label: "الطابعة" },
@@ -669,7 +671,7 @@ export default function SettingsPage({ initialTab = "general" }: { initialTab?: 
   return (
     <div className="flex h-full overflow-hidden bg-canvas" dir="rtl">
       <nav className="w-44 bg-surface-alt border-l border-ink-200 flex flex-col py-3 gap-0.5 shrink-0 overflow-y-auto">
-        {TABS.filter((t) => t.id !== "access" || isOwner).map((t) => (
+        {TABS.filter((t) => (t.id !== "access" && t.id !== "business") || isOwner).map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
@@ -775,6 +777,7 @@ export default function SettingsPage({ initialTab = "general" }: { initialTab?: 
 
         {tab === "prefs" && <PreferencesTab />}
         {tab === "access" && isOwner && <AccessTab />}
+        {tab === "business" && isOwner && <BusinessTab />}
 
         {tab === "printer" && (
           <div className="space-y-6 max-w-xl">

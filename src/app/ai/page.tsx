@@ -7,7 +7,7 @@ import {
 } from "@tabler/icons-react";
 import { formatArabicTime } from "../../lib/dateLocal";
 import {
-  buildPeriods, rangeToIso, nowLocalLabel, tzOffsetMinutes, toHistory, errorText, parseAnswer,
+  buildPeriods, rangeForQuestion, rangeToIso, nowLocalLabel, tzOffsetMinutes, toHistory, errorText, parseAnswer,
   FOLLOW_UPS, QUICK_QUESTIONS, type ChatMessage, type Range, type Segment,
 } from "../../lib/assistant";
 
@@ -131,7 +131,7 @@ export default function AIPage() {
       setLoading(true);
 
       const now = new Date();
-      const { startIso, endIso } = rangeToIso(range, now);
+      const { startIso, endIso } = rangeToIso(rangeForQuestion(q, range), now);
       try {
         const answer = await invoke<AssistantAnswer>("ask_assistant_v3", {
           sessionToken: token,

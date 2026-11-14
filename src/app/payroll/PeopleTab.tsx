@@ -35,7 +35,7 @@ export default function PeopleTab({ employees, onChanged }: { employees: Employe
             {employees.map((e) => (
               <tr key={e.user_id} className="border-b border-ink-100" data-testid={`person-${e.user_id}`}>
                 <td className="p-3 font-arabic font-medium text-ink-900">{e.name}</td>
-                <td className="p-3 font-arabic text-ink-500">{ROLE_LABEL[e.role] ?? e.role}</td>
+                <td className="p-3 font-arabic text-ink-500">{e.job_title || (e.role === "SERVER" ? "عامل" : ROLE_LABEL[e.role] ?? e.role)}</td>
                 <td className="p-3 font-arabic">{e.pay ? PAY_TYPE_LABEL[e.pay.pay_type] : <span className="text-warn">لم يُحدَّد</span>}</td>
                 <td className="p-3 font-mono">{e.pay ? formatMoney(e.pay.rate_cents) : "—"}</td>
                 <td className="p-3 font-arabic text-ink-500">{e.pay ? (e.pay.track_attendance ? "من البصمات" : "بدون احتساب") : "—"}</td>

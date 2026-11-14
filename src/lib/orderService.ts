@@ -306,7 +306,9 @@ export async function finalizeOrder(
   receiptData: ReceiptData,
   debtorId?: string,
   cardNumber?: string,
-  referenceCode?: string
+  referenceCode?: string,
+  /** false: the customer did not want a bill; the sale is recorded and nothing prints. */
+  print = true,
 ): Promise<number | null> {
   const result = await invoke<FinalizePaymentResult>("finalize_order_with_payment_v3", {
     sessionToken: token(),
@@ -319,6 +321,7 @@ export async function finalizeOrder(
     referenceCode: referenceCode ?? null,
   });
 
+  if (!print) return result.points_earned;
   try {
     await printReceipt(receiptData);
   } catch (err) {

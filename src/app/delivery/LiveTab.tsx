@@ -47,6 +47,7 @@ interface OrderLineInfo { name: string; quantity: number; modifiers: string[]; n
 export default function LiveTab() {
   const toast = useToast();
   const cardSize = usePrefsStore((s) => s.deliveryCardSize);
+  const printOnOut = usePrefsStore((s) => s.printDeliveryOnOut);
   const [open, setOpen] = useState<Delivery[]>([]);
   const [done, setDone] = useState<Delivery[]>([]);
   const labelOf = useOrderLabels([...open, ...done].map((d) => d.order_id));
@@ -137,6 +138,22 @@ export default function LiveTab() {
       }));
     } catch (e) {
       toast.error(`تعذرت الطباعة: ${realErrorText(e)}`);
+    }
+  };
+
+  // "خرج للتوصيل": the order leaves with its driver, and (owner setting, on by default) its bill
+  // prints right then, to hand to the driver. Nothing prints before a driver is chosen.
+  const sendOut = async (d: Delivery) => {
+    setBusy(d.order_id);
+    try {
+      await setDeliveryStatus(d.order_id, "OUT");
+      if (usePrefsStore.getState().printDeliveryOnOut) await printSlip(d);
+      toast.success("خرج الطلب للتوصيل ✓");
+      await load();
+    } catch (e) {
+      toast.error(realErrorText(e));
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -331,7 +348,9 @@ export default function LiveTab() {
                     {drivers.map((dr) => <option key={dr.id} value={dr.id}>{dr.name}</option>)}
                   </select>
                   {selected.status === "ASSIGNED" && (
-                    <button onClick={() => act(selected.order_id, () => setDeliveryStatus(selected.order_id, "OUT"))} disabled={busy === selected.order_id} className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold font-arabic" data-testid="delivery-out">خرج للتوصيل</button>
+                    <button onClick={() => void sendOut(selected)} disabled={busy === selected.order_id} className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold font-arabic flex items-center gap-1.5" data-testid="delivery-out">
+                      {printOnOut && <IconPrinter className="w-4 h-4" />}خرج للتوصيل
+                    </button>
                   )}
                   {(selected.status === "ASSIGNED" || selected.status === "OUT") && (
                     <button onClick={() => act(selected.order_id, () => setDeliveryStatus(selected.order_id, "DELIVERED"), "تم التسليم ✓")} disabled={busy === selected.order_id} className="h-10 px-4 rounded-sm bg-green-600 text-white text-sm font-bold font-arabic" data-testid="delivery-delivered">تم التسليم</button>

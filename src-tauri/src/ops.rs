@@ -254,6 +254,14 @@ pub fn price_modifiers(
 
 /// Records who gave a gift: `comp_by` is always the logged-in user, never a
 /// value the client sent. Called on every path that creates order lines.
+/// A gift in the lines needs the Gift till action (owner's access table).
+pub fn require_gift_allowed(items: &[crate::repo::OrderItemInput], actor: &crate::security::Actor) -> Result<(), String> {
+    if items.iter().any(|i| i.comped) && !crate::security::till_action_allowed(actor, crate::role_access::Feature::Gift) {
+        return Err("ليست لديك صلاحية الضيافة (صنف مجاني) -- اطلب من المدير".to_string());
+    }
+    Ok(())
+}
+
 pub fn stamp_comps(items: &mut [OrderItemInput], actor_id: &str) {
     for item in items.iter_mut() {
         item.comp_by = if item.comped { Some(actor_id.to_string()) } else { None };

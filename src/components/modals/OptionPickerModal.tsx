@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { IconMinus, IconPlus, IconX } from "@tabler/icons-react";
 import { useCurrency } from "../../hooks/useCurrency";
-import { choiceKind, choiceShortName, missingRequired, selectionToModifiers, toggleChoice, type Modifier, type OptionGroup, type Selection } from "../../lib/itemOptions";
+import { choiceKind, choiceRows, choiceShortName, missingRequired, pickPairSide, selectionToModifiers, toggleChoice, type Modifier, type OptionGroup, type Selection } from "../../lib/itemOptions";
 import { usePrefsStore } from "../../stores/prefsStore";
 
 export interface PickerResult {
@@ -26,6 +26,10 @@ interface Props {
   /** Editing a line already sent to the kitchen: change the quantity too. */
   askQuantity?: boolean;
   initialQuantity?: number;
+  /** Label of the quantity row (default "الكمية"). */
+  quantityLabel?: string;
+  /** Highest quantity the row allows (e.g. the units on a line being split). */
+  maxQuantity?: number;
   /** Editing a line already sent to the kitchen: say why (it is recorded and printed). */
   askReason?: boolean;
   /** The server wants a manager PIN for this change. */
@@ -48,7 +52,7 @@ const REASONS = ["طلب العميل", "خطأ في الطلب", "خطأ في �
  */
 export default function OptionPickerModal({
   itemName, groups, initialSelection, initialNote, keepModifiers, confirmLabel,
-  askQuantity, initialQuantity, askReason, needsPin, error, busy, onConfirm, onCancel,
+  askQuantity, initialQuantity, quantityLabel, maxQuantity, askReason, needsPin, error, busy, onConfirm, onCancel,
 }: Props) {
   const { fmt } = useCurrency();
   const [selection, setSelection] = useState<Selection>(initialSelection ?? {});
@@ -91,12 +95,12 @@ export default function OptionPickerModal({
         <div className="p-6 space-y-5 overflow-y-auto">
           {askQuantity && (
             <div className="flex items-center gap-3">
-              <span className="font-arabic text-sm font-bold text-ink-700">الكمية</span>
+              <span className="font-arabic text-sm font-bold text-ink-700">{quantityLabel ?? "الكمية"}</span>
               <button type="button" onClick={() => setQuantity((q) => Math.max(1, q - 1))} className="w-11 h-11 rounded-[9px] bg-surface-alt flex items-center justify-center" aria-label="إنقاص" data-testid="edit-qty-minus">
                 <IconMinus className="w-4 h-4" />
               </button>
               <span className="tabular w-8 text-center font-bold" data-testid="edit-qty">{quantity}</span>
-              <button type="button" onClick={() => setQuantity((q) => q + 1)} className="w-11 h-11 rounded-[9px] bg-accent text-white flex items-center justify-center" aria-label="زيادة" data-testid="edit-qty-plus">
+              <button type="button" onClick={() => setQuantity((q) => (maxQuantity ? Math.min(maxQuantity, q + 1) : q + 1))} className="w-11 h-11 rounded-[9px] bg-accent text-white flex items-center justify-center" aria-label="زيادة" data-testid="edit-qty-plus">
                 <IconPlus className="w-4 h-4" />
               </button>
             </div>
@@ -113,8 +117,37 @@ export default function OptionPickerModal({
                 {g.required && <span className="text-xs text-danger font-arabic">مطلوب</span>}
                 {g.selection === "SINGLE" && <span className="text-xs text-ink-400 font-arabic">اختر واحداً</span>}
               </div>
+              {/* An ingredient with both sides ("بدون بصل" / "زيادة بصل") is one row: بصل [بدون] [زيادة]. */}
+              {choiceRows(g.choices).filter((r) => r.kind === "pair").map((r) => {
+                if (r.kind !== "pair") return null;
+                const picked = selection[g.id] ?? [];
+                return (
+                  <div key={r.without.id} className="flex items-center gap-2" data-testid="option-pair">
+                    <span className="flex-1 min-w-0 font-arabic text-sm text-ink-900 truncate">{r.label}</span>
+                    {([[r.without, r.extra, "بدون"], [r.extra, r.without, choiceKind(r.extra.name) === "with" && r.extra.name.trim().startsWith("مع") ? "مع" : "زيادة"]] as const).map(([pick, other, label]) => {
+                      const on = picked.includes(pick.id);
+                      return (
+                        <button
+                          key={pick.id}
+                          type="button"
+                          onClick={() => setSelection((s) => pickPairSide(g, s, pick, other))}
+                          className={`min-h-[44px] min-w-[84px] px-3 rounded-full font-arabic text-sm transition-colors ${on ? "bg-saffron-600 text-white" : "bg-surface-alt text-ink-700 hover:bg-ink-200"}`}
+                          data-testid="option-choice"
+                          data-choice={pick.name}
+                          aria-pressed={on}
+                        >
+                          {label}
+                          {pick.price_cents > 0 && <span className="ms-1 opacity-80">+{fmt(pick.price_cents)}</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })}
               <div className="flex flex-wrap gap-2">
-                {g.choices.map((c) => {
+                {choiceRows(g.choices).map((r) => {
+                  if (r.kind !== "single") return null;
+                  const c = r.choice;
                   const on = (selection[g.id] ?? []).includes(c.id);
                   return (
                     <button
@@ -123,6 +156,7 @@ export default function OptionPickerModal({
                       onClick={() => setSelection((s) => toggleChoice(g, s, c.id))}
                       className={`min-h-[44px] px-4 rounded-full font-arabic text-sm transition-colors ${on ? "bg-saffron-600 text-white" : "bg-surface-alt text-ink-700 hover:bg-ink-200"}`}
                       data-testid="option-choice"
+                      data-choice={c.name}
                       aria-pressed={on}
                     >
                       {c.name}

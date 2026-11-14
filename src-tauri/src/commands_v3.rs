@@ -78,6 +78,7 @@ mod tests {
             include_str!("commands/fingerprint.rs"),
             include_str!("commands/payroll.rs"),
             include_str!("commands/stockroom.rs"),
+            include_str!("commands/workforce.rs"),
         ].join("\n")
     }
 
@@ -129,6 +130,7 @@ mod tests {
         migrate_v3::run_stockroom_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_ops_settings_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_role_access_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_workforce_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -528,6 +530,164 @@ mod tests {
                 "SELECT unit_price_cents FROM order_items WHERE order_id = ?1", params![order_id], |r| r.get(0),
             ).unwrap();
             assert_eq!(stored_unit_price, 1_000, "the stored line price must be the real menu price, not the caller's fabricated unit_price_cents: 1");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// 2026-11-14 offers bug: happy hour and combo prices existed only on
+        /// the till's screen; the order was stored (and a later-paid tab
+        /// charged) at the full menu price. Sells both through the real
+        /// command and checks what is stored, then adds to the tab after the
+        /// happy hour is gone: the old line keeps the price it was sold at.
+        #[test]
+        fn offers_are_priced_by_the_server_and_kept_when_the_tab_grows() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("offers_priced_by_server");
+            let (cashier_id, cola, burger, fries, combo_id, rule_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let cat = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let cola = repo.create_menu_item(&tenant_id, "Cola", &cat, 1000, 100, None, None).unwrap();
+                let burger = repo.create_menu_item(&tenant_id, "Burger", &cat, 500, 200, None, None).unwrap();
+                let fries = repo.create_menu_item(&tenant_id, "Fries", &cat, 300, 50, None, None).unwrap();
+                // Cola is half price all day today.
+                let now = chrono::Local::now();
+                let today = chrono::Datelike::weekday(&now).num_days_from_sunday() as i64;
+                let rule_id = repo.create_happy_hour_rule(&tenant_id, &cola, 50, today, "00:00", "23:59", true).unwrap();
+                // Burger + fries for 600 instead of 800.
+                let combo_id = repo.create_combo_meal(&tenant_id, "Combo", 600, &[(burger.clone(), 1), (fries.clone(), 1)]).unwrap();
+                (cashier_id, cola, burger, fries, combo_id, rule_id)
+            };
+            let session = {
+                let conn = Connection::open(&db_path).unwrap();
+                security::create_session(&conn, &cashier_id, "device-1").unwrap()
+            };
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            open_shift_v3_impl(&db, &license, session.clone(), 10000, None).unwrap();
+
+            let line = |id: &str, qty: i64, price: i64, combo: Option<&str>| OrderItemInput {
+                menu_item_id: id.to_string(), name: None, quantity: qty, unit_price_cents: price,
+                notes: None, combo_id: combo.map(str::to_string), modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None,
+            };
+            let tag = format!("combo-{combo_id}-1731590400000");
+            // What the till sends: cola at the happy-hour price, the combo lines at 375 + 225.
+            let items = vec![line(&cola, 2, 500, None), line(&burger, 1, 375, Some(&tag)), line(&fries, 1, 225, Some(&tag))];
+            let order_id = create_full_order_v3_impl(
+                &db, &license, session.clone(), table_id.clone(), "DINE_IN".to_string(), items,
+                1600, 0, 1600, 0, None, None, None, None, 0, None, None,
+            ).unwrap();
+            let total = |order_id: &str| -> i64 {
+                let conn = Connection::open(&db_path).unwrap();
+                conn.query_row("SELECT total_cents FROM orders WHERE id = ?1", params![order_id], |r| r.get(0)).unwrap()
+            };
+            assert_eq!(total(&order_id), 2 * 500 + 600, "happy-hour cola (2 x 500) + the 600 combo, not the full 2800");
+
+            // A combo whose lines were changed (3 fries at the bundle ratio) gets no bundle price.
+            let cheat = vec![line(&burger, 1, 375, Some(&tag)), line(&fries, 3, 225, Some(&tag))];
+            let cheat_order = create_full_order_v3_impl(
+                &db, &license, session.clone(), String::new(), "TAKEAWAY".to_string(), cheat,
+                1050, 0, 1050, 0, None, None, None, None, 0, None, None,
+            ).unwrap();
+            assert_eq!(total(&cheat_order), 500 + 3 * 300, "not the combo: full menu prices");
+
+            // The happy hour ends; another cola is added to the tab.
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                Repo::new(&conn).delete_happy_hour_rule(&tenant_id, &rule_id).unwrap();
+            }
+            add_items_to_order_v3_impl(&db, &license, session, order_id.clone(), vec![line(&cola, 1, 1000, None)]).unwrap();
+            assert_eq!(total(&order_id), 1600 + 1000, "the first colas keep their happy-hour price, the new one is full price");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// 2026-11-14: workers without the app, the owner's switch for
+        /// managers, per-person exceptions and switched-off modules, through
+        /// the real commands.
+        #[test]
+        fn workers_without_the_app_person_exceptions_and_modules() {
+            let (db_path, tenant_id, branch_id, table_id) = seeded_db("workforce");
+            let (owner_id, manager_id, cashier_id, item_id) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let owner_id = seed_staff(&conn, &tenant_id, None, Role::Owner, "Owner");
+                let manager_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Manager, "Manager");
+                let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                let repo = Repo::new(&conn);
+                let cat = repo.create_category(&tenant_id, "Category", None, 0, None).unwrap();
+                let item_id = repo.create_menu_item(&tenant_id, "Item", &cat, 1000, 100, None, None).unwrap();
+                (owner_id, manager_id, cashier_id, item_id)
+            };
+            let session = |id: &str| { let conn = Connection::open(&db_path).unwrap(); security::create_session(&conn, id, "device-1").unwrap() };
+            let (owner, manager) = (session(&owner_id), session(&manager_id));
+            let db = real_db(&db_path);
+            // Back-office commands need a licence that is installed and in date.
+            let license = {
+                struct NeverCalledTransport;
+                #[async_trait::async_trait]
+                impl crate::license::cloud::CloudTransport for NeverCalledTransport {
+                    async fn check(&self, _license_id: &str, _device_token: &str) -> crate::license::cloud::CloudCheckOutcome {
+                        panic!("never called");
+                    }
+                }
+                let license_dir = db_path.parent().unwrap().join("unlocked-license");
+                fs::create_dir_all(&license_dir).unwrap();
+                let key = license_core::signed::test_support::test_keypair();
+                let offline = crate::license::store::LicenseState::init(license_dir.clone(), key.verifying_key());
+                let now = chrono::Utc::now().timestamp_millis();
+                let payload = license_core::signed::test_support::sample_payload(crate::license::fingerprint::current(), now - 1000, now + 30 * 86_400_000);
+                offline.accept_renewal(license_core::signed::test_support::mint(&key, &payload)).unwrap();
+                crate::license::cloud::CloudLicenseState::new(offline, license_dir, None, Box::new(NeverCalledTransport))
+            };
+            use crate::commands::workforce::{create_worker_v3_impl, update_worker_v3_impl, save_business_profile_v3_impl};
+
+            // The owner adds a cleaner: no PIN, no app, in payroll.
+            let cleaner = create_worker_v3_impl(&db, &license, owner.clone(), "أبو سمير".into(), Some("عامل نظافة".into()), Some(branch_id.clone())).unwrap();
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                let (role, pin, app, title): (String, Option<String>, i64, Option<String>) = conn.query_row(
+                    "SELECT role, pin_hash, app_access, job_title FROM staff WHERE id = ?1", params![cleaner], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                ).unwrap();
+                assert_eq!((role.as_str(), pin, app, title.as_deref()), ("SERVER", None, 0, Some("عامل نظافة")));
+                let scope = crate::payroll::PayrollScope::for_actor(Role::Owner, None, "off").unwrap();
+                let people = crate::payroll::list_employees(&conn, &tenant_id, &scope).unwrap();
+                assert!(people.iter().any(|p| p.user_id == cleaner), "the cleaner is in payroll");
+                // Even a session made by hand never works for a worker.
+                let token = security::create_session(&conn, &cleaner, "device-1").unwrap();
+                drop(conn);
+                assert!(crate::commands::shared::authenticate_actor(&db, &token).is_err(), "a worker without the app can never sign in");
+            }
+
+            // A manager may not add workers until the owner allows it; then only in their own branch.
+            assert!(create_worker_v3_impl(&db, &license, manager.clone(), "حارس".into(), None, None).is_err());
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                crate::role_access::save_matrix(&conn, &tenant_id, &[crate::role_access::AccessCell { role: "MANAGER".into(), feature: "workers".into(), allowed: true }]).unwrap();
+            }
+            let manager = session(&manager_id);
+            let guard = create_worker_v3_impl(&db, &license, manager.clone(), "حارس".into(), Some("حارس".into()), None).unwrap();
+            update_worker_v3_impl(&db, &license, manager, guard.clone(), "حارس الليل".into(), Some("حارس".into()), false).unwrap();
+            assert!(update_worker_v3_impl(&db, &license, owner.clone(), cashier_id.clone(), "x".into(), None, true).is_err(), "an app user is not edited as a worker");
+
+            // Ahmad the cashier may not give discounts: any discount now needs the manager's PIN.
+            {
+                let conn = Connection::open(&db_path).unwrap();
+                crate::role_access::save_person(&conn, &tenant_id, &cashier_id, &[crate::role_access::PersonCell { feature: "discount".into(), allowed: Some(false) }]).unwrap();
+            }
+            let cashier = session(&cashier_id);
+            open_shift_v3_impl(&db, &license, cashier.clone(), 0, None).unwrap();
+            let items = vec![OrderItemInput { menu_item_id: item_id.clone(), name: None, quantity: 1, unit_price_cents: 1000, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }];
+            let refused = create_full_order_v3_impl(&db, &license, cashier.clone(), table_id.clone(), "DINE_IN".into(), items.clone(), 1000, 0, 950, 50, None, None, None, None, 0, None, None);
+            assert!(refused.is_err(), "a 5% discount is refused for a person whose discounts are closed");
+            create_full_order_v3_impl(&db, &license, cashier, String::new(), "TAKEAWAY".into(), items, 1000, 0, 1000, 0, None, None, None, None, 0, None, None).expect("selling without a discount still works");
+
+            // The owner switches the debt book off: its commands are refused by the gate.
+            let mut modules: std::collections::BTreeMap<String, bool> = crate::business::MODULES.iter().map(|m| (m.to_string(), true)).collect();
+            modules.insert("debt".into(), false);
+            assert!(save_business_profile_v3_impl(&db, &license, session(&cashier_id), crate::business::Profile { business_type: Some("shop".into()), modules: modules.clone() }).is_err(), "only the owner shapes the business");
+            save_business_profile_v3_impl(&db, &license, owner.clone(), crate::business::Profile { business_type: Some("shop".into()), modules }).unwrap();
+            assert!(crate::business::refuses("record_debt_payment_v3"));
+            let all_on = crate::business::MODULES.iter().map(|m| (m.to_string(), true)).collect();
+            save_business_profile_v3_impl(&db, &license, owner, crate::business::Profile { business_type: Some("shop".into()), modules: all_on }).unwrap();
+            assert!(!crate::business::refuses("record_debt_payment_v3"));
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
@@ -1739,7 +1899,7 @@ mod tests {
                 let s = build_rich_snapshot(&conn, &scope, "2026-03-01T00:00:00Z", "2026-03-31T00:00:00Z", &ctx).unwrap();
 
                 assert_eq!((s.order_count, s.total_revenue_cents, s.cash_cents), (1, 70_000, 70_000));
-                assert_eq!(s.sales_by_day.iter().map(|d| d.date.as_str()).collect::<Vec<_>>(), vec!["2026-03-11"], "grouped by the LOCAL date, not the UTC date");
+                assert_eq!(s.sales_by_day.iter().map(|d| d.date.as_str()).collect::<Vec<_>>(), vec!["2026-03-10"], "grouped by the LOCAL business day: 00:30 on the 11th still belongs to the 10th (the day starts at 05:00)");
                 assert_eq!(s.sales_by_hour.len(), 1);
                 assert_eq!(s.sales_by_hour[0].hour, 0, "00:30 local");
                 assert_eq!(s.weighed_items.len(), 1);
@@ -7698,6 +7858,7 @@ mod tests {
         migrate_v3::run_stockroom_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_ops_settings_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_role_access_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_workforce_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("matrix", &conn);
@@ -8373,7 +8534,7 @@ mod tests {
             "list_attendance_v3",
             "list_fingerprint_enrolments_v3", "enrol_fingerprint_v3", "delete_fingerprint_enrolment_v3",
             "list_punches_v3", "get_attendance_settings_v3", "set_attendance_settings_v3",
-            "list_product_stock_v3", "set_product_tracking_v3", "adjust_product_stock_v3", "count_product_stock_v3", "receive_products_v3", "list_product_stock_log_v3", "import_products_v3", "list_product_barcodes_v3", "add_product_barcode_v3", "delete_product_barcode_v3", "generate_product_barcode_v3", "get_retail_settings_v3", "save_retail_settings_v3", "get_history_access_v3", "save_history_access_v3", "get_role_access_v3", "save_role_access_v3",
+            "list_product_stock_v3", "set_product_tracking_v3", "adjust_product_stock_v3", "count_product_stock_v3", "receive_products_v3", "list_product_stock_log_v3", "import_products_v3", "list_product_barcodes_v3", "add_product_barcode_v3", "delete_product_barcode_v3", "generate_product_barcode_v3", "get_retail_settings_v3", "save_retail_settings_v3", "get_history_access_v3", "save_history_access_v3", "get_role_access_v3", "save_role_access_v3", "get_staff_access_v3", "save_staff_access_v3", "create_worker_v3", "update_worker_v3", "set_staff_job_title_v3", "save_business_profile_v3",
             "get_payroll_access_v3", "get_payroll_settings_v3", "save_payroll_settings_v3", "list_payroll_employees_v3", "save_payroll_employee_v3",
             "payroll_month_v3", "get_payslip_v3", "approve_payslip_v3", "pay_payslip_v3",
             "reopen_payslip_v3", "add_payroll_adjustment_v3", "delete_payroll_adjustment_v3", "add_payroll_advance_v3",
@@ -8431,7 +8592,7 @@ mod tests {
         /// locked -- a dinner service is never interrupted.
         const NOT_GATED: &[&str] = &[
             "login_v3", "login_pin_v3", "setup_owner_v3", "needs_setup_v3", "logout_v3",
-            "change_own_password_v3", "get_my_access_v3",
+            "change_own_password_v3", "get_my_access_v3", "get_business_profile_v3",
             "get_cached_license_status_v3", "check_license_v3", "renew_license_v3", "activate_license_v3", "get_device_id_v3",
             "backup_database_v3", "list_backups_v3", "send_diagnostics_report_v3",
             // Same reasoning as backup_database_v3/list_backups_v3 right
@@ -9272,21 +9433,24 @@ mod tests {
         }
 
         #[test]
-        fn a_delivery_order_needs_a_phone_and_an_address_and_appears_in_the_delivery_list() {
+        fn a_delivery_order_needs_an_address_and_appears_in_the_delivery_list() {
             let f = fixture("ops_delivery_create");
             let items = || vec![item(&f.sandwich_id, 1, 10_000, vec![])];
-            assert!(create_delivery(&f, items(), None, Some("المزة"), 5_000).is_err(), "no phone");
             assert!(create_delivery(&f, items(), Some("0933000000"), None, 5_000).is_err(), "no address");
             assert!(create_delivery(&f, items(), Some("0933000000"), Some("   "), 5_000).is_err(), "blank address");
+            // 2026-11-14: the phone is the owner's choice (a till preference), the address never is.
+            let no_phone = create_delivery(&f, items(), None, Some("المزة"), 5_000).expect("a delivery with an address and no phone is allowed");
 
             let order_id = create_delivery(&f, items(), Some("0933000000"), Some("المزة - شارع الجلاء"), 5_000).unwrap();
             assert_eq!(order_total(&f, &order_id), 15_000, "the fee is part of what the customer pays");
             let conn = Connection::open(&f.db_path).unwrap();
             let rows = crate::delivery::list_deliveries(&conn, &f.tenant_id, &Default::default()).unwrap();
-            assert_eq!(rows.len(), 1, "failed attempts must not leave delivery rows behind");
-            assert_eq!((rows[0].order_id.as_str(), rows[0].status.as_str()), (order_id.as_str(), "NEW"));
-            assert_eq!(rows[0].address.as_deref(), Some("المزة - شارع الجلاء"));
-            assert_eq!(rows[0].fee_cents, 5_000);
+            assert_eq!(rows.len(), 2, "failed attempts must not leave delivery rows behind");
+            let row = rows.iter().find(|r| r.order_id == order_id).unwrap();
+            assert_eq!(row.status.as_str(), "NEW");
+            assert_eq!(row.address.as_deref(), Some("المزة - شارع الجلاء"));
+            assert_eq!(row.fee_cents, 5_000);
+            assert!(rows.iter().any(|r| r.order_id == no_phone));
             let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
         }
 

@@ -1,3 +1,5 @@
+import { applyModules } from "../../lib/businessModules";
+import { useBusinessStore } from "../../stores/businessStore";
 import { useEffect, useState } from "react";
 import { useAuthStore } from "../../stores/authStore";
 import { useShiftStore } from "../../stores/shiftStore";
@@ -72,8 +74,10 @@ export default function Sidebar({ active, onNavigate }: Props) {
   // the real enforcement is plan_gate.rs refusing the commands.
   const posLite = usePlanStore((s) => s.posLite);
   // Business preset (restaurant/retail) decides KDS visibility and labels.
+  // Modules the owner switched off (Settings > نوع النشاط والوحدات) take their pages with them.
+  const modules = useBusinessStore((s) => s.modules);
   const items = navForMode(
-    navItems.filter((n) => n.allowed).filter((n) => !posLite || LITE_PAGES.has(n.id)),
+    applyModules(navItems.filter((n) => n.allowed).filter((n) => !posLite || LITE_PAGES.has(n.id)), modules),
     { has_tables: true, has_kitchen: hasKitchen },
   );
 

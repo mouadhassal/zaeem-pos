@@ -214,6 +214,21 @@ export default function PreferencesTab() {
           testid="pref-options-layout"
           label="شكل الإضافات"
         />
+        <div>
+          <span className="text-xs font-arabic text-ink-500 block mb-1.5">متى تظهر نافذة الإضافات عند الضغط على الصنف؟</span>
+          <Tiles
+            value={p.optionsOnTap}
+            options={[
+              { value: "always" as const, label: "دائماً" },
+              { value: "required" as const, label: "فقط إن كان فيها اختيار إجباري" },
+              { value: "never" as const, label: "أبداً" },
+            ]}
+            onChange={(v) => p.setPref("optionsOnTap", v)}
+            testid="pref-options-on-tap"
+            label="متى تظهر نافذة الإضافات"
+          />
+          <p className="text-[11px] text-ink-500 font-arabic mt-1.5">عند «أبداً» يُضاف الصنف فوراً، ومن يريد «بدون بصل» يضغط زر «إضافات» على سطر الصنف في الطلب.</p>
+        </div>
       </Card>
 
       <Card title="الكمية" hint="لطلب 10 برغر لا داعي للضغط على + عشر مرات">
@@ -252,6 +267,12 @@ export default function PreferencesTab() {
         <Switch on={p.pickupNameRequired} onChange={(v) => p.setPref("pickupNameRequired", v)} label="اسم الزبون إلزامي" hint="عند الإيقاف يُستعمل «زبون» إن لم يُكتب اسم" testid="pref-pickup-name" />
       </Card>
 
+      <Card title="التوصيل" hint="العنوان مطلوب دائماً. الاسم والرقم حسب اختيارك">
+        <Switch on={p.deliveryNameRequired} onChange={(v) => p.setPref("deliveryNameRequired", v)} label="اسم العميل إلزامي" testid="pref-delivery-name" />
+        <Switch on={p.deliveryPhoneRequired} onChange={(v) => p.setPref("deliveryPhoneRequired", v)} label="رقم هاتف العميل إلزامي" testid="pref-delivery-phone" />
+        <Switch on={p.printDeliveryOnOut} onChange={(v) => p.setPref("printDeliveryOnOut", v)} label="اطبع فاتورة التوصيل عند خروج الطلب" hint="عند الضغط على «خرج للتوصيل» بعد اختيار السائق تُطبع الفاتورة وحدها لتعطيها للسائق. لا تُطبع فاتورة قبل ذلك" testid="pref-delivery-print-out" />
+      </Card>
+
       <h3 className="text-base font-bold text-ink-900 font-arabic">الأسئلة والصلاحيات</h3>
 
       <Card title="الإلغاء" hint="للمطاعم المزدحمة: أوقف الأسئلة التي تأخذ وقتاً">
@@ -261,7 +282,8 @@ export default function PreferencesTab() {
       </Card>
 
       <Card title="الدفع" hint="للمطاعم المزدحمة: زر «دفع» ينهي البيع فوراً دون شاشة اختيار الطريقة والآلة الحاسبة">
-        <Switch on={p.skipPaymentScreen} onChange={(v) => p.setPref("skipPaymentScreen", v)} label="ادفع مباشرة بدون شاشة الدفع" hint="يُسجَّل البيع نقداً بالمبلغ بالضبط (بدون باقٍ) ويُفتح الدرج ويُطبع الإيصال. الدفع بالبطاقة أو الدين يحتاج إيقاف هذا الخيار. الفواتير الآجلة (الدين) تبقى تفتح شاشتها" testid="pref-skip-payment" />
+        <Switch on={p.skipPaymentScreen} onChange={(v) => p.setPref("skipPaymentScreen", v)} label="ادفع مباشرة بدون شاشة الدفع" hint="يُسجَّل البيع نقداً بالمبلغ بالضبط (بدون باقٍ) ويُفتح الدرج ويُطبع الإيصال (إن كانت الطباعة عند الدفع مفعّلة). الدفع بالبطاقة أو الدين يحتاج إيقاف هذا الخيار. الفواتير الآجلة (الدين) تبقى تفتح شاشتها" testid="pref-skip-payment" />
+        <Switch on={p.printReceiptOnPay} onChange={(v) => p.setPref("printReceiptOnPay", v)} label="اطبع فاتورة الزبون عند الدفع" hint="عند الإيقاف لا تُطبع فاتورة إلا إن طلبها الزبون. في شاشة الدفع زر «طباعة الفاتورة» تغيّره لكل بيعة على حدة" testid="pref-print-on-pay" />
       </Card>
 
       <Card title="تغيير سعر صنف في الطلب" hint="لصديق أو زبون خاص: زر «السعر» يظهر على كل سطر. كل تغيير يُسجَّل باسم من فعله">

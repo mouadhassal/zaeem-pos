@@ -9,7 +9,7 @@ export const ACCESS_ROLES: { key: string; label: string }[] = [
 ];
 
 /** The areas of the table, in order. Keys must match `Feature::key` in role_access.rs. */
-export const ACCESS_FEATURES: { key: string; label: string; hint: string }[] = [
+export const ACCESS_FEATURES: { key: string; label: string; hint: string; group?: "till"; onlyRoles?: string[] }[] = [
   { key: "reports", label: "صفحة التقارير", hint: "المبيعات، الضيافة، الطلبات غير المستلمة والمساعد الذكي" },
   { key: "report_print", label: "طباعة التقرير على الطابعة", hint: "الشريط الطويل بكل ما بيع. يلزم معه فتح صفحة التقارير" },
   { key: "finance", label: "المالية", hint: "التكاليف والفواتير والأرباح" },
@@ -18,7 +18,31 @@ export const ACCESS_FEATURES: { key: string; label: string; hint: string }[] = [
   { key: "staff", label: "الموظفون والجدول", hint: "إضافة الموظفين وتعديلهم، الحضور وجدول الدوام" },
   { key: "refund", label: "استرداد الطلبات", hint: "إرجاع ثمن طلب مدفوع" },
   { key: "settings", label: "الإعدادات", hint: "الطابعات والضرائب وبيانات الفرع والتفضيلات" },
+  { key: "workers", label: "العمال بدون تطبيق", hint: "إضافة عمال النظافة والحراس وغيرهم ممن لا يستخدمون التطبيق (للرواتب والحضور)", onlyRoles: ["MANAGER"] },
+  { key: "discount", label: "الخصم وتغيير السعر", hint: "عند الإغلاق يحتاج كل خصم أو سعر خاص رمز المدير", group: "till" },
+  { key: "void_sent", label: "حذف صنف أُرسل للمطبخ", hint: "عند الإغلاق يحتاج الحذف رمز المدير", group: "till" },
+  { key: "cancel_order", label: "إلغاء طلب كامل", hint: "عند الإغلاق يحتاج الإلغاء رمز المدير", group: "till" },
+  { key: "gift", label: "الضيافة (صنف مجاني)", hint: "عند الإغلاق لا يظهر زر الضيافة", group: "till" },
 ];
+
+/** One box of a person's exceptions: null = as their role. Keys match `PersonCell` in role_access.rs. */
+export interface PersonCell {
+  feature: string;
+  allowed: boolean | null;
+}
+
+export function getStaffAccess(staffId: string): Promise<PersonCell[]> {
+  return invoke<PersonCell[]>("get_staff_access_v3", { sessionToken: token(), staffId });
+}
+
+export function saveStaffAccess(staffId: string, cells: PersonCell[]): Promise<void> {
+  return invoke<void>("save_staff_access_v3", { sessionToken: token(), staffId, cells });
+}
+
+/** A person's box set to "as the role" (null), allowed or not. */
+export function withPersonCell(cells: PersonCell[], feature: string, allowed: boolean | null): PersonCell[] {
+  return cells.map((c) => (c.feature === feature ? { ...c, allowed } : c));
+}
 
 export interface AccessCell {
   role: string;

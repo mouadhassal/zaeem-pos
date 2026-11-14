@@ -1,3 +1,4 @@
+import { useAccessStore } from "../../stores/accessStore";
 import { useEffect, useState } from "react";
 import { IconX } from "@tabler/icons-react";
 import { invoke } from "../../lib/invoke";
@@ -51,7 +52,9 @@ export default function CancelOrderModal({ lineCount, totalCents, askReason, nee
     return () => window.removeEventListener("keydown", handler);
   }, [onCancel]);
 
-  const pinShown = !isManager && (needsPin || (threshold !== null && totalCents >= threshold));
+  // The owner closed "cancel a whole order" for this person: the PIN is asked whatever the amount.
+  const closedForMe = useAccessStore((s) => s.features?.cancel_order === false);
+  const pinShown = closedForMe || (!isManager && (needsPin || (threshold !== null && totalCents >= threshold)));
   const finalReason = reason === "أخرى" ? custom.trim() : reason;
   const canConfirm = !busy && (!askReason || !!finalReason) && (!pinShown || !!pin);
 

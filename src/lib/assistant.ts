@@ -15,10 +15,11 @@ export interface ChatTurn {
   text: string;
 }
 
+import { BUSINESS_DAY_START_HOUR, businessDayStart } from "./businessDay";
+
+/** "Today" is the business day (from 05:00), so at 01:00 the night's sales are still today's. */
 function startOfDay(d: Date): Date {
-  const s = new Date(d);
-  s.setHours(0, 0, 0, 0);
-  return s;
+  return businessDayStart(d);
 }
 
 function addDays(d: Date, days: number): Date {
@@ -49,10 +50,25 @@ export function buildPeriods(now: Date = new Date()): PeriodWindow[] {
     win("same_weekday_last_week", addDays(today, -7), endBefore(addDays(today, -6))),
     win("last_7_days", addDays(today, -6), now),
     win("previous_7_days", addDays(today, -13), endBefore(addDays(today, -6))),
-    win("this_month", new Date(today.getFullYear(), today.getMonth(), 1), now),
+    win("this_month", new Date(today.getFullYear(), today.getMonth(), 1, BUSINESS_DAY_START_HOUR), now),
     win("last_30_days", addDays(today, -29), now),
     win("previous_30_days", addDays(today, -59), endBefore(addDays(today, -29))),
   ];
+}
+
+const RANGE_ORDER: Range[] = ["today", "week", "month"];
+
+/**
+ * The detailed data (items, hours, staff...) only covers the chip's window, so "best item this
+ * month?" asked with the "today" chip used to be answered from today's items alone. The window is
+ * widened to what the question talks about; it is never narrowed below the chip.
+ */
+export function rangeForQuestion(question: string, chip: Range): Range {
+  const q = question.replace(/[إأآ]/g, "ا");
+  let wanted: Range = "today";
+  if (/شهر|30\s*يوم|ثلاثين|month/i.test(q)) wanted = "month";
+  else if (/اسبوع|اسابيع|7\s*ايام|سبع[ةه]? ايام|ايام|البارحه|البارحة|امس|مبارح|week|yesterday/i.test(q)) wanted = "week";
+  return RANGE_ORDER.indexOf(wanted) > RANGE_ORDER.indexOf(chip) ? wanted : chip;
 }
 
 /** The detailed-data window for the range chips (today / 7 days / 30 days). */
@@ -64,10 +80,17 @@ export function rangeToIso(range: Range, now: Date = new Date()): { startIso: st
 
 const WEEKDAYS = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
 
-/** "2026-11-01 (الأحد) 14:30" -- tells the model what "today" is. */
+/**
+ * "2026-11-01 (الأحد) 14:30" -- tells the model what "today" is. After midnight and before 05:00 it
+ * also says which business day it still is, so "today's sales" at 01:00 means the night's sales.
+ */
 export function nowLocalLabel(now: Date = new Date()): string {
   const p = (n: number) => String(n).padStart(2, "0");
-  return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} (${WEEKDAYS[now.getDay()]}) ${p(now.getHours())}:${p(now.getMinutes())}`;
+  const clock = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} (${WEEKDAYS[now.getDay()]}) ${p(now.getHours())}:${p(now.getMinutes())}`;
+  const day = businessDayStart(now);
+  const rule = `يوم العمل يبدأ الساعة 0${BUSINESS_DAY_START_HOUR}:00 لا منتصف الليل، و«اليوم» في periods هو يوم العمل الحالي`;
+  if (day.getDate() === now.getDate()) return `${clock} — ${rule}`;
+  return `${clock} — ما زال يوم عمل ${day.getFullYear()}-${p(day.getMonth() + 1)}-${p(day.getDate())} (${WEEKDAYS[day.getDay()]}); ${rule}`;
 }
 
 export interface ChatMessage {

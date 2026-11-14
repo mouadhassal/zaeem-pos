@@ -17,6 +17,8 @@ export type DeliveryCardSize = "large" | "medium" | "small";
 export type PriceEditMode = "off" | "manager" | "everyone";
 /** "list": every option as a button; "table": two big buttons, Without and With, each opening its own list. */
 export type OptionsLayout = "list" | "table";
+/** When tapping an item with options opens the options window: always, only if a group must be answered, or never (options are added from the order line). */
+export type OptionsOnTap = "always" | "required" | "never";
 
 export const PICKUP_CHOICE_MINUTES = [0, 10, 15, 20, 30, 45, 60, 90] as const;
 export const QUANTITY_STEPS = [0, 2, 3, 5, 10] as const;
@@ -34,6 +36,16 @@ export interface Prefs {
   pickupNameRequired: boolean;
   /** How the options of an item (without onion, extra cheese) are shown. */
   optionsLayout: OptionsLayout;
+  /** Whether tapping an item opens its options window. */
+  optionsOnTap: OptionsOnTap;
+  /** The payment screen starts with "print the bill" on (the cashier can still switch it off for one sale). */
+  printReceiptOnPay: boolean;
+  /** A delivery's bill prints by itself when it leaves with the driver ("خرج للتوصيل"). */
+  printDeliveryOnOut: boolean;
+  /** A delivery order needs the customer's name. */
+  deliveryNameRequired: boolean;
+  /** A delivery order needs the customer's phone. The address is always needed. */
+  deliveryPhoneRequired: boolean;
   /** An extra "+N" button on every order line; 0 = hidden. */
   quantityStep: number;
   /** Tap the quantity to type it (10 burgers: type 10). */
@@ -79,6 +91,11 @@ export const DEFAULT_PREFS: Prefs = {
   pickupChoices: [0, 15, 20, 30, 45, 60],
   pickupNameRequired: true,
   optionsLayout: "list",
+  optionsOnTap: "always",
+  printReceiptOnPay: true,
+  printDeliveryOnOut: true,
+  deliveryNameRequired: false,
+  deliveryPhoneRequired: false,
   quantityStep: 0,
   quantityTyping: true,
   askVoidReason: true,
@@ -119,6 +136,11 @@ export function normalizePrefs(raw: unknown): Prefs {
     pickupChoices: choices,
     pickupNameRequired: bool(r.pickupNameRequired, DEFAULT_PREFS.pickupNameRequired),
     optionsLayout: oneOf(r.optionsLayout, ["list", "table"], DEFAULT_PREFS.optionsLayout),
+    optionsOnTap: oneOf(r.optionsOnTap, ["always", "required", "never"], DEFAULT_PREFS.optionsOnTap),
+    printReceiptOnPay: bool(r.printReceiptOnPay, DEFAULT_PREFS.printReceiptOnPay),
+    printDeliveryOnOut: bool(r.printDeliveryOnOut, DEFAULT_PREFS.printDeliveryOnOut),
+    deliveryNameRequired: bool(r.deliveryNameRequired, DEFAULT_PREFS.deliveryNameRequired),
+    deliveryPhoneRequired: bool(r.deliveryPhoneRequired, DEFAULT_PREFS.deliveryPhoneRequired),
     quantityStep: step,
     quantityTyping: bool(r.quantityTyping, DEFAULT_PREFS.quantityTyping),
     askVoidReason: bool(r.askVoidReason, DEFAULT_PREFS.askVoidReason),
@@ -170,4 +192,23 @@ export function usdToLocalMinor(usd: number, rate: number, minorPerMajor: number
 export function billItemName(name: string, categoryName: string, prefs: Pick<Prefs, "drinkLabelOn" | "drinkLabel" | "drinkCategories">): string {
   if (!prefs.drinkLabelOn) return name;
   return prefs.drinkCategories.includes(categoryName) ? prefs.drinkLabel : name;
+}
+
+/** Whether tapping an item with these option groups opens the options window first. */
+export function opensOptionsOnTap(mode: OptionsOnTap, groups: readonly { required: boolean }[]): boolean {
+  if (groups.length === 0) return false;
+  if (mode === "always") return true;
+  if (mode === "required") return groups.some((g) => g.required);
+  return false;
+}
+
+/** What is missing before a delivery can be sent; the address is always needed, name and phone as the owner set. */
+export function deliveryMissing(
+  info: { address: string; name: string; phone: string },
+  prefs: Pick<Prefs, "deliveryNameRequired" | "deliveryPhoneRequired">,
+): string | null {
+  if (!info.address.trim()) return "اكتب عنوان التوصيل";
+  if (prefs.deliveryNameRequired && !info.name.trim()) return "اكتب اسم العميل";
+  if (prefs.deliveryPhoneRequired && !info.phone.trim()) return "اكتب رقم هاتف العميل";
+  return null;
 }

@@ -430,7 +430,8 @@ pub(crate) fn enforce_discount_cap(
         return Ok(false);
     }
     let caps = Repo::new(conn).get_discount_caps(tenant_id).map_err(|e| e.to_string())?;
-    let cap_percent = caps.for_role(actor.role);
+    // The owner closed discounts for this person: every discount needs the manager's PIN.
+    let cap_percent = if crate::security::till_action_allowed(actor, crate::role_access::Feature::Discount) { caps.for_role(actor.role) } else { 0 };
     match crate::pricing::check_discount_cap(subtotal_cents, discount_cents, cap_percent) {
         Ok(()) => Ok(false),
         Err(over) => {
@@ -479,9 +480,24 @@ pub(crate) fn price_order_authoritatively(
     discount_cents: i64,
     delivery_fee_cents: i64,
 ) -> Result<(Vec<crate::repo::OrderItemInput>, i64, i64, i64), String> {
+    let priced_items = Repo::new(conn).price_authoritative_items(tenant_id, items).map_err(|e| e.to_string())?;
+    let (subtotal_cents, combined_tax_cents, total_cents) = totals_for_lines(conn, tenant_id, &priced_items, discount_cents, delivery_fee_cents)?;
+    Ok((priced_items, subtotal_cents, combined_tax_cents, total_cents))
+}
+
+/// An order's `(subtotal, combined tax, total)` from lines that are already priced -- lines
+/// stored on an open order keep the price they were sold at (a happy hour that has ended, a
+/// combo, a menu price changed since). Voiding, splitting or adding to a tab re-totals with this
+/// instead of re-pricing the old lines at today's menu price.
+pub(crate) fn totals_for_lines(
+    conn: &rusqlite::Connection,
+    tenant_id: &str,
+    lines: &[crate::repo::OrderItemInput],
+    discount_cents: i64,
+    delivery_fee_cents: i64,
+) -> Result<(i64, i64, i64), String> {
     let repo = Repo::new(conn);
-    let priced_items = repo.price_authoritative_items(tenant_id, items).map_err(|e| e.to_string())?;
-    let subtotal_cents = Repo::sum_item_total_cents(&priced_items);
+    let subtotal_cents = Repo::sum_item_total_cents(lines);
 
     let chain_config = repo.get_chain_config(tenant_id).map_err(|e| e.to_string())?;
     let tax_config = crate::pricing::TaxConfig {
@@ -494,7 +510,7 @@ pub(crate) fn price_order_authoritatively(
     let combined_tax_cents = breakdown.combined_tax_cents();
     let total_cents = std::cmp::max(0, subtotal_cents + combined_tax_cents - discount_cents + delivery_fee_cents);
 
-    Ok((priced_items, subtotal_cents, combined_tax_cents, total_cents))
+    Ok((subtotal_cents, combined_tax_cents, total_cents))
 }
 
 // ---------------------------------------------------------------------------
@@ -703,6 +719,7 @@ pub(crate) fn create_full_order_with_pickup_v3_impl(
     crate::lan::reject_if_local_kitchen_satellite("create_full_order_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    ops::require_gift_allowed(&items, &actor)?;
     ops::stamp_comps(&mut items, &actor.id);
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -713,8 +730,10 @@ pub(crate) fn create_full_order_with_pickup_v3_impl(
     }
     if order_type == "DELIVERY" {
         let has = |v: &Option<String>| v.as_deref().map(str::trim).is_some_and(|s| !s.is_empty());
-        if !has(&delivery_address) || !has(&customer_phone) {
-            return Err("طلب التوصيل يحتاج عنوان العميل ورقم هاتفه".to_string());
+        // The address is the one thing a driver cannot do without. Name and phone are the
+        // owner's choice (a till preference): many customers order by walking in or by WhatsApp.
+        if !has(&delivery_address) {
+            return Err("طلب التوصيل يحتاج عنوان العميل".to_string());
         }
     }
     let now_ms = chrono::Utc::now().timestamp_millis();
@@ -912,6 +931,7 @@ pub(crate) fn hold_order_v3_impl(
 ) -> Result<String, String> {
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    ops::require_gift_allowed(&items, &actor)?;
     ops::stamp_comps(&mut items, &actor.id);
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -1021,6 +1041,7 @@ pub(crate) fn add_items_to_order_v3_impl(
     crate::lan::reject_if_local_kitchen_satellite("add_items_to_order_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    ops::require_gift_allowed(&items, &actor)?;
     ops::stamp_comps(&mut items, &actor.id);
     let scope = actor.scope();
     if items.is_empty() {
@@ -1034,13 +1055,14 @@ pub(crate) fn add_items_to_order_v3_impl(
         return Err(crate::repo::RepoError::OrderNotOpenForAdditions { order_id: order_id.clone(), status }.to_string());
     }
 
+    // Only the new lines are priced (menu + offers right now); the lines already on the tab keep
+    // the price they were sold at.
     let existing_items = Repo::new(&conn).list_order_items_as_input(&order_id).map_err(|e| e.to_string())?;
-    let existing_count = existing_items.len();
+    let new_priced = Repo::new(&conn).price_authoritative_items(&tenant_id, &items).map_err(|e| e.to_string())?;
     let mut combined = existing_items;
-    combined.extend(items);
-    let (priced_combined, subtotal_cents, tax_cents, total_cents) =
-        price_order_authoritatively(&conn, &tenant_id, &combined, discount_cents, delivery_fee_cents)?;
-    let new_priced_items = &priced_combined[existing_count..];
+    combined.extend(new_priced.iter().cloned());
+    let (subtotal_cents, tax_cents, total_cents) = totals_for_lines(&conn, &tenant_id, &combined, discount_cents, delivery_fee_cents)?;
+    let new_priced_items = &new_priced[..];
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let inserted_ids = Repo::new(&tx).append_order_items(&tenant_id, &branch_id, &order_id, new_priced_items).map_err(|e| e.to_string())?;
@@ -1193,9 +1215,10 @@ pub(crate) fn void_order_item_v3_impl(state: &Db, license: &crate::license::clou
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let line_total_cents = Repo::new(&conn).order_item_line_total_cents(&scope, &item_id).map_err(|e| e.to_string())?;
     let thresholds = Repo::new(&conn).get_manager_thresholds(&actor.tenant_id).map_err(|e| e.to_string())?;
-    let override_used = if thresholds.void_requires_manager(line_total_cents) {
+    let closed = !crate::security::till_action_allowed(&actor, crate::role_access::Feature::VoidSent);
+    let override_used = if closed || thresholds.void_requires_manager(line_total_cents) {
         let Some(pin) = manager_override_pin.as_deref() else {
-            return Err("voiding an item over the manager-override threshold requires a manager PIN".to_string());
+            return Err(if closed { "حذف صنف أُرسل للمطبخ يحتاج رمز المدير".to_string() } else { "voiding an item over the manager-override threshold requires a manager PIN".to_string() });
         };
         if !verify_manager_override_impl(&mut conn, &actor, pin)? {
             return Err("manager PIN is not valid".to_string());
@@ -1250,8 +1273,7 @@ pub(crate) fn void_order_item_v3_impl(state: &Db, license: &crate::license::clou
         let (tenant_id, _branch_id, _status, discount_cents, delivery_fee_cents) =
             Repo::new(&tx).get_order_pricing_context(&scope, &order_id).map_err(|e| e.to_string())?;
         let remaining = Repo::new(&tx).list_order_items_as_input(&order_id).map_err(|e| e.to_string())?;
-        let (_, subtotal_cents, tax_cents, total_cents) =
-            price_order_authoritatively(&tx, &tenant_id, &remaining, discount_cents, delivery_fee_cents)?;
+        let (subtotal_cents, tax_cents, total_cents) = totals_for_lines(&tx, &tenant_id, &remaining, discount_cents, delivery_fee_cents)?;
         Repo::new(&tx).update_order_totals(&order_id, subtotal_cents, tax_cents, total_cents).map_err(|e| e.to_string())?;
         sync_enqueue_order(&tx, &item_tenant_id, &item_branch_id, &order_id, &actor.device_id, &license_status)?;
     }
@@ -1280,7 +1302,8 @@ pub(crate) fn cancel_order_v3_impl(state: &Db, license: &crate::license::cloud::
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let total_cents = Repo::new(&conn).open_order_total_cents(&scope, &order_id).map_err(|e| e.to_string())?;
     let thresholds = Repo::new(&conn).get_manager_thresholds(&actor.tenant_id).map_err(|e| e.to_string())?;
-    let override_used = if actor.role.rank() < Role::Manager.rank() && thresholds.void_requires_manager(total_cents) {
+    let closed = !crate::security::till_action_allowed(&actor, crate::role_access::Feature::CancelOrder);
+    let override_used = if closed || (actor.role.rank() < Role::Manager.rank() && thresholds.void_requires_manager(total_cents)) {
         let Some(pin) = manager_override_pin.as_deref() else {
             return Err("إلغاء طلب بهذه القيمة يحتاج رمز المدير".to_string());
         };
@@ -1375,6 +1398,7 @@ pub(crate) fn schedule_delayed_order_v3_impl(
 ) -> Result<String, String> {
     let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    ops::require_gift_allowed(&items, &actor)?;
     ops::stamp_comps(&mut items, &actor.id);
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;

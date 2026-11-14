@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { businessPeriodStart } from "../../lib/businessDay";
 import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
@@ -33,22 +34,11 @@ interface DashboardSummary {
 type Range = "today" | "week" | "month";
 
 function rangeStart(range: Range): Date {
+  // Business days (from 05:00), so "today" does not empty itself at midnight -- see lib/businessDay.ts.
   const now = new Date();
-  if (range === "today") {
-    const d = new Date(now);
-    d.setHours(0, 0, 0, 0);
-    return d;
-  }
-  if (range === "week") {
-    const d = new Date(now);
-    d.setDate(d.getDate() - d.getDay());
-    d.setHours(0, 0, 0, 0);
-    return d;
-  }
-  const d = new Date(now);
-  d.setDate(1);
-  d.setHours(0, 0, 0, 0);
-  return d;
+  if (range === "today") return businessPeriodStart("day", now);
+  if (range === "week") return businessPeriodStart("week", now);
+  return businessPeriodStart("month", now);
 }
 
 export default function DashboardPage() {

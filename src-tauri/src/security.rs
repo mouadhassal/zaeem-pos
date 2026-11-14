@@ -391,6 +391,15 @@ fn load_actor(conn: &Connection, actor_id: &str, device_id: &str) -> Result<Acto
 
     let role = Role::from_str(&role_str).ok_or(SecurityError::InvalidSession)?;
 
+    // A worker with no app access (cleaner, guard...) never gets a session, even an old one.
+    // (Read on its own: a database from before Migration AP has no such column = everyone has access.)
+    let app_access: i64 = conn
+        .query_row("SELECT COALESCE(app_access, 1) FROM staff WHERE id = ?1", params![actor_id], |r| r.get(0))
+        .unwrap_or(1);
+    if app_access == 0 {
+        return Err(SecurityError::InvalidSession);
+    }
+
     // Defense in depth on top of the `staff` table's own CHECK constraint
     // (T1.1's Migration A): a Branch-level role MUST have a branch_id. Refuse
     // to construct an Actor otherwise, rather than let `Actor::scope()` fall
@@ -399,8 +408,14 @@ fn load_actor(conn: &Connection, actor_id: &str, device_id: &str) -> Result<Acto
         return Err(SecurityError::InvalidSession);
     }
 
-    let access = crate::role_access::load_access(conn, &tenant_id, role);
+    let access = crate::role_access::load_access_for(conn, &tenant_id, role, Some(actor_id));
     Ok(Actor { id: actor_id.to_string(), tenant_id, branch_id, role, device_id: device_id.to_string(), access })
+}
+
+/// A till action the owner may have closed for this person or role (role_access::TILL_FEATURES):
+/// discount, deleting a sent line, cancelling an order, gifts. Open unless the owner closed it.
+pub fn till_action_allowed(actor: &Actor, feature: crate::role_access::Feature) -> bool {
+    actor.access.allows(feature, true)
 }
 
 /// authz step 1: does this role hold the permission at all (rank check).

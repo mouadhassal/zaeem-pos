@@ -9,6 +9,8 @@ mod migrate_v3;
 mod money;
 mod order_lifecycle;
 mod pricing;
+mod offers;
+mod business;
 mod security;
 mod repo;
 mod ops;
@@ -127,6 +129,8 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_stockroom_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_ops_settings_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_role_access_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_workforce_migration(conn, db_path).map_err(|e| e.to_string())?;
+    business::refresh_cache(conn);
     Ok(())
 }
 
@@ -256,6 +260,11 @@ fn gate_by_plan<R: tauri::Runtime>(
             .unwrap_or(false);
         if refused {
             invoke.resolver.reject(plan_gate::LITE_REFUSED);
+            return true;
+        }
+        // A module the owner switched off (Settings > نوع النشاط والوحدات) refuses its commands.
+        if business::refuses(invoke.message.command()) {
+            invoke.resolver.reject(business::MODULE_OFF);
             return true;
         }
         handler(invoke)
@@ -604,6 +613,13 @@ pub fn run() {
             commands::role_access::get_role_access_v3,
             commands::role_access::save_role_access_v3,
             commands::role_access::get_my_access_v3,
+            commands::role_access::get_staff_access_v3,
+            commands::workforce::get_business_profile_v3,
+            commands::workforce::save_business_profile_v3,
+            commands::workforce::create_worker_v3,
+            commands::workforce::update_worker_v3,
+            commands::workforce::set_staff_job_title_v3,
+            commands::role_access::save_staff_access_v3,
             commands::stockroom::save_retail_settings_v3,
             commands::payroll::get_payroll_access_v3,
             commands::payroll::get_payroll_settings_v3,

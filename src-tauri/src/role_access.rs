@@ -22,6 +22,18 @@ CREATE TABLE IF NOT EXISTS role_access (
 );
 ";
 
+/// Exceptions for one person on top of their role (Migration AP): "Ahmad is a cashier but may do
+/// refunds". Only the boxes the owner set for that person are stored.
+pub const PERSON_SCHEMA_SQL: &str = "
+CREATE TABLE IF NOT EXISTS staff_access (
+    tenant_id TEXT NOT NULL,
+    staff_id  TEXT NOT NULL,
+    feature   TEXT NOT NULL,
+    allowed   INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, staff_id, feature)
+);
+";
+
 /// The roles the owner can configure. The owner is never in this list.
 pub const ROLE_KEYS: [&str; 3] = ["MANAGER", "CASHIER", "KITCHEN"];
 
@@ -45,9 +57,20 @@ pub enum Feature {
     Refund,
     /// The settings page: printers, tax, branch data, preferences.
     Settings,
+    /// Adding and editing workers who have no app access (cleaners, guards...). Owner only unless
+    /// the owner opens it to managers.
+    Workers,
+    /// Giving a discount or a special price on the till. Off: every discount needs the manager's PIN.
+    Discount,
+    /// Deleting a line already sent to the kitchen. Off: it needs the manager's PIN.
+    VoidSent,
+    /// Cancelling a whole order. Off: it needs the manager's PIN.
+    CancelOrder,
+    /// Giving an item on the house.
+    Gift,
 }
 
-pub const ALL_FEATURES: [Feature; 8] = [
+pub const ALL_FEATURES: [Feature; 13] = [
     Feature::Reports,
     Feature::ReportPrint,
     Feature::Finance,
@@ -56,7 +79,15 @@ pub const ALL_FEATURES: [Feature; 8] = [
     Feature::Staff,
     Feature::Refund,
     Feature::Settings,
+    Feature::Workers,
+    Feature::Discount,
+    Feature::VoidSent,
+    Feature::CancelOrder,
+    Feature::Gift,
 ];
+
+/// The till actions: everyone who sells may do them unless the owner says otherwise.
+pub const TILL_FEATURES: [Feature; 4] = [Feature::Discount, Feature::VoidSent, Feature::CancelOrder, Feature::Gift];
 
 impl Feature {
     pub fn key(self) -> &'static str {
@@ -69,6 +100,11 @@ impl Feature {
             Feature::Staff => "staff",
             Feature::Refund => "refund",
             Feature::Settings => "settings",
+            Feature::Workers => "workers",
+            Feature::Discount => "discount",
+            Feature::VoidSent => "void_sent",
+            Feature::CancelOrder => "cancel_order",
+            Feature::Gift => "gift",
         }
     }
 
@@ -106,8 +142,11 @@ pub fn role_key(role: crate::security::Role) -> Option<&'static str> {
 
 /// What a role may do when the owner has changed nothing: today's behaviour.
 pub fn default_allowed(role_key: &str, feature: Feature) -> bool {
+    if TILL_FEATURES.contains(&feature) {
+        return true;
+    }
     match role_key {
-        "MANAGER" => !matches!(feature, Feature::Finance),
+        "MANAGER" => !matches!(feature, Feature::Finance | Feature::Workers),
         _ => false,
     }
 }
@@ -117,6 +156,8 @@ pub fn default_allowed(role_key: &str, feature: Feature) -> bool {
 pub struct Access {
     role_key: Option<&'static str>,
     changed: BTreeMap<Feature, bool>,
+    /// This person's own exceptions; they win over the role's boxes.
+    person: BTreeMap<Feature, bool>,
 }
 
 impl Access {
@@ -128,6 +169,9 @@ impl Access {
     /// `Some(true/false)` when the owner's table decides, `None` when the rank rule applies.
     pub fn decision(&self, feature: Feature) -> Option<bool> {
         let key = self.role_key?;
+        if let Some(v) = self.person.get(&feature) {
+            return Some(*v);
+        }
         Some(self.changed.get(&feature).copied().unwrap_or_else(|| default_allowed(key, feature)))
     }
 
@@ -161,11 +205,68 @@ fn load_changes(conn: &Connection, tenant_id: &str, role_key: &str) -> Result<BT
     Ok(out)
 }
 
-/// The access of a signed-in actor. A shop whose table is missing or unreadable keeps the rank rules.
+/// The access of a role (no personal exceptions). A shop whose table is missing keeps the rank rules.
+#[cfg(test)]
 pub fn load_access(conn: &Connection, tenant_id: &str, role: crate::security::Role) -> Access {
+    load_access_for(conn, tenant_id, role, None)
+}
+
+/// The access of a signed-in person: their role's boxes plus their own exceptions.
+pub fn load_access_for(conn: &Connection, tenant_id: &str, role: crate::security::Role, staff_id: Option<&str>) -> Access {
     let Some(key) = role_key(role) else { return Access::unrestricted() };
     let changed = load_changes(conn, tenant_id, key).unwrap_or_default();
-    Access { role_key: Some(key), changed }
+    let person = staff_id.map(|id| load_person_changes(conn, tenant_id, id).unwrap_or_default()).unwrap_or_default();
+    Access { role_key: Some(key), changed, person }
+}
+
+fn load_person_changes(conn: &Connection, tenant_id: &str, staff_id: &str) -> Result<BTreeMap<Feature, bool>, String> {
+    let mut stmt = conn
+        .prepare("SELECT feature, allowed FROM staff_access WHERE tenant_id = ?1 AND staff_id = ?2")
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map(params![tenant_id, staff_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0)))
+        .map_err(db_err)?;
+    let mut out = BTreeMap::new();
+    for row in rows {
+        let (k, v) = row.map_err(db_err)?;
+        if let Some(f) = Feature::from_key(&k) {
+            out.insert(f, v);
+        }
+    }
+    Ok(out)
+}
+
+/// One box of a person's exceptions: `allowed` None = "as their role".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonCell {
+    pub feature: String,
+    pub allowed: Option<bool>,
+}
+
+/// A person's exceptions for the settings screen, every feature listed (None = as the role).
+pub fn load_person(conn: &Connection, tenant_id: &str, staff_id: &str) -> Result<Vec<PersonCell>, String> {
+    let changes = load_person_changes(conn, tenant_id, staff_id)?;
+    Ok(ALL_FEATURES.iter().map(|f| PersonCell { feature: f.key().to_string(), allowed: changes.get(f).copied() }).collect())
+}
+
+/// Replaces a person's exceptions (only the boxes that are not "as the role" are stored).
+pub fn save_person(conn: &Connection, tenant_id: &str, staff_id: &str, cells: &[PersonCell]) -> Result<(), String> {
+    for c in cells {
+        if Feature::from_key(&c.feature).is_none() {
+            return Err(format!("صلاحية غير معروفة: {}", c.feature));
+        }
+    }
+    conn.execute("DELETE FROM staff_access WHERE tenant_id = ?1 AND staff_id = ?2", params![tenant_id, staff_id]).map_err(db_err)?;
+    for c in cells {
+        if let Some(v) = c.allowed {
+            conn.execute(
+                "INSERT INTO staff_access (tenant_id, staff_id, feature, allowed) VALUES (?1, ?2, ?3, ?4)",
+                params![tenant_id, staff_id, c.feature, v as i64],
+            )
+            .map_err(db_err)?;
+        }
+    }
+    Ok(())
 }
 
 /// One cell of the owner's table.
@@ -216,8 +317,8 @@ pub fn save_matrix(conn: &Connection, tenant_id: &str, cells: &[AccessCell]) -> 
 }
 
 /// What the signed-in person may open, by feature key: sent to the screen to build the sidebar.
-pub fn effective_map(conn: &Connection, tenant_id: &str, role: crate::security::Role) -> BTreeMap<String, bool> {
-    let access = load_access(conn, tenant_id, role);
+pub fn effective_map(conn: &Connection, tenant_id: &str, role: crate::security::Role, staff_id: &str) -> BTreeMap<String, bool> {
+    let access = load_access_for(conn, tenant_id, role, Some(staff_id));
     ALL_FEATURES
         .iter()
         .map(|f| (f.key().to_string(), access.decision(*f).unwrap_or(true)))
@@ -232,7 +333,36 @@ mod tests {
     fn db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA_SQL).unwrap();
+        conn.execute_batch(PERSON_SCHEMA_SQL).unwrap();
         conn
+    }
+
+    #[test]
+    fn a_persons_exception_wins_over_their_role() {
+        let conn = db();
+        save_person(&conn, "t1", "ahmad", &[PersonCell { feature: "refund".into(), allowed: Some(true) }, PersonCell { feature: "discount".into(), allowed: Some(false) }]).unwrap();
+        let ahmad = load_access_for(&conn, "t1", Role::Cashier, Some("ahmad"));
+        assert_eq!(ahmad.decision(Feature::Refund), Some(true), "Ahmad may refund although cashiers may not");
+        assert_eq!(ahmad.decision(Feature::Discount), Some(false), "and may not give discounts although cashiers may");
+        let other = load_access_for(&conn, "t1", Role::Cashier, Some("sara"));
+        assert_eq!(other.decision(Feature::Refund), Some(false));
+        assert_eq!(other.decision(Feature::Discount), Some(true));
+        assert!(load_access_for(&conn, "t1", Role::Owner, Some("ahmad")).decision(Feature::Discount).is_none(), "an owner has no exceptions");
+        save_person(&conn, "t1", "ahmad", &[PersonCell { feature: "refund".into(), allowed: None }]).unwrap();
+        assert_eq!(load_access_for(&conn, "t1", Role::Cashier, Some("ahmad")).decision(Feature::Refund), Some(false));
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM staff_access", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "back to 'as the role' stores nothing");
+    }
+
+    #[test]
+    fn till_actions_stay_open_and_workers_stay_with_the_owner_by_default() {
+        let conn = db();
+        for f in TILL_FEATURES {
+            assert_eq!(load_access(&conn, "t1", Role::Cashier).decision(f), Some(true), "{f:?}");
+        }
+        assert_eq!(load_access(&conn, "t1", Role::Manager).decision(Feature::Workers), Some(false), "the owner decides if managers add workers");
+        save_matrix(&conn, "t1", &[cell("MANAGER", "workers", true)]).unwrap();
+        assert_eq!(load_access(&conn, "t1", Role::Manager).decision(Feature::Workers), Some(true));
     }
 
     fn cell(role: &str, feature: &str, allowed: bool) -> AccessCell {
@@ -348,10 +478,10 @@ mod tests {
     fn the_effective_map_is_what_the_sidebar_needs() {
         let conn = db();
         save_matrix(&conn, "t1", &[cell("CASHIER", "reports", true)]).unwrap();
-        let m = effective_map(&conn, "t1", Role::Cashier);
+        let m = effective_map(&conn, "t1", Role::Cashier, "c1");
         assert_eq!(m.get("reports"), Some(&true));
         assert_eq!(m.get("menu"), Some(&false));
-        let owner = effective_map(&conn, "t1", Role::Owner);
+        let owner = effective_map(&conn, "t1", Role::Owner, "o1");
         assert!(owner.values().all(|v| *v), "the owner may open everything");
     }
 }

@@ -777,6 +777,10 @@ pub struct StaffRow {
     pub branch_id: Option<String>,
     pub is_active: i64,
     pub created_at: String,
+    /// What the person is (cleaner, chef, guard...); the role is only the permission level.
+    pub job_title: Option<String>,
+    /// false = a worker who never uses the app (no PIN, cannot log in).
+    pub app_access: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1726,11 +1730,11 @@ impl<'a> Repo<'a> {
     /// actor is correctly restricted to `tenant_id = ? AND branch_id = ?`.
     pub fn list_staff(&self, scope: &Scope) -> Result<Vec<StaffRow>, RepoError> {
         let (pred, binds) = Self::scope_predicate(scope);
-        let sql = format!("SELECT id, name, role, role_rank, branch_id, is_active, created_at FROM staff WHERE {pred} ORDER BY name ASC");
+        let sql = format!("SELECT id, name, role, role_rank, branch_id, is_active, created_at, job_title, COALESCE(app_access, 1) FROM staff WHERE {pred} ORDER BY name ASC");
         let mut stmt = self.conn.prepare(&sql)?;
         let bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(bind_refs.as_slice(), |r| {
-            Ok(StaffRow { id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, role_rank: r.get(3)?, branch_id: r.get(4)?, is_active: r.get(5)?, created_at: r.get(6)? })
+            Ok(StaffRow { id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, role_rank: r.get(3)?, branch_id: r.get(4)?, is_active: r.get(5)?, created_at: r.get(6)?, job_title: r.get(7)?, app_access: r.get::<_, i64>(8)? != 0 })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
@@ -2771,12 +2775,65 @@ impl<'a> Repo<'a> {
     /// tenant's own current menu price -- the caller's value is read only
     /// to know which item was ordered, never trusted for what it costs.
     ///
-    /// Does NOT validate `modifiers` (ad hoc, staff-keyed at ring-up time --
-    /// there is no modifier price catalog anywhere in this schema to check
-    /// against) or happy-hour discounts (applied client-side only, no
-    /// backend equivalent yet -- same still-open gap the old comment named,
-    /// left open here too rather than silently claiming to close it).
+    /// Options are priced from the menu's option groups (ops.rs `price_modifiers`).
+    /// Happy hour and combo bundles are applied here too since 2026-11-14
+    /// (offers.rs); before that they existed only on the till's screen and the
+    /// order was stored and charged at the full price.
     pub fn price_authoritative_items(&self, tenant_id: &str, items: &[OrderItemInput]) -> Result<Vec<OrderItemInput>, RepoError> {
+        let now = chrono::Local::now();
+        self.price_authoritative_items_at(tenant_id, items, &now.format("%H:%M").to_string(), chrono::Datelike::weekday(&now).num_days_from_sunday() as i64)
+    }
+
+    /// `price_authoritative_items` at a given local time ("HH:MM", weekday 0 = Sunday): menu
+    /// prices, then the owner's offers (happy hour, combo bundles; see offers.rs).
+    pub fn price_authoritative_items_at(&self, tenant_id: &str, items: &[OrderItemInput], hhmm: &str, weekday_from_sunday: i64) -> Result<Vec<OrderItemInput>, RepoError> {
+        let mut priced = self.price_items_at_menu(tenant_id, items)?;
+        self.apply_offers(tenant_id, &mut priced, hhmm, weekday_from_sunday)?;
+        Ok(priced)
+    }
+
+    /// Combo lines (tagged by the till with one shared `combo_id`) that are exactly a combo's
+    /// items get the bundle price spread over them; other piece lines get an active happy hour.
+    /// Weighed lines are left alone (the till gives them no happy hour either).
+    fn apply_offers(&self, tenant_id: &str, lines: &mut [OrderItemInput], hhmm: &str, weekday_from_sunday: i64) -> Result<(), RepoError> {
+        // The owner switched the offers module off: no happy hour, no bundles.
+        if !crate::business::is_on("offers") {
+            return Ok(());
+        }
+        let mut groups: Vec<String> = Vec::new();
+        for l in lines.iter() {
+            if let Some(tag) = &l.combo_id {
+                if !groups.contains(tag) {
+                    groups.push(tag.clone());
+                }
+            }
+        }
+        for tag in &groups {
+            let Some(combo_id) = crate::offers::combo_meal_id(tag) else { continue };
+            let Some((bundle, combo_items)) = crate::offers::load_combo(self.conn, tenant_id, combo_id)? else { continue };
+            let idx: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| l.combo_id.as_deref() == Some(tag.as_str()) && l.weight.is_none()).map(|(i, _)| i).collect();
+            let shape: Vec<(String, i64)> = idx.iter().map(|&i| (lines[i].menu_item_id.clone(), lines[i].quantity)).collect();
+            if !crate::offers::lines_match_combo(&shape, &combo_items) {
+                continue;
+            }
+            let normal: i64 = idx.iter().map(|&i| lines[i].unit_price_cents * lines[i].quantity).sum();
+            for &i in &idx {
+                lines[i].unit_price_cents = crate::offers::combo_unit_price(lines[i].unit_price_cents, bundle, normal);
+            }
+        }
+        let rules = crate::offers::load_happy_hour_rules(self.conn, tenant_id)?;
+        if rules.is_empty() {
+            return Ok(());
+        }
+        for l in lines.iter_mut().filter(|l| l.combo_id.is_none() && l.weight.is_none()) {
+            let pct = crate::offers::happy_hour_percent(&rules, &l.menu_item_id, weekday_from_sunday, hhmm);
+            l.unit_price_cents = crate::offers::happy_hour_price(l.unit_price_cents, pct);
+        }
+        Ok(())
+    }
+
+    /// Every line at its menu price (weighed lines from their weight), options priced from the menu.
+    fn price_items_at_menu(&self, tenant_id: &str, items: &[OrderItemInput]) -> Result<Vec<OrderItemInput>, RepoError> {
         items.iter().map(|item| {
             let (price_cents, is_active, sold_by): (i64, i64, String) = self.conn.query_row(
                 "SELECT price_cents, is_active, sold_by FROM menu_items WHERE id = ?1 AND tenant_id = ?2",
@@ -6493,6 +6550,7 @@ mod tests {
         migrate_v3::run_stockroom_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_ops_settings_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_role_access_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_workforce_migration(&mut conn, &db_path).unwrap();
         db_path
     }
 

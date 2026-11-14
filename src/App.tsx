@@ -1,3 +1,5 @@
+import { PAGE_MODULE, moduleOn } from "./lib/businessModules";
+import { useBusinessStore } from "./stores/businessStore";
 import { useState, lazy, Suspense, useEffect } from "react";
 import { useAuthStore } from "./stores/authStore";
 import { useAccessStore } from "./stores/accessStore";
@@ -85,7 +87,8 @@ function PosLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!userId) return;
     void useAccessStore.getState().load();
-    const t = setInterval(() => void useAccessStore.getState().load(), 30000);
+    void useBusinessStore.getState().load();
+    const t = setInterval(() => { void useAccessStore.getState().load(); void useBusinessStore.getState().load(); }, 30000);
     return () => {
       clearInterval(t);
       useAccessStore.getState().reset();
@@ -106,7 +109,9 @@ function PosLayout({ children }: { children: React.ReactNode }) {
       return;
     }
     const item = navItems.find((n) => n.id === id);
-    if (item && item.allowed && (!posLite || LITE_PAGES.has(id))) {
+    // A page of a module the owner switched off (Settings > نوع النشاط والوحدات) does not open.
+    const moduleOff = PAGE_MODULE[id] !== undefined && !moduleOn(useBusinessStore.getState().modules, PAGE_MODULE[id]!);
+    if (item && item.allowed && !moduleOff && (!posLite || LITE_PAGES.has(id))) {
       if (id === "settings") setSettingsInitialTab("general");
       setActiveView(id);
     }

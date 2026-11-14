@@ -58,6 +58,8 @@ export interface EmployeePay {
 }
 
 export interface EmployeeRow {
+  /** What the person is (cleaner, chef...), if set. */
+  job_title?: string | null;
   user_id: string;
   name: string;
   role: string;

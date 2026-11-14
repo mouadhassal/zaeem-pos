@@ -1,3 +1,6 @@
+import { useBusinessStore } from "../../stores/businessStore";
+import { moduleOn } from "../../lib/businessModules";
+import { useAccessStore } from "../../stores/accessStore";
 import { useEffect, useState, useCallback, useMemo, useRef, lazy, Suspense } from "react";
 import { invoke } from "../../lib/invoke";
 import { printableShopName } from "../../lib/shopName";
@@ -57,7 +60,7 @@ import GiftModal from "../../components/modals/GiftModal";
 import PickupQueueModal from "../../components/modals/PickupQueueModal";
 import { cancelOrder, listPickupOrders, sendDuePickupsToKitchen, sendPickupToKitchenNow, markPickupNoShow, type PickupOrder } from "../../lib/orderService";
 import { pickupAtFromClock, pickupAtFromMinutes } from "../../lib/pickup";
-import { billItemName, pickupChoiceLabel } from "../../lib/prefs";
+import { billItemName, deliveryMissing, pickupChoiceLabel } from "../../lib/prefs";
 import { getPrefs, usePrefsStore } from "../../stores/prefsStore";
 import { formatArabicTime } from "../../lib/dateLocal";
 import { useEditOrderStore, type EditOrderRequest } from "../../stores/editOrderStore";
@@ -147,6 +150,9 @@ export default function POSPage() {
   const [cancelDialog, setCancelDialog] = useState<null | { needsPin: boolean; error: string | null }>(null);
   const [priceTargetId, setPriceTargetId] = useState<string | null>(null);
   const prefs = usePrefsStore();
+  // The owner's switches for this person (Settings > الصلاحيات): gifts, deleting sent items...
+  const accessFeatures = useAccessStore((st) => st.features);
+  const modules = useBusinessStore((st) => st.modules);
   const [showTransfer, setShowTransfer] = useState(false);
   const [showOnScreenReceipt, setShowOnScreenReceipt] = useState(false);
   const [showLoyaltyScan, setShowLoyaltyScan] = useState(false);
@@ -632,7 +638,7 @@ export default function POSPage() {
     setShowPayment(true);
   };
 
-  const handlePaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string, referenceCode?: string) => {
+  const handlePaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string, referenceCode?: string, print = true) => {
     if (!user) return;
     if (!tableId && orderType === "DINE_IN") return;
     let orderId: string;
@@ -676,7 +682,7 @@ export default function POSPage() {
       };
       let pointsEarned: number | null = null;
       try {
-        pointsEarned = await finalizeOrder(orderId, effectiveMethod, receivedCents, changeCents, receipt, effectiveDebtorId ?? undefined, loyaltyCard?.card_number, referenceCode);
+        pointsEarned = await finalizeOrder(orderId, effectiveMethod, receivedCents, changeCents, receipt, effectiveDebtorId ?? undefined, loyaltyCard?.card_number, referenceCode, print);
       } catch {
         setReceiptData(receipt);
         setLastReceipt(receipt);
@@ -788,7 +794,7 @@ export default function POSPage() {
   // (the order's own server-computed total, handed to PaymentModal as
   // `totalOverrideCents` below) so it matches what `finalize_order_with_payment_v3`
   // requires.
-  const handleOpenOrderPaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string) => {
+  const handleOpenOrderPaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string, _referenceCode?: string, print = true) => {
     if (!openOrderId) return;
     const wasPickup = collectingPickup;
     const afterPickup = () => {
@@ -813,7 +819,7 @@ export default function POSPage() {
       };
       let pointsEarned: number | null = null;
       try {
-        pointsEarned = await finalizeOrder(openOrderId, method, receivedCents, changeCents, receipt, debtorId, loyaltyCard?.card_number);
+        pointsEarned = await finalizeOrder(openOrderId, method, receivedCents, changeCents, receipt, debtorId, loyaltyCard?.card_number, undefined, print);
       } catch {
         setReceiptData(receipt);
         setShowOnScreenReceipt(true);
@@ -886,7 +892,7 @@ export default function POSPage() {
   // no `createOrder` call, the order already exists (created by
   // `split_bill_v3`). Advances to the next queued split on success, or
   // closes out the whole split-payment flow once the queue is empty.
-  const handleSplitPaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string, referenceCode?: string) => {
+  const handleSplitPaymentSuccess = async (method: string, receivedCents: number, changeCents: number, debtorId?: string, referenceCode?: string, print = true) => {
     if (!splitQueue) return;
     const current = splitQueue[splitQueueIndex];
     try {
@@ -901,7 +907,7 @@ export default function POSPage() {
         savingsCents: 0, totalCents: current.amountCents, paymentMethod: method, changeCents,
         ...(referenceCode ? { referenceCode } : {}),
       };
-      await finalizeOrder(current.orderId, method, receivedCents, changeCents, receipt, debtorId, undefined, referenceCode);
+      await finalizeOrder(current.orderId, method, receivedCents, changeCents, receipt, debtorId, undefined, referenceCode, print);
       setLastReceipt(receipt);
       const nextIndex = splitQueueIndex + 1;
       if (nextIndex < splitQueue.length) {
@@ -965,7 +971,7 @@ export default function POSPage() {
             }
           }
         } catch (err) {
-          if (/manager/i.test(String(err))) return "needs-pin";
+          if (/manager|المدير/i.test(String(err))) return "needs-pin";
           setSuccessMsg(`تعذر حفظ الإلغاء: ${realErrorText(err)}`);
           setTimeout(() => setSuccessMsg(null), 4000);
           return "failed";
@@ -1076,9 +1082,8 @@ export default function POSPage() {
     if (orderType !== "DELIVERY") return null;
     // The cart still holds a table's open tab: sending it as a delivery would create a second, duplicate order.
     if (openOrderId || items.some((i) => i.dbItemId)) return "السلة تحمل طلب طاولة مفتوحاً — أفرغها وابدأ طلب توصيل جديداً";
-    if (!deliveryAddress.trim()) return "اكتب عنوان التوصيل";
-    if (!customerPhone.trim()) return "اكتب رقم هاتف العميل";
-    return null;
+    // The address always; name and phone only if the owner made them required (Settings > التفضيلات > التوصيل).
+    return deliveryMissing({ address: deliveryAddress, name: customerName, phone: customerPhone }, prefs);
   };
 
   // Delivery orders are usually paid to the driver at the door: this sends the
@@ -1297,7 +1302,7 @@ export default function POSPage() {
   const optionGroups = useOptionsStore((s) => s.groups);
   const [editLineId, setEditLineId] = useState<string | null>(null);
   const [giftLineId, setGiftLineId] = useState<string | null>(null);
-  const setLineOptions = useCartStore((s) => s.setLineOptions);
+  const setLineOptionsFor = useCartStore((s) => s.setLineOptionsFor);
   const setLineWeight = useCartStore((s) => s.setLineWeight);
   // A line sold by weight is changed in the weight dialog, not the options picker.
   const [weightEditId, setWeightEditId] = useState<string | null>(null);
@@ -1523,7 +1528,7 @@ export default function POSPage() {
           onDecrementLine={handleDecrementLine}
           onVoidLine={handleVoidLineClick}
           onEditLine={handleEditLine}
-          onGiftLine={handleGiftClick}
+          {...(accessFeatures?.gift === false ? {} : { onGiftLine: handleGiftClick })}
           onSetQuantityLine={handleSetQuantityLine}
           {...(canEditPrice ? { onEditPriceLine: (id: string) => setPriceTargetId(id) } : {})}
           toolbar={
@@ -1650,6 +1655,8 @@ export default function POSPage() {
             // meaningless once tables are off.
             .filter((t) => hasTables || t !== "DINE_IN")
             .filter((t) => !posLite || t !== "DEBT")
+            // Modules the owner switched off (Settings > نوع النشاط والوحدات).
+            .filter((t) => (t !== "DELIVERY" || moduleOn(modules, "delivery")) && (t !== "DEBT" || moduleOn(modules, "debt")))
             .map((t) => {
             const IconComp = ORDER_TYPE_ICONS[t] || IconToolsKitchen2;
             const isActive = orderType === t;
@@ -1681,6 +1688,7 @@ export default function POSPage() {
               </button>
             );
           })}
+          {moduleOn(modules, "pickup") && (
           <button
             onClick={() => { refreshPickups(); setShowPickupQueue(true); }}
             data-testid="pickup-queue-button"
@@ -1694,6 +1702,7 @@ export default function POSPage() {
               <span className="min-w-5 h-5 px-1 rounded-full bg-accent text-white text-[11px] leading-5 text-center" data-testid="pickup-count">{pickupOrders.length}</span>
             )}
           </button>
+          )}
           <div className="flex-1" />
           {/* Customer info for non-DINE_IN types */}
           {orderType !== "DINE_IN" && orderType !== "DEBT" && !editingOrder && (
@@ -1701,17 +1710,17 @@ export default function POSPage() {
               <input
                 value={customerName}
                 onChange={(e) => useOrderTypeStore.getState().setCustomerName(e.target.value)}
-                placeholder="اسم العميل"
+                placeholder={orderType === "DELIVERY" && prefs.deliveryNameRequired ? "اسم العميل *" : "اسم العميل"}
                 className="h-7 px-2 rounded-[7px] border border-line text-xs w-28 bg-surface-alt focus:outline-none focus:border-accent font-arabic"
               />
               <input
                 value={customerPhone}
                 onChange={(e) => useOrderTypeStore.getState().setCustomerPhone(e.target.value)}
-                placeholder="رقم الجوال"
+                placeholder={orderType === "DELIVERY" && prefs.deliveryPhoneRequired ? "رقم الجوال *" : "رقم الجوال"}
                 className="h-7 px-2 rounded-[7px] border border-line text-xs w-24 bg-surface-alt focus:outline-none focus:border-accent font-mono"
                 dir="ltr"
               />
-              {!posLite && <button
+              {!posLite && moduleOn(modules, "loyalty") && <button
                 onClick={() => setShowLoyaltyScan(true)}
                 className={`h-7 px-2 rounded-[7px] text-xs font-bold transition-all flex items-center gap-1 ${
                   loyaltyCard ? "bg-accent-soft text-accent-text" : "bg-surface-alt text-text-3 hover:text-text-2"
@@ -1757,7 +1766,7 @@ export default function POSPage() {
           </div>
         )}
 
-        {orderType === "TAKEAWAY" && !openOrderId && (
+        {orderType === "TAKEAWAY" && !openOrderId && moduleOn(modules, "pickup") && (
           <div className="min-h-12 shrink-0 bg-surface-alt border-b border-line flex flex-wrap items-center gap-1.5 px-2 py-1.5" dir="rtl" data-testid="pickup-fields">
             <span className="text-xs font-bold font-arabic text-text-2 me-1">الاستلام:</span>
             <button
@@ -1804,7 +1813,7 @@ export default function POSPage() {
             <input
               value={deliveryAddress}
               onChange={(e) => useOrderTypeStore.getState().setDeliveryAddress(e.target.value)}
-              placeholder="عنوان التوصيل (الحي، الشارع، البناء)"
+              placeholder="عنوان التوصيل * (الحي، الشارع، البناء)"
               className="h-8 px-2 rounded-[7px] border border-line text-xs flex-1 min-w-0 bg-surface focus:outline-none focus:border-accent font-arabic"
               data-testid="delivery-address"
             />
@@ -1889,8 +1898,9 @@ export default function POSPage() {
             editLine.modifiers,
           )}
           confirmLabel="حفظ"
-          askQuantity={!!editLine.dbItemId}
+          askQuantity={!!editLine.dbItemId || editLine.quantity > 1}
           initialQuantity={editLine.quantity}
+          {...(!editLine.dbItemId && editLine.quantity > 1 ? { quantityLabel: `كم قطعة من ${editLine.quantity} بهذه الإضافات؟`, maxQuantity: editLine.quantity } : {})}
           askReason={!!editLine.dbItemId}
           needsPin={editNeedsPin}
           error={editError}
@@ -1901,7 +1911,7 @@ export default function POSPage() {
               void confirmSentEdit(r);
               return;
             }
-            setLineOptions(editLine.id, r.modifiers, r.note);
+            setLineOptionsFor(editLine.id, r.modifiers, r.note, r.quantity);
             setEditLineId(null);
           }}
         />
@@ -2154,7 +2164,13 @@ export default function POSPage() {
       )}
 
       {showVoid && (
-        <VoidItemModal itemName={voidTargetName} itemPriceCents={voidTargetPrice} onConfirm={handleVoidConfirm} onCancel={() => { setShowVoid(false); setVoidTargetItem(null); }} />
+        <VoidItemModal
+          itemName={voidTargetName}
+          itemPriceCents={voidTargetPrice}
+          requirePin={accessFeatures?.void_sent === false && !!items.find((i) => i.id === voidTargetItem)?.dbItemId}
+          onConfirm={handleVoidConfirm}
+          onCancel={() => { setShowVoid(false); setVoidTargetItem(null); }}
+        />
       )}
 
       {showTransfer && (

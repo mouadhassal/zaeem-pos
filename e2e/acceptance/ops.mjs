@@ -1593,8 +1593,9 @@ try {
     await as(managerToken, "get_sales_strip_v3", strip);
     ok((await refused(as(managerToken, "list_operational_costs_v3", { startIso: strip.startIso, endIso: strip.endIso }))).includes("forbidden"), "finance is not a manager page by default");
     const mine = await as(cashierToken, "get_my_access_v3");
-    eq(Object.keys(mine).sort(), ["finance", "inventory", "menu", "refund", "report_print", "reports", "settings", "staff"], "the areas in a cashier's own answer");
-    ok(Object.values(mine).every((v) => v === false), "a cashier has none of them by default");
+    eq(Object.keys(mine).sort(), ["cancel_order", "discount", "finance", "gift", "inventory", "menu", "refund", "report_print", "reports", "settings", "staff", "void_sent", "workers"], "the areas in a cashier's own answer (pages + till actions, 2026-11-14)");
+    const TILL_ACTIONS = ["cancel_order", "discount", "gift", "void_sent"];
+    ok(Object.entries(mine).every(([k, v]) => (TILL_ACTIONS.includes(k) ? v === true : v === false)), `a cashier has none of the pages by default and every till action: ${JSON.stringify(mine)}`);
     ok((await refused(as(cashierToken, "get_role_access_v3"))).includes("للمالك"), "only the owner reads the table");
     ok((await refused(as(managerToken, "save_role_access_v3", { cells: [] }))).includes("للمالك"), "only the owner changes the table");
 
@@ -1630,7 +1631,10 @@ try {
     await clickId("access-CASHIER-reports");
     await clickId("access-CASHIER-report_print");
     await clickId("access-MANAGER-reports");
-    await until(async () => (await call("get_role_access_v3")).every((c) => c.allowed === (c.role === "MANAGER" && c.feature !== "finance")), "defaults restored");
+    // Defaults: a manager opens every page but finance and workers; till actions are open to every role.
+    const TILL = ["cancel_order", "discount", "gift", "void_sent"];
+    const byDefault = (c) => TILL.includes(c.feature) || (c.role === "MANAGER" && c.feature !== "finance" && c.feature !== "workers");
+    await until(async () => (await call("get_role_access_v3")).every((c) => c.allowed === byDefault(c)), "defaults restored");
     ok((await refused(as(cashierToken, "get_sales_report_v3", day))).includes("forbidden"), "the cashier is locked out again");
     await as(managerToken, "get_sales_report_v3", day);
   });
@@ -1751,6 +1755,132 @@ try {
     ok(geo.n >= 2, "categories are listed");
     console.log("  shot:", await reg.shot("category-grid"));
     await b.execute((k, v) => { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); }, PREFS, prefsBefore);
+  });
+
+  await step("batch1114", "options window off + options on 1 of 2 units, one-row without/extra, sale with no bill, delivery bill on 'out', happy hour charged by the server", async () => {
+    const PREFS = "zaeem_pos_prefs";
+    const prefsBefore = await b.execute((k) => localStorage.getItem(k), PREFS);
+    const setPrefs = (patch) => b.execute((k, p) => { const v = JSON.parse(localStorage.getItem(k) || "{}"); localStorage.setItem(k, JSON.stringify({ ...v, ...p })); }, PREFS, patch);
+    const payButton = () => b.execute(() => { const x = [...document.querySelectorAll("button")].find((e) => e.offsetParent !== null && e.innerText.trim() === "دفع"); x?.click(); return !!x; });
+    // An ingredient typed once: "بدون مخلل" + "زيادة مخلل" on the pizzas.
+    await call("save_option_group_v3", { group: { id: null, name: "مخلل", selection: "MULTI", required: false, sort_order: 9, is_active: true,
+      choices: [{ name: "بدون مخلل", price_cents: 0 }, { name: "زيادة مخلل", price_cents: 0 }], targets: [{ target_type: "CATEGORY", target_id: ids.catPizza }] } });
+    // Juice is half price all day today.
+    const juice = await call("create_menu_item_v3", { name: "عصير برتقال", categoryId: ids.catBar, priceCents: 3000, costCents: 1000, description: null, barcode: null });
+    await call("create_happy_hour_rule_v3", { menuItemId: juice, discountPercent: 50, dayOfWeek: new Date().getDay(), startTime: "00:00", endTime: "23:59", isActive: true });
+
+    // 1. The options window does not open on tap; options are added from the line, to 1 of the 2 pizzas.
+    await setPrefs({ optionsOnTap: "never", optionsLayout: "list" });
+    await b.refresh();
+    await byId("sidebar", 30000);
+    await call("open_shift_v3", { startingCashCents: 0, branchId: null }).catch(() => {});
+    await nav("pos");
+    await clickId("order-type-TAKEAWAY");
+    await pause(400);
+    await reg.addItem("بيتزا مارغريتا");
+    ok(!(await exists("option-picker")), "no options window on tap when the owner turned it off");
+    await reg.addItem("بيتزا مارغريتا");
+    eq((await b.$$('[data-testid="order-line"]')).length, 1, "two pizzas, one line");
+    await clickId("order-line-edit");
+    await byId("option-picker");
+    ok((await b.$$('[data-testid="option-pair"]')).length >= 1, "pickle shows as one row with its two sides");
+    await clickId("edit-qty-minus");
+    eq(await textOf("edit-qty"), "1", "options for one of the two");
+    await b.execute(() => { [...document.querySelectorAll('[data-testid="option-choice"]')].find((e) => e.dataset.choice === "بدون مخلل")?.click(); });
+    await clickId("option-confirm");
+    await until(async () => (await b.$$('[data-testid="order-line"]')).length === 2, "the pizza with options became its own line");
+    console.log("  shot:", await reg.shot("options-split"));
+
+    // 2. The customer wants no bill: the sale is recorded, nothing prints. (The cash drawer's 7-byte
+    // kick goes to the same printer, so only real bills -- anything bigger -- are counted.)
+    const bills = () => jobs("receipt").filter((f) => fs.statSync(path.join(printDir("receipt"), f)).size > 64).length;
+    const receiptsBefore = bills();
+    ok(await payButton(), "pay button");
+    await byId("pay-exact");
+    await clickId("pay-print-toggle");
+    await clickId("pay-exact");
+    await reg.click(/تأكيد بدون طباعة/);
+    await until(async () => !(await exists("pay-exact")), "paid", 20000);
+    await pause(2500);
+    eq(bills(), receiptsBefore, "no customer bill printed");
+    const day = await call("list_order_history_v3", { businessDate: null });
+    ok(day.rows.some((r) => r.status === "PAID" && r.total_cents === 20000), "the 2 pizzas are paid in the history");
+
+    // 3. Happy hour: the server stores (and charges) the half price the till shows.
+    await clickId("order-type-TAKEAWAY");
+    await pause(400);
+    await reg.addItem("عصير برتقال");
+    ok(await payButton(), "pay button");
+    await byId("pay-exact");
+    await clickId("pay-exact");
+    await reg.click(/تأكيد وطباعة/);
+    await until(async () => (await call("list_order_history_v3", { businessDate: null })).rows.some((r) => r.status === "PAID" && r.total_cents === 1500), "the juice was sold at the happy-hour price 1,500 (not 3,000)", 20000);
+
+    // 4. A delivery with no phone (only the address is needed); its bill prints when it goes out.
+    await clickId("order-type-DELIVERY");
+    await pause(400);
+    await reg.addItem("شيش طاووق");
+    await (await byId("delivery-address")).setValue("حي الطباعة - بناء 7");
+    await (await byId("delivery-driver")).selectByVisibleText("علي السائق");
+    await clickId("pay-send-kitchen");
+    const sent = await until(async () => {
+      const l = await call("list_deliveries_v3", { filter: { statuses: ["NEW", "ASSIGNED"] } });
+      return l.find((d) => d.address === "حي الطباعة - بناء 7" && d.status === "ASSIGNED") ?? null;
+    }, "delivery with no phone created and assigned", 20000);
+    ok(!sent.customer_phone, "no phone stored");
+    await nav("delivery");
+    await until(async () => (await b.$$('[data-testid="delivery-card"]')).length >= 1, "delivery cards");
+    await b.execute((addr) => { [...document.querySelectorAll('[data-testid="delivery-card"]')].find((c) => c.innerText.includes(addr))?.click(); }, "حي الطباعة");
+    await byId("delivery-panel");
+    const before = jobs("receipt").length;
+    await clickId("delivery-out");
+    await until(async () => jobs("receipt").length > before, "the delivery bill printed by itself on 'out'", 20000);
+    await until(async () => (await call("list_deliveries_v3", { filter: { statuses: [] } })).find((d) => d.order_id === sent.order_id)?.status === "OUT", "out");
+    await b.execute((k, v) => { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); }, PREFS, prefsBefore);
+  });
+
+  await step("workforce", "worker without the app in payroll, per-person exception, business type + a module switched off", async () => {
+    const navIds = () => b.execute(() => [...document.querySelectorAll('[data-testid^="sidebar-nav-"]')].map((e) => e.dataset.testid.replace("sidebar-nav-", "")));
+    await b.refresh();
+    await byId("sidebar", 30000);
+    // A cleaner who never uses the app, added from the Staff page.
+    await nav("staff");
+    await clickId("worker-add");
+    await (await byId("worker-name")).setValue("أبو سمير");
+    await (await byId("worker-title")).setValue("عامل نظافة");
+    await clickId("worker-save");
+    await until(async () => (await b.$$('[data-testid="worker-row"]')).length >= 1, "the worker is listed");
+    const staff = await call("list_staff_v3");
+    const cleaner = staff.find((p) => p.name === "أبو سمير");
+    ok(cleaner && cleaner.app_access === false && cleaner.job_title === "عامل نظافة", `worker stored without app access: ${JSON.stringify(cleaner)}`);
+    const people = await call("list_payroll_employees_v3");
+    ok(people.some((p) => p.user_id === cleaner.id && p.job_title === "عامل نظافة"), "the worker is in payroll with the job title");
+    console.log("  shot:", await reg.shot("workers"));
+
+    // A per-person exception: a cashier who may refund although cashiers may not.
+    const cashier = staff.find((p) => p.role === "CASHIER" && p.app_access);
+    if (cashier) {
+      await call("save_staff_access_v3", { staffId: cashier.id, cells: [{ feature: "refund", allowed: true }] });
+      const cells = await call("get_staff_access_v3", { staffId: cashier.id });
+      eq(cells.find((c) => c.feature === "refund").allowed, true, "the exception is stored");
+      await call("save_staff_access_v3", { staffId: cashier.id, cells: [] });
+    }
+
+    // Business type: a shop. The debt book is switched off; its page leaves the sidebar and its commands are refused.
+    await nav("settings");
+    await reg.click("نوع النشاط والوحدات");
+    await byId("business-tab");
+    const before = await call("get_business_profile_v3");
+    await clickId("module-debt");
+    await until(async () => (await call("get_business_profile_v3")).modules.debt === false, "debt module off");
+    const err = await call("list_debtors_v3").then(() => "", (e) => String(e.message));
+    ok(err.includes("متوقفة"), `the debt commands are refused while the module is off, got: ${err.slice(0, 120) || "ok"}`);
+    await until(async () => !(await navIds()).includes("debt"), "the debt page left the sidebar", 40000);
+    console.log("  shot:", await reg.shot("business-modules"));
+    await clickId("module-debt");
+    await until(async () => (await call("get_business_profile_v3")).modules.debt === true, "debt module back on");
+    ok(await call("list_debtors_v3").then(() => true, () => false), "debt commands work again");
+    eq(before.modules.debt, true, "debt was on before");
   });
 
   await step("lite", "POS Lite: till screens only, Full-only commands refused, cash sale prints, upgrade restores", async () => {

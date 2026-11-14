@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { usePrefsStore } from "../stores/prefsStore";
 import { invoke } from "../lib/invoke";
-import { IconX, IconCash, IconCreditCard, IconWallet, IconCircleCheck } from "@tabler/icons-react";
+import { IconX, IconCash, IconCreditCard, IconWallet, IconCircleCheck, IconPrinter, IconPrinterOff } from "@tabler/icons-react";
 import { useCartStore } from "../stores/cartStore";
 import { openCashDrawer } from "../lib/printer";
 import { useAuthStore } from "../stores/authStore";
@@ -37,7 +37,8 @@ const QUICK_AMOUNTS = [50, 100, 200, 500, 1000, 1500, 2000];
 
 interface Props {
   onClose: () => void;
-  onSuccess: (method: string, receivedCents: number, changeCents: number, debtorId?: string, referenceCode?: string) => void | Promise<void>;
+  /** `print`: the cashier's choice for this sale's customer bill (off = the sale is recorded, nothing is printed). */
+  onSuccess: (method: string, receivedCents: number, changeCents: number, debtorId?: string, referenceCode?: string, print?: boolean) => void | Promise<void>;
   initialMethod?: PaymentMethod | undefined;
   initialDebtorId?: string | undefined;
   initialDebtorName?: string | undefined;
@@ -91,6 +92,8 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
   // their screen, and if the sale fails the normal screen is shown so the cashier can retry or pick
   // another method.
   const skipScreen = usePrefsStore((s) => s.skipPaymentScreen);
+  // Print the customer's bill for this sale? Starts from the owner's setting; one tap changes it for this sale only.
+  const [printBill, setPrintBill] = useState(() => usePrefsStore.getState().printReceiptOnPay);
   const autoPay = skipScreen && initialMethod === undefined;
   const autoStarted = useRef(false);
   const [autoFailed, setAutoFailed] = useState(false);
@@ -101,7 +104,7 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
     void (async () => {
       try {
         try { await openCashDrawer(); } catch { /* drawer may not be connected */ }
-        await onSuccess("CASH", totalCents, 0);
+        await onSuccess("CASH", totalCents, 0, undefined, undefined, usePrefsStore.getState().printReceiptOnPay);
       } catch (err) {
         setError(realErrorText(err));
         setAutoFailed(true);
@@ -169,7 +172,7 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
       if (!debtorId) { setError("يرجى إدخال رقم هاتف صحيح"); return; }
       setProcessing(true);
       try {
-        await onSuccess(method, totalCents, 0, debtorId);
+        await onSuccess(method, totalCents, 0, debtorId, undefined, printBill);
       } finally {
         setProcessing(false);
       }
@@ -193,7 +196,8 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
         method === "CASH" ? receivedCents : totalCents,
         method === "CASH" ? changeCents : 0,
         undefined,
-        method === "CARD" || method === "WALLET" ? referenceCode.trim() : undefined
+        method === "CARD" || method === "WALLET" ? referenceCode.trim() : undefined,
+        printBill,
       );
     } finally {
       setProcessing(false);
@@ -486,7 +490,21 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
           <p className="px-6 pb-2 text-danger text-sm text-center font-arabic">{error}</p>
         )}
 
-        <div className="px-6 py-4 border-t border-ink-200 flex gap-3">
+        <div className="px-6 pt-3 flex justify-center">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={printBill}
+            onClick={() => setPrintBill((v) => !v)}
+            data-testid="pay-print-toggle"
+            className={`h-10 px-4 rounded-full border-2 font-arabic text-sm font-bold flex items-center gap-2 transition-colors ${printBill ? "border-saffron-600 bg-saffron-50 text-saffron-700" : "border-ink-300 bg-ink-100 text-ink-600"}`}
+          >
+            {printBill ? <IconPrinter className="w-4 h-4" /> : <IconPrinterOff className="w-4 h-4" />}
+            {printBill ? "طباعة الفاتورة" : "بدون طباعة"}
+          </button>
+        </div>
+
+        <div className="px-6 py-4 border-t border-ink-200 flex gap-3 mt-3">
           <button
             onClick={onClose}
             className="flex-1 h-14 rounded-xl bg-surface-alt text-ink-900 font-arabic font-bold hover:bg-ink-200 active:scale-[0.98] transition-[background-color,transform]"
@@ -498,7 +516,7 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
             disabled={!sufficient || processing}
             className="flex-1 h-14 rounded-xl bg-saffron-600 text-white font-arabic font-bold hover:bg-accent-text active:scale-[0.98] transition-[background-color,transform,opacity] disabled:opacity-50 disabled:shadow-none"
           >
-            {processing ? "...جارٍ" : "تأكيد وطباعة"}
+            {processing ? "...جارٍ" : printBill ? "تأكيد وطباعة" : "تأكيد بدون طباعة"}
           </button>
         </div>
       </div>
