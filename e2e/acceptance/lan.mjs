@@ -304,13 +304,27 @@ try {
     await networkTab(B);
   }
   const kitchen = process.argv.includes("--kitchen");
+  // --manual: B types the address A shows instead of searching (the path a
+  // customer uses when Windows Firewall or the router blocks the search).
+  const manual = process.argv.includes("--manual");
+  const hubAddr = await (await byTestId(A, "lan-local-addr")).getText();
+  check("hub-shows-addr", /^\d+\.\d+\.\d+\.\d+:47811$/.test(hubAddr.trim()), hubAddr);
   await B.click(kitchen ? /^شاشة مطبخ فقط/ : /^كاشير \/ نقطة بيع/);
-  await B.click(/^البحث عن أجهزة مركزية$/);
-  await B.browser.waitUntil(async () => /اتصال/.test((await controls(B.browser)).join("|")), { timeout: 30000, timeoutMsg: "B found no hub on the network" }).catch(() => {});
-  const found = (await controls(B.browser)).includes("اتصال");
-  check("discover", found, found ? "" : (await B.text()).slice(-400).replace(/\n+/g, " | "));
-  if (!found) throw new Error("stop");
-  await B.click(/^اتصال$/);
+  if (!kitchen) {
+    // B holds a licence: the screen must say so, not warn about a missing one.
+    check("licence-line", (await exists(B, "lan-licence-ok")) && !(await exists(B, "lan-licence-warning")), (await B.text()).slice(-500).replace(/\n+/g, " | "));
+  }
+  if (manual) {
+    await (await byTestId(B, "lan-manual-addr")).setValue(hubAddr.trim());
+    await (await byTestId(B, "lan-manual-connect")).click();
+  } else {
+    await B.click(/^البحث عن أجهزة مركزية$/);
+    await B.browser.waitUntil(async () => exists(B, "lan-hub-connect"), { timeout: 30000, timeoutMsg: "B found no hub on the network" }).catch(() => {});
+    const found = await exists(B, "lan-hub-connect");
+    check("discover", found, found ? "" : (await B.text()).slice(-400).replace(/\n+/g, " | "));
+    if (!found) throw new Error("stop");
+    await (await byTestId(B, "lan-hub-connect")).click();
+  }
   await B.browser.pause(2500);
   const bJoin = await B.text();
   console.log("  B after join:", bJoin.slice(bJoin.indexOf("الوضع الحالي")).slice(0, 400).replace(/\n+/g, " | "));

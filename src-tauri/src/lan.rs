@@ -559,6 +559,13 @@ pub struct LanStatusV3 {
     pub device_name: String,
     pub hub_addr: Option<String>,
     pub paired: bool,
+    /// This PC's own LAN address with the Hub port ("192.168.1.5:47811"), shown
+    /// on the Hub screen so a second POS can type it when mDNS search finds
+    /// nothing (firewall, router blocking multicast).
+    pub local_addr: Option<String>,
+    /// False when this device's own licence would refuse a 'register' pairing,
+    /// so the screen only warns about a licence when one is really missing.
+    pub licensed: bool,
 }
 
 fn db_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -568,7 +575,12 @@ fn db_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 }
 
 #[tauri::command]
-pub fn get_lan_status_v3(app: AppHandle, state: State<Db>, session_token: String) -> Result<LanStatusV3, String> {
+pub fn get_lan_status_v3(
+    app: AppHandle,
+    state: State<Db>,
+    license: State<'_, crate::license::cloud::CloudLicenseState>,
+    session_token: String,
+) -> Result<LanStatusV3, String> {
     let actor = crate::commands::shared::authenticate_actor(&state, &session_token)?;
     crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
     let dir = db_dir(&app)?;
@@ -578,6 +590,8 @@ pub fn get_lan_status_v3(app: AppHandle, state: State<Db>, session_token: String
         device_name: config.device_name,
         hub_addr: config.hub_addr,
         paired: config.mode == "satellite" && config.trust_token.is_some(),
+        local_addr: local_ip().map(|ip| format!("{ip}:{LAN_HUB_PORT}")),
+        licensed: !license.cached_status().back_office_locked(),
     })
 }
 
@@ -703,7 +717,94 @@ pub struct DiscoveredHubV3 {
     pub addr: String,
 }
 
-/// Browses mDNS for ~2 seconds and returns whatever Hubs answered. Short
+/// Turns what a person types (or what mDNS returned) into "host:port".
+/// Accepts "192.168.1.5", "192.168.1.5:47811", "http://192.168.1.5/" and
+/// surrounding spaces; adds the Hub port when it is missing. Refuses
+/// anything that is not a plain host (no paths, no spaces inside).
+pub fn normalize_hub_addr(raw: &str) -> Result<String, String> {
+    let mut s = raw.trim();
+    for prefix in ["http://", "https://"] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest;
+        }
+    }
+    let s = s.trim_end_matches('/');
+    let bad = || "عنوان الجهاز المركزي غير صحيح. اكتبه كما يظهر على الجهاز المركزي، مثل 192.168.1.5".to_string();
+    if s.is_empty() || s.contains(char::is_whitespace) || s.contains('/') {
+        return Err(bad());
+    }
+    if let Ok(sock) = s.parse::<std::net::SocketAddr>() {
+        return Ok(sock.to_string());
+    }
+    if let Ok(ip) = s.parse::<std::net::IpAddr>() {
+        return Ok(std::net::SocketAddr::new(ip, LAN_HUB_PORT).to_string());
+    }
+    let (host, port) = match s.rsplit_once(':') {
+        Some((h, p)) => (h, p.parse::<u16>().map_err(|_| bad())?),
+        None => (s, LAN_HUB_PORT),
+    };
+    if host.is_empty() || !host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+        return Err(bad());
+    }
+    Ok(format!("{host}:{port}"))
+}
+
+/// The PowerShell run (elevated) by `open_lan_firewall_v3`: network profile
+/// Public -> Private, drop the Block rules Windows creates when someone
+/// presses Cancel on its firewall prompt, then allow this app, the Hub port
+/// and mDNS on every profile. A pure function so a test can check the exact
+/// rules without touching the real firewall.
+pub fn lan_firewall_script(exe_path: &str) -> String {
+    let exe = exe_path.replace('\'', "''");
+    [
+        "$ErrorActionPreference = 'SilentlyContinue'".to_string(),
+        "Get-NetConnectionProfile | Where-Object { $_.NetworkCategory -eq 'Public' } | Set-NetConnectionProfile -NetworkCategory Private".to_string(),
+        format!("Get-NetFirewallApplicationFilter | Where-Object {{ $_.Program -eq '{exe}' }} | Get-NetFirewallRule | Where-Object {{ $_.Action -eq 'Block' }} | Remove-NetFirewallRule"),
+        "Get-NetFirewallRule -DisplayName 'WENZDES POS*' | Remove-NetFirewallRule".to_string(),
+        format!("New-NetFirewallRule -DisplayName 'WENZDES POS app' -Direction Inbound -Program '{exe}' -Action Allow -Profile Any | Out-Null"),
+        format!("New-NetFirewallRule -DisplayName 'WENZDES POS LAN TCP' -Direction Inbound -Protocol TCP -LocalPort {LAN_HUB_PORT} -Action Allow -Profile Any | Out-Null"),
+        "New-NetFirewallRule -DisplayName 'WENZDES POS LAN mDNS' -Direction Inbound -Protocol UDP -LocalPort 5353 -Action Allow -Profile Any | Out-Null".to_string(),
+    ]
+    .join("\n")
+}
+
+/// Opens Windows Firewall for the local network link. Windows shows its own
+/// admin (UAC) prompt; nothing changes unless the person accepts it. Owner /
+/// manager only (ManageSettings), like every other network setting.
+#[tauri::command]
+pub fn open_lan_firewall_v3(state: State<Db>, session_token: String) -> Result<(), String> {
+    let actor = crate::commands::shared::authenticate_actor(&state, &session_token)?;
+    crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    {
+        use base64::Engine as _;
+        use std::os::windows::process::CommandExt;
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let script = lan_firewall_script(&exe.to_string_lossy());
+        let utf16: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let launcher = format!(
+            "$p = Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','{encoded}'; if (-not $p) {{ exit 1 }}"
+        );
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let status = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &launcher])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err("لم يُفتح جدار الحماية: لم تتم الموافقة على صلاحية المدير في ويندوز. أعد المحاولة واضغط «نعم».".to_string());
+        }
+        crate::obslog::log_lan_error("firewall opened for the LAN link (user accepted the admin prompt)");
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(())
+    }
+}
+
+/// Browses mDNS for ~4 seconds and returns whatever Hubs answered. Short
 /// and synchronous-feeling on purpose -- this backs a "بحث" (search)
 /// button on a settings screen, not a background service.
 #[tauri::command]
@@ -711,16 +812,20 @@ pub async fn discover_hubs_v3() -> Result<Vec<DiscoveredHubV3>, String> {
     let daemon = mdns_sd::ServiceDaemon::new().map_err(|e| e.to_string())?;
     let receiver = daemon.browse(MDNS_SERVICE_TYPE).map_err(|e| e.to_string())?;
     let mut found = Vec::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    // 4 s: on a busy Wi-Fi the first answer often arrives after 2 s.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
     while std::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         match receiver.recv_timeout(remaining) {
             Ok(mdns_sd::ServiceEvent::ServiceResolved(info)) => {
-                if let Some(ip) = info.get_addresses().iter().next() {
-                    found.push(DiscoveredHubV3 {
-                        name: info.get_fullname().to_string(),
-                        addr: format!("{}:{}", ip, info.get_port()),
-                    });
+                let addrs = info.get_addresses();
+                let ip = addrs.iter().find(|a| a.is_ipv4()).or_else(|| addrs.iter().next());
+                if let Some(ip) = ip {
+                    let addr = std::net::SocketAddr::new(*ip, info.get_port()).to_string();
+                    if !found.iter().any(|h: &DiscoveredHubV3| h.addr == addr) {
+                        let name = info.get_fullname().split("._").next().unwrap_or_default().to_string();
+                        found.push(DiscoveredHubV3 { name, addr });
+                    }
                 }
             }
             Ok(_) => continue,
@@ -779,21 +884,31 @@ pub async fn request_pairing_v3(
         );
     }
 
+    let hub_addr = normalize_hub_addr(&hub_addr)?;
     let dir = db_dir(&app)?;
     let mut config = load_lan_config(&dir);
 
     let trust_token = config.trust_token.clone().unwrap_or_else(random_trust_token);
     let trust_token_hash = sha256_hex(&trust_token);
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
     let resp = client
         .post(format!("http://{hub_addr}/pair/request"))
         .json(&serde_json::json!({ "device_name": device_name, "trust_token_hash": trust_token_hash, "device_role": device_role }))
         .send()
         .await
-        .map_err(|e| format!("could not reach hub at {hub_addr}: {e}"))?;
+        .map_err(|e| {
+            crate::obslog::log_lan_error(&format!("pairing: could not reach hub at {hub_addr}: {e}"));
+            format!(
+                "تعذّر الوصول إلى الجهاز المركزي على العنوان {hub_addr}. تأكد أن الجهازين على نفس الراوتر، وأن الجهاز المركزي مفعّل كـ«مركزي» وتطبيقه مفتوح، ثم اضغط «السماح عبر جدار الحماية» على الجهازين."
+            )
+        })?;
     if !resp.status().is_success() {
-        return Err(format!("hub rejected pairing request: {}", resp.status()));
+        return Err(format!("رفض الجهاز المركزي طلب الاتصال (رمز {}).", resp.status().as_u16()));
     }
     let body: PairRequestReply = resp.json().await.map_err(|e| e.to_string())?;
 
@@ -1051,6 +1166,31 @@ mod tests {
             device_role: Some("register".to_string()),
             device_name: "Test Satellite".to_string(),
         }
+    }
+
+    #[test]
+    fn hub_address_typed_by_hand_is_normalized() {
+        assert_eq!(normalize_hub_addr(" 192.168.1.5 ").unwrap(), "192.168.1.5:47811");
+        assert_eq!(normalize_hub_addr("192.168.1.5:47811").unwrap(), "192.168.1.5:47811");
+        assert_eq!(normalize_hub_addr("http://192.168.1.5/").unwrap(), "192.168.1.5:47811");
+        assert_eq!(normalize_hub_addr("10.0.0.7:9000").unwrap(), "10.0.0.7:9000");
+        assert_eq!(normalize_hub_addr("pos-main.local").unwrap(), "pos-main.local:47811");
+        assert_eq!(normalize_hub_addr("pos-main.local:47811").unwrap(), "pos-main.local:47811");
+        for bad in ["", "   ", "192.168.1.5/evil", "a b", "host:notaport", "x;rm", ":47811"] {
+            assert!(normalize_hub_addr(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn firewall_script_allows_the_app_the_hub_port_and_mdns_only() {
+        let s = lan_firewall_script(r"C:\Program Files\wenzdes-pos\app.exe");
+        assert!(s.contains(r"-Program 'C:\Program Files\wenzdes-pos\app.exe' -Action Allow"));
+        assert!(s.contains("-Protocol TCP -LocalPort 47811 -Action Allow"));
+        assert!(s.contains("-Protocol UDP -LocalPort 5353 -Action Allow"));
+        assert!(s.contains("Where-Object { $_.Action -eq 'Block' }"));
+        assert!(!s.contains("-Action Block"));
+        // a quote in the path cannot break out of the PowerShell string
+        assert!(lan_firewall_script(r"C:\it's\app.exe").contains(r"'C:\it''s\app.exe'"));
     }
 
     #[test]

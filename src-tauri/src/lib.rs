@@ -800,6 +800,7 @@ pub fn run() {
             lan::reject_pairing_v3,
             lan::revoke_terminal_v3,
             lan::discover_hubs_v3,
+            lan::open_lan_firewall_v3,
             lan::request_pairing_v3,
             lan::check_pairing_status_v3,
             lan::forget_pairing_v3,

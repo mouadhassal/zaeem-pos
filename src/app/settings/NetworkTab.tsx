@@ -7,6 +7,10 @@ interface LanStatus {
   deviceName: string;
   hubAddr: string | null;
   paired: boolean;
+  /** This PC's own address ("192.168.1.5:47811"), shown on the Hub screen. */
+  localAddr?: string | null;
+  /** False only when this device's licence would refuse a cashier pairing. */
+  licensed?: boolean;
 }
 
 interface PendingPairing {
@@ -50,6 +54,11 @@ export default function NetworkTab({ token }: { token: string | null }) {
   const [error, setError] = useState<string | null>(null);
   const [pairingWait, setPairingWait] = useState(false);
   const [joinRole, setJoinRole] = useState<"register" | "kitchen">("kitchen");
+  // true once a search finished, so an empty result shows the help box.
+  const [searched, setSearched] = useState(false);
+  const [manualAddr, setManualAddr] = useState("");
+  const [firewallBusy, setFirewallBusy] = useState(false);
+  const [firewallDone, setFirewallDone] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -118,8 +127,40 @@ export default function NetworkTab({ token }: { token: string | null }) {
       setError(typeof err === "string" ? err : "حدث خطأ في البحث عن الأجهزة");
     } finally {
       setDiscovering(false);
+      setSearched(true);
     }
   };
+
+  const openFirewall = async () => {
+    setFirewallBusy(true);
+    setError(null);
+    try {
+      await invoke("open_lan_firewall_v3", { sessionToken: token });
+      setFirewallDone(true);
+    } catch (err) {
+      setError(typeof err === "string" ? err : "تعذّر فتح جدار الحماية");
+    } finally {
+      setFirewallBusy(false);
+    }
+  };
+
+  const firewallButton = (
+    <div className="space-y-1">
+      <button
+        data-testid="lan-open-firewall"
+        onClick={openFirewall}
+        disabled={firewallBusy}
+        className="h-9 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-xs font-bold hover:bg-ink-100 transition-colors disabled:opacity-50"
+      >
+        {firewallBusy ? "بانتظار موافقة ويندوز..." : "السماح عبر جدار الحماية"}
+      </button>
+      <p className="text-[11px] font-arabic text-ink-400">
+        {firewallDone
+          ? "تم. أعد تشغيل التطبيق على هذا الجهاز ثم حاول مجدداً."
+          : "يطلب ويندوز موافقة المدير مرة واحدة. افعلها على الجهازين إذا لم يظهر الجهاز المركزي في البحث."}
+      </p>
+    </div>
+  );
 
   const joinHub = async (hub: DiscoveredHub) => {
     setBusy(true);
@@ -181,6 +222,8 @@ export default function NetworkTab({ token }: { token: string | null }) {
     }
   };
 
+  const licenceMissing = status?.licensed === false;
+
   if (!status) {
     return <div className="max-w-xl text-sm text-ink-400 font-arabic">جاري التحميل...</div>;
   }
@@ -208,6 +251,14 @@ export default function NetworkTab({ token }: { token: string | null }) {
             {status.mode === "hub" ? "مركزي (Hub)" : status.mode === "satellite" ? "فرعي (متصل بمركز)" : "مستقل"}
           </span>
         </div>
+        {status.mode === "hub" && (
+          <div className="flex justify-between text-sm">
+            <span className="font-arabic text-ink-400">عنوان هذا الجهاز</span>
+            <span data-testid="lan-local-addr" className="font-mono font-bold text-ink-900" dir="ltr">
+              {status.localAddr ?? "غير معروف"}
+            </span>
+          </div>
+        )}
       </div>
 
       {status.mode === "standalone" && (
@@ -244,11 +295,16 @@ export default function NetworkTab({ token }: { token: string | null }) {
                 كاشير / نقطة بيع (يتطلب ترخيصاً لهذا الجهاز)
               </button>
             </div>
-            {joinRole === "register" && (
-              <p className="text-xs font-arabic text-warn mb-2">
-                هذا الجهاز يعمل كنقطة بيع كاملة (طلبات، دفع، ورديات) — يجب تفعيل ترخيص خاص به من تبويب &quot;الترخيص&quot; قبل الاتصال.
-              </p>
-            )}
+            {joinRole === "register" &&
+              (licenceMissing ? (
+                <p data-testid="lan-licence-warning" className="text-xs font-arabic text-warn mb-2">
+                  هذا الجهاز لا يملك ترخيصاً فعّالاً. كل كاشير يحتاج ترخيصاً خاصاً به: فعّله من تبويب &quot;الترخيص&quot; قبل الاتصال.
+                </p>
+              ) : (
+                <p data-testid="lan-licence-ok" className="text-xs font-arabic text-ok mb-2">
+                  ✓ هذا الجهاز مرخّص ويمكنه الاتصال ككاشير.
+                </p>
+              ))}
             <button
               onClick={runDiscovery}
               disabled={discovering}
@@ -256,6 +312,16 @@ export default function NetworkTab({ token }: { token: string | null }) {
             >
               {discovering ? "جاري البحث..." : "البحث عن أجهزة مركزية"}
             </button>
+            {searched && !discovering && discovered.length === 0 && (
+              <div data-testid="lan-none-found" className="mt-3 p-3 rounded-sm bg-ink-100 border border-ink-200 space-y-1">
+                <p className="text-sm font-arabic font-bold text-ink-900">لم يظهر أي جهاز مركزي</p>
+                <p className="text-xs font-arabic text-ink-500">
+                  تأكد أن الجهاز المركزي مفتوح ومفعّل كـ«مركزي» وأن الجهازين على نفس الراوتر. غالباً يمنع جدار الحماية في
+                  ويندوز البحث: اضغط «السماح عبر جدار الحماية» على الجهازين، أو اكتب عنوان الجهاز المركزي في الأسفل (يظهر
+                  في شاشة «الشبكة المحلية» على الجهاز المركزي).
+                </p>
+              </div>
+            )}
             {discovered.length > 0 && (
               <div className="mt-3 space-y-1.5">
                 {discovered.map((hub) => (
@@ -265,6 +331,7 @@ export default function NetworkTab({ token }: { token: string | null }) {
                       <p className="text-xs font-mono text-ink-400" dir="ltr">{hub.addr}</p>
                     </div>
                     <button
+                      data-testid="lan-hub-connect"
                       onClick={() => joinHub(hub)}
                       disabled={busy}
                       className="h-8 px-4 rounded-sm bg-saffron-600 text-white text-xs font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
@@ -275,6 +342,28 @@ export default function NetworkTab({ token }: { token: string | null }) {
                 ))}
               </div>
             )}
+            <div className="mt-4 space-y-2">
+              <p className="text-xs font-arabic text-ink-500">أو اكتب عنوان الجهاز المركزي مباشرة:</p>
+              <div className="flex gap-2">
+                <input
+                  data-testid="lan-manual-addr"
+                  value={manualAddr}
+                  onChange={(e) => setManualAddr(e.target.value)}
+                  placeholder="192.168.1.5"
+                  dir="ltr"
+                  className="flex-1 h-10 px-3 rounded-sm border-2 border-ink-200 font-mono text-sm"
+                />
+                <button
+                  data-testid="lan-manual-connect"
+                  onClick={() => joinHub({ name: manualAddr.trim(), addr: manualAddr.trim() })}
+                  disabled={busy || manualAddr.trim() === ""}
+                  className="h-10 px-5 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-50"
+                >
+                  اتصال
+                </button>
+              </div>
+            </div>
+            <div className="mt-4">{firewallButton}</div>
           </div>
         </div>
       )}
@@ -326,6 +415,15 @@ export default function NetworkTab({ token }: { token: string | null }) {
             <p className="text-xs text-ink-400 font-arabic">
               يعيد هذا الجهاز إلى الوضع المستقل. يسري التغيير بالكامل بعد إعادة تشغيل التطبيق.
             </p>
+          </div>
+
+          <div className="bg-white rounded-md p-5 border border-ink-200 space-y-2">
+            <p className="text-sm font-arabic text-ink-900 font-bold">الجهاز الثاني لا يجد هذا الجهاز؟</p>
+            <p className="text-xs text-ink-400 font-arabic">
+              اكتب على الجهاز الثاني العنوان الظاهر في الأعلى ({status.localAddr ?? "—"})، واضغط هنا مرة واحدة ليسمح
+              ويندوز بالاتصال بهذا الجهاز.
+            </p>
+            {firewallButton}
           </div>
 
           <div className="bg-white rounded-md p-5 border border-ink-200 space-y-3">
