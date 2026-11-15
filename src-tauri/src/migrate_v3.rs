@@ -3163,6 +3163,32 @@ pub fn run_workforce_migration(conn: &mut Connection, _db_path: &Path) -> Result
     Ok(())
 }
 
+pub const MIGRATION_AQ_VERSION: i64 = 49;
+
+/// Migration AQ (2026-11-15): "no bill for this order". `orders.no_bill` = 1 means the customer's
+/// bill must not print by itself for this order (paying, delivery going out); the kitchen ticket
+/// still prints and the cashier can still print the bill by hand. Additive, default 0 = as before.
+pub fn run_no_bill_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AQ_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    let has: bool = tx.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('orders') WHERE name = 'no_bill'", [], |r| r.get(0))?;
+    if !has {
+        tx.execute_batch("ALTER TABLE orders ADD COLUMN no_bill INTEGER NOT NULL DEFAULT 0;")?;
+    }
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AQ_VERSION, "0049_order_no_bill", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -45,7 +45,7 @@ import { CURRENCY_SYMBOLS } from "../../hooks/useCurrency";
 import { setCurrency, parseMoneyInput } from "../../lib/money";
 import { useDiscountCap } from "../../hooks/useDiscountCap";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
-import { editOrderItem, setOrderItemComp, printKitchenChange, createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, retrieveOpenOrder, addItemsToOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, lookupLoyaltyCard, listActiveLoyaltyRewards, redeemLoyaltyReward, getBusinessMode, listPendingOrdersForTable } from "../../lib/orderService";
+import { editOrderItem, setOrderItemComp, printKitchenChange, createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, retrieveOpenOrder, addItemsToOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, setOrderNoBill, lookupLoyaltyCard, listActiveLoyaltyRewards, redeemLoyaltyReward, getBusinessMode, listPendingOrdersForTable } from "../../lib/orderService";
 import type { LoyaltyRewardOption } from "../../lib/orderService";
 import { enableBarcodeScanner, disableBarcodeScanner } from "../../lib/barcodeScanner";
 import { NO_SHOP_SETTINGS, resolveScan, stockWarning, type ShopSettings } from "../../lib/shop";
@@ -463,6 +463,32 @@ export default function POSPage() {
     };
   }, [fetchTables, addItem]);
 
+  // "بدون فاتورة" above the Pay button. On an order that already exists (a table's open tab, an
+  // edited delivery or pickup) the choice is saved on the order straight away; a new order gets
+  // it right after it is created (rememberNoBill), so it still holds when the table is opened
+  // again, the pickup is collected or the delivery goes out.
+  const noBill = useOrderTypeStore((s) => s.noBill);
+  const toggleNoBill = async () => {
+    const next = !useOrderTypeStore.getState().noBill;
+    if (openOrderId) {
+      try {
+        await setOrderNoBill(openOrderId, next);
+      } catch (err) {
+        flash(realErrorText(err));
+        return;
+      }
+    }
+    useOrderTypeStore.getState().setNoBill(next);
+  };
+  const rememberNoBill = async (orderId: string) => {
+    if (!useOrderTypeStore.getState().noBill) return;
+    await setOrderNoBill(orderId, true).catch(() => flash("أُرسل الطلب لكن تعذر حفظ «بدون فاتورة»، أوقف الطباعة من شاشة الدفع"));
+  };
+  // An emptied cart starts the next order with the bill on again.
+  useEffect(() => {
+    if (items.length === 0 && !openOrderId) useOrderTypeStore.getState().setNoBill(false);
+  }, [items.length, openOrderId]);
+
   const handleHold = async () => {
     if (!user) return;
     if (!tableId && orderType === "DINE_IN") return;
@@ -477,7 +503,7 @@ export default function POSPage() {
       return;
     }
     try {
-      await holdOrder(
+      const heldId = await holdOrder(
         tableId ?? "", user.id, orderType,
         items.map((i) => ({ menuItemId: i.menuItemId, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers, ...compFields(i) })),
         useCartStore.getState().subtotal(),
@@ -485,6 +511,7 @@ export default function POSPage() {
         useCartStore.getState().total(),
         shiftId ?? undefined
       );
+      await rememberNoBill(heldId);
       clearCart();
       resetOrderInfo();
       fetchTables();
@@ -570,12 +597,14 @@ export default function POSPage() {
     setSentQuantities({});
     setTable(table.id, table.name);
     setResumableSplits(null);
+    useOrderTypeStore.getState().setNoBill(false);
     if (table.status === "OCCUPIED" && table.current_order_id) {
       const held = await retrieveHeldOrder(table.current_order_id);
       if (held) {
         for (const item of held.items) {
           addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
         }
+        useOrderTypeStore.getState().setNoBill(held.noBill);
         if (held.customerName) {
           useOrderTypeStore.getState().setCustomerName(held.customerName);
           if (held.customerPhone) useOrderTypeStore.getState().setCustomerPhone(held.customerPhone);
@@ -591,6 +620,7 @@ export default function POSPage() {
           for (const item of open.items) {
             addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
           }
+          useOrderTypeStore.getState().setNoBill(open.noBill);
           if (open.customerName) {
             useOrderTypeStore.getState().setCustomerName(open.customerName);
             if (open.customerPhone) useOrderTypeStore.getState().setCustomerPhone(open.customerPhone);
@@ -745,6 +775,7 @@ export default function POSPage() {
           state.savings(), shiftId ?? undefined, discountOverridePin ?? undefined,
         );
         setDiscountOverridePin(null);
+        await rememberNoBill(orderId);
       } else {
         // Only the quantity ABOVE what's already confirmed sent (per
         // `sentQuantities`) -- not just lines with no dbItemId at all, see
@@ -770,6 +801,7 @@ export default function POSPage() {
         for (const item of open.items) {
           addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
         }
+        useOrderTypeStore.getState().setNoBill(open.noBill);
         if (open.customerName) useOrderTypeStore.getState().setCustomerName(open.customerName);
         setOpenOrderId(orderId);
         setOpenOrderTotals({
@@ -1106,6 +1138,7 @@ export default function POSPage() {
         state.savings(), shiftId ?? undefined, discountOverridePin ?? undefined, state.deliveryFeeCents,
       );
       setDiscountOverridePin(null);
+      await rememberNoBill(orderId);
       if (driverId) await assignDriver(orderId, driverId).catch(() => flash("أُرسل الطلب لكن تعذر تعيين السائق، عيّنه من صفحة التوصيل"));
       clearCart();
       resetOrderInfo();
@@ -1126,7 +1159,7 @@ export default function POSPage() {
     try {
       const state = useCartStore.getState();
       const t = state.tax();
-      await createOrder(
+      const pickupOrderId = await createOrder(
         "", user.id, "TAKEAWAY",
         items.map((i) => ({ menuItemId: i.menuItemId, name: i.name, quantity: i.quantity, unitPriceCents: i.unitPriceCents, notes: i.notes, modifiers: i.modifiers, ...compFields(i) })),
         state.subtotal(), t.taxCents, t.secondaryTaxCents, t.serviceChargeCents,
@@ -1135,6 +1168,7 @@ export default function POSPage() {
         state.savings(), shiftId ?? undefined, discountOverridePin ?? undefined, 0, pickupAtMs,
       );
       setDiscountOverridePin(null);
+      await rememberNoBill(pickupOrderId);
       const at = formatArabicTime(new Date(pickupAtMs));
       clearCart();
       resetOrderInfo();
@@ -1158,6 +1192,7 @@ export default function POSPage() {
       clearCart();
       setOrderType("TAKEAWAY");
       for (const item of open.items) addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
+      useOrderTypeStore.getState().setNoBill(open.noBill);
       useOrderTypeStore.getState().setCustomerName(p.customer_name ?? "");
       useOrderTypeStore.getState().setCustomerPhone(p.customer_phone ?? "");
       setOpenOrderId(p.order_id);
@@ -1189,6 +1224,7 @@ export default function POSPage() {
       setOrderType(req.orderType);
       for (const item of open.items) addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
       const info = useOrderTypeStore.getState();
+      info.setNoBill(open.noBill);
       info.setCustomerName(open.customerName ?? req.customerName ?? "");
       info.setCustomerPhone(open.customerPhone ?? req.customerPhone ?? "");
       if (req.orderType === "DELIVERY") {
@@ -1342,6 +1378,7 @@ export default function POSPage() {
     if (tableId) setTable(tableId, tableName ?? "");
     if (editing?.orderType === "DELIVERY") setDeliveryFee(editing.deliveryFeeCents ?? 0);
     for (const item of open.items) addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
+    useOrderTypeStore.getState().setNoBill(open.noBill);
     if (open.customerName) useOrderTypeStore.getState().setCustomerName(open.customerName);
     setOpenOrderId(orderId);
     setOpenOrderTotals({
@@ -1612,6 +1649,9 @@ export default function POSPage() {
                 setShowPayment(true);
               }
             }}
+            noBill={noBill}
+            onToggleNoBill={() => void toggleNoBill()}
+            noBillDisabled={items.length === 0}
             {...(items.length > 0 && !openOrderId ? { onHold: shiftId ? handleHold as () => void : () => setShowOpenShift(true) } : {})}
             holdDisabled={!tableId && orderType === "DINE_IN"}
             // "Send to kitchen now, pay later" dine-in fix: only offered for

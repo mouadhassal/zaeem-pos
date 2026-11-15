@@ -58,6 +58,7 @@ export const LAN_REDIRECT_COMMANDS = new Set([
   "retrieve_open_order_v3",
   "retrieve_held_order_v3",
   "add_items_to_order_v3",
+  "set_order_no_bill_v3",
   "hold_order_v3",
   "edit_order_item_v3",
   "set_order_item_comp_v3",

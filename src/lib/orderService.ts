@@ -63,6 +63,7 @@ export interface HeldOrderResult {
   customer_name?: string | null;
   customer_phone?: string | null;
   delivery_address?: string | null;
+  no_bill?: boolean;
 }
 
 interface TableInfo {
@@ -397,6 +398,7 @@ export async function retrieveHeldOrder(
   customerName?: string;
   customerPhone?: string;
   deliveryAddress?: string;
+  noBill: boolean;
 } | null> {
   const result = await invoke<HeldOrderResult | null>("retrieve_held_order_v3", {
     sessionToken: token(),
@@ -421,7 +423,15 @@ export async function retrieveHeldOrder(
     ...(result.customer_name ? { customerName: result.customer_name } : {}),
     ...(result.customer_phone ? { customerPhone: result.customer_phone } : {}),
     ...(result.delivery_address ? { deliveryAddress: result.delivery_address } : {}),
+    noBill: !!result.no_bill,
   };
+}
+
+/// "No bill for this order" (the toggle above the Pay button), saved on an order that already
+/// exists so it holds when the table is opened again, the pickup is collected or the delivery
+/// goes out. Kitchen tickets are not affected.
+export async function setOrderNoBill(orderId: string, noBill: boolean): Promise<void> {
+  await invoke<void>("set_order_no_bill_v3", { sessionToken: token(), orderId, noBill });
 }
 
 interface PendingOrderSummary {
@@ -467,6 +477,7 @@ interface OpenOrderApiResult {
   tax_cents: number;
   discount_cents: number;
   total_cents: number;
+  no_bill?: boolean;
 }
 
 export interface OpenOrderResult {
@@ -491,6 +502,7 @@ export interface OpenOrderResult {
   taxCents: number;
   discountCents: number;
   totalCents: number;
+  noBill: boolean;
 }
 
 /// "Send to kitchen now, pay later" dine-in fix: read back a table's OPEN
@@ -530,6 +542,7 @@ export async function retrieveOpenOrder(orderId: string): Promise<OpenOrderResul
     taxCents: result.tax_cents,
     discountCents: result.discount_cents,
     totalCents: result.total_cents,
+    noBill: !!result.no_bill,
   };
 }
 

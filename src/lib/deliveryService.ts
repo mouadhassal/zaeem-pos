@@ -38,6 +38,8 @@ export interface Delivery extends StatementLine {
   out_at: string | null;
   delivered_at: string | null;
   note: string | null;
+  /** The cashier said "no bill" for this order: its bill does not print when it goes out. */
+  no_bill?: boolean;
 }
 
 export interface Statement {

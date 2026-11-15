@@ -1009,6 +1009,25 @@ pub(crate) fn retrieve_open_order_v3_impl(state: &Db, session_token: String, ord
     Repo::new(&conn).retrieve_open_order(&actor.scope(), &order_id).map_err(|e| e.to_string())
 }
 
+/// "No bill for this order" (the cashier's toggle on the cart): the customer's bill will not print
+/// by itself when the order is paid or goes out for delivery. Kitchen tickets are not affected.
+#[tauri::command]
+pub fn set_order_no_bill_v3(state: State<Db>, session_token: String, order_id: String, no_bill: bool) -> Result<(), String> {
+    set_order_no_bill_v3_impl(&state, session_token, order_id, no_bill)
+}
+
+pub(crate) fn set_order_no_bill_v3_impl(state: &Db, session_token: String, order_id: String, no_bill: bool) -> Result<(), String> {
+    crate::lan::reject_if_local_kitchen_satellite("set_order_no_bill_v3")?;
+    let actor = authenticate_actor(state, &session_token)?;
+    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let changed = Repo::new(&conn).set_order_no_bill(&actor.scope(), &order_id, no_bill).map_err(|e| e.to_string())?;
+    if !changed {
+        return Err("الطلب لم يعد مفتوحاً، لا يمكن تغيير طباعة الفاتورة".to_string());
+    }
+    Ok(())
+}
+
 /// "Send to kitchen now, pay later" dine-in fix: append more items to an
 /// order that's already been sent to the kitchen and is still unpaid --
 /// the real "running tab" mutation. Re-prices the WHOLE order (existing

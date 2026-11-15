@@ -1,3 +1,5 @@
+import { IconPrinter, IconPrinterOff } from "@tabler/icons-react";
+
 interface Props {
   disabled?: boolean;
   onClick: () => void;
@@ -11,11 +13,31 @@ interface Props {
   onSendToKitchen?: () => void;
   sendToKitchenDisabled?: boolean;
   sendToKitchenLabel?: string;
+  /** "No bill for this order": shown as a big switch above the buttons when passed. */
+  noBill?: boolean;
+  onToggleNoBill?: () => void;
+  noBillDisabled?: boolean;
 }
 
-export default function PayKey({ disabled, onClick, onHold, holdDisabled, onSendToKitchen, sendToKitchenDisabled, sendToKitchenLabel }: Props) {
+export default function PayKey({ disabled, onClick, onHold, holdDisabled, onSendToKitchen, sendToKitchenDisabled, sendToKitchenLabel, noBill, onToggleNoBill, noBillDisabled }: Props) {
   return (
     <div className="flex flex-col gap-2">
+      {onToggleNoBill && (
+        <button
+          type="button"
+          role="switch"
+          aria-checked={!!noBill}
+          onClick={onToggleNoBill}
+          disabled={noBillDisabled}
+          data-testid="cart-no-bill"
+          className={`h-10 rounded-[12px] border-2 text-sm font-bold flex items-center justify-center gap-2 transition-colors disabled:opacity-40 ${
+            noBill ? "border-danger-600 bg-danger-100 text-danger-600" : "border-line bg-surface text-text-2 hover:bg-surface-alt"
+          }`}
+        >
+          {noBill ? <IconPrinterOff className="w-4 h-4" /> : <IconPrinter className="w-4 h-4" />}
+          {noBill ? "بدون فاتورة للزبون (اضغط للتراجع)" : "فاتورة الزبون: تُطبع"}
+        </button>
+      )}
       {onSendToKitchen && (
         <button
           onClick={onSendToKitchen}
@@ -34,7 +56,7 @@ export default function PayKey({ disabled, onClick, onHold, holdDisabled, onSend
           className="flex-1 bg-saffron-500 text-white font-bold text-base rounded-[12px] transition-[transform,opacity] active:scale-[0.98] disabled:opacity-40"
           style={{ height: 52, minHeight: 52 }}
         >
-          دفع
+          {noBill ? "دفع بدون فاتورة" : "دفع"}
         </button>
         {onHold && (
           <button

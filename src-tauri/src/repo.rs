@@ -469,6 +469,8 @@ pub struct HeldOrderResult {
     pub customer_name: Option<String>,
     pub customer_phone: Option<String>,
     pub delivery_address: Option<String>,
+    /// The cashier said "no bill" before holding it.
+    pub no_bill: bool,
 }
 
 /// One outstanding (unpaid) PENDING order for a table -- see
@@ -499,6 +501,15 @@ pub struct OpenOrderResult {
     pub tax_cents: i64,
     pub discount_cents: i64,
     pub total_cents: i64,
+    /// The cashier said "no bill" for this order: the customer's bill does not print by itself.
+    pub no_bill: bool,
+}
+
+/// True when the order was marked "no bill". False on a database from before Migration AQ.
+pub fn order_no_bill(conn: &Connection, order_id: &str) -> bool {
+    conn.query_row("SELECT no_bill FROM orders WHERE id = ?1", params![order_id], |r| r.get::<_, i64>(0))
+        .map(|v| v != 0)
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -5250,7 +5261,8 @@ impl<'a> Repo<'a> {
         };
 
         let items = self.fetch_order_items_for_retrieval(order_id)?;
-        Ok(Some(HeldOrderResult { items, customer_name, customer_phone, delivery_address }))
+        let no_bill = order_no_bill(self.conn, order_id);
+        Ok(Some(HeldOrderResult { items, customer_name, customer_phone, delivery_address, no_bill }))
     }
 
     /// Shared item+modifier fetch used by both `retrieve_held_order` (DRAFT)
@@ -5325,10 +5337,27 @@ impl<'a> Repo<'a> {
         };
 
         let items = self.fetch_order_items_for_retrieval(order_id)?;
+        let no_bill = order_no_bill(self.conn, order_id);
         Ok(Some(OpenOrderResult {
             items, customer_name, customer_phone, delivery_address,
-            subtotal_cents, tax_cents, discount_cents, total_cents,
+            subtotal_cents, tax_cents, discount_cents, total_cents, no_bill,
         }))
+    }
+
+    /// Marks (or unmarks) an order "no bill". Only an order that is not finished yet (held, sent to
+    /// the kitchen, unpaid); a paid or cancelled order is history and stays as it was.
+    pub fn set_order_no_bill(&self, scope: &Scope, order_id: &str, no_bill: bool) -> Result<bool, RepoError> {
+        let (predicate, mut args) = Self::scope_predicate(scope);
+        args.push(if no_bill { "1".into() } else { "0".into() });
+        let flag = format!("?{}", args.len());
+        args.push(order_id.to_string());
+        let id = format!("?{}", args.len());
+        let sql = format!(
+            "UPDATE orders SET no_bill = CAST({flag} AS INTEGER) WHERE id = {id} \
+             AND status IN ('DRAFT','PENDING','PREPARING','READY','SERVED') AND {predicate}"
+        );
+        let changed = self.conn.execute(&sql, params_from_iter(args.iter()))?;
+        Ok(changed > 0)
     }
 
     /// "Send to kitchen now, pay later" dine-in fix: every non-voided item
@@ -6551,6 +6580,7 @@ mod tests {
         migrate_v3::run_ops_settings_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_role_access_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_workforce_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_no_bill_migration(&mut conn, &db_path).unwrap();
         db_path
     }
 

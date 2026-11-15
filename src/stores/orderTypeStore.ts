@@ -19,6 +19,10 @@ interface OrderTypeState {
   debtorName: string | null;
   /** TAKEAWAY only: a phone order the customer collects later (epoch ms), or null to pay now. */
   pickupAtMs: number | null;
+  /** "No bill for this order": the customer's bill does not print by itself (paying, delivery going
+      out). The kitchen ticket still prints. Saved on the order once it exists (set_order_no_bill_v3). */
+  noBill: boolean;
+  setNoBill: (v: boolean) => void;
   setOrderType: (t: OrderType) => void;
   setPickupAtMs: (v: number | null) => void;
   setCustomerName: (v: string) => void;
@@ -38,7 +42,9 @@ export const useOrderTypeStore = create<OrderTypeState>((set) => ({
   debtorId: null,
   debtorName: null,
   pickupAtMs: null,
+  noBill: false,
 
+  setNoBill: (v) => set({ noBill: v }),
   setOrderType: (t) => set({ orderType: t }),
   setPickupAtMs: (v) => set({ pickupAtMs: v }),
   setCustomerName: (v) => set({ customerName: v }),
@@ -57,5 +63,6 @@ export const useOrderTypeStore = create<OrderTypeState>((set) => ({
       debtorId: null,
       debtorName: null,
       pickupAtMs: null,
+      noBill: false,
     }),
 }));

@@ -130,6 +130,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_ops_settings_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_role_access_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_workforce_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_no_bill_migration(conn, db_path).map_err(|e| e.to_string())?;
     business::refresh_cache(conn);
     Ok(())
 }
@@ -767,6 +768,7 @@ pub fn run() {
             commands::orders::retrieve_held_order_v3,
             commands::orders::list_pending_orders_for_table_v3,
             commands::orders::retrieve_open_order_v3,
+            commands::orders::set_order_no_bill_v3,
             commands::orders::add_items_to_order_v3,
             commands::orders::split_bill_v3,
             commands::orders::merge_tables_v3,

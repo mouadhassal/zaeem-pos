@@ -177,6 +177,8 @@ pub struct DeliveryRow {
     pub out_at: Option<String>,
     pub delivered_at: Option<String>,
     pub note: Option<String>,
+    /// The cashier said "no bill" for this order: its bill does not print when it goes out.
+    pub no_bill: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -215,6 +217,7 @@ fn map_row(r: &rusqlite::Row) -> rusqlite::Result<DeliveryRow> {
         order_status: r.get(10)?, pay_cents: r.get(11)?, cash_due_cents: r.get(12)?,
         pay_settled: r.get::<_, i64>(13)? != 0, cash_settled: r.get::<_, i64>(14)? != 0,
         assigned_at: r.get(15)?, out_at: r.get(16)?, delivered_at: r.get(17)?, note: r.get(18)?,
+        no_bill: false,
     })
 }
 
@@ -251,6 +254,14 @@ pub fn list_deliveries(conn: &Connection, tenant_id: &str, filter: &DeliveryFilt
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
+    drop(stmt);
+    let rows = rows
+        .into_iter()
+        .map(|mut row| {
+            row.no_bill = crate::repo::order_no_bill(conn, &row.order_id);
+            row
+        })
+        .collect();
     Ok(rows)
 }
 

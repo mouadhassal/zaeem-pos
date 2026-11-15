@@ -147,7 +147,7 @@ export default function LiveTab() {
     setBusy(d.order_id);
     try {
       await setDeliveryStatus(d.order_id, "OUT");
-      if (usePrefsStore.getState().printDeliveryOnOut) await printSlip(d);
+      if (usePrefsStore.getState().printDeliveryOnOut && !d.no_bill) await printSlip(d);
       toast.success("خرج الطلب للتوصيل ✓");
       await load();
     } catch (e) {

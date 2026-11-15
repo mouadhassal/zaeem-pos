@@ -3,6 +3,7 @@ import { usePrefsStore } from "../stores/prefsStore";
 import { invoke } from "../lib/invoke";
 import { IconX, IconCash, IconCreditCard, IconWallet, IconCircleCheck, IconPrinter, IconPrinterOff } from "@tabler/icons-react";
 import { useCartStore } from "../stores/cartStore";
+import { useOrderTypeStore } from "../stores/orderTypeStore";
 import { openCashDrawer } from "../lib/printer";
 import { useAuthStore } from "../stores/authStore";
 import { useCurrency } from "../hooks/useCurrency";
@@ -93,7 +94,8 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
   // another method.
   const skipScreen = usePrefsStore((s) => s.skipPaymentScreen);
   // Print the customer's bill for this sale? Starts from the owner's setting; one tap changes it for this sale only.
-  const [printBill, setPrintBill] = useState(() => usePrefsStore.getState().printReceiptOnPay);
+  // "بدون فاتورة" on the cart (this order) wins over the setting.
+  const [printBill, setPrintBill] = useState(() => usePrefsStore.getState().printReceiptOnPay && !useOrderTypeStore.getState().noBill);
   const autoPay = skipScreen && initialMethod === undefined;
   const autoStarted = useRef(false);
   const [autoFailed, setAutoFailed] = useState(false);
@@ -104,7 +106,7 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
     void (async () => {
       try {
         try { await openCashDrawer(); } catch { /* drawer may not be connected */ }
-        await onSuccess("CASH", totalCents, 0, undefined, undefined, usePrefsStore.getState().printReceiptOnPay);
+        await onSuccess("CASH", totalCents, 0, undefined, undefined, usePrefsStore.getState().printReceiptOnPay && !useOrderTypeStore.getState().noBill);
       } catch (err) {
         setError(realErrorText(err));
         setAutoFailed(true);

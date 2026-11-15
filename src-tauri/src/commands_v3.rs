@@ -131,6 +131,7 @@ mod tests {
         migrate_v3::run_ops_settings_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_role_access_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_workforce_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_no_bill_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -3329,6 +3330,42 @@ mod tests {
             // grid keeps its glyph), it does not error.
             let photo = rpc(&db, &license, "get_menu_item_photo_v3", serde_json::json!({ "sessionToken": session, "itemId": item_id }));
             assert!(photo.is_null());
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn no_bill_sticks_to_the_open_order_until_it_is_finished() {
+            let (db_path, db, license, session, table_id, item_id) = second_till_fixture("no_bill");
+            let order_id = rpc(&db, &license, "create_full_order_v3", serde_json::json!({
+                "sessionToken": session, "tableId": table_id, "orderType": "DINE_IN",
+                "items": [line(&item_id, 1, 1500)],
+                "subtotalCents": 1500, "taxCents": 0, "totalCents": 1500, "discountCents": 0,
+                "discountReason": null, "customerName": null, "customerPhone": null, "deliveryAddress": null,
+                "deliveryFeeCents": 0, "shiftId": null, "managerOverridePin": null,
+            })).as_str().unwrap().to_string();
+            let open = rpc(&db, &license, "retrieve_open_order_v3", serde_json::json!({ "sessionToken": session, "orderId": order_id }));
+            assert_eq!(open["no_bill"], false, "a new order prints its bill as before");
+
+            dispatch_lan_rpc(&db, &license, "set_order_no_bill_v3", serde_json::json!({ "sessionToken": session, "orderId": order_id, "noBill": true }))
+                .expect("set_order_no_bill_v3 over LAN RPC");
+            let open = rpc(&db, &license, "retrieve_open_order_v3", serde_json::json!({ "sessionToken": session, "orderId": order_id }));
+            assert_eq!(open["no_bill"], true, "the flag comes back when the table is opened again");
+            {
+                let conn = db.0.lock().unwrap();
+                assert!(crate::repo::order_no_bill(&conn, &order_id));
+            }
+            dispatch_lan_rpc(&db, &license, "set_order_no_bill_v3", serde_json::json!({ "sessionToken": session, "orderId": order_id, "noBill": false })).unwrap();
+            let open = rpc(&db, &license, "retrieve_open_order_v3", serde_json::json!({ "sessionToken": session, "orderId": order_id }));
+            assert_eq!(open["no_bill"], false);
+
+            // A finished order is history: the flag can no longer change.
+            {
+                let conn = db.0.lock().unwrap();
+                conn.execute("UPDATE orders SET status = 'PAID' WHERE id = ?1", params![order_id]).unwrap();
+            }
+            let err = dispatch_lan_rpc(&db, &license, "set_order_no_bill_v3", serde_json::json!({ "sessionToken": session, "orderId": order_id, "noBill": true })).unwrap_err();
+            assert!(err.contains("لم يعد مفتوحاً"), "{err}");
+            assert!(crate::commands::lan_rpc::lan_rpc_mutates_orders("set_order_no_bill_v3"));
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
@@ -7859,6 +7896,7 @@ mod tests {
         migrate_v3::run_ops_settings_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_role_access_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_workforce_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_no_bill_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("matrix", &conn);
@@ -8609,7 +8647,7 @@ mod tests {
             // above -- reading back a table's open tab and appending items
             // to it (fires a kitchen ticket) are both mid-service actions
             // that must never be interrupted by a lapsed back-office license.
-            "retrieve_open_order_v3", "add_items_to_order_v3",
+            "retrieve_open_order_v3", "add_items_to_order_v3", "set_order_no_bill_v3",
             "split_bill_v3", "merge_tables_v3", "unmerge_tables_v3", "void_order_item_v3", "cancel_order_v3",
             "edit_order_item_v3", "set_order_item_comp_v3",
             "get_delivery_settings_v3", "list_delivery_drivers_v3", "list_deliveries_v3", "assign_delivery_driver_v3",
