@@ -206,6 +206,97 @@ pub fn get_sales_strip_v3(state: State<Db>, license: State<crate::license::cloud
     crate::sales_strip::strip(&conn, &actor.scope(), &start_iso, &end_iso).map_err(|e| e.to_string())
 }
 
+/// Sales for a period split one way: by hour, table, dining area, cashier, order source, payment
+/// method, or discounts by person / by reason. The page asks again for the previous period of the
+/// same length to show the change.
+#[tauri::command]
+pub fn get_sales_breakdown_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String, kind: String, tz_offset_minutes: Option<i64>) -> Result<crate::sales_reports::Breakdown, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::sales_reports::breakdown(&conn, &actor.scope(), &kind, &start_iso, &end_iso, tz_offset_minutes.unwrap_or(0))
+}
+
+/// The orders behind one row of a breakdown (what a tap on the row opens).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn list_breakdown_orders_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String, kind: String, key: String, tz_offset_minutes: Option<i64>) -> Result<Vec<crate::order_history::HistoryRow>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::sales_reports::breakdown_orders(&conn, &actor.scope(), &kind, &key, &start_iso, &end_iso, tz_offset_minutes.unwrap_or(0))
+}
+
+/// Cancelled orders and voided items in a period: who, why, how much.
+#[tauri::command]
+pub fn get_cancellations_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String) -> Result<crate::sales_reports::Cancellations, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::sales_reports::cancellations(&conn, &actor.scope(), &start_iso, &end_iso)
+}
+
+/// Top customers, customers gone quiet for `inactive_days`, visit frequency and debts by age.
+#[tauri::command]
+pub fn get_customers_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String, inactive_days: Option<i64>) -> Result<crate::sales_reports::CustomersReport, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::sales_reports::customers_report(&conn, &actor.scope(), &start_iso, &end_iso, inactive_days.unwrap_or(30), &chrono::Utc::now().to_rfc3339())
+}
+
+/// Kitchen preparation time (late orders over `late_minutes`), delivery times and orders per delivery app.
+#[tauri::command]
+pub fn get_kitchen_delivery_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String, late_minutes: Option<i64>) -> Result<crate::sales_reports::KitchenDelivery, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::sales_reports::kitchen_delivery(&conn, &actor.scope(), &start_iso, &end_iso, late_minutes.unwrap_or(20))
+}
+
+/// Menu engineering: popularity against profit per item, category profit, add-on usage.
+#[tauri::command]
+pub fn get_menu_engineering_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String) -> Result<crate::sales_reports::MenuEngineering, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::sales_reports::menu_engineering(&conn, &actor.scope(), &start_iso, &end_iso)
+}
+
+/// The activity log ("سجل النشاط"): every sensitive action in plain Arabic. Owner only, read only.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn list_activity_log_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String, actor_id: Option<String>, kind: Option<String>, limit: Option<i64>) -> Result<crate::activity_log::ActivityReport, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewActivityLog).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
+    require_plan_includes_management(&license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let filter = crate::activity_log::ActivityFilter { start_iso, end_iso, actor_id, kind, limit: limit.unwrap_or(500).clamp(1, 1000) as usize };
+    crate::activity_log::list(&conn, &actor.scope(), &filter)
+}
+
+/// The kinds of action the activity log can filter by: (id, Arabic label).
+#[tauri::command]
+pub fn list_activity_kinds_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<(String, String)>, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    authorize(&actor, Permission::ViewActivityLog).map_err(|e| e.to_string())?;
+    require_license_not_locked(&license)?;
+    Ok(crate::activity_log::KINDS.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect())
+}
+
 /// 2026-08-04: the business assistant -- "you ask, it answers from your
 /// own real data, and gives an actual recommendation, not just a number."
 /// Same Manager+ rank as every other report (real revenue data). Two

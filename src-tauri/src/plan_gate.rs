@@ -44,7 +44,8 @@ pub const FULL_ONLY_COMMANDS: &[&str] = &[
     "get_finance_revenue_v3", "get_dashboard_summary_v3", "get_profit_trend_v3", "get_tax_collected_v3", "list_operational_costs_v3",
     "create_operational_cost_v3", "list_invoices_v3", "create_invoice_v3", "mark_invoice_paid_v3",
     "get_cost_report_v3", "get_finance_settings_v3", "save_finance_settings_v3", "list_rent_contracts_v3", "save_rent_contract_v3", "record_rent_payment_v3", "upload_cost_attachment_v3", "get_cost_attachment_v3", "set_category_cost_class_v3", "get_cost_of_sales_v3", "update_operational_cost_v3",
-    "gifts_report_v3", "get_sales_report_v3", "get_sales_strip_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
+    "gifts_report_v3", "get_sales_report_v3", "get_sales_strip_v3",
+    "get_sales_breakdown_v3", "list_breakdown_orders_v3", "get_cancellations_report_v3", "get_customers_report_v3", "get_kitchen_delivery_report_v3", "get_menu_engineering_v3", "list_activity_log_v3", "list_activity_kinds_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
     "list_pickup_no_shows_v3",
     // delivery apps: their accounts and settlements
     "save_delivery_platform_v3", "platform_accounts_v3", "record_platform_settlement_v3", "list_platform_settlements_v3",

@@ -8970,7 +8970,7 @@ mod tests {
         const GATED: &[&str] = &[
             "save_dining_area_v3", "delete_dining_area_v3", "set_table_area_v3", "save_delivery_platform_v3", "platform_accounts_v3",
             "record_platform_settlement_v3", "list_platform_settlements_v3", "save_receipt_template_v3", "delete_receipt_template_v3", "set_printer_template_v3",
-            "list_staff_v3", "get_sales_report_v3", "get_sales_strip_v3", "gifts_report_v3", "list_pickup_no_shows_v3", "ask_assistant_v3", "assistant_insights_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
+            "list_staff_v3", "get_sales_report_v3", "get_sales_strip_v3", "get_sales_breakdown_v3", "list_breakdown_orders_v3", "get_cancellations_report_v3", "get_customers_report_v3", "get_kitchen_delivery_report_v3", "get_menu_engineering_v3", "list_activity_log_v3", "list_activity_kinds_v3", "gifts_report_v3", "list_pickup_no_shows_v3", "ask_assistant_v3", "assistant_insights_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
             "create_branch_v3", "create_staff_v3", "update_staff_v3", "update_staff_profile_v3",
             "set_staff_active_v3", "list_branches_v3", "list_shifts_v3", "force_close_shift_v3",
             "list_attendance_v3",
