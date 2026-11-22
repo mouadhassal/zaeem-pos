@@ -324,7 +324,7 @@ pub fn get_ingredient(conn: &Connection, scope: &Scope, id: &str) -> Result<Ing,
 
 /// One movement: stock and its log row together. `change` is already rounded; the stock is rounded again after the add.
 #[allow(clippy::too_many_arguments)]
-fn apply_movement(conn: &Connection, ing: &Ing, change: f64, reason: &str, note: Option<&str>, value_cents: i64, actor_id: &str, now: &str) -> Result<String, String> {
+pub(crate) fn apply_movement(conn: &Connection, ing: &Ing, change: f64, reason: &str, note: Option<&str>, value_cents: i64, actor_id: &str, now: &str) -> Result<String, String> {
     conn.execute(
         "UPDATE ingredients SET current_stock = ROUND(current_stock + ?1, 3), last_modified = ?2 WHERE id = ?3",
         params![change, now, ing.id],
@@ -717,8 +717,10 @@ pub struct ProduceOutcome {
 
 /// Runs a production: `batches` x the batch recipe, `actual_qty` is what really came out (defaults to the expected output).
 #[allow(clippy::too_many_arguments)]
-pub fn produce(conn: &Connection, scope: &Scope, actor_id: &str, produced_id: &str, batches: f64, actual_qty: Option<f64>, notes: Option<&str>, now: &str) -> Result<ProduceOutcome, String> {
+pub fn produce(conn: &Connection, scope: &Scope, actor_id: &str, produced_id: &str, batches: f64, actual_qty: Option<f64>, notes: Option<&str>, now: &str, warehouse_id: Option<&str>) -> Result<ProduceOutcome, String> {
     let ing = get_ingredient(conn, scope, produced_id)?;
+    // The warehouse the run happens in (None = the default one): components come out of it, the product goes into it.
+    let shelf = crate::warehouses::pick(conn, &ing.branch_id, warehouse_id)?;
     if !ing.is_produced || ing.batch_yield <= 0.0 {
         return Err("هذا المكوّن ليس له تركيبة إنتاج -- عرّفها أولاً".to_string());
     }
@@ -758,6 +760,9 @@ pub fn produce(conn: &Connection, scope: &Scope, actor_id: &str, produced_id: &s
     for (comp, need) in &plan {
         let line_cost = need * comp.cost_cents as f64;
         total_cost += line_cost;
+        if let Some(w) = &shelf {
+            crate::warehouses::move_in(conn, w, &comp.id, -need, false)?;
+        }
         apply_movement(conn, comp, -need, REASON_PRODUCTION, Some(&run_id), -(line_cost.round() as i64), actor_id, now)?;
         let after: f64 = conn.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![comp.id], |r| r.get(0)).map_err(db)?;
         if after < 0.0 {
@@ -768,6 +773,9 @@ pub fn produce(conn: &Connection, scope: &Scope, actor_id: &str, produced_id: &s
 
     let batch_unit_cost = total_cost / actual;
     let new_cost = weighted_average_cost(ing.stock, ing.cost_cents, actual, batch_unit_cost);
+    if let Some(w) = &shelf {
+        crate::warehouses::move_in(conn, w, &ing.id, actual, false)?;
+    }
     apply_movement(conn, &ing, actual, REASON_PRODUCTION, Some(&run_id), total_cost.round() as i64, actor_id, now)?;
     conn.execute("UPDATE ingredients SET cost_cents_per_unit = ?1 WHERE id = ?2", params![new_cost, ing.id]).map_err(db)?;
     touched.push(ing.id.clone());
@@ -863,8 +871,9 @@ pub struct WasteOutcome {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn record_waste(conn: &Connection, scope: &Scope, actor_id: &str, ingredient_id: &str, quantity: f64, unit: Option<&str>, reason: &str, note: Option<&str>, now: &str) -> Result<WasteOutcome, String> {
+pub fn record_waste(conn: &Connection, scope: &Scope, actor_id: &str, ingredient_id: &str, quantity: f64, unit: Option<&str>, reason: &str, note: Option<&str>, now: &str, warehouse_id: Option<&str>) -> Result<WasteOutcome, String> {
     let ing = get_ingredient(conn, scope, ingredient_id)?;
+    let shelf = crate::warehouses::pick(conn, &ing.branch_id, warehouse_id)?;
     if !WASTE_REASONS.contains(&reason) {
         return Err("اختر سبب الهدر من القائمة".to_string());
     }
@@ -882,6 +891,9 @@ pub fn record_waste(conn: &Connection, scope: &Scope, actor_id: &str, ingredient
         Some(n) => format!("{reason}: {n}"),
         None => reason.to_string(),
     };
+    if let Some(w) = &shelf {
+        crate::warehouses::move_in(conn, w, &ing.id, -qty, false)?;
+    }
     let log_id = apply_movement(conn, &ing, -qty, REASON_WASTE, Some(&note_text), -value, actor_id, now)?;
     let after: f64 = conn.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![ing.id], |r| r.get(0)).map_err(db)?;
     Ok(WasteOutcome { log_id, quantity: qty, value_cents: value, stock_after: after, below_zero: after < 0.0 })

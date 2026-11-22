@@ -3427,6 +3427,29 @@ pub fn run_remote_back_office_migration(conn: &mut Connection, _db_path: &Path) 
     Ok(())
 }
 
+pub const MIGRATION_BA_VERSION: i64 = 59;
+
+/// Migration BA: warehouses. `warehouses` lists the stores of a branch (the first one, the default,
+/// is made when the owner first looks) and `warehouse_stock` holds what sits in the NON-default ones.
+/// `ingredients.current_stock` stays the total, so nothing that reads it changes. Additive.
+pub fn run_warehouses_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_BA_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    tx.execute_batch(crate::warehouses::SCHEMA_SQL)?;
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_BA_VERSION, "0059_warehouses", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

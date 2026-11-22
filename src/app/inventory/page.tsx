@@ -20,6 +20,10 @@ import { orderNo } from "../../lib/orderNumber";
 import { STANDARD_UNITS, stockValue, trimNum, unitLabel, type IngredientPack } from "../../lib/inventoryUnits";
 import UnitSelect from "../../components/inventory/UnitSelect";
 import { ProductionTab, StockMovementReport, UnitsTab, WasteTab } from "./StockExtras";
+import WarehouseSelect from "../../components/inventory/WarehouseSelect";
+import { TransferDialog, WarehousesSection } from "./Warehouses";
+import { warehouseQty, warehouseToSend, type StockCell, type Warehouse } from "../../lib/warehouses";
+import { useWarehouseStock, useWarehouses } from "../../lib/useWarehouses";
 
 const editSchema = z.object({
   name: z.string().min(1, "الاسم مطلوب"),
@@ -93,9 +97,11 @@ interface InventoryLog {
   created_at: string;
   ingredient_name: string;
   user_name: string;
+  note?: string | null;
 }
 
 function getTypeLabel(change_amount: number, reason: string): string {
+  if (reason === "TRANSFER") return "نقل";
   if (change_amount > 0) return "إضافة";
   const lower = reason.toLowerCase();
   if (lower.includes("هالك") || lower.includes("تالف")) return "هالك";
@@ -103,7 +109,13 @@ function getTypeLabel(change_amount: number, reason: string): string {
   return "خصم";
 }
 
+/** What to show in the "reason" column: a transfer between warehouses shows where from and to. */
+function reasonText(log: { reason: string; note?: string | null }): string {
+  return log.reason === "TRANSFER" ? log.note || "نقل بين المخازن" : log.reason;
+}
+
 function getTypeKey(change_amount: number, reason: string): string {
+  if (reason === "TRANSFER") return "transfer";
   if (change_amount > 0) return "add";
   const lower = reason.toLowerCase();
   if (lower.includes("هالك") || lower.includes("تالف")) return "waste";
@@ -470,6 +482,12 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
   const [addTarget, setAddTarget] = useState<Ingredient | null>(null);
   const [removeTarget, setRemoveTarget] = useState<Ingredient | null>(null);
   const [editTarget, setEditTarget] = useState<Ingredient | null>(null);
+  // Warehouses: nothing below shows until the owner has added a second one.
+  const [whKey, setWhKey] = useState(0);
+  const { all: allWarehouses, shown: warehouses, multi, reload: reloadWarehouses } = useWarehouses(refreshKey);
+  const cells = useWarehouseStock(multi, refreshKey + whKey);
+  const [transferTarget, setTransferTarget] = useState<Ingredient | null>(null);
+  const gridStyle = multi ? { gridTemplateColumns: `repeat(${9 + warehouses.length}, minmax(0, 1fr))` } : undefined;
 
   const fetch = useCallback(async () => {
     setLoading(true);
@@ -503,12 +521,14 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
   const handleAddRemove = async (
     ingredient: Ingredient,
     change: number,
-    reason: string
+    reason: string,
+    warehouseId: string | null
   ) => {
     try {
       const token = useAuthStore.getState().token;
-      await invoke("adjust_stock_v3", { sessionToken: token, ingredientId: ingredient.id, changeAmount: change, reason });
+      await invoke("adjust_stock_v3", { sessionToken: token, ingredientId: ingredient.id, changeAmount: change, reason, warehouseId });
       toast.success("تم تعديل المخزون ✓");
+      setWhKey((k) => k + 1);
       await fetch();
     } catch (err) {
       setActionError(`حدث خطأ في تعديل المخزون: ${realErrorText(err)}`);
@@ -557,10 +577,13 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
       </div>
 
       <div className="zc-card overflow-hidden">
-        <div className="grid grid-cols-9 gap-4 px-6 py-3 bg-white/80 border-b border-ink-200">
+        <div className="grid grid-cols-9 gap-4 px-6 py-3 bg-white/80 border-b border-ink-200" style={gridStyle}>
           <div className="text-xs font-semibold text-ink-400">المادة</div>
           <div className="text-xs font-semibold text-ink-400">الوحدة</div>
-          <div className="text-xs font-semibold text-ink-400 text-center">الكمية الحالية</div>
+          <div className="text-xs font-semibold text-ink-400 text-center">{multi ? "الإجمالي" : "الكمية الحالية"}</div>
+          {multi && warehouses.map((w) => (
+            <div key={w.id} className="text-xs font-semibold text-ink-400 text-center">{w.name}</div>
+          ))}
           <div className="text-xs font-semibold text-ink-400 text-center">الحد الأدنى</div>
           <div className="text-xs font-semibold text-ink-400 text-center">الكمية المطلوبة</div>
           <div className="text-xs font-semibold text-ink-400 text-center">متوسط التكلفة</div>
@@ -584,6 +607,7 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
                 className={`grid grid-cols-9 gap-4 px-6 py-4 items-center transition-colors ${
                   i !== filtered.length - 1 ? "border-b border-ink-50" : ""
                 } hover:bg-ink-50`}
+                style={gridStyle}
               >
                 <div className="flex items-center gap-3">
                   <div className="w-8 h-8 rounded-sm bg-white flex items-center justify-center">
@@ -601,6 +625,10 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
                   <StockBadge qty={ing.current_stock} min={ing.min_stock} />
                 </div>
 
+                {multi && warehouses.map((w) => (
+                  <div key={w.id} className="text-center text-sm font-mono text-ink-900">{trimNum(warehouseQty(cells, ing.id, w.id))}</div>
+                ))}
+
                 <div className="text-center text-sm text-ink-400">{ing.min_stock}</div>
 
                 <div className="text-center text-sm text-ink-400">
@@ -616,6 +644,15 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
                 </div>
 
                 <div className="flex items-center justify-end gap-1">
+                  {multi && (
+                    <button
+                      onClick={() => setTransferTarget(ing)}
+                      className="px-2 h-8 rounded-sm text-xs font-bold text-ink-500 hover:text-saffron-600 hover:bg-saffron-50 transition-colors font-arabic"
+                      title="نقل بين المخازن"
+                    >
+                      نقل
+                    </button>
+                  )}
                   <button
                     onClick={() => setAddTarget(ing)}
                     className="p-2 rounded-sm text-ink-500 hover:text-saffron-600 hover:bg-saffron-50 transition-colors"
@@ -666,15 +703,30 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
 
       <StockMovementReport refreshKey={refreshKey} />
 
+      <WarehousesSection all={allWarehouses} onChanged={() => { reloadWarehouses(); setWhKey((k) => k + 1); }} />
+
+      {transferTarget && (
+        <TransferDialog
+          ingredient={transferTarget}
+          warehouses={warehouses}
+          cells={cells}
+          onClose={() => setTransferTarget(null)}
+          onDone={() => { setTransferTarget(null); setWhKey((k) => k + 1); }}
+        />
+      )}
+
       <AddStockModal
         target={addTarget}
+        warehouses={warehouses}
         onClose={() => setAddTarget(null)}
-        onSave={(ing, qty, reason) => handleAddRemove(ing, qty, reason)}
+        onSave={(ing, qty, reason, wh) => handleAddRemove(ing, qty, reason, wh)}
       />
       <RemoveStockModal
         target={removeTarget}
+        warehouses={warehouses}
+        cells={cells}
         onClose={() => setRemoveTarget(null)}
-        onSave={(ing, qty, reason) => handleAddRemove(ing, -qty, reason)}
+        onSave={(ing, qty, reason, wh) => handleAddRemove(ing, -qty, reason, wh)}
       />
       <EditIngredientModal
         target={editTarget}
@@ -688,16 +740,20 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
 
 function AddStockModal({
   target,
+  warehouses,
   onClose,
   onSave,
 }: {
   target: Ingredient | null;
+  /** the shown warehouses; the picker only appears with two or more */
+  warehouses: Warehouse[];
   onClose: () => void;
-  onSave: (ing: Ingredient, qty: number, reason: string) => void;
+  onSave: (ing: Ingredient, qty: number, reason: string, warehouseId: string | null) => void;
 }) {
   const [qty, setQty] = useState(0);
   const [reason, setReason] = useState("");
   const [notes, setNotes] = useState("");
+  const [warehouseId, setWarehouseId] = useState("");
 
   if (!target) return null;
 
@@ -707,10 +763,11 @@ function AddStockModal({
     const fullReason = notes.trim()
       ? `${reason.trim()} (${notes.trim()})`
       : reason.trim();
-    onSave(target, qty, fullReason);
+    onSave(target, qty, fullReason, warehouseToSend(warehouseId));
     setQty(0);
     setReason("");
     setNotes("");
+    setWarehouseId("");
     onClose();
   };
 
@@ -723,6 +780,7 @@ function AddStockModal({
         <p className="text-xs text-ink-500 bg-warn-soft border border-warn-soft rounded-sm p-2">
           هذا تعديل يدوي للمخزون فقط — لا يرتبط بمورد ولا يسجّل تكلفة شراء. لاستلام بضاعة فعلية من مورد استخدم زر "استلام بضاعة" أعلى الصفحة.
         </p>
+        <WarehouseSelect warehouses={warehouses} value={warehouseId} onChange={setWarehouseId} />
         <input
           type="number"
           value={qty || ""}
@@ -766,30 +824,41 @@ function AddStockModal({
 
 function RemoveStockModal({
   target,
+  warehouses,
+  cells,
   onClose,
   onSave,
 }: {
   target: Ingredient | null;
+  /** the shown warehouses; the picker only appears with two or more */
+  warehouses: Warehouse[];
+  cells: StockCell[];
   onClose: () => void;
-  onSave: (ing: Ingredient, qty: number, reason: string) => void;
+  onSave: (ing: Ingredient, qty: number, reason: string, warehouseId: string | null) => void;
 }) {
   const [qty, setQty] = useState(0);
   const [reason, setReason] = useState("");
   const [notes, setNotes] = useState("");
+  const [warehouseId, setWarehouseId] = useState("");
 
   if (!target) return null;
+
+  // With several warehouses what can be taken out is what the chosen one holds.
+  const chosenId = warehouseId || warehouses.find((w) => w.is_default)?.id || "";
+  const available = warehouses.length >= 2 ? warehouseQty(cells, target.id, chosenId) : target.current_stock;
 
   const handleSubmit = () => {
     if (qty <= 0) return;
     if (!reason.trim()) return;
-    if (qty > target.current_stock) return;
+    if (qty > available) return;
     const fullReason = notes.trim()
       ? `${reason.trim()} (${notes.trim()})`
       : reason.trim();
-    onSave(target, qty, fullReason);
+    onSave(target, qty, fullReason, warehouseToSend(warehouseId));
     setQty(0);
     setReason("");
     setNotes("");
+    setWarehouseId("");
     onClose();
   };
 
@@ -799,18 +868,19 @@ function RemoveStockModal({
         <p className="text-sm text-ink-900">
           المادة: <span className="font-bold">{target.name}</span>
           <span className="mr-2 text-ink-500 text-xs font-mono">
-            (المخزون: {target.current_stock})
+            (المخزون: {available})
           </span>
         </p>
+        <WarehouseSelect warehouses={warehouses} value={warehouseId} onChange={setWarehouseId} />
         <input
           type="number"
           value={qty || ""}
           onChange={(e) => setQty(Number(e.target.value))}
           placeholder="الكمية"
-          max={target.current_stock}
+          max={available}
           className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
         />
-        {qty > target.current_stock && (
+        {qty > available && (
           <p className="text-danger text-xs">الكمية تتجاوز المخزون المتاح</p>
         )}
         <input
@@ -836,7 +906,7 @@ function RemoveStockModal({
           </button>
           <button
             onClick={handleSubmit}
-            disabled={qty <= 0 || !reason.trim() || qty > target.current_stock}
+            disabled={qty <= 0 || !reason.trim() || qty > available}
             className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors disabled:opacity-40"
           >
             تأكيد
@@ -1893,6 +1963,8 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
   const [amountPaid, setAmountPaid] = useState("");
   const [payMethod, setPayMethod] = useState<"CASH" | "BANK" | "CARD">("CASH");
   const [saving, setSaving] = useState(false);
+  const { shown: warehouses } = useWarehouses();
+  const [warehouseId, setWarehouseId] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -1922,6 +1994,7 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
         items: items.map((item) => [item.id, item.ingredient_id, item.quantity_received]),
         amountPaidCents,
         method: amountPaidCents > 0 ? payMethod : null,
+        warehouseId: warehouseToSend(warehouseId),
       });
       toast.success("تم استلام الطلبية وتحديث المخزون ✓");
       onSaved();
@@ -1948,6 +2021,7 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
         <p className="text-sm text-ink-500 font-arabic">المورد: {po.supplier_name}</p>
         {loadError && <p className="text-sm text-danger font-arabic">{loadError}</p>}
         {receiveError && <p className="text-sm text-danger font-arabic">{receiveError}</p>}
+        <WarehouseSelect warehouses={warehouses} value={warehouseId} onChange={setWarehouseId} />
         <div className="space-y-3">
           {items.map((item, idx) => (
             <div key={item.id} className="bg-white rounded-sm border border-ink-200 p-3 space-y-2">
@@ -2148,7 +2222,7 @@ function MovementsTab() {
             log.ingredient_name,
             getTypeLabel(log.change_amount, log.reason),
             `${log.change_amount > 0 ? "+" : ""}${log.change_amount}`,
-            log.reason,
+            reasonText(log),
             log.user_name,
           ])
         )}
@@ -2233,7 +2307,7 @@ function MovementsTab() {
             tables={() => [{
               title: "الحركات",
               headers: ["التاريخ", "المادة", "النوع", "الكمية", "السبب", "المستخدم"],
-              rows: filteredLogs.map((log) => [formatDate(log.created_at), log.ingredient_name, getTypeLabel(log.change_amount, log.reason), log.change_amount, log.reason, log.user_name]),
+              rows: filteredLogs.map((log) => [formatDate(log.created_at), log.ingredient_name, getTypeLabel(log.change_amount, log.reason), log.change_amount, reasonText(log), log.user_name]),
             }]}
           />
         </div>
@@ -2286,7 +2360,7 @@ function MovementsTab() {
                     {log.change_amount}
                   </td>
                   <td className="p-3 text-ink-400 text-xs max-w-xs truncate">
-                    {log.reason}
+                    {reasonText(log)}
                   </td>
                   <td className="p-3 text-ink-500">{log.user_name}</td>
                 </tr>

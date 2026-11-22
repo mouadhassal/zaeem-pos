@@ -1174,6 +1174,7 @@ pub struct InventoryLogRow {
     pub created_at: String,
     pub ingredient_name: String,
     pub user_name: String,
+    pub note: Option<String>,
 }
 
 /// What a table or bill merge did: where the lines went and which orders were folded away.
@@ -3515,9 +3516,18 @@ impl<'a> Repo<'a> {
     /// same two-fact-types pattern as `debt_entries`, applied to the other
     /// direction of money. Returns the new `supplier_payments` ids so the
     /// caller (`receive_purchase_order_v3`) can put them in the audit entry.
+    /// Into the default warehouse. Only the tests use this short form; the commands call `receive_purchase_order_into`.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn receive_purchase_order(&self, tenant_id: &str, branch_id: &str, po_id: &str, actor_id: &str, scope: &Scope, items: &[(String, String, f64)], amount_paid_cents: i64, method: Option<&str>) -> Result<(Vec<String>, Option<String>), RepoError> {
+        self.receive_purchase_order_into(tenant_id, branch_id, po_id, actor_id, scope, items, amount_paid_cents, method, None)
+    }
+
+    /// `receive_purchase_order` into a chosen warehouse (`None` = the default one, as before warehouses).
+    #[allow(clippy::too_many_arguments)]
+    pub fn receive_purchase_order_into(&self, tenant_id: &str, branch_id: &str, po_id: &str, actor_id: &str, scope: &Scope, items: &[(String, String, f64)], amount_paid_cents: i64, method: Option<&str>, warehouse_id: Option<&str>) -> Result<(Vec<String>, Option<String>), RepoError> {
         let status = self.assert_purchase_order_in_scope(po_id, scope)?;
+        let shelf = crate::warehouses::pick(self.conn, branch_id, warehouse_id).map_err(RepoError::Refused)?;
         if status != "PENDING" {
             return Err(RepoError::PurchaseOrderNotPending { po_id: po_id.to_string(), status });
         }
@@ -3577,6 +3587,9 @@ impl<'a> Repo<'a> {
                 "SELECT current_stock, cost_cents_per_unit FROM ingredients WHERE id = ?1", params![real_ingredient_id], |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
             let new_cost = crate::inventory_ops::weighted_average_cost(old_stock, old_cost, stock_qty, unit_cost_cents as f64 / factor);
+            if let Some(w) = &shelf {
+                crate::warehouses::move_in(self.conn, w, &real_ingredient_id, stock_qty, false).map_err(RepoError::Refused)?;
+            }
             self.conn.execute(
                 "UPDATE ingredients SET current_stock = ROUND(current_stock + ?1, 3), cost_cents_per_unit = ?2, last_modified = ?3 WHERE id = ?4",
                 params![stock_qty, new_cost, now, real_ingredient_id],
@@ -3753,7 +3766,7 @@ impl<'a> Repo<'a> {
         let predicate = predicate.replace("tenant_id", "inventory_logs.tenant_id").replace("branch_id", "inventory_logs.branch_id");
         let sql = format!(
             "SELECT inventory_logs.id, inventory_logs.ingredient_id, inventory_logs.change_amount, inventory_logs.reason, \
-                    inventory_logs.user_id, inventory_logs.created_at, ingredients.name, staff.name \
+                    inventory_logs.user_id, inventory_logs.created_at, ingredients.name, staff.name, inventory_logs.note \
              FROM inventory_logs \
              INNER JOIN ingredients ON ingredients.id = inventory_logs.ingredient_id \
              INNER JOIN staff ON staff.id = inventory_logs.user_id \
@@ -3764,7 +3777,7 @@ impl<'a> Repo<'a> {
         let rows = stmt.query_map(params_refs.as_slice(), |r| {
             Ok(InventoryLogRow {
                 id: r.get(0)?, ingredient_id: r.get(1)?, change_amount: r.get(2)?, reason: r.get(3)?,
-                user_id: r.get(4)?, created_at: r.get(5)?, ingredient_name: r.get(6)?, user_name: r.get(7)?,
+                user_id: r.get(4)?, created_at: r.get(5)?, ingredient_name: r.get(6)?, user_name: r.get(7)?, note: r.get(8)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
@@ -6872,6 +6885,7 @@ mod tests {
         migrate_v3::run_areas_platforms_templates_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_payroll_extras_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_remote_back_office_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_warehouses_migration(&mut conn, &db_path).unwrap();
         db_path
     }
 
@@ -7259,7 +7273,7 @@ mod tests {
         assert_eq!(recipes[0].batch_cost_cents, 5300);
 
         // 4) produce 2 batches, 18 kg came out instead of 20
-        let out = ops::produce(&conn, &f.scope, &f.actor_id, &sauce, 2.0, Some(18.0), Some("اختبار"), "2026-11-22T10:00:00+00:00").unwrap();
+        let out = ops::produce(&conn, &f.scope, &f.actor_id, &sauce, 2.0, Some(18.0), Some("اختبار"), "2026-11-22T10:00:00+00:00", None).unwrap();
         assert_eq!(out.expected_qty, 20.0);
         assert_eq!(out.actual_qty, 18.0);
         assert_eq!(out.cost_cents, 10600);
@@ -7290,13 +7304,13 @@ mod tests {
         assert_eq!(listed[0].recipe_unit.as_deref(), Some("g"));
 
         // 6) waste: 500 g of sauce spoiled
-        let w = ops::record_waste(&conn, &f.scope, &f.actor_id, &sauce, 500.0, Some("g"), "تالف", Some("نسيان خارج الثلاجة"), "2026-11-22T12:00:00+00:00").unwrap();
+        let w = ops::record_waste(&conn, &f.scope, &f.actor_id, &sauce, 500.0, Some("g"), "تالف", Some("نسيان خارج الثلاجة"), "2026-11-22T12:00:00+00:00", None).unwrap();
         assert_eq!(w.quantity, 0.5);
         assert_eq!(w.value_cents, 295);
         assert_eq!(stock_of(&conn, &sauce), 17.35);
         assert!(!w.below_zero);
-        assert!(ops::record_waste(&conn, &f.scope, &f.actor_id, &sauce, 1.0, None, "غير موجود", None, "2026-11-22T12:00:00+00:00").is_err());
-        assert!(ops::record_waste(&conn, &f.scope, &f.actor_id, &sauce, 1.0, Some("l"), "تالف", None, "2026-11-22T12:00:00+00:00").is_err());
+        assert!(ops::record_waste(&conn, &f.scope, &f.actor_id, &sauce, 1.0, None, "غير موجود", None, "2026-11-22T12:00:00+00:00", None).is_err());
+        assert!(ops::record_waste(&conn, &f.scope, &f.actor_id, &sauce, 1.0, Some("l"), "تالف", None, "2026-11-22T12:00:00+00:00", None).is_err());
 
         // 7) the report
         let report = ops::stock_report(&conn, &f.scope, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").unwrap();
@@ -7330,7 +7344,7 @@ mod tests {
         conn.execute("UPDATE ingredients SET current_stock = 1.0 WHERE id = ?1", params![flour]).unwrap();
         ops::save_batch_recipe(&conn, &f.scope, &dough, 3.0, &[ops::BatchLineInput { component_id: flour.clone(), quantity: 2.0, unit: None }]).unwrap();
         // 1 kg of flour on the shelf, one batch needs 2: it goes through, flour is -1 and the answer says so
-        let out = ops::produce(&conn, &f.scope, &f.actor_id, &dough, 1.0, None, None, "2026-11-22T10:00:00+00:00").unwrap();
+        let out = ops::produce(&conn, &f.scope, &f.actor_id, &dough, 1.0, None, None, "2026-11-22T10:00:00+00:00", None).unwrap();
         assert_eq!(out.negative_components.len(), 1);
         assert_eq!(out.negative_components[0].stock_after, -1.0);
         assert_eq!(stock_of(&conn, &flour), -1.0);
@@ -7338,17 +7352,17 @@ mod tests {
         assert_eq!(cost_of(&conn, &dough), 67); // 200 / 3
         // another batch with dough already on the shelf: (3 x 67 + 3 x 67) / 6 stays 67; change the flour price to see the mix
         conn.execute("UPDATE ingredients SET cost_cents_per_unit = 400 WHERE id = ?1", params![flour]).unwrap();
-        ops::produce(&conn, &f.scope, &f.actor_id, &dough, 1.0, None, None, "2026-11-22T11:00:00+00:00").unwrap();
+        ops::produce(&conn, &f.scope, &f.actor_id, &dough, 1.0, None, None, "2026-11-22T11:00:00+00:00", None).unwrap();
         // new batch 800 / 3 = 266.67 per kg; (3 x 67 + 3 x 266.67) / 6 = 166.8 -> 167
         assert_eq!(cost_of(&conn, &dough), 167);
         assert_eq!(stock_of(&conn, &dough), 6.0);
         // not a produced ingredient / bad numbers
-        assert!(ops::produce(&conn, &f.scope, &f.actor_id, &flour, 1.0, None, None, "2026-11-22T11:00:00+00:00").is_err());
-        assert!(ops::produce(&conn, &f.scope, &f.actor_id, &dough, 0.0, None, None, "2026-11-22T11:00:00+00:00").is_err());
-        assert!(ops::produce(&conn, &f.scope, &f.actor_id, &dough, 1.0, Some(0.0), None, "2026-11-22T11:00:00+00:00").is_err());
+        assert!(ops::produce(&conn, &f.scope, &f.actor_id, &flour, 1.0, None, None, "2026-11-22T11:00:00+00:00", None).is_err());
+        assert!(ops::produce(&conn, &f.scope, &f.actor_id, &dough, 0.0, None, None, "2026-11-22T11:00:00+00:00", None).is_err());
+        assert!(ops::produce(&conn, &f.scope, &f.actor_id, &dough, 1.0, Some(0.0), None, "2026-11-22T11:00:00+00:00", None).is_err());
         // removing the recipe makes it a plain ingredient again
         ops::save_batch_recipe(&conn, &f.scope, &dough, 0.0, &[]).unwrap();
-        assert!(ops::produce(&conn, &f.scope, &f.actor_id, &dough, 1.0, None, None, "2026-11-22T11:00:00+00:00").is_err());
+        assert!(ops::produce(&conn, &f.scope, &f.actor_id, &dough, 1.0, None, None, "2026-11-22T11:00:00+00:00", None).is_err());
         let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
     }
 
@@ -7363,7 +7377,7 @@ mod tests {
         assert_eq!(stock_of(&conn, &rice), 6.0);
         assert_eq!(cost_of(&conn, &rice), 300, "a negative old balance carries no value to average with");
         let other = Scope::Branch { tenant_id: f.tenant_id.clone(), branch_id: "another-branch".to_string() };
-        assert!(ops::record_waste(&conn, &other, &f.actor_id, &rice, 1.0, None, "تالف", None, "2026-11-22T12:00:00+00:00").is_err());
+        assert!(ops::record_waste(&conn, &other, &f.actor_id, &rice, 1.0, None, "تالف", None, "2026-11-22T12:00:00+00:00", None).is_err());
         assert!(ops::save_pack(&conn, &other, &rice, None, "كيس", 25.0).is_err());
         // changing the unit of an ingredient used by a recipe in an incompatible unit is refused
         let category_id = repo.create_category(&f.tenant_id, "C", None, 0, None).unwrap();
@@ -7376,6 +7390,205 @@ mod tests {
         ops::after_ingredient_unit_change(&conn, &f.scope, &rice).unwrap();
         let factor: f64 = conn.query_row("SELECT stock_factor FROM recipes WHERE id = ?1", params![recipe_id], |r| r.get(0)).unwrap();
         assert_eq!(factor, 1.0);
+        let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+    }
+
+    // -----------------------------------------------------------------
+    // Warehouses: the total stays `ingredients.current_stock`, the default warehouse holds the rest.
+    // -----------------------------------------------------------------
+
+    /// Receives `qty` of `ingredient` from a new supplier into `warehouse` (None = the default one).
+    fn buy_into(conn: &Connection, f: &InvFixture, ingredient: &str, qty: f64, cost: i64, warehouse: Option<&str>) -> Result<(), RepoError> {
+        let repo = Repo::new(conn);
+        let supplier = repo.create_supplier(&f.tenant_id, &f.branch_id, "مورد", None, None).unwrap();
+        let po = repo.create_purchase_order_with_unit_items(&f.scope, &f.tenant_id, &f.branch_id, &supplier, &f.actor_id, None, &[(ingredient.to_string(), qty, cost, None)]).unwrap();
+        let po_items = repo.list_purchase_order_items(&po, &f.scope).unwrap();
+        let received: Vec<(String, String, f64)> = po_items.iter().map(|i| (i.id.clone(), i.ingredient_id.clone(), i.quantity_ordered)).collect();
+        repo.receive_purchase_order_into(&f.tenant_id, &f.branch_id, &po, &f.actor_id, &f.scope, &received, 0, None, warehouse).map(|_| ())
+    }
+
+    /// (default, other) quantities of an ingredient from the stock table.
+    fn cells(conn: &Connection, f: &InvFixture, ingredient: &str) -> Vec<(String, f64)> {
+        crate::warehouses::stock_table(conn, &f.tenant_id, &f.branch_id)
+            .unwrap()
+            .into_iter()
+            .filter(|c| c.ingredient_id == ingredient)
+            .map(|c| (c.warehouse_id, c.qty))
+            .collect()
+    }
+
+    fn qty_in(conn: &Connection, f: &InvFixture, ingredient: &str, warehouse: &str) -> f64 {
+        cells(conn, f, ingredient).into_iter().find(|(w, _)| w == warehouse).unwrap().1
+    }
+
+    #[test]
+    fn a_shop_with_one_warehouse_sees_no_change() {
+        use crate::warehouses as wh;
+        let (f, conn) = inv_fixture("wh_single");
+        let repo = Repo::new(&conn);
+        let rice = repo.create_ingredient(&f.tenant_id, &f.branch_id, "رز", "kg", 100, 0.0).unwrap();
+        // The old paths, never told about warehouses.
+        buy_into(&conn, &f, &rice, 10.0, 100, None).unwrap();
+        wh::adjust(&conn, &f.scope, &f.tenant_id, &f.branch_id, &rice, -2.0, "تصحيح", &f.actor_id, None).unwrap();
+        crate::inventory_ops::record_waste(&conn, &f.scope, &f.actor_id, &rice, 1.0, None, "تالف", None, "2026-11-22T12:00:00+00:00", None).unwrap();
+        assert_eq!(stock_of(&conn, &rice), 7.0);
+        // No shelf rows were written; the one (default) warehouse holds all of it.
+        let rows: i64 = conn.query_row("SELECT COUNT(*) FROM warehouse_stock", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 0);
+        let list = wh::list(&conn, &f.tenant_id, &f.branch_id).unwrap();
+        assert_eq!(list.len(), 1);
+        assert!(list[0].is_default && list[0].active);
+        assert_eq!(list[0].name, "المخزن الرئيسي");
+        assert_eq!(cells(&conn, &f, &rice), vec![(list[0].id.clone(), 7.0)]);
+        let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+    }
+
+    #[test]
+    fn transfers_keep_the_total_and_refuse_more_than_there_is() {
+        use crate::warehouses as wh;
+        let (f, conn) = inv_fixture("wh_transfer");
+        let repo = Repo::new(&conn);
+        let oil = repo.create_ingredient(&f.tenant_id, &f.branch_id, "زيت", "l", 100, 0.0).unwrap();
+        buy_into(&conn, &f, &oil, 10.0, 100, None).unwrap();
+        let main = wh::list(&conn, &f.tenant_id, &f.branch_id).unwrap()[0].id.clone();
+        let cold = wh::save(&conn, &f.tenant_id, &f.branch_id, None, "المستودع البارد", true).unwrap();
+        let dry = wh::save(&conn, &f.tenant_id, &f.branch_id, None, "المستودع الجاف", true).unwrap();
+        assert!(wh::save(&conn, &f.tenant_id, &f.branch_id, None, " المستودع البارد ", true).is_err(), "same name twice");
+        let go = |from: &str, to: &str, q: f64| wh::transfer(&conn, &f.scope, &f.actor_id, &oil, from, to, q, "2026-11-22T10:00:00+00:00");
+
+        // 4 go from the main warehouse to the cold one: total 10, main 6, cold 4.
+        let out = go(&main, &cold, 4.0).unwrap();
+        assert_eq!((out.from_name.as_str(), out.to_name.as_str()), ("المخزن الرئيسي", "المستودع البارد"));
+        assert_eq!(stock_of(&conn, &oil), 10.0);
+        assert_eq!((qty_in(&conn, &f, &oil, &main), qty_in(&conn, &f, &oil, &cold), qty_in(&conn, &f, &oil, &dry)), (6.0, 4.0, 0.0));
+
+        // cold -> dry, then dry -> main
+        go(&cold, &dry, 1.5).unwrap();
+        go(&dry, &main, 0.5).unwrap();
+        assert_eq!(stock_of(&conn, &oil), 10.0);
+        assert_eq!((qty_in(&conn, &f, &oil, &main), qty_in(&conn, &f, &oil, &cold), qty_in(&conn, &f, &oil, &dry)), (6.5, 2.5, 1.0));
+        let sum: f64 = cells(&conn, &f, &oil).iter().map(|c| c.1).sum();
+        assert_eq!(sum, 10.0, "the warehouses always add up to the total");
+
+        // more than there is: refused, nothing moves, the message is Arabic and names the place
+        let e = go(&dry, &main, 1.5).unwrap_err();
+        assert!(e.contains("المستودع الجاف") && e.contains("زيت"), "{e}");
+        assert!(go(&main, &cold, 6.6).is_err());
+        assert!(go(&cold, &cold, 1.0).is_err(), "same warehouse");
+        assert!(go(&cold, &main, 0.0).is_err());
+        assert!(go(&cold, &main, -1.0).is_err());
+        assert_eq!(qty_in(&conn, &f, &oil, &dry), 1.0);
+
+        // the log: one TRANSFER row per move, change 0, a note with from and to
+        let (n, note): (i64, String) = conn
+            .query_row("SELECT COUNT(*), MIN(note) FROM inventory_logs WHERE reason = 'TRANSFER' AND ingredient_id = ?1 AND change_amount = 0", params![oil], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(n, 3);
+        assert!(note.starts_with("من "), "{note}");
+        let first: String = conn.query_row("SELECT note FROM inventory_logs WHERE reason = 'TRANSFER' ORDER BY created_at, rowid LIMIT 1", [], |r| r.get(0)).unwrap();
+        assert!(first.starts_with("من المخزن الرئيسي إلى المستودع البارد"), "{first}");
+
+        // a warehouse that still holds something cannot be hidden; an empty one can, and comes back
+        assert!(wh::save(&conn, &f.tenant_id, &f.branch_id, Some(&dry), "المستودع الجاف", false).is_err());
+        go(&dry, &main, 1.0).unwrap();
+        wh::save(&conn, &f.tenant_id, &f.branch_id, Some(&dry), "المستودع الجاف", false).unwrap();
+        assert!(go(&main, &dry, 1.0).is_err(), "a hidden warehouse takes nothing");
+        assert!(wh::save(&conn, &f.tenant_id, &f.branch_id, Some(&main), "المخزن الرئيسي", false).is_err(), "the default one stays");
+        wh::save(&conn, &f.tenant_id, &f.branch_id, Some(&dry), "جاف", true).unwrap();
+        assert_eq!(wh::list(&conn, &f.tenant_id, &f.branch_id).unwrap().iter().filter(|w| w.name == "جاف" && w.active).count(), 1);
+        let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+    }
+
+    #[test]
+    fn receiving_into_another_warehouse_leaves_the_default_alone() {
+        use crate::warehouses as wh;
+        let (f, conn) = inv_fixture("wh_receive");
+        let repo = Repo::new(&conn);
+        let flour = repo.create_ingredient(&f.tenant_id, &f.branch_id, "طحين", "kg", 0, 0.0).unwrap();
+        buy_into(&conn, &f, &flour, 10.0, 100, None).unwrap();
+        let main = wh::list(&conn, &f.tenant_id, &f.branch_id).unwrap()[0].id.clone();
+        let store = wh::save(&conn, &f.tenant_id, &f.branch_id, None, "المستودع", true).unwrap();
+        // 20 more at 200 go to the store: total 30, the average cost is still one number (150 -> (10x100 + 20x200)/30 = 167)
+        buy_into(&conn, &f, &flour, 20.0, 200, Some(&store)).unwrap();
+        assert_eq!(stock_of(&conn, &flour), 30.0);
+        assert_eq!(cost_of(&conn, &flour), 167);
+        assert_eq!((qty_in(&conn, &f, &flour, &main), qty_in(&conn, &f, &flour, &store)), (10.0, 20.0));
+        // choosing the default warehouse by name is the same as choosing nothing
+        buy_into(&conn, &f, &flour, 5.0, 200, Some(&main)).unwrap();
+        assert_eq!((qty_in(&conn, &f, &flour, &main), qty_in(&conn, &f, &flour, &store)), (15.0, 20.0));
+        // a warehouse of nobody's, or a hidden one, is refused and nothing is received
+        assert!(buy_into(&conn, &f, &flour, 1.0, 100, Some("nope")).is_err());
+        assert_eq!(stock_of(&conn, &flour), 35.0);
+        let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_sale_takes_from_the_total_and_so_from_the_default_warehouse() {
+        use crate::warehouses as wh;
+        let (f, conn) = inv_fixture("wh_sale");
+        let repo = Repo::new(&conn);
+        let cheese = repo.create_ingredient(&f.tenant_id, &f.branch_id, "جبنة", "kg", 100, 0.0).unwrap();
+        buy_into(&conn, &f, &cheese, 10.0, 100, None).unwrap();
+        let main = wh::list(&conn, &f.tenant_id, &f.branch_id).unwrap()[0].id.clone();
+        let store = wh::save(&conn, &f.tenant_id, &f.branch_id, None, "المستودع", true).unwrap();
+        wh::transfer(&conn, &f.scope, &f.actor_id, &cheese, &main, &store, 4.0, "2026-11-22T10:00:00+00:00").unwrap();
+        let category_id = repo.create_category(&f.tenant_id, "Category", None, 0, None).unwrap();
+        let item_id = repo.create_menu_item(&f.tenant_id, "Pizza", &category_id, 5000, 2000, None, None).unwrap();
+        repo.add_recipe_ingredient(&f.tscope, &item_id, &cheese, 0.5).unwrap();
+        sell(&conn, &f, &item_id, 4, 5000);
+        // 4 x 0.5 kg = 2 kg: the total and the default warehouse go down, the store does not move
+        assert_eq!(stock_of(&conn, &cheese), 8.0);
+        assert_eq!((qty_in(&conn, &f, &cheese, &main), qty_in(&conn, &f, &cheese, &store)), (4.0, 4.0));
+        let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+    }
+
+    #[test]
+    fn waste_production_adjust_and_count_work_inside_one_warehouse() {
+        use crate::inventory_ops as ops;
+        use crate::warehouses as wh;
+        let (f, conn) = inv_fixture("wh_ops");
+        let repo = Repo::new(&conn);
+        let tomato = repo.create_ingredient(&f.tenant_id, &f.branch_id, "بندورة", "kg", 100, 0.0).unwrap();
+        let sauce = repo.create_ingredient(&f.tenant_id, &f.branch_id, "صلصة", "kg", 0, 0.0).unwrap();
+        buy_into(&conn, &f, &tomato, 20.0, 100, None).unwrap();
+        let main = wh::list(&conn, &f.tenant_id, &f.branch_id).unwrap()[0].id.clone();
+        let store = wh::save(&conn, &f.tenant_id, &f.branch_id, None, "المستودع", true).unwrap();
+        wh::transfer(&conn, &f.scope, &f.actor_id, &tomato, &main, &store, 8.0, "2026-11-22T10:00:00+00:00").unwrap();
+        let at = |ing: &str, w: &str| qty_in(&conn, &f, ing, w);
+
+        // waste of 3 kg in the store; 6 kg more than it has is refused
+        ops::record_waste(&conn, &f.scope, &f.actor_id, &tomato, 3.0, None, "تالف", None, "2026-11-22T12:00:00+00:00", Some(&store)).unwrap();
+        assert_eq!((stock_of(&conn, &tomato), at(&tomato, &main), at(&tomato, &store)), (17.0, 12.0, 5.0));
+        assert!(ops::record_waste(&conn, &f.scope, &f.actor_id, &tomato, 6.0, None, "تالف", None, "2026-11-22T12:00:00+00:00", Some(&store)).is_err());
+        assert_eq!(stock_of(&conn, &tomato), 17.0);
+
+        // production in the store: 2 batches of sauce (1 kg of tomato each, 1 kg out) take 2 kg of the store's tomato
+        ops::save_batch_recipe(&conn, &f.scope, &sauce, 1.0, &[ops::BatchLineInput { component_id: tomato.clone(), quantity: 1.0, unit: None }]).unwrap();
+        ops::produce(&conn, &f.scope, &f.actor_id, &sauce, 2.0, None, None, "2026-11-22T13:00:00+00:00", Some(&store)).unwrap();
+        assert_eq!((stock_of(&conn, &tomato), at(&tomato, &main), at(&tomato, &store)), (15.0, 12.0, 3.0));
+        assert_eq!((stock_of(&conn, &sauce), at(&sauce, &main), at(&sauce, &store)), (2.0, 0.0, 2.0));
+
+        // a correction in the store: +1 then -10 (refused)
+        wh::adjust(&conn, &f.scope, &f.tenant_id, &f.branch_id, &tomato, 1.0, "توريد", &f.actor_id, Some(&store)).unwrap();
+        assert!(wh::adjust(&conn, &f.scope, &f.tenant_id, &f.branch_id, &tomato, -10.0, "خطأ", &f.actor_id, Some(&store)).is_err());
+        assert_eq!((stock_of(&conn, &tomato), at(&tomato, &main), at(&tomato, &store)), (16.0, 12.0, 4.0));
+        // the same correction in the main warehouse cannot take more than the main warehouse has
+        assert!(wh::adjust(&conn, &f.scope, &f.tenant_id, &f.branch_id, &tomato, -13.0, "خطأ", &f.actor_id, Some(&main)).is_err());
+        wh::adjust(&conn, &f.scope, &f.tenant_id, &f.branch_id, &tomato, -2.0, "هالك", &f.actor_id, Some(&main)).unwrap();
+        assert_eq!((stock_of(&conn, &tomato), at(&tomato, &main), at(&tomato, &store)), (14.0, 10.0, 4.0));
+
+        // a count of the store says 7 (it was 4): the total moves by 3 and the count is recorded against the new total
+        wh::count(&conn, &f.scope, &f.tenant_id, &f.branch_id, &tomato, 7.0, &f.actor_id, Some("جرد"), Some(&store)).unwrap();
+        assert_eq!((stock_of(&conn, &tomato), at(&tomato, &main), at(&tomato, &store)), (17.0, 10.0, 7.0));
+        let counted: f64 = conn.query_row("SELECT counted_stock FROM stock_counts WHERE ingredient_id = ?1", params![tomato], |r| r.get(0)).unwrap();
+        assert_eq!(counted, 17.0);
+        // a count of the main warehouse says 9 (it was 10)
+        wh::count(&conn, &f.scope, &f.tenant_id, &f.branch_id, &tomato, 9.0, &f.actor_id, None, Some(&main)).unwrap();
+        assert_eq!((stock_of(&conn, &tomato), at(&tomato, &main), at(&tomato, &store)), (16.0, 9.0, 7.0));
+        assert!(wh::count(&conn, &f.scope, &f.tenant_id, &f.branch_id, &tomato, -1.0, &f.actor_id, None, Some(&main)).is_err());
+        // no warehouse chosen: the old total count
+        wh::count(&conn, &f.scope, &f.tenant_id, &f.branch_id, &tomato, 20.0, &f.actor_id, None, None).unwrap();
+        assert_eq!((stock_of(&conn, &tomato), at(&tomato, &main), at(&tomato, &store)), (20.0, 13.0, 7.0));
         let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
     }
 }

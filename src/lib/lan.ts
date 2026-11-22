@@ -209,6 +209,10 @@ export const BACK_OFFICE_REMOTE_COMMANDS = new Set([
   "record_waste_v3",
   "list_waste_v3",
   "get_stock_report_v3",
+  "list_warehouses_v3",
+  "list_warehouse_stock_v3",
+  "save_warehouse_v3",
+  "transfer_stock_v3",
   // loyalty
   "list_loyalty_cards_v3",
   "issue_loyalty_card_v3",

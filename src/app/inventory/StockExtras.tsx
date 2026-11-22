@@ -12,6 +12,9 @@ import { formatArabicDateTime } from "../../lib/dateLocal";
 import DatePicker from "../../components/ui/DatePicker";
 import EmptyState from "../../components/ui/EmptyState";
 import UnitSelect from "../../components/inventory/UnitSelect";
+import WarehouseSelect from "../../components/inventory/WarehouseSelect";
+import { warehouseToSend } from "../../lib/warehouses";
+import { useWarehouses } from "../../lib/useWarehouses";
 import {
   KIND_LABEL,
   WASTE_REASONS,
@@ -582,6 +585,8 @@ function ProduceDialog({
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const { shown: warehouses } = useWarehouses();
+  const [warehouseId, setWarehouseId] = useState("");
 
   const n = parseFloat(batches) || 0;
   const expected = round3(recipe.batch_yield * n);
@@ -607,6 +612,7 @@ function ProduceDialog({
         batches: n,
         actualQty: actual === "" ? null : actualNum,
         notes: notes.trim() || null,
+        warehouseId: warehouseToSend(warehouseId),
       });
       toast.success(`تم الإنتاج: ${trimNum(out.actual_qty)} ${unitLabel(recipe.unit)} ✓`);
       if (out.negative_components.length > 0) {
@@ -624,6 +630,7 @@ function ProduceDialog({
     <Dialog title={`إنتاج ${recipe.name}`} onClose={onClose}>
       {error && <div className={errBox}>{error}</div>}
       <div className="space-y-3">
+        <WarehouseSelect warehouses={warehouses} value={warehouseId} onChange={setWarehouseId} />
         <div className="flex gap-3">
           <div className="flex-1">
             <label className="block text-xs text-ink-400 mb-1 font-arabic">عدد الدفعات</label>
@@ -701,6 +708,8 @@ export function WasteTab({ onChanged }: { onChanged?: () => void }) {
   const [note, setNote] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const { shown: warehouses } = useWarehouses();
+  const [warehouseId, setWarehouseId] = useState("");
   const [from, setFrom] = useState(monthStart());
   const [to, setTo] = useState(ymd(new Date()));
   const [rows, setRows] = useState<WasteRow[]>([]);
@@ -729,7 +738,7 @@ export function WasteTab({ onChanged }: { onChanged?: () => void }) {
     setSaving(true);
     setFormError(null);
     try {
-      const out = await invoke<WasteOutcome>("record_waste_v3", { sessionToken: token, ingredientId: ing.id, quantity: q, unit: unit || null, reason, note: note.trim() || null });
+      const out = await invoke<WasteOutcome>("record_waste_v3", { sessionToken: token, ingredientId: ing.id, quantity: q, unit: unit || null, reason, note: note.trim() || null, warehouseId: warehouseToSend(warehouseId) });
       toast.success(`سُجّل الهدر: ${trimNum(out.quantity)} ${unitLabel(ing.unit)} بقيمة ${formatMoney(out.value_cents)} ✓`);
       if (out.below_zero) toast.error(`تنبيه: مخزون ${ing.name} أصبح بالسالب (${trimNum(out.stock_after)}) -- راجع الاستلام أو الجرد`, 8000);
       setQty("");
@@ -770,6 +779,7 @@ export function WasteTab({ onChanged }: { onChanged?: () => void }) {
               {ing && <UnitSelect stockUnit={ing.unit} packs={packsOf(packs, ing.id)} value={unit} onChange={setUnit} />}
             </div>
           </div>
+          <WarehouseSelect warehouses={warehouses} value={warehouseId} onChange={setWarehouseId} />
           <div>
             <label className="block text-xs text-ink-400 mb-1 font-arabic">السبب</label>
             <select value={reason} onChange={(e) => setReason(e.target.value)} className={inputCls}>
