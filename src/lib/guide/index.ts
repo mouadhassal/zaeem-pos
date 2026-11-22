@@ -1,4 +1,5 @@
 import type { GuideChapter, GuideRole, GuideTask } from "./types";
+import type { Terms } from "../terms";
 import { START_CHAPTERS } from "./chapters/start";
 import { TILL_CHAPTERS } from "./chapters/till";
 import { DELIVERY_CHAPTERS } from "./chapters/delivery";
@@ -41,11 +42,47 @@ export function guideRoleOf(role: string | undefined | null): GuideRole {
  * guides" view). POS Lite never sees what it doesn't have: a Full-only
  * chapter, or a Full-only task inside a shared chapter, is dropped.
  */
-export function chaptersFor(role: GuideRole | null, posLite: boolean): GuideChapter[] {
-  return ALL_CHAPTERS
+export function chaptersFor(role: GuideRole | null, posLite: boolean, terms?: Terms): GuideChapter[] {
+  const chapters = ALL_CHAPTERS
     .filter((c) => (role === null || c.roles.includes(role)) && !(posLite && c.fullOnly))
     .map((c) => (posLite ? { ...c, tasks: c.tasks.filter((t) => !t.fullOnly) } : c))
     .filter((c) => c.tasks.length > 0);
+  return terms ? localizeChapters(chapters, terms) : chapters;
+}
+
+/**
+ * The guide is written in the restaurant's words. The names of pages and tabs it quotes in «» are swapped for this
+ * business's own (a shop's «المنتجات», a supplier's «قائمة الأسعار» and «العملاء التجار»), so a step never points at a
+ * page that is not on the sidebar.
+ */
+export function localizeText(text: string, t: Terms): string {
+  return text
+    .replace(/«القائمة(?=[ »])/g, `«${t.menu}`)
+    .replace(/«إعداد القائمة AI»/g, `«${t.menuSetupAi}»`)
+    .replace(/«العملاء»/g, `«${t.customersNav}»`)
+    .replace(/«سجل الطلبات(?=[ »])/g, `«${t.ordersNav}`)
+    .replace(/«الأصناف»/g, `«${t.theItems}»`)
+    .replace(/«أفضل الأصناف»/g, `«${t.topItems}»`)
+    .replace(/«هامش الأصناف»/g, `«${t.itemMargins}»`)
+    .replace(/عدد الأصناف في كل صف/g, `عدد ${t.items} في كل صف`);
+}
+
+export function localizeChapters(chapters: GuideChapter[], t: Terms): GuideChapter[] {
+  const fix = (list?: string[]) => list?.map((x) => localizeText(x, t));
+  return chapters.map((c) => ({
+    ...c,
+    title: localizeText(c.title, t),
+    blurb: localizeText(c.blurb, t),
+    tasks: c.tasks.map((k) => {
+      const out = { ...k, title: localizeText(k.title, t) } as GuideTask;
+      if (k.when) out.when = localizeText(k.when, t);
+      for (const key of ["steps", "points", "tips", "warnings"] as const) {
+        const v = fix(k[key]);
+        if (v) out[key] = v;
+      }
+      return out;
+    }),
+  }));
 }
 
 // Arabic search: ignore diacritics and the letters people type loosely.

@@ -1,3 +1,4 @@
+import { useTerms } from "../../lib/terms";
 import { useEffect, useState, useCallback } from "react";
 import { businessPeriodStart } from "../../lib/businessDay";
 import { invoke } from "../../lib/invoke";
@@ -42,6 +43,7 @@ function rangeStart(range: Range): Date {
 }
 
 export default function DashboardPage() {
+  const tm = useTerms();
   const token = useAuthStore((s) => s.token);
   const { fmt } = useCurrency();
   const [range, setRange] = useState<Range>("today");
@@ -105,7 +107,7 @@ export default function DashboardPage() {
       {/* Net sales and the three ways to count profit, with the explanation */}
       <ProfitCards profit={summary.profit} fmt={fmt} />
       <div className="zc-card p-4 flex items-center justify-between">
-        <p className="text-ink-400 text-sm font-arabic">عدد الطلبات</p>
+        <p className="text-ink-400 text-sm font-arabic">عدد {tm.theOrders}</p>
         <p className="text-2xl font-bold text-ink-900 font-mono">{summary.branches.reduce((a, b) => a + b.order_count, 0)}</p>
       </div>
 
@@ -150,7 +152,7 @@ export default function DashboardPage() {
                 <th className="text-center p-3 font-medium">الربح بالمصروفات</th>
                 <th className="text-center p-3 font-medium">ربح الهامش</th>
                 <th className="text-center p-3 font-medium">صافي الربح الفعلي</th>
-                <th className="text-center p-3 font-medium">الطلبات</th>
+                <th className="text-center p-3 font-medium">{tm.theOrders}</th>
                 <th className="text-center p-3 font-medium">متوسط الفاتورة</th>
               </tr>
             </thead>

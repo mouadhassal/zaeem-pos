@@ -1,3 +1,4 @@
+import { useTerms } from "../../lib/terms";
 import { useEffect, useRef, useState } from "react";
 import { IconX } from "@tabler/icons-react";
 import { useCurrency } from "../../hooks/useCurrency";
@@ -22,6 +23,7 @@ interface Props {
  * so the owner's discount limit, the manager's PIN and the audit trail apply.
  */
 export default function LinePriceModal({ itemName, unitCents, currentPriceCents, onConfirm, onReset, onCancel }: Props) {
+  const tm = useTerms();
   const { fmt } = useCurrency();
   const [text, setText] = useState(minorToInputValue(currentPriceCents ?? unitCents));
   const inputRef = useRef<HTMLInputElement>(null);
@@ -43,7 +45,7 @@ export default function LinePriceModal({ itemName, unitCents, currentPriceCents,
         <div className="px-6 py-4 border-b border-line flex items-center justify-between">
           <div>
             <h2 className="font-arabic font-bold text-lg text-ink-900">سعر خاص</h2>
-            <p className="font-arabic text-sm text-ink-500 mt-0.5">{itemName} · السعر في القائمة {fmt(unitCents)}</p>
+            <p className="font-arabic text-sm text-ink-500 mt-0.5">{itemName} · {tm.menuPrice} {fmt(unitCents)}</p>
           </div>
           <button type="button" onClick={onCancel} aria-label="إغلاق" className="w-8 h-8 rounded-lg hover:bg-surface-alt flex items-center justify-center text-ink-500">
             <IconX className="w-4 h-4" />
@@ -61,7 +63,7 @@ export default function LinePriceModal({ itemName, unitCents, currentPriceCents,
             data-testid="line-price-input"
             className="w-full h-12 rounded-sm border-2 border-ink-200 px-4 text-lg tabular outline-none focus:border-accent"
           />
-          {tooHigh && <p className="font-arabic text-xs text-danger">السعر الخاص يكون أقل من سعر القائمة. لرفع السعر عدّل سعر الصنف في القائمة.</p>}
+          {tooHigh && <p className="font-arabic text-xs text-danger">السعر الخاص يكون أقل من السعر المسجّل. لرفع السعر عدّل سعر {tm.theItem} في {tm.menu}.</p>}
           {valid && parsed !== null && (
             <p className="font-arabic text-xs text-ink-500">خصم {fmt(unitCents - parsed)} على كل واحد، يُسجَّل على الفاتورة باسمك.</p>
           )}

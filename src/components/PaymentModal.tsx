@@ -1,3 +1,4 @@
+import { useTerms } from "../lib/terms";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { usePrefsStore } from "../stores/prefsStore";
 import { invoke } from "../lib/invoke";
@@ -56,6 +57,7 @@ interface Props {
 }
 
 export default function PaymentModal({ onClose, onSuccess, initialMethod, initialDebtorId, initialDebtorName, totalOverrideCents, subtitleOverride }: Props) {
+  const tm = useTerms();
   const cartTotalCents = useCartStore((s) => s.total());
   const totalCents = totalOverrideCents ?? cartTotalCents;
   const { fmt, symbol } = useCurrency();
@@ -244,7 +246,7 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
                 {useCartStore.getState().tableName && useCartStore.getState().tableName !== "المنضدة"
                   ? `طاولة ${useCartStore.getState().tableName} · `
                   : ""}
-                {useCartStore.getState().items.length} أصناف
+                {useCartStore.getState().items.length} {tm.items}
               </>
             )}
           </div>

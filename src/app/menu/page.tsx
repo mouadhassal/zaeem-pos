@@ -1,3 +1,4 @@
+import { useTerms } from "../../lib/terms";
 import UsdHelper from "../../components/ui/UsdHelper";
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
@@ -221,6 +222,7 @@ function marginBadge(margin: number) {
 }
 
 export default function MenuPage() {
+  const tm = useTerms();
   const token = useAuthStore((s) => s.token);
   const toast = useToast();
   const [tab, setTab] = useState<Tab>("items");
@@ -555,7 +557,7 @@ export default function MenuPage() {
         await invoke("set_menu_item_sold_by_v3", { sessionToken: token, itemId: savedId, soldBy: parsed.data.sold_by });
       }
       setShowItemModal(false);
-      toast.success(editItemId ? "تم تحديث الصنف ✓" : "تمت إضافة الصنف ✓");
+      toast.success(editItemId ? `تم تحديث ${tm.theItem} ✓` : `تمت إضافة ${tm.theItem} ✓`);
       await fetchAll();
     } catch (err: any) {
       if (typeof err === "string" && err.includes("UNIQUE")) {
@@ -574,10 +576,10 @@ export default function MenuPage() {
     try {
       await invoke("delete_menu_item_v3", { sessionToken: token, itemId: deleteItemId });
       setDeleteItemId(null);
-      toast.success("تم حذف الصنف ✓");
+      toast.success(`تم حذف ${tm.theItem} ✓`);
       await fetchAll();
     } catch (err) {
-      setError(friendlyDeleteErrorText(err, "هذا الصنف"));
+      setError(friendlyDeleteErrorText(err, tm.theItem));
     } finally {
       setDeletingItem(false);
     }
@@ -897,13 +899,13 @@ export default function MenuPage() {
   return (
     <div className="p-6 space-y-6 overflow-y-auto h-full bg-canvas" dir="rtl">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-ink-900">{hasKitchen ? "إدارة القائمة" : "إدارة المنتجات"}</h1>
+        <h1 className="text-xl font-bold text-ink-900">{tm.menuManage}</h1>
         {tab === "items" && (
           <button
             onClick={openAddItem}
             className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
-            + إضافة صنف
+            + {tm.addItem}
           </button>
         )}
         {tab === "categories" && (
@@ -944,7 +946,7 @@ export default function MenuPage() {
                 : "text-ink-500 hover:text-saffron-600 hover:bg-saffron-50"
             }`}
           >
-            {t === "items" ? "الأصناف" : t === "categories" ? "التصنيفات" : t === "options" ? "الإضافات" : "العروض"}
+            {t === "items" ? tm.theItems : t === "categories" ? tm.categories : t === "options" ? "الإضافات" : "العروض"}
           </button>
         ))}
       </div>
@@ -957,7 +959,7 @@ export default function MenuPage() {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="ابحث عن صنف..."
+              placeholder={tm.searchItem}
               className="flex-1 h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
             />
             <select
@@ -1067,7 +1069,7 @@ export default function MenuPage() {
                 {filteredItems.length === 0 && (
                   <tr>
                     <td colSpan={8} className="p-6 text-center text-ink-500 font-arabic">
-                      لا توجد أصناف
+                      {tm.noItems}
                     </td>
                   </tr>
                 )}
@@ -1093,7 +1095,7 @@ export default function MenuPage() {
                 <div className="flex-1 min-w-0">
                   <p className="font-arabic font-bold text-ink-900 truncate">{cat.name}</p>
                   <p className="text-xs text-ink-500 font-arabic">
-                    {categoryItemCounts[cat.id] ?? 0} صنف
+                    {categoryItemCounts[cat.id] ?? 0} {tm.item}
                   </p>
                 </div>
                 <div className="flex gap-1">
@@ -1228,7 +1230,7 @@ export default function MenuPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
-                    <th className="text-right p-3 font-medium">الصنف</th>
+                    <th className="text-right p-3 font-medium">{tm.theItem}</th>
                     <th className="text-right p-3 font-medium">الخصم</th>
                     <th className="text-right p-3 font-medium">اليوم</th>
                     <th className="text-right p-3 font-medium">من</th>
@@ -1318,7 +1320,7 @@ export default function MenuPage() {
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold font-arabic text-ink-900">
-                {editItemId ? "تعديل صنف" : "إضافة صنف"}
+                {editItemId ? `تعديل ${tm.item}` : tm.addItem}
               </h2>
               <button onClick={() => setShowItemModal(false)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
             </div>
@@ -1379,7 +1381,7 @@ export default function MenuPage() {
                 </div>
                 {itemForm.sold_by === "weight" && (
                   <p className="text-xs text-ink-500 font-arabic mt-1.5 leading-relaxed">
-                    السعر أدناه هو سعر الكيلو. عند البيع يكتب الكاشير الوزن أو المبلغ الذي طلبه الزبون. وصفة الصنف (إن وُجدت) تُحسب لكل كيلو.
+                    السعر أدناه هو سعر الكيلو. عند البيع يكتب الكاشير الوزن أو المبلغ الذي طلبه الزبون. وصفة {tm.theItem} (إن وُجدت) تُحسب لكل كيلو.
                   </p>
                 )}
               </div>
@@ -1439,7 +1441,7 @@ export default function MenuPage() {
 
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">
-                  صورة الصنف (اختياري)
+                  صورة {tm.theItem} (اختياري)
                 </label>
                 {editItemId ? (
                   <div className="flex items-center gap-3">
@@ -1481,7 +1483,7 @@ export default function MenuPage() {
                   </div>
                 ) : (
                   <p className="text-xs text-ink-400 font-arabic">
-                    احفظ الصنف أولاً، بعدها تقدر ترفع صورة له
+                    احفظ {tm.theItem} أولاً، بعدها تقدر ترفع الصورة
                   </p>
                 )}
                 {photoError && (
@@ -1605,12 +1607,12 @@ export default function MenuPage() {
                     </div>
                     {recipeError && <p className="text-xs text-danger font-arabic">{recipeError}</p>}
                     <p className="text-[11px] text-ink-400 font-arabic">
-                      كل مكوّن مرتبط ينقص تلقائياً من المخزون عند بيع الصنف.
+                      كل مكوّن مرتبط ينقص تلقائياً من المخزون عند بيع {tm.theItem}.
                     </p>
                   </div>
                 ) : (
                   <p className="text-xs text-ink-400 font-arabic">
-                    احفظ الصنف أولاً، بعدها تقدر تربطه بمكوّنات من المخزون
+                    احفظ {tm.theItem} أولاً، بعدها تقدر تربط مكوّنات من المخزون
                   </p>
                 )}
               </div>}
@@ -1648,7 +1650,7 @@ export default function MenuPage() {
               <button onClick={() => setDeleteItemId(null)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
             </div>
             <p className="text-sm font-arabic text-ink-500">
-              هل أنت متأكد من حذف هذا الصنف؟
+              هل أنت متأكد من حذف {tm.theItem}؟
             </p>
             <div className="flex gap-3 justify-end">
               <button
@@ -1923,7 +1925,7 @@ export default function MenuPage() {
                     onClick={addComboItemRow}
                     className="text-xs font-arabic text-saffron-600 hover:underline"
                   >
-                    + إضافة صنف
+                    + {tm.addItem}
                   </button>
                 </div>
                 {comboErrors.items && (

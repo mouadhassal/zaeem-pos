@@ -1,3 +1,4 @@
+import { useTerms } from "../../lib/terms";
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
@@ -116,6 +117,7 @@ function formatDateTime(dateStr: string | null): string {
 }
 
 export default function CustomersPage() {
+  const tm = useTerms();
   const toast = useToast();
   const token = useAuthStore((s) => s.token);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -229,7 +231,7 @@ export default function CustomersPage() {
         await invoke("create_customer_v3", args);
       }
       setShowModal(false);
-      toast.success(editId ? "تم تحديث بيانات العميل ✓" : "تمت إضافة العميل ✓");
+      toast.success(editId ? `تم تحديث بيانات ${tm.theClient} ✓` : `تمت إضافة ${tm.theClient} ✓`);
       await fetchAll();
     } catch (err: any) {
       if (typeof err === "string" && err.includes("UNIQUE")) {
@@ -247,7 +249,7 @@ export default function CustomersPage() {
     try {
       await invoke("delete_customer_v3", { sessionToken: token, customerId: deleteId });
       setDeleteId(null);
-      toast.success("تم حذف العميل ✓");
+      toast.success(`تم حذف ${tm.theClient} ✓`);
       await fetchAll();
     } catch (err) {
       setError(`حدث خطأ في الحذف: ${realErrorText(err)}`);
@@ -314,7 +316,7 @@ export default function CustomersPage() {
     setExportingPdf(true);
     try {
       const bodyHtml = `
-        <h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 4px">قاعدة العملاء</h1>
+        <h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 4px">${tm.customersTitle}</h1>
         <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${formatArabicDate(new Date())}</p>
         ${pdfTableHtml(
           "العملاء",
@@ -357,13 +359,13 @@ export default function CustomersPage() {
     <div className="bg-canvas p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-ink-900">قاعدة العملاء</h1>
+        <h1 className="text-xl font-bold text-ink-900">{tm.customersTitle}</h1>
         <div className="flex gap-2">
           <button
             onClick={openAdd}
             className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
           >
-            + إضافة عميل
+            + إضافة {tm.client}
           </button>
           <button
             onClick={exportPdf}
@@ -472,7 +474,7 @@ export default function CustomersPage() {
           <div className="bg-white rounded-md shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold font-arabic text-ink-900">
-                {editId ? "تعديل عميل" : "إضافة عميل"}
+                {editId ? `تعديل ${tm.client}` : `إضافة ${tm.client}`}
               </h2>
               <button onClick={() => setShowModal(false)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
             </div>
@@ -577,7 +579,7 @@ export default function CustomersPage() {
               <h2 className="text-lg font-bold font-arabic text-ink-900">تأكيد الحذف</h2>
               <button onClick={() => setDeleteId(null)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
             </div>
-            <p className="text-sm font-arabic text-ink-500">هل أنت متأكد من حذف هذا العميل؟</p>
+            <p className="text-sm font-arabic text-ink-500">هل أنت متأكد من حذف {tm.theClient}؟</p>
             {(() => {
               // 2026-09-13 audit fix: delete_customer_v3 is a hard delete
               // with no FK enforcement against loyalty_cards.customer_id
@@ -687,7 +689,7 @@ export default function CustomersPage() {
 
               {/* Favorite Items */}
               <div className="bg-white rounded-md p-4 space-y-2 border border-ink-200">
-                <h3 className="font-bold font-arabic text-sm text-ink-900">الأصناف المفضلة</h3>
+                <h3 className="font-bold font-arabic text-sm text-ink-900">{tm.theItems} المفضلة</h3>
                 {detailCustomer.favoriteItems.length > 0 ? (
                   <div className="space-y-1">
                     {detailCustomer.favoriteItems.map((item, i) => (

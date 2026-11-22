@@ -1,3 +1,4 @@
+import { useTerms } from "../../lib/terms";
 import { useMenuGridStore } from "../../stores/menuGridStore";
 import { PRODUCTS_PER_ROW_AUTO, PRODUCTS_PER_ROW_CHOICES } from "../../lib/menuGridLayout";
 
@@ -8,19 +9,20 @@ const OPTIONS: { value: number; label: string }[] = [
 
 /** Settings > عام: how many item cards the POS screen shows per row on this device. */
 export default function ProductsPerRowSetting() {
+  const tm = useTerms();
   const productsPerRow = useMenuGridStore((s) => s.productsPerRow);
   const setProductsPerRow = useMenuGridStore((s) => s.setProductsPerRow);
 
   return (
     <div className="bg-white rounded-md p-5 border border-ink-200 space-y-4">
       <div>
-        <span className="text-sm font-arabic text-ink-900 block">عدد الأصناف في كل صف</span>
+        <span className="text-sm font-arabic text-ink-900 block">عدد {tm.items} في كل صف</span>
         <span className="text-xs font-arabic text-ink-400">
-          كلما زاد العدد صغرت بطاقات الأصناف في شاشة البيع، فيظهر عدد أكبر منها دون تمرير
+          كلما زاد العدد صغرت بطاقات {tm.items} في شاشة البيع، فيظهر عدد أكبر منها دون تمرير
         </span>
       </div>
 
-      <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="عدد الأصناف في كل صف">
+      <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="عدد {tm.items} في كل صف">
         {OPTIONS.map((o) => {
           const active = productsPerRow === o.value;
           return (
@@ -63,7 +65,7 @@ export default function ProductsPerRowSetting() {
       </div>
 
       <p className="text-[10px] text-ink-500 font-arabic">
-        يُحفظ لهذا الجهاز فقط. إذا كانت الشاشة أضيق من العدد المختار تظهر أصناف أقل حتى تبقى البطاقات مقروءة.
+        يُحفظ لهذا الجهاز فقط. إذا كانت الشاشة أضيق من العدد المختار تظهر {tm.items} أقل حتى تبقى البطاقات مقروءة.
       </p>
     </div>
   );

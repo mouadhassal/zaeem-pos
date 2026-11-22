@@ -1,10 +1,9 @@
 import { applyModules } from "../../lib/businessModules";
 import { useBusinessStore } from "../../stores/businessStore";
-import { useEffect, useState } from "react";
 import { useAuthStore } from "../../stores/authStore";
 import { useShiftStore } from "../../stores/shiftStore";
 import { usePermissions } from "../../hooks/usePermissions";
-import { getBusinessMode } from "../../lib/orderService";
+import { labelNav, useTerms } from "../../lib/terms";
 import { navForMode } from "../../lib/businessPreset";
 import { openMarketplace } from "../../lib/marketplace";
 import { usePlanStore, LITE_PAGES } from "../../stores/planStore";
@@ -63,12 +62,9 @@ export default function Sidebar({ active, onNavigate }: Props) {
   const logout = useAuthStore((s) => s.logout);
   const activeShiftId = useShiftStore((s) => s.activeShiftId);
   const { navItems } = usePermissions();
-  // 2026-08-03 "next phase" (see nextphase.md §2): a business with no
-  // kitchen has no use for the Kitchen Display System nav item at all.
-  const [hasKitchen, setHasKitchen] = useState(true);
-  useEffect(() => {
-    getBusinessMode().then((m) => setHasKitchen(m.has_kitchen)).catch(() => {});
-  }, []);
+  // A business with no kitchen has no use for the Kitchen Display System nav item at all.
+  const hasKitchen = useBusinessStore((s) => s.hasKitchen);
+  const terms = useTerms();
   // POS Lite shows only the till's own screens (stores/planStore.ts). An
   // allowlist, so a new page is Full-only until someone decides otherwise;
   // the real enforcement is plan_gate.rs refusing the commands.
@@ -76,9 +72,13 @@ export default function Sidebar({ active, onNavigate }: Props) {
   // Business preset (restaurant/retail) decides KDS visibility and labels.
   // Modules the owner switched off (Settings > نوع النشاط والوحدات) take their pages with them.
   const modules = useBusinessStore((s) => s.modules);
-  const items = navForMode(
-    applyModules(navItems.filter((n) => n.allowed).filter((n) => !posLite || LITE_PAGES.has(n.id)), modules),
-    { has_tables: true, has_kitchen: hasKitchen },
+  // The labels follow the type: القائمة / المنتجات / قائمة الأسعار, العملاء / العملاء التجار...
+  const items = labelNav(
+    navForMode(
+      applyModules(navItems.filter((n) => n.allowed).filter((n) => !posLite || LITE_PAGES.has(n.id)), modules),
+      { has_tables: true, has_kitchen: hasKitchen },
+    ),
+    terms,
   );
 
   return (

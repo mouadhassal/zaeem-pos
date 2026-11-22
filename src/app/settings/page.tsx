@@ -13,8 +13,8 @@ import { checkForUpdatesManually } from "../../lib/autoUpdate";
 import { createBackup, listBackups, getBackupSettings, updateBackupSettings, type BackupInfo, type BackupSettings } from "../../lib/backup";
 import { realErrorText } from "../../lib/errors";
 import { CURRENCY_SYMBOL, parseMoneyInput, setCurrency, minorToInputValue } from "../../lib/money";
-import PresetPicker from "../../components/ui/PresetPicker";
-import { presetToMode } from "../../lib/businessPreset";
+import { useTerms } from "../../lib/terms";
+import { useBusinessStore } from "../../stores/businessStore";
 import { formatArabicDate, formatArabicDateTime } from "../../lib/dateLocal";
 
 export type SettingsTab = "general" | "business" | "prefs" | "access" | "printer" | "tax" | "branch" | "license" | "network" | "backup" | "about";
@@ -140,6 +140,7 @@ function formatExpiry(expiresAtMs: number): string {
 
 export default function SettingsPage({ initialTab = "general" }: { initialTab?: SettingsTab } = {}) {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
+  const terms = useTerms();
   const user = useAuthStore((s) => s.user);
   const token = useAuthStore((s) => s.token);
   const isOwner = user?.role === "OWNER";
@@ -435,6 +436,7 @@ export default function SettingsPage({ initialTab = "general" }: { initialTab?: 
     setHasKitchen(nextHasKitchen);
     try {
       await invoke("update_business_mode_v3", { sessionToken: token, hasTables: nextHasTables, hasKitchen: nextHasKitchen });
+      useBusinessStore.getState().setMode({ has_tables: nextHasTables, has_kitchen: nextHasKitchen });
       showMsg("تم حفظ نوع النشاط بنجاح");
     } catch (err) {
       showMsg(`حدث خطأ في الحفظ: ${realErrorText(err)}`);
@@ -702,7 +704,7 @@ export default function SettingsPage({ initialTab = "general" }: { initialTab?: 
             <h2 className="text-lg font-bold text-ink-900 font-arabic">الإعدادات العامة</h2>
             <div className="bg-white rounded-md p-5 border border-ink-200 space-y-4">
               <div>
-                <label className="block text-sm font-arabic text-ink-900 mb-1">اسم المطعم أو المتجر</label>
+                <label className="block text-sm font-arabic text-ink-900 mb-1">{terms.placeName}</label>
                 <div className="flex gap-2">
                   <input
                     type="text"
@@ -739,13 +741,8 @@ export default function SettingsPage({ initialTab = "general" }: { initialTab?: 
 
             <h2 className="text-lg font-bold text-ink-900 font-arabic">نوع النشاط</h2>
             <div className="bg-white rounded-md p-5 border border-ink-200 space-y-4">
-              <PresetPicker
-                mode={{ has_tables: hasTables, has_kitchen: hasKitchen }}
-                disabled={saving}
-                onPick={(p) => { const m = presetToMode(p); saveBusinessMode(m.has_tables, m.has_kitchen); }}
-              />
               <p className="text-xs text-ink-400 font-arabic">
-                اختر نوع نشاطك أو عدّل الخيارات أدناه يدوياً — مقهى بدون طاولات، متجر بدون مطبخ، أو الاثنين معاً
+                نوع النشاط (مطعم، مقهى، متجر، مورّد) يختاره المالك من تبويب «نوع النشاط والوحدات». هنا يمكنك تشغيل الطاولات أو المطبخ أو إيقافهما فقط.
               </p>
               <div className="flex items-center justify-between">
                 <div>

@@ -1,3 +1,4 @@
+import { useTerms } from "../../lib/terms";
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
@@ -112,6 +113,7 @@ function rangeEnd(range: DateRange, customEnd?: string): Date {
 const CATEGORY_OPTIONS = EXPENSE_CATEGORIES;
 
 export default function FinancePage() {
+  const tm = useTerms();
   const token = useAuthStore((s) => s.token);
   const [tab, setTab] = useState<Tab>("pnl");
   const [dateRange, setDateRange] = useState<DateRange>("today");
@@ -266,7 +268,7 @@ export default function FinancePage() {
               ["المبيعات", formatMoney(t?.gross_sales_cents ?? 0)],
               ["المرتجعات", formatMoney(t?.refunds_cents ?? 0)],
               ["صافي المبيعات", formatMoney(t?.net_sales_cents ?? 0)],
-              ["تكلفة الأصناف المباعة", formatMoney(t?.cogs_cents ?? 0)],
+              [tm.soldItemsCost, formatMoney(t?.cogs_cents ?? 0)],
               ["ربح الهامش", formatMoney(t?.margin_profit_cents ?? 0)],
               ["كل المصروفات", formatMoney(t?.expenses_cents ?? 0)],
               ["الربح بالمصروفات", formatMoney(t?.expense_profit_cents ?? 0)],

@@ -1,3 +1,4 @@
+import { useTerms } from "../../lib/terms";
 import { getPrefs } from "../../stores/prefsStore";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { IconPencil, IconPrinter, IconReceiptRefund, IconRefresh, IconSearch } from "@tabler/icons-react";
@@ -87,6 +88,7 @@ const timeOf = (iso: string | null | undefined) => (iso ? formatArabicTime(new D
  * sees only the orders they took today.
  */
 export default function OrdersPage() {
+  const tm = useTerms();
   const user = useAuthStore((s) => s.user);
   const isManager = MANAGER_ROLES.includes(String(user?.role ?? "").toUpperCase());
   const toast = useToast();
@@ -180,7 +182,7 @@ export default function OrdersPage() {
       <div className="px-6 pt-6 pb-4 space-y-4 border-b border-line">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h1 className="text-xl font-bold text-text">سجل الطلبات</h1>
+            <h1 className="text-xl font-bold text-text">{tm.ordersNav}</h1>
             <p className="text-sm text-text-3 font-arabic mt-0.5" data-testid="history-day">
               {day ? dayLabel(day.business_date) : "…"}
               {day?.own_only && <span className="text-text-muted"> · {(day.back_days ?? 0) > 0 ? "طلباتك فقط" : "طلباتك اليوم فقط"}</span>}
@@ -216,7 +218,7 @@ export default function OrdersPage() {
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative flex-1 min-w-[220px] max-w-sm">
             <IconSearch className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-text-muted" />
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="رقم الطلب أو اسم الزبون أو الهاتف" data-testid="history-search"
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={tm.orderSearchHint} data-testid="history-search"
               className="w-full h-9 pr-9 pl-3 rounded-sm border border-line bg-white text-sm font-arabic outline-none focus:border-accent" />
           </div>
           {STATUS_FILTERS.map((f) => (

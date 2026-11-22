@@ -1,3 +1,4 @@
+import { useTerms } from "../../lib/terms";
 import { useCartStore } from "../../stores/cartStore";
 import EmptyState from "../ui/EmptyState";
 import { IconTrash as Trash2, IconPlus as Plus, IconMinus as Minus, IconHash as Hash } from "@tabler/icons-react";
@@ -10,6 +11,7 @@ interface Props {
 
 export default function LeftPanel({ onVoidItem }: Props) {
   const { fmt } = useCurrency();
+  const tm = useTerms();
   const items = useCartStore((s) => s.items);
   const updateQty = useCartStore((s) => s.updateQuantity);
   const removeItem = useCartStore((s) => s.removeItem);
@@ -24,7 +26,7 @@ export default function LeftPanel({ onVoidItem }: Props) {
         <div className="flex-1 flex items-center justify-center">
           <EmptyState
             title="الطلبية فارغة"
-            description="اختر المنتجات من القائمة"
+            description={tm.pickFromMenu}
           />
         </div>
       </div>
@@ -36,7 +38,7 @@ export default function LeftPanel({ onVoidItem }: Props) {
       <div className="h-14 flex items-center gap-2 px-4 border-b border-ink-200">
         <Hash className="w-4 h-4 text-ink-400" />
         <span className="font-semibold text-ink-700 text-sm">الطلبية</span>
-        <span className="mr-auto text-xs text-ink-400">{items.length} أصناف</span>
+        <span className="mr-auto text-xs text-ink-400">{items.length} {tm.items}</span>
       </div>
 
       <div className="flex-1 overflow-y-auto p-2 space-y-2">

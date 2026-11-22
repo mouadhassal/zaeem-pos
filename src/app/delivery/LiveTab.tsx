@@ -1,3 +1,4 @@
+import { useTerms } from "../../lib/terms";
 import { useCallback, useEffect, useState } from "react";
 import { IconPencil, IconPrinter, IconTrash, IconX } from "@tabler/icons-react";
 import { printableShopName } from "../../lib/shopName";
@@ -45,6 +46,7 @@ interface OrderLineInfo { name: string; quantity: number; modifiers: string[]; n
 
 /** Orders waiting for a driver, with a driver, or on the road; plus what finished today. */
 export default function LiveTab() {
+  const tm = useTerms();
   const toast = useToast();
   const cardSize = usePrefsStore((s) => s.deliveryCardSize);
   const printOnOut = usePrefsStore((s) => s.printDeliveryOnOut);
@@ -301,11 +303,11 @@ export default function LiveTab() {
               {selected.note && <div className="text-sm text-danger bg-danger-soft rounded-sm px-3 py-2">{selected.note}</div>}
 
               <div>
-                <div className="text-xs text-ink-500 mb-1">الأصناف</div>
+                <div className="text-xs text-ink-500 mb-1">{tm.theItems}</div>
                 {lines === null ? (
                   <div className="text-sm text-ink-400">…</div>
                 ) : lines.length === 0 ? (
-                  <div className="text-sm text-ink-400">لا تتوفر تفاصيل الأصناف</div>
+                  <div className="text-sm text-ink-400">لا تتوفر تفاصيل {tm.theItems}</div>
                 ) : (
                   <ul className="space-y-1.5" data-testid="delivery-panel-lines">
                     {lines.map((l, i) => (

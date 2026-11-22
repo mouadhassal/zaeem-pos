@@ -8,7 +8,7 @@ interface Props {
 const STEPS = [
   { label: "جاري تهيئة قاعدة البيانات...", duration: 600 },
   { label: "جاري التحقق من سلامة البيانات...", duration: 400 },
-  { label: "جاري تحميل القائمة...", duration: 500 },
+  { label: "جاري تحميل البيانات...", duration: 500 },
   { label: "جاري التحميل...", duration: 300 },
 ];
 
