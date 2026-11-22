@@ -13,7 +13,8 @@ import {
 import { SAMPLE_NOW, SAMPLE_RECEIPTS, SAMPLE_TICKETS } from "./ticketLayout.samples";
 
 const GOLDEN_PATH = fileURLToPath(new URL("./ticketLayout.golden.json", import.meta.url));
-const GOLDEN_TEXT = readFileSync(GOLDEN_PATH, "utf8");
+// Git on Windows may check the file out with CRLF; compare content, not line endings.
+const GOLDEN_TEXT = readFileSync(GOLDEN_PATH, "utf8").replace(/\r\n/g, "\n");
 
 const render = (template?: TemplateConfig) =>
   JSON.stringify(
