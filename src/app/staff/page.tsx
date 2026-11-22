@@ -1,3 +1,4 @@
+import { takePendingTab } from "../../lib/deepLink";
 import WorkersPanel from "./WorkersPanel";
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
@@ -17,6 +18,7 @@ import FingerprintPanel from "./FingerprintPanel";
 /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 type Tab = "employees" | "shifts" | "attendance";
+const STAFF_TABS: readonly Tab[] = ["employees", "shifts", "attendance"];
 
 // Matches Rust's `repo::StaffRow` -- `staff` (T1.1) replaced `users`
 // (dropped by Decision A, 2026-07-16) and has no `email`/`phone`/
@@ -162,7 +164,7 @@ export default function StaffPage() {
   const toast = useToast();
   const user = useAuthStore((s) => s.user);
   const token = useAuthStore((s) => s.token);
-  const [tab, setTab] = useState<Tab>("employees");
+  const [tab, setTab] = useState<Tab>(() => takePendingTab("staff", STAFF_TABS, "employees"));
   // POS Lite keeps cashiers and shifts; attendance is HR, Full only.
   const posLite = usePlanStore((s) => s.posLite);
   const [loading, setLoading] = useState(true);

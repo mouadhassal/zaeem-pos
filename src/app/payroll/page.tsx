@@ -1,3 +1,4 @@
+import { takePendingTab } from "../../lib/deepLink";
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "../../lib/invoke";
 import { realErrorText } from "../../lib/errors";
@@ -9,6 +10,7 @@ import PeopleTab from "./PeopleTab";
 import RulesPanel from "./RulesPanel";
 
 type Tab = "month" | "people" | "rules" | "advances";
+const PAYROLL_TABS: readonly Tab[] = ["month", "people", "rules", "advances"];
 
 const MANAGER_LABEL = { NONE: "لا وصول", PREPARE: "يجهّز الكشف فقط", FULL: "يجهّز ويعتمد ويصرف" } as const;
 
@@ -23,7 +25,7 @@ export default function PayrollPage() {
   const [access, setAccess] = useState<PayrollAccess | null>(null);
   const [settings, setSettings] = useState<PayrollSettings | null>(null);
   const [employees, setEmployees] = useState<EmployeeRow[]>([]);
-  const [tab, setTab] = useState<Tab>("month");
+  const [tab, setTab] = useState<Tab>(() => takePendingTab("payroll", PAYROLL_TABS, "month"));
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 

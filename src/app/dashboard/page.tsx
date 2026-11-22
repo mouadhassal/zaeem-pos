@@ -1,183 +1,102 @@
-import { useTerms } from "../../lib/terms";
-import { useEffect, useState, useCallback } from "react";
-import { businessPeriodStart } from "../../lib/businessDay";
-import { invoke } from "../../lib/invoke";
-import { realErrorText } from "../../lib/errors";
-import { useAuthStore } from "../../stores/authStore";
-import { useCurrency } from "../../hooks/useCurrency";
-import { IconUsers, IconTruck } from "@tabler/icons-react";
-import ProfitCards from "../../components/ProfitCards";
-import { tzOffsetMinutes, type ProfitSummary } from "../../lib/profit";
+import { useMemo, useState } from "react";
+import { IconRefresh } from "@tabler/icons-react";
+import { usePermissions } from "../../hooks/usePermissions";
+import { useBusinessStore } from "../../stores/businessStore";
+import { openPageTab } from "../../lib/deepLink";
+import { toLocalDateStr } from "../../lib/dateLocal";
+import {
+  DASH_TABS, cardDef, periodRange, visibleCardIds, visibleTabs,
+  type CardContext, type CustomDays, type DashPeriod, type DashTab,
+} from "../../lib/dashboard";
+import PeriodPicker from "./PeriodPicker";
+import SummaryTab from "./SummaryTab";
+import SalesTab from "./SalesTab";
+import FinanceTab from "./FinanceTab";
+import StockTab from "./StockTab";
+import HrTab from "./HrTab";
 
-interface DashboardBranch {
-  branch_id: string;
-  branch_name: string;
-  revenue_cents: number;
-  order_count: number;
-  costs_cents: number;
-  profit_cents: number;
-  avg_ticket_cents: number;
-  outstanding_debt_cents: number;
-  outstanding_supplier_balance_cents: number;
-  profit: ProfitSummary;
-}
-
-interface DashboardSummary {
-  branches: DashboardBranch[];
-  total_revenue_cents: number;
-  total_costs_cents: number;
-  total_profit_cents: number;
-  total_outstanding_debt_cents: number;
-  total_outstanding_supplier_balance_cents: number;
-  profit: ProfitSummary;
-}
-
-type Range = "today" | "week" | "month";
-
-function rangeStart(range: Range): Date {
-  // Business days (from 05:00), so "today" does not empty itself at midnight -- see lib/businessDay.ts.
-  const now = new Date();
-  if (range === "today") return businessPeriodStart("day", now);
-  if (range === "week") return businessPeriodStart("week", now);
-  return businessPeriodStart("month", now);
-}
-
+/**
+ * لوحة التحكم: five simple tabs (الخلاصة، المبيعات، المالية، المخزون، الموظفين) over one shared period.
+ * Each tab is a few big cards with one plain sentence each; a tap opens the detailed report.
+ * A card shows only when the person can open the screen it leads to and the shop uses that part.
+ */
 export default function DashboardPage() {
-  const tm = useTerms();
-  const token = useAuthStore((s) => s.token);
-  const { fmt } = useCurrency();
-  const [range, setRange] = useState<Range>("today");
-  const [summary, setSummary] = useState<DashboardSummary | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const { navItems } = usePermissions();
+  const modules = useBusinessStore((s) => s.modules);
+  const hasKitchen = useBusinessStore((s) => s.hasKitchen);
 
-  const fetchSummary = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const startIso = rangeStart(range).toISOString();
-      const endIso = new Date().toISOString();
-      const result = await invoke<DashboardSummary>("get_dashboard_summary_v3", { sessionToken: token, startIso, endIso, tzOffsetMinutes: tzOffsetMinutes() });
-      setSummary(result);
-    } catch (err) {
-      setLoadError(`تعذر تحميل لوحة التحكم: ${realErrorText(err)}`);
-    } finally {
-      setLoading(false);
-    }
-  }, [token, range]);
+  const [period, setPeriod] = useState<DashPeriod>("today");
+  const [custom, setCustom] = useState<CustomDays>(() => {
+    const today = toLocalDateStr(new Date());
+    return { start: today, end: today };
+  });
+  const [tab, setTab] = useState<DashTab>("summary");
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  useEffect(() => {
-    fetchSummary();
-  }, [fetchSummary]);
+  const ctx: CardContext = useMemo(
+    () => ({ pages: new Set(navItems.filter((n) => n.allowed).map((n) => n.id)), modules, hasKitchen }),
+    [navItems, modules, hasKitchen],
+  );
+  const ids = useMemo(() => visibleCardIds(ctx), [ctx]);
+  const tabs = useMemo(() => visibleTabs(ctx), [ctx]);
+  const current: DashTab = tabs.includes(tab) ? tab : tabs[0] ?? "summary";
+  // The range is worked out again whenever the period changes or the refresh button is pressed.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const range = useMemo(() => periodRange(period, new Date(), custom), [period, custom, refreshKey]);
 
-  if (loading) {
-    return <div className="flex items-center justify-center h-full text-ink-500 font-arabic">جاري التحميل...</div>;
-  }
-
-  if (loadError || !summary) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-2">
-        <p className="text-danger font-arabic">{loadError || "حدث خطأ في تحميل لوحة التحكم"}</p>
-        <button onClick={fetchSummary} className="text-sm text-saffron-600 hover:text-saffron-700 font-bold font-arabic">إعادة المحاولة</button>
-      </div>
-    );
-  }
-
-    const multiBranch = summary.branches.length > 1;
+  const show = (id: string) => ids.has(id);
+  const open = (id: string) => {
+    const def = cardDef(id);
+    openPageTab(def.page, def.target);
+  };
+  const props = { period, range, show, open, refreshKey };
 
   return (
-    <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-ink-900">لوحة التحكم</h1>
-        <div className="flex gap-2">
-          {(["today", "week", "month"] as Range[]).map((r) => (
-            <button
-              key={r}
-              onClick={() => setRange(r)}
-              className={`px-4 py-2 rounded-lg font-arabic text-sm transition-colors ${
-                range === r ? "bg-saffron-600 text-white" : "bg-white text-ink-500 hover:bg-ink-200"
-              }`}
-            >
-              {r === "today" ? "اليوم" : r === "week" ? "هذا الأسبوع" : "هذا الشهر"}
-            </button>
-          ))}
-        </div>
+    <div className="p-6 space-y-5 overflow-y-auto h-full" dir="rtl">
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-xl font-bold text-ink-900 font-arabic">لوحة التحكم</h1>
+        <button
+          type="button"
+          onClick={() => setRefreshKey((k) => k + 1)}
+          className="h-9 px-3 rounded-sm border border-ink-200 bg-white text-sm font-arabic text-ink-500 hover:bg-surface-alt inline-flex items-center gap-1"
+          data-testid="dash-refresh"
+        >
+          <IconRefresh className="w-4 h-4" /> تحديث
+        </button>
       </div>
 
-      {/* Net sales and the three ways to count profit, with the explanation */}
-      <ProfitCards profit={summary.profit} fmt={fmt} />
-      <div className="zc-card p-4 flex items-center justify-between">
-        <p className="text-ink-400 text-sm font-arabic">عدد {tm.theOrders}</p>
-        <p className="text-2xl font-bold text-ink-900 font-mono">{summary.branches.reduce((a, b) => a + b.order_count, 0)}</p>
-      </div>
-
-      {/* Debt / supplier widgets */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="zc-card p-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-danger-soft flex items-center justify-center">
-              <IconUsers className="w-5 h-5 text-danger" />
-            </div>
-            <div>
-              <p className="text-ink-400 text-sm font-arabic">ديون العملاء المستحقة</p>
-              <p className="text-lg font-bold text-danger font-mono">{fmt(summary.total_outstanding_debt_cents)}</p>
-            </div>
+      {tabs.length === 0 ? (
+        <div className="py-12 text-center text-ink-500 font-arabic">لا توجد أرقام تناسب صلاحياتك هنا.</div>
+      ) : (
+        <>
+          <div className="flex gap-1.5 flex-wrap border-b border-ink-200 pb-2" role="tablist" data-testid="dash-tabs">
+            {DASH_TABS.filter((t) => tabs.includes(t.id)).map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={current === t.id}
+                onClick={() => setTab(t.id)}
+                data-testid={`dash-tab-${t.id}`}
+                className={`px-5 py-2 rounded-lg font-arabic text-sm font-bold transition-colors ${current === t.id ? "bg-ink-900 text-white" : "bg-white text-ink-500 hover:bg-ink-200"}`}
+              >
+                {t.label}
+              </button>
+            ))}
           </div>
-        </div>
-        <div className="zc-card p-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-warn-soft flex items-center justify-center">
-              <IconTruck className="w-5 h-5 text-warn" />
-            </div>
-            <div>
-              <p className="text-ink-400 text-sm font-arabic">مستحقات الموردين</p>
-              <p className="text-lg font-bold text-warn font-mono">{fmt(summary.total_outstanding_supplier_balance_cents)}</p>
-            </div>
-          </div>
-        </div>
-      </div>
 
-      {/* Branch comparison -- only shown when there's more than one branch to compare */}
-      {multiBranch && (
-        <div className="bg-white rounded-lg border border-ink-200 overflow-x-auto">
-          <div className="p-4 pb-0">
-            <h2 className="font-bold text-ink-900 font-arabic">مقارنة الفروع</h2>
-          </div>
-          <table className="w-full text-sm mt-2">
-            <thead>
-              <tr className="border-b border-ink-200 text-ink-400 font-arabic bg-surface-alt">
-                <th className="text-right p-3 font-medium">الفرع</th>
-                <th className="text-center p-3 font-medium">صافي المبيعات</th>
-                <th className="text-center p-3 font-medium">المصروفات</th>
-                <th className="text-center p-3 font-medium">الربح بالمصروفات</th>
-                <th className="text-center p-3 font-medium">ربح الهامش</th>
-                <th className="text-center p-3 font-medium">صافي الربح الفعلي</th>
-                <th className="text-center p-3 font-medium">{tm.theOrders}</th>
-                <th className="text-center p-3 font-medium">متوسط الفاتورة</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...summary.branches].sort((a, b) => b.profit_cents - a.profit_cents).map((b) => (
-                <tr key={b.branch_id} className="border-b border-ink-100 hover:bg-saffron-50">
-                  <td className="p-3 font-arabic text-ink-900 font-medium">{b.branch_name}</td>
-                  <td className="p-3 text-center font-mono text-saffron-600">{fmt(b.revenue_cents)}</td>
-                  <td className="p-3 text-center font-mono text-danger">{fmt(b.costs_cents)}</td>
-                  <td className={`p-3 text-center font-mono font-bold ${b.profit_cents >= 0 ? "text-ok" : "text-danger"}`}>{fmt(b.profit_cents)}</td>
-                  <td className={`p-3 text-center font-mono ${b.profit.margin_profit_cents >= 0 ? "text-ok" : "text-danger"}`}>{fmt(b.profit.margin_profit_cents)}</td>
-                  <td className={`p-3 text-center font-mono ${b.profit.net_profit_cents >= 0 ? "text-ok" : "text-danger"}`}>{fmt(b.profit.net_profit_cents)}</td>
-                  <td className="p-3 text-center font-mono text-ink-900">{b.order_count}</td>
-                  <td className="p-3 text-center font-mono text-ink-900">{fmt(b.avg_ticket_cents)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+          {current === "summary" ? (
+            <p className="text-sm text-ink-500 font-arabic">الخلاصة دائماً عن «اليوم» و«هذا الشهر». لرؤية فترة أخرى افتح تبويب المبيعات أو المالية.</p>
+          ) : (
+            <PeriodPicker period={period} custom={custom} onPeriod={setPeriod} onCustom={setCustom} />
+          )}
 
-      {!multiBranch && summary.branches.length === 0 && (
-        <div className="text-center py-12 text-ink-500 font-arabic bg-white rounded-lg border border-ink-200">
-          لا توجد بيانات لهذا الفرع بعد
-        </div>
+          {current === "summary" && <SummaryTab show={show} open={open} refreshKey={refreshKey} />}
+          {current === "sales" && <SalesTab {...props} />}
+          {current === "finance" && <FinanceTab {...props} />}
+          {current === "stock" && <StockTab {...props} />}
+          {current === "hr" && <HrTab {...props} />}
+        </>
       )}
     </div>
   );

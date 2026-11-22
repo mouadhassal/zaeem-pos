@@ -1,3 +1,4 @@
+import { takePendingTab } from "../../lib/deepLink";
 import { useTerms } from "../../lib/terms";
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { businessPeriodStart } from "../../lib/businessDay";
@@ -211,6 +212,7 @@ const VARIANCE_FLAG_THRESHOLD_PCT = 0.05;
 const MARGIN_FLOOR_PCT = 40;
 
 type ReportTab = "sales" | "customers" | "kitchen" | "menu" | "activity";
+const REPORT_TABS: readonly ReportTab[] = ["sales", "customers", "kitchen", "menu", "activity"];
 
 export default function ReportsPage() {
   const tm = useTerms();
@@ -221,7 +223,7 @@ export default function ReportsPage() {
   const [dateRange, setDateRange] = useState<DateRange>("today");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
-  const [tab, setTab] = useState<ReportTab>("sales");
+  const [tab, setTab] = useState<ReportTab>(() => takePendingTab("reports", REPORT_TABS, "sales"));
   const [refreshKey, setRefreshKey] = useState(0);
   const role = String(useAuthStore((s) => s.user?.role) ?? "").toUpperCase();
   const isOwner = role === "OWNER" || role === "PLATFORM";

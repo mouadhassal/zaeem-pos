@@ -1,3 +1,4 @@
+import { takePendingTab } from "../../lib/deepLink";
 import { useTerms } from "../../lib/terms";
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
@@ -18,6 +19,7 @@ import RentTab from "./RentTab";
 import CostOfSalesCard from "./CostOfSalesCard";
 
 type Tab = "pnl" | "revenue" | "costs" | "rent" | "invoices" | "taxes";
+const FINANCE_TABS: readonly Tab[] = ["pnl", "revenue", "costs", "rent", "invoices", "taxes"];
 type DateRange = "today" | "week" | "month" | "custom";
 
 // Mirrors dashboard/page.tsx's own shape for `get_dashboard_summary_v3` --
@@ -110,7 +112,7 @@ function rangeEnd(range: DateRange, customEnd?: string): Date {
 export default function FinancePage() {
   const tm = useTerms();
   const token = useAuthStore((s) => s.token);
-  const [tab, setTab] = useState<Tab>("pnl");
+  const [tab, setTab] = useState<Tab>(() => takePendingTab("finance", FINANCE_TABS, "pnl"));
   const [dateRange, setDateRange] = useState<DateRange>("today");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");

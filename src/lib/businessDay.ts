@@ -13,10 +13,11 @@ export function businessDayStart(now: Date = new Date()): Date {
   return d;
 }
 
-/** Start of the business week (Sunday's business day) or month (the 1st's) that `now` is in. */
-export function businessPeriodStart(period: "day" | "week" | "month", now: Date = new Date()): Date {
+/** Start of the business week (Sunday's business day), month (the 1st's) or year (1 January's) that `now` is in. */
+export function businessPeriodStart(period: "day" | "week" | "month" | "year", now: Date = new Date()): Date {
   const d = businessDayStart(now);
   if (period === "week") d.setDate(d.getDate() - d.getDay());
   if (period === "month") d.setDate(1);
+  if (period === "year") d.setMonth(0, 1);
   return d;
 }

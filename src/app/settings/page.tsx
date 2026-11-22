@@ -9,6 +9,7 @@ import NetworkTab from "./NetworkTab";
 import AccessTab from "./AccessTab";
 import BusinessTab from "./BusinessTab";
 import PreferencesTab from "./PreferencesTab";
+import OverviewTab from "./OverviewTab";
 import AreasSection from "./AreasSection";
 import TemplatesSection, { PrinterTemplatePicker } from "./TemplatesSection";
 import { checkForUpdatesManually } from "../../lib/autoUpdate";
@@ -19,7 +20,7 @@ import { useTerms } from "../../lib/terms";
 import { useBusinessStore } from "../../stores/businessStore";
 import { formatArabicDate, formatArabicDateTime } from "../../lib/dateLocal";
 
-export type SettingsTab = "general" | "business" | "prefs" | "access" | "printer" | "tax" | "branch" | "license" | "network" | "backup" | "about";
+export type SettingsTab = "general" | "overview" | "business" | "prefs" | "access" | "printer" | "tax" | "branch" | "license" | "network" | "backup" | "about";
 
 interface ChainConfig {
   currency: string;
@@ -88,6 +89,7 @@ const CURRENCY_NAMES: Record<string, string> = {
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: "general", label: "عام" },
+  { id: "overview", label: "نظرة عامة على الإعداد" },
   { id: "business", label: "نوع النشاط والوحدات" },
   { id: "prefs", label: "التفضيلات والتصميم" },
   { id: "access", label: "الصلاحيات" },
@@ -776,6 +778,7 @@ export default function SettingsPage({ initialTab = "general" }: { initialTab?: 
           </div>
         )}
 
+        {tab === "overview" && <OverviewTab onGoTab={setTab} />}
         {tab === "prefs" && <PreferencesTab />}
         {tab === "access" && isOwner && <AccessTab />}
         {tab === "business" && isOwner && <BusinessTab />}

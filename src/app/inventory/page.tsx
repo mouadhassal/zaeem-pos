@@ -1,3 +1,4 @@
+import { takePendingTab } from "../../lib/deepLink";
 import UsdHelper from "../../components/ui/UsdHelper";
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../../lib/invoke";
@@ -246,9 +247,10 @@ interface PurchaseOrderItem {
 }
 
 type TabKey = "stock" | "units" | "production" | "waste" | "suppliers" | "movements" | "alerts" | "purchases" | "marketplace";
+const INVENTORY_TABS: readonly TabKey[] = ["stock", "units", "production", "waste", "suppliers", "movements", "alerts", "purchases", "marketplace"];
 
 export default function InventoryPage() {
-  const [activeTab, setActiveTab] = useState<TabKey>("stock");
+  const [activeTab, setActiveTab] = useState<TabKey>(() => takePendingTab("inventory", INVENTORY_TABS, "stock"));
   const [showAddIngredient, setShowAddIngredient] = useState(false);
   const [showReceiveStock, setShowReceiveStock] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
