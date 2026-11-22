@@ -27,7 +27,7 @@ import {
 import RefundModal from "../../components/modals/RefundModal";
 import OnScreenReceiptModal from "../../components/modals/OnScreenReceiptModal";
 
-const TYPE_LABEL: Record<string, string> = { TAKEAWAY: "سفري", DINE_IN: "صالة", DELIVERY: "توصيل", ONLINE: "أونلاين" };
+export const TYPE_LABEL: Record<string, string> = { TAKEAWAY: "سفري", DINE_IN: "صالة", DELIVERY: "توصيل", ONLINE: "أونلاين" };
 const METHOD_LABEL: Record<string, string> = { CASH: "نقداً", CARD: "بطاقة", WALLET: "محفظة", CREDIT: "دين" };
 const MANAGER_ROLES = ["MANAGER", "OWNER", "PLATFORM", "ADMIN"];
 
@@ -47,7 +47,7 @@ const TYPE_FILTERS: { id: TypeFilter; label: string }[] = [
   { id: "DELIVERY", label: "توصيل C" },
 ];
 
-function statusPill(row: HistoryRow): { label: string; cls: string } {
+export function statusPill(row: HistoryRow): { label: string; cls: string } {
   if (row.refunded_cents > 0 && row.refunded_cents >= row.total_cents) return { label: "مسترد", cls: "bg-danger-soft text-danger" };
   if (row.refunded_cents > 0) return { label: "مسترد جزئياً", cls: "bg-warn-soft text-warn" };
   if (row.status === "PAID") return { label: "مدفوع", cls: "bg-ok-soft text-ok" };
@@ -79,7 +79,7 @@ function matchesQuery(row: HistoryRow, typed: string): boolean {
 }
 
 const dayLabel = (date: string) => formatArabicDate(parseLocalDateStr(date), { weekday: "long", year: "numeric", month: "long", day: "numeric" });
-const timeOf = (iso: string | null | undefined) => (iso ? formatArabicTime(new Date(iso)) : "—");
+export const timeOf = (iso: string | null | undefined) => (iso ? formatArabicTime(new Date(iso)) : "—");
 
 /**
  * Order history: every order of one business day (it changes at 05:00) with
@@ -299,7 +299,8 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 /** Orders that can still take changes: sent to the kitchen and not paid (a table's tab is changed from its table). */
 const EDITABLE_STATUSES = ["PENDING", "PREPARING", "READY", "SERVED"];
 
-function OrderDetail({ d, printing, canRefund, onReprint, onRefund }: { d: HistoryDetail; printing: boolean; canRefund: boolean; onReprint: () => void; onRefund: () => void }) {
+/** One order in full. `readOnly` (the reports drill-down) hides the print, edit and refund buttons. */
+export function OrderDetail({ d, printing, canRefund, onReprint, onRefund, readOnly = false }: { d: HistoryDetail; printing: boolean; canRefund: boolean; onReprint: () => void; onRefund: () => void; readOnly?: boolean }) {
   const pill = statusPill(d);
   const money = (c: number) => <span className="font-mono tabular" dir="ltr">{formatMoney(c)}</span>;
   return (
@@ -314,7 +315,7 @@ function OrderDetail({ d, printing, canRefund, onReprint, onRefund }: { d: Histo
         <span className={`rounded-full px-2.5 py-1 text-xs font-bold font-arabic ${pill.cls}`}>{pill.label}</span>
       </div>
 
-      <div className="flex gap-2">
+      {!readOnly && <div className="flex gap-2">
         {d.status === "PAID" && (
           <button onClick={onReprint} disabled={printing} data-testid="history-reprint"
             className="flex-1 h-10 rounded-sm border border-line bg-white text-sm font-arabic text-text-2 flex items-center justify-center gap-1.5 hover:bg-surface-alt disabled:opacity-50">
@@ -342,7 +343,7 @@ function OrderDetail({ d, printing, canRefund, onReprint, onRefund }: { d: Histo
             <IconReceiptRefund className="w-4 h-4" /> استرداد
           </button>
         )}
-      </div>
+      </div>}
 
       <div className="rounded-md border border-line bg-white p-3 space-y-1.5">
         <Row label="النوع">{TYPE_LABEL[d.order_type] ?? d.order_type}{d.order_type === "DINE_IN" && d.table_name ? ` · ${d.table_name}` : ""}</Row>

@@ -86,9 +86,19 @@ describe("BACK_OFFICE_REMOTE_COMMANDS stays in sync with the hub", () => {
       "create_menu_item_v3", "update_menu_item_v3", "delete_category_v3", "save_option_group_v3", "create_happy_hour_rule_v3",
       "list_staff_v3", "payroll_month_v3", "list_attendance_v3", "list_customers_v3", "list_debt_entries_v3",
       "save_delivery_platform_v3", "save_receipt_template_v3",
+      // credit, payroll and reports work merged from launch/pos-fixes
+      "get_customer_debt_v3", "get_debt_statement_v3", "unlink_debtor_customer_v3",
+      "add_payroll_day_deduction_v3", "get_attendance_review_v3", "set_attendance_approval_v3", "get_worker_statement_v3",
+      "get_sales_breakdown_v3", "list_breakdown_orders_v3", "get_cancellations_report_v3", "get_customers_report_v3",
+      "get_kitchen_delivery_report_v3", "get_menu_engineering_v3", "list_activity_log_v3", "list_activity_kinds_v3",
     ]) {
       expect(BACK_OFFICE_REMOTE_COMMANDS.has(c), c).toBe(true);
     }
+  });
+
+  it("linking a credit account to a customer stays a till command (the cashier does it at checkout)", () => {
+    expect(LAN_REDIRECT_COMMANDS.has("link_debtor_customer_v3")).toBe(true);
+    expect(BACK_OFFICE_REMOTE_COMMANDS.has("link_debtor_customer_v3")).toBe(false);
   });
 
   it("the hub wording of the refusal is the one the app knows", () => {

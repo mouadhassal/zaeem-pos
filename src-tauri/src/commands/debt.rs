@@ -82,7 +82,13 @@ pub(crate) fn create_debtor_v3_impl(
         // feed.
         Repo::new(&tx).record_initial_debt(&tenant_id, &branch_id, &debtor_id, initial_debt_cents, &actor.id).map_err(|e| e.to_string())?;
     }
-    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "name": name, "created": true, "initial_debt_cents": initial_debt_cents }))).map_err(|e| e.to_string())?;
+    // The credit customer is also a customer: the one with this phone, or a new one. Best effort: a customer that
+    // cannot be made never blocks the credit sale (the debtor can be linked later from the debt page).
+    let link = crate::credit::link_debtor_to_customer(&tx, &tenant_id, &debtor_id, None, true).ok();
+    if let Some(l) = link.as_ref().filter(|l| l.created) {
+        audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::CustomerChanged, "customer", l.customer_id.as_deref().unwrap_or(""), None, Some(&serde_json::json!({ "name": name, "from_debtor": debtor_id }))).map_err(|e| e.to_string())?;
+    }
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "name": name, "created": true, "initial_debt_cents": initial_debt_cents, "customer_id": link.and_then(|l| l.customer_id) }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(debtor_id)
 }
@@ -166,11 +172,11 @@ pub(crate) fn list_debt_entries_v3_impl(state: &Db, license: &crate::license::cl
 /// تسجيل الدفعة" with no indication of why, indistinguishable from the
 /// amount input simply not working.
 #[tauri::command]
-pub fn record_debt_payment_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String, amount_cents: i64, notes: Option<String>) -> Result<String, String> {
-    record_debt_payment_v3_impl(&state, &license, session_token, debtor_id, amount_cents, notes)
+pub fn record_debt_payment_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String, amount_cents: i64, notes: Option<String>, order_id: Option<String>) -> Result<String, String> {
+    record_debt_payment_v3_impl(&state, &license, session_token, debtor_id, amount_cents, notes, order_id)
 }
 
-pub(crate) fn record_debt_payment_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, debtor_id: String, amount_cents: i64, notes: Option<String>) -> Result<String, String> {
+pub(crate) fn record_debt_payment_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, debtor_id: String, amount_cents: i64, notes: Option<String>, order_id: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(state, &session_token)?;
     require_license_not_locked(license)?;
     require_plan_includes_management(license)?;
@@ -180,10 +186,72 @@ pub(crate) fn record_debt_payment_v3_impl(state: &Db, license: &crate::license::
     }
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let entry_id = Repo::new(&tx).record_debt_payment(&actor.scope(), &debtor_id, amount_cents, notes.as_deref(), &actor.id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "entry_id": entry_id, "amount_cents": amount_cents, "type": "PAYMENT" }))).map_err(|e| e.to_string())?;
+    // `order_id` (optional) names the credit invoice this payment settles; without it the payment is on the overall balance.
+    let order_id = order_id.filter(|o| !o.trim().is_empty());
+    let entry_id = Repo::new(&tx).record_debt_settlement(&actor.scope(), &debtor_id, order_id.as_deref(), amount_cents, notes.as_deref(), &actor.id).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "entry_id": entry_id, "amount_cents": amount_cents, "type": "PAYMENT", "order_id": order_id }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(entry_id)
+}
+
+
+/// A debtor's statement: every credit invoice with what is left of it, and every entry with the running balance.
+#[tauri::command]
+pub fn get_debt_statement_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String) -> Result<crate::credit::DebtStatement, String> {
+    get_debt_statement_v3_impl(&state, &license, session_token, debtor_id)
+}
+
+pub(crate) fn get_debt_statement_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, debtor_id: String) -> Result<crate::credit::DebtStatement, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
+    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).assert_debtor_in_scope(&actor.scope(), &debtor_id).map_err(|e| e.to_string())?;
+    crate::credit::debt_statement(&conn, &actor.tenant_id, &debtor_id)
+}
+
+/// Links a credit customer to a customer: the one given, else the one with the same phone, else (when `create_if_missing`)
+/// a new one made from the debtor. The pay screen asks without creating; the debt page's "اربط بزبون" button creates.
+#[tauri::command]
+pub fn link_debtor_customer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String, customer_id: Option<String>, create_if_missing: Option<bool>) -> Result<crate::credit::DebtorLink, String> {
+    link_debtor_customer_v3_impl(&state, &license, session_token, debtor_id, customer_id, create_if_missing)
+}
+
+pub(crate) fn link_debtor_customer_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, debtor_id: String, customer_id: Option<String>, create_if_missing: Option<bool>) -> Result<crate::credit::DebtorLink, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
+    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).assert_debtor_in_scope(&actor.scope(), &debtor_id).map_err(|e| e.to_string())?;
+    let customer_id = customer_id.filter(|c| !c.trim().is_empty());
+    let link = crate::credit::link_debtor_to_customer(&tx, &actor.tenant_id, &debtor_id, customer_id.as_deref(), create_if_missing.unwrap_or(false))?;
+    if link.customer_id.is_some() {
+        audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "linked_customer_id": link.customer_id, "customer_created": link.created }))).map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(link)
+}
+
+#[tauri::command]
+pub fn unlink_debtor_customer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String) -> Result<(), String> {
+    unlink_debtor_customer_v3_impl(&state, &license, session_token, debtor_id)
+}
+
+pub(crate) fn unlink_debtor_customer_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, debtor_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
+    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    Repo::new(&tx).assert_debtor_in_scope(&actor.scope(), &debtor_id).map_err(|e| e.to_string())?;
+    crate::credit::unlink_debtor(&tx, &actor.tenant_id, &debtor_id)?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::DebtRecorded, "debtor", &debtor_id, None, Some(&serde_json::json!({ "unlinked_customer": true }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +263,18 @@ pub(crate) fn record_debt_payment_v3_impl(state: &Db, license: &crate::license::
 pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
     use super::lan_rpc::lan_arg;
     let value = match command {
+        "get_debt_statement_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let debtor_id: String = lan_arg(args, "debtorId")?;
+            let r = get_debt_statement_v3_impl(db, license, session_token, debtor_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "unlink_debtor_customer_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let debtor_id: String = lan_arg(args, "debtorId")?;
+            let r = unlink_debtor_customer_v3_impl(db, license, session_token, debtor_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
         "update_debtor_v3" => {
             let session_token: String = lan_arg(args, "sessionToken")?;
             let debtor_id: String = lan_arg(args, "debtorId")?;
@@ -224,7 +304,8 @@ pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::C
             let debtor_id: String = lan_arg(args, "debtorId")?;
             let amount_cents: i64 = lan_arg(args, "amountCents")?;
             let notes: Option<String> = lan_arg(args, "notes")?;
-            let r = record_debt_payment_v3_impl(db, license, session_token, debtor_id, amount_cents, notes)?;
+            let order_id: Option<String> = lan_arg(args, "orderId")?;
+            let r = record_debt_payment_v3_impl(db, license, session_token, debtor_id, amount_cents, notes, order_id)?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
         _ => return Ok(None),

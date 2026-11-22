@@ -141,6 +141,28 @@ pub(crate) fn get_customer_detail_v3_impl(state: &Db, license: &crate::license::
 
 // ---------------------------------------------------------------------------
 
+/// What a customer owes on credit, with the statement (credit invoices and payments): for the customer page.
+/// Needs the debt permission too, so the page simply hides the section for someone without it.
+#[tauri::command]
+pub fn get_customer_debt_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, customer_id: String) -> Result<crate::credit::CustomerDebt, String> {
+    get_customer_debt_v3_impl(&state, &license, session_token, customer_id)
+}
+
+pub(crate) fn get_customer_debt_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, customer_id: String) -> Result<crate::credit::CustomerDebt, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
+    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut debt = crate::credit::customer_debt(&conn, &actor.tenant_id, &customer_id)?;
+    // A branch cashier only sees the credit accounts of their own branch.
+    let repo = Repo::new(&conn);
+    let scope = actor.scope();
+    debt.statements.retain(|s| repo.assert_debtor_in_scope(&scope, &s.debtor_id).is_ok());
+    debt.balance_cents = debt.statements.iter().map(|s| s.balance_cents).sum();
+    Ok(debt)
+}
+
 // ---------------------------------------------------------------------------
 // Remote back office: the arms a second till's back-office commands take on the hub
 // (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
@@ -150,6 +172,12 @@ pub(crate) fn get_customer_detail_v3_impl(state: &Db, license: &crate::license::
 pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
     use super::lan_rpc::lan_arg;
     let value = match command {
+        "get_customer_debt_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let customer_id: String = lan_arg(args, "customerId")?;
+            let r = get_customer_debt_v3_impl(db, license, session_token, customer_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
         "create_customer_v3" => {
             let session_token: String = lan_arg(args, "sessionToken")?;
             let name: String = lan_arg(args, "name")?;

@@ -86,6 +86,7 @@ export const LAN_REDIRECT_COMMANDS = new Set([
   // customers on the till: debtors and loyalty
   "list_debtors_v3",
   "create_debtor_v3",
+  "link_debtor_customer_v3",
   "lookup_loyalty_card_v3",
   "list_loyalty_rewards_v3",
   "redeem_loyalty_reward_v3",
@@ -151,12 +152,15 @@ export const BACK_OFFICE_REMOTE_COMMANDS = new Set([
   "get_staff_counts_by_branch_v3",
   "get_terminal_counts_by_branch_v3",
   // customers
+  "get_customer_debt_v3",
   "create_customer_v3",
   "list_customers_v3",
   "update_customer_v3",
   "delete_customer_v3",
   "get_customer_detail_v3",
   // debt
+  "get_debt_statement_v3",
+  "unlink_debtor_customer_v3",
   "update_debtor_v3",
   "deactivate_debtor_v3",
   "list_debt_entries_v3",
@@ -245,6 +249,13 @@ export const BACK_OFFICE_REMOTE_COMMANDS = new Set([
   // order_history
   "save_history_access_v3",
   // payroll
+  "add_payroll_day_deduction_v3",
+  "delete_payroll_day_deduction_v3",
+  "get_attendance_review_v3",
+  "set_attendance_day_v3",
+  "clear_attendance_day_v3",
+  "set_attendance_approval_v3",
+  "get_worker_statement_v3",
   "get_payroll_access_v3",
   "get_payroll_settings_v3",
   "save_payroll_settings_v3",
@@ -263,6 +274,14 @@ export const BACK_OFFICE_REMOTE_COMMANDS = new Set([
   "set_paid_leave_v3",
   "add_manual_punch_v3",
   // reports
+  "get_sales_breakdown_v3",
+  "list_breakdown_orders_v3",
+  "get_cancellations_report_v3",
+  "get_customers_report_v3",
+  "get_kitchen_delivery_report_v3",
+  "get_menu_engineering_v3",
+  "list_activity_log_v3",
+  "list_activity_kinds_v3",
   "get_finance_revenue_v3",
   "get_dashboard_summary_v3",
   "get_profit_trend_v3",

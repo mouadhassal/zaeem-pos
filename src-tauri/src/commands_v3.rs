@@ -137,6 +137,7 @@ mod tests {
         migrate_v3::run_finance_ledger_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_inventory_units_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_areas_platforms_templates_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_payroll_extras_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_remote_back_office_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
@@ -5950,6 +5951,122 @@ mod tests {
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
+    /// A credit account linked to a customer: found by phone (with or without the country code), made when asked,
+    /// shown on the customer, and settled per credit invoice (full or partial) or against the overall balance, with the
+    /// remaining amount of every invoice always adding up to the balance.
+    #[test]
+    fn credit_debtor_links_to_a_customer_and_settles_per_invoice() {
+        let (db_path, tenant_id, branch_id, table_id) = seeded_db("credit_link");
+        let conn = Connection::open(&db_path).unwrap();
+        let cashier_id = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Credit Cashier");
+        let scope = crate::security::Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let repo = Repo::new(&conn);
+
+        // ---- linking -------------------------------------------------------------------------------------------
+        let customer_id = repo.create_customer(&tenant_id, "علي", Some("0933111222"), None, None, None, None).unwrap();
+        let debtor_id = repo.create_debtor(&tenant_id, &branch_id, "علي التاجر", Some("+963 933 111 222"), None, None, None, None).unwrap();
+        let unlinked = repo.list_debtors(&scope).unwrap().into_iter().find(|d| d.id == debtor_id).unwrap();
+        assert_eq!(unlinked.customer_id, None, "an existing debtor starts unlinked and keeps working");
+        // Asking without permission to create finds the customer with the same number, however it was written.
+        let l = crate::credit::link_debtor_to_customer(&conn, &tenant_id, &debtor_id, None, false).unwrap();
+        assert_eq!((l.customer_id.as_deref(), l.customer_name.as_deref(), l.created), (Some(customer_id.as_str()), Some("علي"), false));
+        let linked = repo.list_debtors(&scope).unwrap().into_iter().find(|d| d.id == debtor_id).unwrap();
+        assert_eq!((linked.customer_id.as_deref(), linked.customer_name.as_deref()), (Some(customer_id.as_str()), Some("علي")));
+
+        // A debtor nobody matches: nothing happens unless asked to create, and then it is created once.
+        let other = repo.create_debtor(&tenant_id, &branch_id, "سامر", Some("0999000111"), None, None, None, None).unwrap();
+        let customers_before = repo.list_customers(&tenant_id).unwrap().len();
+        let none = crate::credit::link_debtor_to_customer(&conn, &tenant_id, &other, None, false).unwrap();
+        assert_eq!(none.customer_id, None);
+        assert_eq!(repo.list_customers(&tenant_id).unwrap().len(), customers_before);
+        let made = crate::credit::link_debtor_to_customer(&conn, &tenant_id, &other, None, true).unwrap();
+        assert!(made.created && made.customer_id.is_some());
+        assert_eq!(repo.list_customers(&tenant_id).unwrap().len(), customers_before + 1);
+        let again = crate::credit::link_debtor_to_customer(&conn, &tenant_id, &other, None, true).unwrap();
+        assert_eq!((again.created, again.customer_id), (false, made.customer_id.clone()), "linking twice never makes a second customer");
+        assert_eq!(repo.list_customers(&tenant_id).unwrap().len(), customers_before + 1);
+        // Another business's customer cannot be used, and an unknown debtor is refused.
+        assert!(crate::credit::link_debtor_to_customer(&conn, "someone-else", &other, None, true).is_err());
+        assert!(crate::credit::link_debtor_to_customer(&conn, &tenant_id, &other, Some("no-such-customer"), false).is_err());
+
+        // ---- two credit sales ----------------------------------------------------------------------------------
+        let mut orders = Vec::new();
+        for total in [5000, 3000] {
+            let order_id = repo.create_order(&scope, &tenant_id, &branch_id, NewOrder {
+                table_id: table_id.clone(), user_id: cashier_id.clone(), order_type: "DINE_IN".into(),
+                subtotal_cents: total, tax_cents: 0, total_cents: total, discount_cents: 0,
+            }).unwrap();
+            repo.take_payment(&tenant_id, &branch_id, crate::repo::PaymentInput {
+                order_id: order_id.clone(), method: "CREDIT".into(), amount_cents: total, change_cents: 0, debtor_id: Some(debtor_id.clone()), actor_id: cashier_id.clone(),
+            }).unwrap();
+            orders.push(order_id);
+        }
+        let remaining = |conn: &Connection| -> Vec<i64> { crate::credit::debt_statement(conn, &tenant_id, &debtor_id).unwrap().invoices.iter().map(|l| l.remaining_cents).collect() };
+        let st = crate::credit::debt_statement(&conn, &tenant_id, &debtor_id).unwrap();
+        assert_eq!((st.balance_cents, st.invoices.len(), st.customer_name.as_deref()), (8000, 2, Some("علي")));
+        assert_eq!(remaining(&conn), vec![5000, 3000]);
+
+        // ---- settling one invoice, partly then fully -----------------------------------------------------------
+        repo.record_debt_settlement(&scope, &debtor_id, Some(&orders[0]), 2000, Some("دفعة"), &cashier_id).unwrap();
+        assert_eq!(remaining(&conn), vec![3000, 3000]);
+        match repo.record_debt_settlement(&scope, &debtor_id, Some(&orders[0]), 4000, None, &cashier_id) {
+            Err(RepoError::Refused(m)) => assert!(m.contains("3000"), "{m}"),
+            other => panic!("expected a refusal naming what is left, got {other:?}"),
+        }
+        repo.record_debt_settlement(&scope, &debtor_id, Some(&orders[0]), 3000, None, &cashier_id).unwrap();
+        assert_eq!(remaining(&conn), vec![0, 3000]);
+        assert!(matches!(repo.record_debt_settlement(&scope, &debtor_id, Some(&orders[0]), 1, None, &cashier_id), Err(RepoError::Refused(_))), "a settled invoice takes no more");
+        assert!(repo.record_debt_settlement(&scope, &debtor_id, Some("not-an-order-of-this-debtor"), 1, None, &cashier_id).is_err());
+        let entry_order: Option<String> = conn.query_row("SELECT order_id FROM debt_entries WHERE type = 'PAYMENT' AND amount_cents = 2000", [], |r| r.get(0)).unwrap();
+        assert_eq!(entry_order.as_deref(), Some(orders[0].as_str()), "the payment is stored against its invoice");
+
+        // ---- the overall balance: a general payment goes to the oldest open invoice -----------------------------
+        repo.record_debt_settlement(&scope, &debtor_id, None, 1000, None, &cashier_id).unwrap();
+        let st = crate::credit::debt_statement(&conn, &tenant_id, &debtor_id).unwrap();
+        assert_eq!(st.invoices.iter().map(|l| l.remaining_cents).collect::<Vec<_>>(), vec![0, 2000]);
+        assert_eq!(st.balance_cents, 2000);
+        assert_eq!(st.invoices.iter().map(|l| l.remaining_cents).sum::<i64>(), st.balance_cents, "what each invoice has left adds up to what is owed");
+        assert_eq!(st.entries.last().unwrap().balance_after_cents, 2000);
+        assert!(matches!(repo.record_debt_settlement(&scope, &debtor_id, None, 2001, None, &cashier_id), Err(RepoError::DebtPaymentExceedsBalance { .. })));
+
+        // ---- the customer's own page --------------------------------------------------------------------------
+        let debt = crate::credit::customer_debt(&conn, &tenant_id, &customer_id).unwrap();
+        assert_eq!((debt.balance_cents, debt.statements.len()), (2000, 1));
+        assert_eq!(debt.statements[0].invoices.len(), 2);
+        assert!(crate::credit::customer_debt(&conn, "someone-else", &customer_id).is_err());
+        crate::credit::unlink_debtor(&conn, &tenant_id, &debtor_id).unwrap();
+        assert_eq!(crate::credit::customer_debt(&conn, &tenant_id, &customer_id).unwrap().statements.len(), 0);
+        println!("[credit] debtor linked by phone, settled per invoice and in general, customer page and unlink all consistent");
+
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Migration 56 adds the nullable link and the payroll extras without touching what was there, and runs twice safely.
+    #[test]
+    fn payroll_extras_migration_is_additive_and_idempotent() {
+        let (db_path, _tenant_id, _branch_id, _table_id) = seeded_db("extras_migration");
+        let mut conn = Connection::open(&db_path).unwrap();
+        migrate_v3::run_payroll_extras_migration(&mut conn, &db_path).unwrap();
+        let cols = |t: &str| -> Vec<String> {
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info({t})")).unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(1)).unwrap().map(|x| x.unwrap()).collect()
+        };
+        assert!(cols("debtors").contains(&"customer_id".to_string()));
+        for c in ["extra_day_rule", "holiday_multiplier_pct", "holidays", "require_attendance_approval"] {
+            assert!(cols("payroll_settings").contains(&c.to_string()), "{c}");
+        }
+        for t in ["payroll_day_deductions", "payroll_day_overrides", "payroll_attendance_approvals"] {
+            assert!(!cols(t).is_empty(), "{t}");
+        }
+        let recorded: String = conn.query_row("SELECT name FROM schema_migrations WHERE version = 56", [], |r| r.get(0)).unwrap();
+        assert_eq!(recorded, "0056_payroll_extras_credit_link");
+        // Nothing is switched on for a shop that never asked.
+        let s = crate::payroll::load_settings(&conn, "any").unwrap();
+        assert_eq!((s.extra_day_rule.as_str(), s.require_attendance_approval), ("NONE", false));
+        migrate_v3::run_payroll_extras_migration(&mut conn, &db_path).unwrap();
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
     /// 2026-09-13 audit finding: there was previously no way to configure a
     /// maximum debt limit per debtor and nothing enforced one anywhere.
     /// Proves: (1) a NULL/unset limit preserves old behavior (unlimited),
@@ -8308,6 +8425,7 @@ mod tests {
         migrate_v3::run_finance_ledger_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_inventory_units_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_areas_platforms_templates_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_payroll_extras_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_remote_back_office_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
@@ -8980,7 +9098,7 @@ mod tests {
         const GATED: &[&str] = &[
             "save_dining_area_v3", "delete_dining_area_v3", "set_table_area_v3", "save_delivery_platform_v3", "platform_accounts_v3",
             "record_platform_settlement_v3", "list_platform_settlements_v3", "save_receipt_template_v3", "delete_receipt_template_v3", "set_printer_template_v3",
-            "list_staff_v3", "get_sales_report_v3", "get_sales_strip_v3", "gifts_report_v3", "list_pickup_no_shows_v3", "ask_assistant_v3", "assistant_insights_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
+            "list_staff_v3", "get_sales_report_v3", "get_sales_strip_v3", "get_sales_breakdown_v3", "list_breakdown_orders_v3", "get_cancellations_report_v3", "get_customers_report_v3", "get_kitchen_delivery_report_v3", "get_menu_engineering_v3", "list_activity_log_v3", "list_activity_kinds_v3", "gifts_report_v3", "list_pickup_no_shows_v3", "ask_assistant_v3", "assistant_insights_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
             "create_branch_v3", "create_staff_v3", "update_staff_v3", "update_staff_profile_v3",
             "set_staff_active_v3", "list_branches_v3", "list_shifts_v3", "force_close_shift_v3",
             "list_attendance_v3",
@@ -8991,6 +9109,7 @@ mod tests {
             "payroll_month_v3", "get_payslip_v3", "approve_payslip_v3", "pay_payslip_v3",
             "reopen_payslip_v3", "add_payroll_adjustment_v3", "delete_payroll_adjustment_v3", "add_payroll_advance_v3",
             "list_payroll_advances_v3", "cancel_payroll_advance_v3", "set_paid_leave_v3", "add_manual_punch_v3",
+            "add_payroll_day_deduction_v3", "delete_payroll_day_deduction_v3", "get_attendance_review_v3", "set_attendance_day_v3", "clear_attendance_day_v3", "set_attendance_approval_v3", "get_worker_statement_v3",
             "set_menu_item_sold_by_v3",
             "list_roster_entries_v3", "create_roster_entry_v3", "update_roster_entry_v3", "delete_roster_entry_v3",
             "create_category_v3", "update_category_v3", "delete_category_v3",
@@ -9012,7 +9131,7 @@ mod tests {
             "get_marketplace_context_v3", "receive_marketplace_order_v3",
             "list_recipe_ingredients_v3", "add_recipe_ingredient_v3", "update_recipe_ingredient_v3", "delete_recipe_ingredient_v3",
             "create_debtor_v3", "update_debtor_v3", "deactivate_debtor_v3",
-            "list_debt_entries_v3", "record_debt_payment_v3",
+            "list_debt_entries_v3", "record_debt_payment_v3", "get_debt_statement_v3", "link_debtor_customer_v3", "unlink_debtor_customer_v3", "get_customer_debt_v3",
             "get_finance_revenue_v3", "get_dashboard_summary_v3", "get_profit_trend_v3", "get_tax_collected_v3", "list_operational_costs_v3",
             "create_operational_cost_v3", "list_invoices_v3", "create_invoice_v3", "mark_invoice_paid_v3",
             "get_cost_report_v3", "get_finance_settings_v3", "save_finance_settings_v3", "list_rent_contracts_v3", "save_rent_contract_v3", "record_rent_payment_v3", "upload_cost_attachment_v3", "get_cost_attachment_v3", "set_category_cost_class_v3", "get_cost_of_sales_v3", "update_operational_cost_v3",

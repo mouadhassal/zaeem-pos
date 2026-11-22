@@ -99,7 +99,7 @@ export async function exportHtmlToPdf(filename: string, bodyHtml: string, sessio
   showSavedToast(savedPath);
 }
 
-function showSavedToast(path: string): void {
+export function showSavedToast(path: string): void {
   const toast = document.createElement("div");
   toast.dir = "rtl";
   toast.style.cssText =

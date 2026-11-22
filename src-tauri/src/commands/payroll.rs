@@ -11,7 +11,7 @@
 //! it), and never sees the owner's or another manager's pay.
 
 use crate::audit;
-use crate::payroll::{self, AdvanceRow, EmployeePay, EmployeeRow, MonthRow, Payslip, PayrollScope, PayrollSettings};
+use crate::payroll::{self, AdvanceRow, AttendanceReview, EmployeePay, EmployeeRow, MonthRow, Payslip, PayrollScope, PayrollSettings, WorkerStatement};
 use crate::security::{authorize, Permission};
 use crate::Db;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
@@ -24,7 +24,7 @@ fn local_today(tz_offset_minutes: i64) -> NaiveDate {
 }
 
 /// What this actor may do in payroll right now (the owner's `manager_access` choice decides for a manager).
-fn scope_of(conn: &rusqlite::Connection, actor: &crate::security::Actor) -> Result<PayrollScope, String> {
+pub(crate) fn scope_of(conn: &rusqlite::Connection, actor: &crate::security::Actor) -> Result<PayrollScope, String> {
     let access = payroll::load_settings(conn, &actor.tenant_id)?.manager_access;
     PayrollScope::for_actor(actor.role, actor.branch_id.as_deref(), &access)
 }
@@ -307,8 +307,14 @@ pub(crate) fn add_payroll_advance_v3_impl(state: &Db, license: &crate::license::
     payroll::person_in_scope(&conn, &actor.tenant_id, &user_id, &scope)?;
     let branch = home_branch(&conn, &user_id, &actor, license)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let id = payroll::add_advance(&tx, &actor.tenant_id, Some(&branch), &user_id, amount_cents, instalment_cents, &given_on, reason.as_deref(), &actor.id)?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, Some(&branch), &actor.id, audit::Action::SettingsChanged, "payroll_advance", &id, None, Some(&serde_json::json!({ "user_id": user_id, "amount_cents": amount_cents, "instalment_cents": instalment_cents }))).map_err(|e| e.to_string())?;
+    // The advance and its expense (category «سلفة موظف») are made together, once: the same advance entered from
+    // Finance already has its expense and never gets a second one.
+    let (id, cost_id) = payroll::add_advance_with_cost(&tx, &actor.tenant_id, &branch, &user_id, amount_cents, instalment_cents, &given_on, reason.as_deref(), &actor.id, None)?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, Some(&branch), &actor.id, audit::Action::SettingsChanged, "payroll_advance", &id, None, Some(&serde_json::json!({ "user_id": user_id, "amount_cents": amount_cents, "instalment_cents": instalment_cents, "cost_id": cost_id }))).map_err(|e| e.to_string())?;
+    if let Some(cost_id) = &cost_id {
+        audit::append(&tx, &actor.device_id, &actor.tenant_id, Some(&branch), &actor.id, audit::Action::OperationalCostRecorded, "operational_cost", cost_id, None, Some(&serde_json::json!({ "category": crate::finance::ADVANCE_CATEGORY, "amount_cents": amount_cents, "advance_id": id }))).map_err(|e| e.to_string())?;
+        super::orders::sync_enqueue_operational_cost(&tx, &actor.tenant_id, &branch, cost_id, &actor.device_id, &license.cached_status())?;
+    }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(id)
 }
@@ -403,6 +409,154 @@ pub(crate) fn add_manual_punch_v3_impl(state: &Db, license: &crate::license::clo
     Ok(id)
 }
 
+/// Days the owner deducts by hand (separate from absence). `days` may be a fraction (0.5 = half a day).
+#[tauri::command]
+pub fn add_payroll_day_deduction_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String, month: String, days: f64, reason: String) -> Result<String, String> {
+    add_payroll_day_deduction_v3_impl(&state, &license, session_token, user_id, month, days, reason)
+}
+
+pub(crate) fn add_payroll_day_deduction_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String, month: String, days: f64, reason: String) -> Result<String, String> {
+    crate::lan::reject_if_local_kitchen_satellite("add_payroll_day_deduction_v3")?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
+    if !days.is_finite() {
+        return Err("عدد الأيام غير صالح".to_string());
+    }
+    let days_x100 = (days * 100.0).round() as i64;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let scope = scope_of(&conn, &actor)?;
+    payroll::person_in_scope(&conn, &actor.tenant_id, &user_id, &scope)?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let id = payroll::add_day_deduction(&tx, &actor.tenant_id, &user_id, &month, days_x100, &reason, &actor.id)?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "payroll_day_deduction", &id, None, Some(&serde_json::json!({ "user_id": user_id, "month": month, "days_x100": days_x100, "reason": reason }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn delete_payroll_day_deduction_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, deduction_id: String) -> Result<(), String> {
+    delete_payroll_day_deduction_v3_impl(&state, &license, session_token, deduction_id)
+}
+
+pub(crate) fn delete_payroll_day_deduction_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, deduction_id: String) -> Result<(), String> {
+    crate::lan::reject_if_local_kitchen_satellite("delete_payroll_day_deduction_v3")?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let scope = scope_of(&conn, &actor)?;
+    payroll::day_deduction_person_in_scope(&conn, &actor.tenant_id, &deduction_id, &scope)?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    payroll::delete_day_deduction(&tx, &actor.tenant_id, &deduction_id)?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "payroll_day_deduction", &deduction_id, None, Some(&serde_json::json!({ "deleted": true }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// A person's month of attendance for the owner or manager to check, correct and approve before payroll.
+#[tauri::command]
+pub fn get_attendance_review_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String, month: String, tz_offset_minutes: Option<i64>) -> Result<AttendanceReview, String> {
+    get_attendance_review_v3_impl(&state, &license, session_token, user_id, month, tz_offset_minutes)
+}
+
+pub(crate) fn get_attendance_review_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String, month: String, tz_offset_minutes: Option<i64>) -> Result<AttendanceReview, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
+    let tz = tz_offset_minutes.unwrap_or(0);
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let scope = scope_of(&conn, &actor)?;
+    payroll::person_in_scope(&conn, &actor.tenant_id, &user_id, &scope)?;
+    payroll::attendance_review(&conn, &actor.tenant_id, &user_id, &month, tz, local_today(tz))
+}
+
+/// Corrects one day in the review: the day's own in/out times, or the day forced absent. The punch log is not edited.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub fn set_attendance_day_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String, day: String, absent: bool, in_time: Option<String>, out_time: Option<String>, reason: String) -> Result<(), String> {
+    set_attendance_day_v3_impl(&state, &license, session_token, user_id, day, absent, in_time, out_time, reason)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn set_attendance_day_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String, day: String, absent: bool, in_time: Option<String>, out_time: Option<String>, reason: String) -> Result<(), String> {
+    crate::lan::reject_if_local_kitchen_satellite("set_attendance_day_v3")?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let scope = scope_of(&conn, &actor)?;
+    payroll::person_in_scope(&conn, &actor.tenant_id, &user_id, &scope)?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    payroll::set_day_override(&tx, &actor.tenant_id, &user_id, &day, absent, in_time.as_deref(), out_time.as_deref(), &reason, &actor.id)?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "attendance", &user_id, None, Some(&serde_json::json!({ "action": "day_corrected", "day": day, "absent": absent, "in": in_time, "out": out_time, "reason": reason }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Undoes a day's correction (the day goes back to what the punches say).
+#[tauri::command]
+pub fn clear_attendance_day_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String, day: String) -> Result<(), String> {
+    clear_attendance_day_v3_impl(&state, &license, session_token, user_id, day)
+}
+
+pub(crate) fn clear_attendance_day_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String, day: String) -> Result<(), String> {
+    crate::lan::reject_if_local_kitchen_satellite("clear_attendance_day_v3")?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let scope = scope_of(&conn, &actor)?;
+    payroll::person_in_scope(&conn, &actor.tenant_id, &user_id, &scope)?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    payroll::clear_day_override(&tx, &user_id, &day)?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "attendance", &user_id, None, Some(&serde_json::json!({ "action": "day_correction_cleared", "day": day }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// "اعتماد الحضور" for one person and month; with `approve = false` the approval is taken back.
+#[tauri::command]
+pub fn set_attendance_approval_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String, month: String, approve: bool, tz_offset_minutes: Option<i64>) -> Result<(), String> {
+    set_attendance_approval_v3_impl(&state, &license, session_token, user_id, month, approve, tz_offset_minutes)
+}
+
+pub(crate) fn set_attendance_approval_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String, month: String, approve: bool, tz_offset_minutes: Option<i64>) -> Result<(), String> {
+    crate::lan::reject_if_local_kitchen_satellite("set_attendance_approval_v3")?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
+    let tz = tz_offset_minutes.unwrap_or(0);
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let scope = scope_of(&conn, &actor)?;
+    payroll::person_in_scope(&conn, &actor.tenant_id, &user_id, &scope)?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    if approve {
+        payroll::approve_attendance(&tx, &actor.tenant_id, &user_id, &month, tz, local_today(tz), &actor.id)?;
+    } else {
+        payroll::unapprove_attendance(&tx, &user_id, &month)?;
+    }
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "attendance", &user_id, None, Some(&serde_json::json!({ "action": if approve { "attendance_approved" } else { "attendance_unapproved" }, "month": month }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// A worker's account: the advances given, what was taken back off each payslip, and what is still owed.
+#[tauri::command]
+pub fn get_worker_statement_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String) -> Result<WorkerStatement, String> {
+    get_worker_statement_v3_impl(&state, &license, session_token, user_id)
+}
+
+pub(crate) fn get_worker_statement_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String) -> Result<WorkerStatement, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let scope = scope_of(&conn, &actor)?;
+    payroll::person_in_scope(&conn, &actor.tenant_id, &user_id, &scope)?;
+    payroll::worker_statement(&conn, &actor.tenant_id, &user_id)
+}
+
 // ---------------------------------------------------------------------------
 // Remote back office: the arms a second till's back-office commands take on the hub
 // (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
@@ -412,6 +566,62 @@ pub(crate) fn add_manual_punch_v3_impl(state: &Db, license: &crate::license::clo
 pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
     use super::lan_rpc::lan_arg;
     let value = match command {
+        "add_payroll_day_deduction_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let user_id: String = lan_arg(args, "userId")?;
+            let month: String = lan_arg(args, "month")?;
+            let days: f64 = lan_arg(args, "days")?;
+            let reason: String = lan_arg(args, "reason")?;
+            let r = add_payroll_day_deduction_v3_impl(db, license, session_token, user_id, month, days, reason)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_payroll_day_deduction_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let deduction_id: String = lan_arg(args, "deductionId")?;
+            let r = delete_payroll_day_deduction_v3_impl(db, license, session_token, deduction_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_attendance_review_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let user_id: String = lan_arg(args, "userId")?;
+            let month: String = lan_arg(args, "month")?;
+            let tz_offset_minutes: Option<i64> = lan_arg(args, "tzOffsetMinutes")?;
+            let r = get_attendance_review_v3_impl(db, license, session_token, user_id, month, tz_offset_minutes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "set_attendance_day_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let user_id: String = lan_arg(args, "userId")?;
+            let day: String = lan_arg(args, "day")?;
+            let absent: bool = lan_arg(args, "absent")?;
+            let in_time: Option<String> = lan_arg(args, "inTime")?;
+            let out_time: Option<String> = lan_arg(args, "outTime")?;
+            let reason: String = lan_arg(args, "reason")?;
+            let r = set_attendance_day_v3_impl(db, license, session_token, user_id, day, absent, in_time, out_time, reason)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "clear_attendance_day_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let user_id: String = lan_arg(args, "userId")?;
+            let day: String = lan_arg(args, "day")?;
+            let r = clear_attendance_day_v3_impl(db, license, session_token, user_id, day)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "set_attendance_approval_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let user_id: String = lan_arg(args, "userId")?;
+            let month: String = lan_arg(args, "month")?;
+            let approve: bool = lan_arg(args, "approve")?;
+            let tz_offset_minutes: Option<i64> = lan_arg(args, "tzOffsetMinutes")?;
+            let r = set_attendance_approval_v3_impl(db, license, session_token, user_id, month, approve, tz_offset_minutes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_worker_statement_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let user_id: String = lan_arg(args, "userId")?;
+            let r = get_worker_statement_v3_impl(db, license, session_token, user_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
         "get_payroll_access_v3" => {
             let session_token: String = lan_arg(args, "sessionToken")?;
             let r = get_payroll_access_v3_impl(db, license, session_token)?;

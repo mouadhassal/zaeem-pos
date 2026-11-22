@@ -5,7 +5,7 @@ import { formatMoney, minorToInputValue, parseMoneyInput } from "../../lib/money
 import { realErrorText } from "../../lib/errors";
 import { toLocalDateStr } from "../../lib/dateLocal";
 import DatePicker from "../../components/ui/DatePicker";
-import { categoryHint, EXPENSE_CATEGORIES } from "../../lib/profit";
+import { ADVANCE_CATEGORY, categoryHint, EXPENSE_CATEGORIES } from "../../lib/profit";
 import { COST_GROUPS, monthOf, monthRange, paymentMethodLabel, PAYMENT_METHODS, type CostGroupBy } from "../../lib/finance";
 
 /** One expense as `list_operational_costs_v3` returns it (finance.rs `CostRow`). */
@@ -101,10 +101,27 @@ export default function CostsTab({ token, onRows, notify }: Props) {
   const [existingReceipt, setExistingReceipt] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  // An advance to a worker («سلفة موظف»): who took it, and how much is taken off each salary.
+  const [workers, setWorkers] = useState<{ user_id: string; name: string }[] | null>(null);
+  const [workersError, setWorkersError] = useState<string | null>(null);
+  const [advanceUser, setAdvanceUser] = useState("");
+  const [advanceInstalment, setAdvanceInstalment] = useState("");
 
   const [receipt, setReceipt] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newCategory, setNewCategory] = useState("");
+
+  const isAdvance = form.category === ADVANCE_CATEGORY && !editId;
+  useEffect(() => {
+    if (!isAdvance || workers) return;
+    invoke<{ user_id: string; name: string; pay: unknown | null }[]>("list_payroll_employees_v3", { sessionToken: token })
+      .then((rows) => {
+        const list = rows.filter((r) => r.pay).map((r) => ({ user_id: r.user_id, name: r.name }));
+        setWorkers(list);
+        setAdvanceUser((u) => u || list[0]?.user_id || "");
+      })
+      .catch((err) => setWorkersError(realErrorText(err)));
+  }, [isAdvance, workers, token]);
 
   const preview = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
 
@@ -152,6 +169,7 @@ export default function CostsTab({ token, onRows, notify }: Props) {
   const openNew = () => {
     setEditId(null);
     setForm(emptyForm(EXPENSE_CATEGORIES[0]));
+    setAdvanceInstalment("");
     setMoreOpen(false);
     setFile(null);
     setExistingReceipt(null);
@@ -194,6 +212,15 @@ export default function CostsTab({ token, onRows, notify }: Props) {
       setFormError("الصورة كبيرة جداً (الحد الأقصى 3 ميجابايت)");
       return;
     }
+    if (isAdvance && !advanceUser) {
+      setFormError("اختر الموظف الذي أخذ السلفة");
+      return;
+    }
+    const instalment = parseMoneyInput(advanceInstalment);
+    if (isAdvance && instalment > amount) {
+      setFormError("القسط أكبر من مبلغ السلفة");
+      return;
+    }
     setSaving(true);
     setFormError(null);
     try {
@@ -214,7 +241,7 @@ export default function CostsTab({ token, onRows, notify }: Props) {
       if (editId) {
         await invoke("update_operational_cost_v3", { ...args, costId: editId });
       } else {
-        id = await invoke<string>("create_operational_cost_v3", args);
+        id = await invoke<string>("create_operational_cost_v3", isAdvance ? { ...args, advanceUserId: advanceUser, advanceInstalmentCents: instalment > 0 ? instalment : amount } : args);
       }
       if (file && id) {
         const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
@@ -448,6 +475,23 @@ export default function CostsTab({ token, onRows, notify }: Props) {
                 </select>
                 <p className="mt-1 text-[11px] text-ink-400 font-arabic" data-testid="cost-category-hint">{categoryHint(form.category)}</p>
               </div>
+              {isAdvance && (
+                <div className="grid grid-cols-2 gap-3 rounded-md border border-saffron-300 bg-saffron-50 p-3" data-testid="advance-fields">
+                  <div>
+                    <label className="block text-sm font-arabic text-ink-900 mb-1">الموظف</label>
+                    <select value={advanceUser} onChange={(e) => setAdvanceUser(e.target.value)} className={INPUT} data-testid="advance-worker">
+                      {(workers ?? []).map((w) => <option key={w.user_id} value={w.user_id}>{w.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-arabic text-ink-900 mb-1">القسط من كل راتب</label>
+                    <input type="number" min="0" step="0.01" value={advanceInstalment} onChange={(e) => setAdvanceInstalment(e.target.value)} placeholder="كامل المبلغ" className={`${INPUT} font-mono`} dir="ltr" data-testid="advance-instalment" />
+                  </div>
+                  {workersError && <p className="col-span-2 text-xs text-danger font-arabic">{workersError}</p>}
+                  {workers && workers.length === 0 && !workersError && <p className="col-span-2 text-xs text-warn font-arabic">لا موظفين لهم راتب محدد. حدّد الرواتب من صفحة «الرواتب» أولاً.</p>}
+                  <p className="col-span-2 text-[11px] text-ink-500 font-arabic">تُسجَّل السلفة على الموظف في «الرواتب» تلقائياً وتُخصم أقساطها من رواتبه، ولا تسجّلها هناك مرة ثانية.</p>
+                </div>
+              )}
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">المبلغ</label>
                 <input type="number" min="0" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className={`${INPUT} font-mono`} dir="ltr" />

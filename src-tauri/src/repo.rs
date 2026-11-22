@@ -1033,6 +1033,9 @@ pub struct DebtorRow {
     /// that can increase `balance_cents` (`record_initial_debt`,
     /// `take_payment`, `finalize_order_with_payment`).
     pub credit_limit_cents: Option<i64>,
+    /// The customer this credit account is linked to (None = not linked, as before).
+    pub customer_id: Option<String>,
+    pub customer_name: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -2302,7 +2305,8 @@ impl<'a> Repo<'a> {
         // reason: DebtorRow.phone is non-optional String but the column is
         // nullable and create_debtor now allows email-only debtors.
         let sql = format!(
-            "SELECT id, name, COALESCE(phone, ''), email, address, notes, total_debt_cents, total_paid_cents, balance_cents, last_transaction_at, is_active, credit_limit_cents \
+            "SELECT id, name, COALESCE(phone, ''), email, address, notes, total_debt_cents, total_paid_cents, balance_cents, last_transaction_at, is_active, credit_limit_cents, \
+                    customer_id, (SELECT c.name FROM customers c WHERE c.id = debtors.customer_id) \
              FROM debtors WHERE {predicate} AND is_active = 1 ORDER BY name ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -2311,7 +2315,7 @@ impl<'a> Repo<'a> {
             Ok(DebtorRow {
                 id: r.get(0)?, name: r.get(1)?, phone: r.get(2)?, email: r.get(3)?, address: r.get(4)?, notes: r.get(5)?,
                 total_debt_cents: r.get(6)?, total_paid_cents: r.get(7)?, balance_cents: r.get(8)?, last_transaction_at: r.get(9)?, is_active: r.get(10)?,
-                credit_limit_cents: r.get(11)?,
+                credit_limit_cents: r.get(11)?, customer_id: r.get(12)?, customer_name: r.get(13)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
@@ -2413,6 +2417,11 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
+    /// The debtor must be one this caller may see (their business, and for a branch actor their branch).
+    pub fn assert_debtor_in_scope(&self, scope: &Scope, debtor_id: &str) -> Result<(), RepoError> {
+        self.assert_row_in_scope("debtors", debtor_id, scope)
+    }
+
     pub fn list_debt_entries(&self, scope: &Scope, debtor_id: &str) -> Result<Vec<DebtEntryRow>, RepoError> {
         self.assert_row_in_scope("debtors", debtor_id, scope)?;
         let mut stmt = self.conn.prepare(
@@ -2435,8 +2444,20 @@ impl<'a> Repo<'a> {
     /// their tenant. The entry is stamped with the debtor's branch (where
     /// the debt actually lives), not the acting staff member's, which is
     /// also the more correct bookkeeping regardless of who's paying.
+    #[cfg(test)]
     pub fn record_debt_payment(&self, scope: &Scope, debtor_id: &str, amount_cents: i64, notes: Option<&str>, actor_id: &str) -> Result<String, RepoError> {
+        self.record_debt_settlement(scope, debtor_id, None, amount_cents, notes, actor_id)
+    }
+
+    /// A payment on a debtor's account: against the overall balance (`order_id` None, counted against the oldest open
+    /// invoices) or against one credit invoice (`order_id` = that sale's order, which must be open and is never overpaid).
+    /// Full or partial either way.
+    pub fn record_debt_settlement(&self, scope: &Scope, debtor_id: &str, order_id: Option<&str>, amount_cents: i64, notes: Option<&str>, actor_id: &str) -> Result<String, RepoError> {
         self.assert_row_in_scope("debtors", debtor_id, scope)?;
+        if let Some(order) = order_id {
+            let entries = crate::credit::load_entries(self.conn, debtor_id).map_err(RepoError::Refused)?;
+            crate::credit::check_settlement(&entries, order, amount_cents).map_err(RepoError::Refused)?;
+        }
         let (tenant_id, branch_id, balance_cents): (String, String, i64) = self.conn.query_row(
             "SELECT tenant_id, branch_id, balance_cents FROM debtors WHERE id = ?1",
             params![debtor_id],
@@ -2449,8 +2470,8 @@ impl<'a> Repo<'a> {
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
             "INSERT INTO debt_entries (id, tenant_id, branch_id, debtor_id, order_id, amount_cents, type, notes, created_by, created_at, last_modified, sync_status) \
-             VALUES (?1, ?2, ?3, ?4, NULL, ?5, 'PAYMENT', ?6, ?7, ?8, ?8, 'pending')",
-            params![id, tenant_id, branch_id, debtor_id, amount_cents, notes, actor_id, now],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'PAYMENT', ?7, ?8, ?9, ?9, 'pending')",
+            params![id, tenant_id, branch_id, debtor_id, order_id, amount_cents, notes, actor_id, now],
         )?;
         self.conn.execute(
             "UPDATE debtors SET total_paid_cents = total_paid_cents + ?1, balance_cents = balance_cents - ?1, last_transaction_at = ?2, last_modified = ?2 WHERE id = ?3",
@@ -6849,6 +6870,7 @@ mod tests {
         migrate_v3::run_finance_ledger_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_inventory_units_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_areas_platforms_templates_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_payroll_extras_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_remote_back_office_migration(&mut conn, &db_path).unwrap();
         db_path
     }

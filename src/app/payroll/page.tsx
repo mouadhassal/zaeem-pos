@@ -113,6 +113,8 @@ export default function PayrollPage() {
               <p>التأخير: {describeLateRule(settings)}</p>
               <p>الغياب: {describeAbsenceRule(settings)}</p>
               <p>الوقت الإضافي: {settings.overtime_rule === "PER_HOUR" ? `يُدفع بنسبة ${settings.overtime_multiplier_pct}%` : "لا يُدفع"}</p>
+              <p>العمل في العطلة: {settings.extra_day_rule === "DAY_PAY" ? `يوم إضافي بنسبة ${settings.holiday_multiplier_pct}%` : "وقت إضافي فقط"}{settings.holidays.length > 0 ? ` · ${settings.holidays.length} عطلة رسمية مسجلة` : ""}</p>
+              <p>اعتماد الحضور قبل الراتب: {settings.require_attendance_approval ? "مطلوب" : "غير مطلوب"}</p>
               <p>المشرفون: {MANAGER_LABEL[settings.manager_access]}</p>
             </div>
           )}

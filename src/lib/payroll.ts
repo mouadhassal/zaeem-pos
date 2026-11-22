@@ -34,7 +34,17 @@ export interface PayrollSettings {
   overtime_after_minutes: number;
   /** What a branch manager may do: the owner's choice. */
   manager_access: ManagerAccess;
+  /** NONE: a day worked on a day off or a holiday is overtime. DAY_PAY: it is an extra day paid at `holiday_multiplier_pct`. */
+  extra_day_rule: ExtraDayRule;
+  /** Percent of one day's pay an extra day is paid at (150 = a day and a half). */
+  holiday_multiplier_pct: number;
+  /** Official holidays the owner marked, "2026-11-10". */
+  holidays: string[];
+  /** ON: a month's attendance must be approved before the payslip can be approved. */
+  require_attendance_approval: boolean;
 }
+
+export type ExtraDayRule = "NONE" | "DAY_PAY";
 
 export type ManagerAccess = "NONE" | "PREPARE" | "FULL";
 
@@ -87,6 +97,17 @@ export interface AdvanceRow {
   reason: string | null;
 }
 
+export interface DayDeductionRow {
+  id: string;
+  month: string;
+  /** Hundredths of a day: 150 = a day and a half. */
+  days_x100: number;
+  reason: string;
+  created_at: string;
+}
+
+export type AttendanceState = "NOT_REQUIRED" | "PENDING" | "APPROVED";
+
 export type DayStatus = "PRESENT" | "LATE" | "ABSENT" | "OFF" | "OFF_WORKED" | "PAID_LEAVE" | "MISSING_OUT" | "PENDING" | "NO_RECORD";
 
 export interface DayLine {
@@ -99,6 +120,9 @@ export interface DayLine {
   early_minutes: number;
   overtime_minutes: number;
   note: string | null;
+  holiday?: boolean;
+  /** Corrected by hand in the attendance review. */
+  corrected?: boolean;
 }
 
 export interface Payslip {
@@ -121,11 +145,24 @@ export interface Payslip {
   overtime_minutes: number;
   overtime_pay_cents: number;
   paid_leave_days: number;
+  /** Days worked on a day off or a holiday, paid as extra days. */
+  extra_days: number;
+  extra_day_pay_cents: number;
+  extra_day_multiplier_pct: number;
+  /** Days deducted by hand (hundredths of a day), apart from absence. */
+  deduction_days_x100: number;
+  deduction_days_cents: number;
+  day_deductions: DayDeductionRow[];
   bonus_cents: number;
   fine_cents: number;
+  /** Everything added: base + overtime + extra days + bonuses. */
+  gross_cents: number;
+  /** Everything deducted: late + absence + early + deduction days + fines. */
+  total_deductions_cents: number;
   earned_cents: number;
   advance_repaid_cents: number;
   net_cents: number;
+  attendance_status: AttendanceState;
   days: DayLine[];
   adjustments: AdjustmentRow[];
   warnings: string[];
@@ -148,6 +185,87 @@ export interface MonthRow {
   net_cents: number;
   warnings: number;
   payslip_id: string | null;
+  gross_cents: number;
+  extra_day_pay_cents: number;
+  deduction_days_cents: number;
+  attendance_status: AttendanceState;
+}
+
+export interface DayOverride {
+  day: string;
+  absent: boolean;
+  in_time: string | null;
+  out_time: string | null;
+  reason: string;
+}
+
+/** One person's month of attendance, for the owner or manager to check, correct and approve. */
+export interface AttendanceReview {
+  user_id: string;
+  user_name: string;
+  month: string;
+  required: boolean;
+  approved: boolean;
+  approved_at: string | null;
+  payslip_locked: boolean;
+  days: DayLine[];
+  overrides: DayOverride[];
+  present_days: number;
+  absent_days: number;
+  late_days: number;
+  late_minutes: number;
+  early_minutes: number;
+  overtime_minutes: number;
+  extra_days: number;
+  paid_leave_days: number;
+  warnings: string[];
+}
+
+export interface StatementLine {
+  date: string;
+  kind: "ADVANCE" | "REPAYMENT";
+  label: string;
+  amount_cents: number;
+  balance_cents: number;
+}
+
+/** A worker's account: advances given, instalments taken off payslips, and what is still owed. */
+export interface WorkerStatement {
+  user_id: string;
+  user_name: string;
+  lines: StatementLine[];
+  total_advanced_cents: number;
+  total_repaid_cents: number;
+  owed_cents: number;
+  payslips: { month: string; status: string; earned_cents: number; advance_repaid_cents: number; net_cents: number }[];
+}
+
+export const ATTENDANCE_STATE_LABEL: Record<AttendanceState, string> = {
+  NOT_REQUIRED: "غير مطلوب",
+  PENDING: "بانتظار الاعتماد",
+  APPROVED: "معتمد",
+};
+
+/** Whole days from hundredths: 150 -> "1.5", 100 -> "1", 25 -> "0.25". */
+export function formatDaysX100(x100: number): string {
+  const d = x100 / 100;
+  return Number.isInteger(d) ? String(d) : String(Math.round(d * 100) / 100);
+}
+
+/** What the person typed ("1.5", "٠٫٥") as hundredths of a day; 0 for anything that is not a positive number. */
+export function parseDaysX100(input: string): number {
+  const n = Number(input.replace(/[٠-٩]/g, (c) => String(c.charCodeAt(0) - 0x0660)).replace(/[٫,]/g, ".").trim());
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : 0;
+}
+
+/** A day worked on a day off or a holiday, paid as an extra day: whole days of pay x the owner's percent. */
+export function extraDayPay(days: number, dayPayCents: number, pct: number): number {
+  return muldiv(dayPayCents * days, pct, 100);
+}
+
+/** The pay for days deducted by hand (hundredths of a day). */
+export function deductionDaysCost(daysX100: number, dayPayCents: number): number {
+  return muldiv(dayPayCents, daysX100, 100);
 }
 
 /** What a fresh install starts with: nothing is deducted until the owner chooses. */
@@ -170,6 +288,10 @@ export const DEFAULT_SETTINGS: PayrollSettings = {
   overtime_multiplier_pct: 150,
   overtime_after_minutes: 30,
   manager_access: "NONE",
+  extra_day_rule: "NONE",
+  holiday_multiplier_pct: 150,
+  holidays: [],
+  require_attendance_approval: false,
 };
 
 export const WEEKDAYS = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
@@ -283,6 +405,7 @@ export function exampleLines(s: PayrollSettings, salary: number): ExampleLine[] 
   if (s.absence_rule !== "NONE") lines.push({ label: "غاب يوماً", amount: -absenceCost(1, salary, s) });
   if (s.early_rule !== "NONE") lines.push({ label: "خرج قبل النهاية بساعة", amount: -earlyCost(60, salary, s) });
   if (s.overtime_rule !== "NONE") lines.push({ label: "عمل ساعتين إضافيتين", amount: overtimePay(120, salary, s) });
+  if (s.extra_day_rule === "DAY_PAY") lines.push({ label: "عمل يوماً في عطلة", amount: extraDayPay(1, dayPay(salary, s), s.holiday_multiplier_pct) });
   return lines;
 }
 

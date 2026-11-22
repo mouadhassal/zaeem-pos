@@ -44,7 +44,7 @@ const DELIVERY: &[&str] = &[
         "record_platform_settlement_v3", "list_platform_settlements_v3",
     ];
 const PICKUP: &[&str] = &["list_pickup_orders_v3", "claim_due_pickup_kitchen_v3", "send_pickup_to_kitchen_now_v3", "mark_pickup_no_show_v3", "list_pickup_no_shows_v3"];
-const DEBT: &[&str] = &["list_debtors_v3", "create_debtor_v3", "update_debtor_v3", "deactivate_debtor_v3", "list_debt_entries_v3", "record_debt_payment_v3"];
+const DEBT: &[&str] = &["list_debtors_v3", "create_debtor_v3", "update_debtor_v3", "deactivate_debtor_v3", "list_debt_entries_v3", "record_debt_payment_v3", "get_debt_statement_v3", "link_debtor_customer_v3", "unlink_debtor_customer_v3", "get_customer_debt_v3"];
 const LOYALTY: &[&str] = &[
         "list_loyalty_cards_v3", "issue_loyalty_card_v3", "list_loyalty_transactions_v3", "list_loyalty_tiers_v3", "create_loyalty_tier_v3",
         "update_loyalty_tier_v3", "delete_loyalty_tier_v3", "list_loyalty_rewards_v3", "create_loyalty_reward_v3", "set_loyalty_reward_active_v3",
@@ -71,6 +71,7 @@ const HR: &[&str] = &[
         "get_payroll_settings_v3", "save_payroll_settings_v3", "list_payroll_employees_v3", "save_payroll_employee_v3", "payroll_month_v3",
         "get_payslip_v3", "approve_payslip_v3", "pay_payslip_v3", "reopen_payslip_v3", "add_payroll_adjustment_v3", "delete_payroll_adjustment_v3",
         "add_payroll_advance_v3", "list_payroll_advances_v3", "cancel_payroll_advance_v3", "set_paid_leave_v3", "add_manual_punch_v3",
+        "add_payroll_day_deduction_v3", "delete_payroll_day_deduction_v3", "get_attendance_review_v3", "set_attendance_day_v3", "clear_attendance_day_v3", "set_attendance_approval_v3", "get_worker_statement_v3",
     ];
 const AI: &[&str] = &["ask_assistant_v3", "assistant_insights_v3", "queue_media", "list_uploads", "process_queue", "reset_failed_uploads", "clear_uploads", "delete_upload", "apply_draft"];
 

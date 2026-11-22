@@ -88,12 +88,12 @@ pub(crate) fn list_operational_costs_v3_impl(state: &Db, license: &crate::licens
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_operational_cost_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category: String, amount_cents: i64, date: String, notes: Option<String>, payment_date: Option<String>, payee: Option<String>, payment_method: Option<String>, reference_no: Option<String>, cost_centre: Option<String>, accrual_period: Option<String>) -> Result<String, String> {
-    create_operational_cost_v3_impl(&state, &license, session_token, category, amount_cents, date, notes, payment_date, payee, payment_method, reference_no, cost_centre, accrual_period)
+pub fn create_operational_cost_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category: String, amount_cents: i64, date: String, notes: Option<String>, payment_date: Option<String>, payee: Option<String>, payment_method: Option<String>, reference_no: Option<String>, cost_centre: Option<String>, accrual_period: Option<String>, advance_user_id: Option<String>, advance_instalment_cents: Option<i64>) -> Result<String, String> {
+    create_operational_cost_v3_impl(&state, &license, session_token, category, amount_cents, date, notes, payment_date, payee, payment_method, reference_no, cost_centre, accrual_period, advance_user_id, advance_instalment_cents)
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn create_operational_cost_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, category: String, amount_cents: i64, date: String, notes: Option<String>, payment_date: Option<String>, payee: Option<String>, payment_method: Option<String>, reference_no: Option<String>, cost_centre: Option<String>, accrual_period: Option<String>) -> Result<String, String> {
+pub(crate) fn create_operational_cost_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, category: String, amount_cents: i64, date: String, notes: Option<String>, payment_date: Option<String>, payee: Option<String>, payment_method: Option<String>, reference_no: Option<String>, cost_centre: Option<String>, accrual_period: Option<String>, advance_user_id: Option<String>, advance_instalment_cents: Option<i64>) -> Result<String, String> {
     let actor = authenticate_actor(state, &session_token)?;
     require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
@@ -105,7 +105,19 @@ pub(crate) fn create_operational_cost_v3_impl(state: &Db, license: &crate::licen
     fields.normalise()?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let cost_id = crate::finance::insert_cost(&tx, &tenant_id, &branch_id, &actor.id, &fields).map_err(|e| e.to_string())?;
+    let cost_id = if fields.category == crate::finance::ADVANCE_CATEGORY {
+        // An advance paid to a worker: the payroll advance is created together with this expense (once), and
+        // payroll never records a second expense for it.
+        let worker = advance_user_id.as_deref().map(str::trim).filter(|w| !w.is_empty()).ok_or("اختر الموظف الذي أخذ السلفة")?;
+        let scope = super::payroll::scope_of(&tx, &actor)?;
+        crate::payroll::person_in_scope(&tx, &tenant_id, worker, &scope)?;
+        let instalment = advance_instalment_cents.filter(|i| *i > 0).unwrap_or(amount_cents);
+        let (advance_id, cost_id) = crate::payroll::add_advance_with_cost(&tx, &tenant_id, &branch_id, worker, fields.amount_cents, instalment, &fields.date, fields.notes.as_deref(), &actor.id, Some(fields.clone()))?;
+        audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::SettingsChanged, "payroll_advance", &advance_id, None, Some(&serde_json::json!({ "user_id": worker, "amount_cents": amount_cents, "instalment_cents": instalment, "from": "finance" }))).map_err(|e| e.to_string())?;
+        cost_id.ok_or("تعذر تسجيل مصروف السلفة")?
+    } else {
+        crate::finance::insert_cost(&tx, &tenant_id, &branch_id, &actor.id, &fields).map_err(|e| e.to_string())?
+    };
     audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::OperationalCostRecorded, "operational_cost", &cost_id, None, Some(&serde_json::json!({ "category": fields.category, "amount_cents": amount_cents }))).map_err(|e| e.to_string())?;
     // T2.0 plan §0 flag #4: operational_costs' first-ever sync wire-up.
     let license_status = license.cached_status();
@@ -128,6 +140,9 @@ pub(crate) fn update_operational_cost_v3_impl(state: &Db, license: &crate::licen
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let mut fields = crate::finance::CostFields { category, amount_cents, date, notes, payment_date, payee, payment_method, reference_no, cost_centre, accrual_period, ..Default::default() };
     fields.normalise()?;
+    if fields.category == crate::finance::ADVANCE_CATEGORY {
+        return Err("السلفة تُسجَّل كمصروف جديد مع اختيار الموظف، ولا يُحوَّل إليها مصروف قديم".to_string());
+    }
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = crate::finance::update_cost(&tx, &actor.scope(), &cost_id, &fields)?;
@@ -243,6 +258,131 @@ pub(crate) fn get_sales_strip_v3_impl(state: &Db, license: &crate::license::clou
     require_plan_includes_management(license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     crate::sales_strip::strip(&conn, &actor.scope(), &start_iso, &end_iso).map_err(|e| e.to_string())
+}
+
+/// Sales for a period split one way: by hour, table, dining area, cashier, order source, payment
+/// method, or discounts by person / by reason. The page asks again for the previous period of the
+/// same length to show the change.
+#[tauri::command]
+pub fn get_sales_breakdown_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String, kind: String, tz_offset_minutes: Option<i64>) -> Result<crate::sales_reports::Breakdown, String> {
+    get_sales_breakdown_v3_impl(&state, &license, session_token, start_iso, end_iso, kind, tz_offset_minutes)
+}
+
+pub(crate) fn get_sales_breakdown_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, start_iso: String, end_iso: String, kind: String, tz_offset_minutes: Option<i64>) -> Result<crate::sales_reports::Breakdown, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::sales_reports::breakdown(&conn, &actor.scope(), &kind, &start_iso, &end_iso, tz_offset_minutes.unwrap_or(0))
+}
+
+/// The orders behind one row of a breakdown (what a tap on the row opens).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn list_breakdown_orders_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String, kind: String, key: String, tz_offset_minutes: Option<i64>) -> Result<Vec<crate::order_history::HistoryRow>, String> {
+    list_breakdown_orders_v3_impl(&state, &license, session_token, start_iso, end_iso, kind, key, tz_offset_minutes)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn list_breakdown_orders_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, start_iso: String, end_iso: String, kind: String, key: String, tz_offset_minutes: Option<i64>) -> Result<Vec<crate::order_history::HistoryRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::sales_reports::breakdown_orders(&conn, &actor.scope(), &kind, &key, &start_iso, &end_iso, tz_offset_minutes.unwrap_or(0))
+}
+
+/// Cancelled orders and voided items in a period: who, why, how much.
+#[tauri::command]
+pub fn get_cancellations_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String) -> Result<crate::sales_reports::Cancellations, String> {
+    get_cancellations_report_v3_impl(&state, &license, session_token, start_iso, end_iso)
+}
+
+pub(crate) fn get_cancellations_report_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, start_iso: String, end_iso: String) -> Result<crate::sales_reports::Cancellations, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::sales_reports::cancellations(&conn, &actor.scope(), &start_iso, &end_iso)
+}
+
+/// Top customers, customers gone quiet for `inactive_days`, visit frequency and debts by age.
+#[tauri::command]
+pub fn get_customers_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String, inactive_days: Option<i64>) -> Result<crate::sales_reports::CustomersReport, String> {
+    get_customers_report_v3_impl(&state, &license, session_token, start_iso, end_iso, inactive_days)
+}
+
+pub(crate) fn get_customers_report_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, start_iso: String, end_iso: String, inactive_days: Option<i64>) -> Result<crate::sales_reports::CustomersReport, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::sales_reports::customers_report(&conn, &actor.scope(), &start_iso, &end_iso, inactive_days.unwrap_or(30), &chrono::Utc::now().to_rfc3339())
+}
+
+/// Kitchen preparation time (late orders over `late_minutes`), delivery times and orders per delivery app.
+#[tauri::command]
+pub fn get_kitchen_delivery_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String, late_minutes: Option<i64>) -> Result<crate::sales_reports::KitchenDelivery, String> {
+    get_kitchen_delivery_report_v3_impl(&state, &license, session_token, start_iso, end_iso, late_minutes)
+}
+
+pub(crate) fn get_kitchen_delivery_report_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, start_iso: String, end_iso: String, late_minutes: Option<i64>) -> Result<crate::sales_reports::KitchenDelivery, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::sales_reports::kitchen_delivery(&conn, &actor.scope(), &start_iso, &end_iso, late_minutes.unwrap_or(20))
+}
+
+/// Menu engineering: popularity against profit per item, category profit, add-on usage.
+#[tauri::command]
+pub fn get_menu_engineering_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String) -> Result<crate::sales_reports::MenuEngineering, String> {
+    get_menu_engineering_v3_impl(&state, &license, session_token, start_iso, end_iso)
+}
+
+pub(crate) fn get_menu_engineering_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, start_iso: String, end_iso: String) -> Result<crate::sales_reports::MenuEngineering, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::sales_reports::menu_engineering(&conn, &actor.scope(), &start_iso, &end_iso)
+}
+
+/// The activity log ("سجل النشاط"): every sensitive action in plain Arabic. Owner only, read only.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn list_activity_log_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String, actor_id: Option<String>, kind: Option<String>, limit: Option<i64>) -> Result<crate::activity_log::ActivityReport, String> {
+    list_activity_log_v3_impl(&state, &license, session_token, start_iso, end_iso, actor_id, kind, limit)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn list_activity_log_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, start_iso: String, end_iso: String, actor_id: Option<String>, kind: Option<String>, limit: Option<i64>) -> Result<crate::activity_log::ActivityReport, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    authorize(&actor, Permission::ViewActivityLog).map_err(|e| e.to_string())?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let filter = crate::activity_log::ActivityFilter { start_iso, end_iso, actor_id, kind, limit: limit.unwrap_or(500).clamp(1, 1000) as usize };
+    crate::activity_log::list(&conn, &actor.scope(), &filter)
+}
+
+/// The kinds of action the activity log can filter by: (id, Arabic label).
+#[tauri::command]
+pub fn list_activity_kinds_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<(String, String)>, String> {
+    list_activity_kinds_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_activity_kinds_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<(String, String)>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    authorize(&actor, Permission::ViewActivityLog).map_err(|e| e.to_string())?;
+    require_license_not_locked(license)?;
+    Ok(crate::activity_log::KINDS.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect())
 }
 
 /// 2026-08-04: the business assistant -- "you ask, it answers from your
@@ -474,6 +614,70 @@ pub(crate) fn reconcile_orders_v3_impl(state: &Db, license: &crate::license::clo
 pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
     use super::lan_rpc::lan_arg;
     let value = match command {
+        "get_sales_breakdown_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let start_iso: String = lan_arg(args, "startIso")?;
+            let end_iso: String = lan_arg(args, "endIso")?;
+            let kind: String = lan_arg(args, "kind")?;
+            let tz_offset_minutes: Option<i64> = lan_arg(args, "tzOffsetMinutes")?;
+            let r = get_sales_breakdown_v3_impl(db, license, session_token, start_iso, end_iso, kind, tz_offset_minutes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_breakdown_orders_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let start_iso: String = lan_arg(args, "startIso")?;
+            let end_iso: String = lan_arg(args, "endIso")?;
+            let kind: String = lan_arg(args, "kind")?;
+            let key: String = lan_arg(args, "key")?;
+            let tz_offset_minutes: Option<i64> = lan_arg(args, "tzOffsetMinutes")?;
+            let r = list_breakdown_orders_v3_impl(db, license, session_token, start_iso, end_iso, kind, key, tz_offset_minutes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_cancellations_report_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let start_iso: String = lan_arg(args, "startIso")?;
+            let end_iso: String = lan_arg(args, "endIso")?;
+            let r = get_cancellations_report_v3_impl(db, license, session_token, start_iso, end_iso)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_customers_report_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let start_iso: String = lan_arg(args, "startIso")?;
+            let end_iso: String = lan_arg(args, "endIso")?;
+            let inactive_days: Option<i64> = lan_arg(args, "inactiveDays")?;
+            let r = get_customers_report_v3_impl(db, license, session_token, start_iso, end_iso, inactive_days)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_kitchen_delivery_report_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let start_iso: String = lan_arg(args, "startIso")?;
+            let end_iso: String = lan_arg(args, "endIso")?;
+            let late_minutes: Option<i64> = lan_arg(args, "lateMinutes")?;
+            let r = get_kitchen_delivery_report_v3_impl(db, license, session_token, start_iso, end_iso, late_minutes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_menu_engineering_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let start_iso: String = lan_arg(args, "startIso")?;
+            let end_iso: String = lan_arg(args, "endIso")?;
+            let r = get_menu_engineering_v3_impl(db, license, session_token, start_iso, end_iso)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_activity_log_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let start_iso: String = lan_arg(args, "startIso")?;
+            let end_iso: String = lan_arg(args, "endIso")?;
+            let actor_id: Option<String> = lan_arg(args, "actorId")?;
+            let kind: Option<String> = lan_arg(args, "kind")?;
+            let limit: Option<i64> = lan_arg(args, "limit")?;
+            let r = list_activity_log_v3_impl(db, license, session_token, start_iso, end_iso, actor_id, kind, limit)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_activity_kinds_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_activity_kinds_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
         "get_finance_revenue_v3" => {
             let session_token: String = lan_arg(args, "sessionToken")?;
             let start_iso: String = lan_arg(args, "startIso")?;
@@ -524,7 +728,9 @@ pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::C
             let reference_no: Option<String> = lan_arg(args, "referenceNo")?;
             let cost_centre: Option<String> = lan_arg(args, "costCentre")?;
             let accrual_period: Option<String> = lan_arg(args, "accrualPeriod")?;
-            let r = create_operational_cost_v3_impl(db, license, session_token, category, amount_cents, date, notes, payment_date, payee, payment_method, reference_no, cost_centre, accrual_period)?;
+            let advance_user_id: Option<String> = lan_arg(args, "advanceUserId")?;
+            let advance_instalment_cents: Option<i64> = lan_arg(args, "advanceInstalmentCents")?;
+            let r = create_operational_cost_v3_impl(db, license, session_token, category, amount_cents, date, notes, payment_date, payee, payment_method, reference_no, cost_centre, accrual_period, advance_user_id, advance_instalment_cents)?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
         "update_operational_cost_v3" => {

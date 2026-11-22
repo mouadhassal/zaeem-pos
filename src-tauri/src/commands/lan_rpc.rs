@@ -3,7 +3,7 @@ use super::shared::*;
 use super::auth::{login_pin_v3_impl, logout_v3_impl};
 use super::orders::{list_tables_v3_impl, list_kitchen_orders_v3_impl, update_order_status_v3_impl, void_order_item_v3_impl, cancel_order_v3_impl, take_payment_v3_impl};
 use super::shifts::{get_active_shift_v3_impl, clock_in_v3_impl, clock_out_v3_impl, open_shift_v3_impl, close_shift_v3_impl, get_shift_stats_v3_impl};
-use super::debt::{create_debtor_v3_impl, list_debtors_v3_impl};
+use super::debt::{create_debtor_v3_impl, link_debtor_customer_v3_impl, list_debtors_v3_impl};
 use super::delivery::{assign_delivery_driver_v3_impl, get_delivery_settings_v3_impl, get_driver_statement_v3_impl, list_deliveries_v3_impl, list_delivery_drivers_v3_impl, list_driver_settlements_v3_impl, set_delivery_status_v3_impl, settle_driver_v3_impl};
 use super::loyalty::{list_loyalty_rewards_v3_impl, redeem_loyalty_reward_v3_impl};
 use super::menu::{get_menu_item_photo_v3_impl, list_categories_v3_impl, list_combo_components_v3_impl, list_combo_meal_items_v3_impl, list_combo_meals_v3_impl, list_happy_hour_rules_v3_impl, list_menu_items_v3_impl, toggle_menu_item_availability_v3_impl};
@@ -561,6 +561,14 @@ pub fn dispatch_lan_rpc(
             let initial_debt_cents: Option<i64> = lan_arg(&args, "initialDebtCents")?;
             let credit_limit_cents: Option<i64> = lan_arg(&args, "creditLimitCents")?;
             let r = create_debtor_v3_impl(db, license, session_token, name, phone, email, address, notes, initial_debt_cents, credit_limit_cents)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "link_debtor_customer_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let debtor_id: String = lan_arg(&args, "debtorId")?;
+            let customer_id: Option<String> = lan_arg(&args, "customerId")?;
+            let create_if_missing: Option<bool> = lan_arg(&args, "createIfMissing")?;
+            let r = link_debtor_customer_v3_impl(db, license, session_token, debtor_id, customer_id, create_if_missing)?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
         "lookup_loyalty_card_v3" => {
