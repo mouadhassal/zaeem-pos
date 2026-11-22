@@ -13,6 +13,79 @@ export type Row =
   | { t: "rule"; dashed?: boolean }
   | { t: "gap"; h: number };
 
+/**
+ * How the owner can change one printer's bill or kitchen slip (a "receipt template", saved by
+ * save_receipt_template_v3 and chosen per printer). Every switch defaults to "as it always was",
+ * so a printer with no template, and a template nobody touched, print exactly the same rows.
+ */
+export type TemplateFontSize = "small" | "normal" | "large";
+
+export interface TemplateConfig {
+  /** Printed under the shop name (bill) or the title (kitchen slip), centered. */
+  header_lines: string[];
+  /** undefined = the usual ending (the thank-you lines on a bill, nothing on a kitchen slip); [] = none. */
+  footer_lines?: string[];
+  show_order_number: boolean;
+  show_table: boolean;
+  show_cashier: boolean;
+  /** The customer's name, phone and delivery address. */
+  show_customer: boolean;
+  /** The tax rows of a bill. The total still includes the tax. */
+  show_tax_line: boolean;
+  show_item_notes: boolean;
+  font_size: TemplateFontSize;
+  /** How many copies one print makes (1-3). */
+  copies: number;
+}
+
+export const DEFAULT_TEMPLATE_CONFIG: TemplateConfig = {
+  header_lines: [],
+  show_order_number: true,
+  show_table: true,
+  show_cashier: true,
+  show_customer: true,
+  show_tax_line: true,
+  show_item_notes: true,
+  font_size: "normal",
+  copies: 1,
+};
+
+/** The thank-you lines at the foot of every bill that has no footer of its own. */
+export const DEFAULT_BILL_FOOTER = ["شكراً لزيارتكم", "نتمنى لكم يوماً سعيداً"];
+
+const FONT_SCALE: Record<TemplateFontSize, number> = { small: 0.85, normal: 1, large: 1.25 };
+
+const asBool = (v: unknown, fallback: boolean) => (typeof v === "boolean" ? v : fallback);
+const asLines = (v: unknown): string[] =>
+  Array.isArray(v) ? v.filter((l): l is string => typeof l === "string").map((l) => l.trim()).filter((l) => l !== "") : [];
+
+/** A config read from the database (or from nothing): every missing or wrong field falls back to the default. */
+export function parseTemplateConfig(raw: unknown): TemplateConfig {
+  const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const d = DEFAULT_TEMPLATE_CONFIG;
+  const copies = typeof o.copies === "number" && Number.isFinite(o.copies) ? Math.min(3, Math.max(1, Math.round(o.copies))) : d.copies;
+  const font = o.font_size === "small" || o.font_size === "large" || o.font_size === "normal" ? o.font_size : d.font_size;
+  return {
+    header_lines: asLines(o.header_lines),
+    ...(Array.isArray(o.footer_lines) ? { footer_lines: asLines(o.footer_lines) } : {}),
+    show_order_number: asBool(o.show_order_number, d.show_order_number),
+    show_table: asBool(o.show_table, d.show_table),
+    show_cashier: asBool(o.show_cashier, d.show_cashier),
+    show_customer: asBool(o.show_customer, d.show_customer),
+    show_tax_line: asBool(o.show_tax_line, d.show_tax_line),
+    show_item_notes: asBool(o.show_item_notes, d.show_item_notes),
+    font_size: font,
+    copies,
+  };
+}
+
+/** Same rows at the template's font size (the plain size of a row is 26, as the printer draws it). */
+export function scaleRows(rows: Row[], font: TemplateFontSize): Row[] {
+  const k = FONT_SCALE[font];
+  if (k === 1) return rows;
+  return rows.map((r) => (r.t === "line" || r.t === "two" ? { ...r, size: Math.round((r.size ?? 26) * k) } : r));
+}
+
 export interface ReceiptItem {
   name: string;
   quantity: number;
@@ -157,7 +230,7 @@ const parse = (iso: string | undefined, fallback: Date) => {
   return Number.isNaN(d.getTime()) ? fallback : d;
 };
 
-function itemRows(items: readonly TicketItem[], prefix = ""): Row[] {
+function itemRows(items: readonly TicketItem[], prefix = "", showNotes = true): Row[] {
   const rows: Row[] = [];
   for (const item of items) {
     rows.push({ t: "line", text: `${prefix}${item.quantity} × ${item.name}`, bold: true, size: 28 });
@@ -165,7 +238,7 @@ function itemRows(items: readonly TicketItem[], prefix = ""): Row[] {
       // "Without ..." is the part a cook must not miss.
       rows.push({ t: "line", text: `  ◂ ${mod}`, size: 24, bold: mod.startsWith("بدون") });
     }
-    if (item.notes) rows.push({ t: "line", text: `  ملاحظة: ${item.notes}`, size: 24, bold: true });
+    if (item.notes && showNotes) rows.push({ t: "line", text: `  ملاحظة: ${item.notes}`, size: 24, bold: true });
     rows.push({ t: "gap", h: 6 });
   }
   return rows;
@@ -181,7 +254,8 @@ function orderNumberRows(orderNumber: string): Row[] {
   ];
 }
 
-export function kitchenTicketRows(data: KitchenTicketData, now: Date = new Date()): Row[] {
+export function kitchenTicketRows(data: KitchenTicketData, now: Date = new Date(), template?: TemplateConfig): Row[] {
+  const t = template ?? DEFAULT_TEMPLATE_CONFIG;
   const kind = data.kind ?? "NEW";
   const rows: Row[] = [];
   rows.push({ t: "line", text: TITLES[kind], size: 38, bold: true, align: "center" });
@@ -190,13 +264,14 @@ export function kitchenTicketRows(data: KitchenTicketData, now: Date = new Date(
   if (data.stationOf && data.stationOf > 1 && data.stationNo) {
     rows.push({ t: "line", text: `قسم ${data.stationNo} من ${data.stationOf}`, size: 24, align: "center" });
   }
-  rows.push(...orderNumberRows(data.orderNumber));
+  for (const h of t.header_lines) rows.push({ t: "line", text: h, size: 24, align: "center" });
+  if (t.show_order_number) rows.push(...orderNumberRows(data.orderNumber));
   rows.push({ t: "rule" });
 
-  if (isSeatedTable(data.tableName)) rows.push({ t: "two", right: "طاولة", left: data.tableName });
+  if (t.show_table && isSeatedTable(data.tableName)) rows.push({ t: "two", right: "طاولة", left: data.tableName });
   rows.push({ t: "two", right: "النوع", left: ORDER_TYPE_LABELS[data.orderType] ?? data.orderType });
-  if (present(data.customerName)) rows.push({ t: "two", right: "العميل", left: data.customerName });
-  if (present(data.cashier)) rows.push({ t: "two", right: "الكاشير", left: data.cashier });
+  if (t.show_customer && present(data.customerName)) rows.push({ t: "two", right: "العميل", left: data.customerName });
+  if (t.show_cashier && present(data.cashier)) rows.push({ t: "two", right: "الكاشير", left: data.cashier });
   rows.push({ t: "two", right: "وقت الطلب", left: dateTime(parse(data.createdAt, now)) });
   rows.push({ t: "two", right: "وقت الطباعة", left: formatArabicTime(now) });
   if (data.scheduledAt) {
@@ -211,15 +286,15 @@ export function kitchenTicketRows(data: KitchenTicketData, now: Date = new Date(
   if (kind === "CANCEL") {
     rows.push({ t: "line", text: "ألغِ هذه الأصناف:", size: 28, bold: true });
     if (data.cancelReason) rows.push({ t: "line", text: `السبب: ${data.cancelReason}`, size: 24 });
-    rows.push(...itemRows(data.items, "✗ "));
+    rows.push(...itemRows(data.items, "✗ ", t.show_item_notes));
   } else if (kind === "EDIT") {
     rows.push({ t: "line", text: "قبل التعديل (ألغِه):", size: 26, bold: true });
-    rows.push(...itemRows(data.replaces ?? [], "✗ "));
+    rows.push(...itemRows(data.replaces ?? [], "✗ ", t.show_item_notes));
     rows.push({ t: "rule", dashed: true });
     rows.push({ t: "line", text: "بعد التعديل (حضّره):", size: 26, bold: true });
-    rows.push(...itemRows(data.items));
+    rows.push(...itemRows(data.items, "", t.show_item_notes));
   } else {
-    rows.push(...itemRows(data.items));
+    rows.push(...itemRows(data.items, "", t.show_item_notes));
   }
 
   rows.push({ t: "rule" });
@@ -227,8 +302,14 @@ export function kitchenTicketRows(data: KitchenTicketData, now: Date = new Date(
     rows.push({ t: "line", text: "يُرسل الباقي إلى:", size: 22 });
     for (const s of data.alsoSentTo) rows.push({ t: "line", text: `  ${s.name} (${s.count})`, size: 22 });
   }
+  footerRows(rows, t.footer_lines);
   rows.push({ t: "gap", h: 16 });
-  return rows;
+  return scaleRows(rows, t.font_size);
+}
+
+/** A template's own footer lines (the first a little bigger), centered. Nothing when it has none. */
+function footerRows(rows: Row[], lines: readonly string[] | undefined) {
+  (lines ?? []).forEach((text, i) => rows.push({ t: "line", text, align: "center", size: i === 0 ? 26 : 22 }));
 }
 
 /** What one receipt line is charged: options included, nothing if it is a gift. */
@@ -244,7 +325,8 @@ export function receiptLineValueCents(item: ReceiptItem): number {
   return (item.priceCents + options) * item.quantity;
 }
 
-export function receiptRows(data: ReceiptData, now: Date = new Date()): Row[] {
+export function receiptRows(data: ReceiptData, now: Date = new Date(), template?: TemplateConfig): Row[] {
+  const t = template ?? DEFAULT_TEMPLATE_CONFIG;
   const fmt = formatMoney;
   const rows: Row[] = [];
 
@@ -252,7 +334,8 @@ export function receiptRows(data: ReceiptData, now: Date = new Date()): Row[] {
   // When the shop has no name of its own the title already is the branch name.
   if (data.branchName && data.branchName !== data.chainName) rows.push({ t: "line", text: data.branchName, size: 24, align: "center" });
   if (data.isCopy) rows.push({ t: "line", text: "(نسخة مكررة)", size: 24, align: "center" });
-  rows.push(...orderNumberRows(data.orderNumber));
+  for (const h of t.header_lines) rows.push({ t: "line", text: h, size: 24, align: "center" });
+  if (t.show_order_number) rows.push(...orderNumberRows(data.orderNumber));
   rows.push({ t: "rule" });
 
   const paidAt = parse(data.paidAt, now);
@@ -260,16 +343,16 @@ export function receiptRows(data: ReceiptData, now: Date = new Date()): Row[] {
   if (data.createdAt) rows.push({ t: "two", right: "وقت الطلب", left: formatArabicTime(parse(data.createdAt, now)) });
   rows.push({ t: "two", right: data.createdAt ? "وقت الدفع" : "الوقت", left: formatArabicTime(paidAt) });
   if (data.isCopy) rows.push({ t: "two", right: "وقت الطباعة", left: dateTime(now) });
-  if (present(data.cashier)) rows.push({ t: "two", right: "الكاشير", left: data.cashier });
+  if (t.show_cashier && present(data.cashier)) rows.push({ t: "two", right: "الكاشير", left: data.cashier });
   // 2026-08-13 generalization fix: was drawn unconditionally -- a takeaway/
   // delivery order (tableName = "") or ANY order from a has_tables=false
   // business printed a "طاولة" row with nothing next to it, on every
   // single receipt for a non-table business.
-  if (isSeatedTable(data.tableName)) rows.push({ t: "two", right: "طاولة", left: data.tableName });
+  if (t.show_table && isSeatedTable(data.tableName)) rows.push({ t: "two", right: "طاولة", left: data.tableName });
   rows.push({ t: "two", right: "النوع", left: ORDER_TYPE_LABELS[data.orderType] ?? data.orderType });
-  if (present(data.customerName)) rows.push({ t: "two", right: "العميل", left: data.customerName });
-  if (present(data.customerPhone)) rows.push({ t: "two", right: "الهاتف", left: data.customerPhone });
-  if (present(data.deliveryAddress)) rows.push({ t: "two", right: "العنوان", left: data.deliveryAddress });
+  if (t.show_customer && present(data.customerName)) rows.push({ t: "two", right: "العميل", left: data.customerName });
+  if (t.show_customer && present(data.customerPhone)) rows.push({ t: "two", right: "الهاتف", left: data.customerPhone });
+  if (t.show_customer && present(data.deliveryAddress)) rows.push({ t: "two", right: "العنوان", left: data.deliveryAddress });
   if (data.orderType === "DELIVERY" && present(data.driverName)) rows.push({ t: "two", right: "السائق", left: data.driverName, bold: true });
   rows.push({ t: "rule" });
 
@@ -280,7 +363,7 @@ export function receiptRows(data: ReceiptData, now: Date = new Date()): Row[] {
       giftValue += value;
       rows.push({ t: "two", right: `${item.quantity} × ${item.name}`, left: "ضيافة", bold: true });
       for (const mod of item.modifiers ?? []) rows.push({ t: "line", text: `  ◂ ${mod.name}`, size: 20 });
-      if (item.notes) rows.push({ t: "line", text: `  ملاحظة: ${item.notes}`, size: 20 });
+      if (item.notes && t.show_item_notes) rows.push({ t: "line", text: `  ملاحظة: ${item.notes}`, size: 20 });
       rows.push({ t: "two", right: `  ${item.compReason ?? "ضيافة"}`, left: `القيمة ${fmt(value)}`, size: 20 });
       continue;
     }
@@ -288,7 +371,7 @@ export function receiptRows(data: ReceiptData, now: Date = new Date()): Row[] {
     for (const mod of item.modifiers ?? []) {
       rows.push({ t: "two", right: `  ◂ ${mod.name}`, left: mod.priceCents > 0 ? `+${fmt(mod.priceCents * item.quantity)}` : "", size: 20 });
     }
-    if (item.notes) rows.push({ t: "line", text: `  ملاحظة: ${item.notes}`, size: 20 });
+    if (item.notes && t.show_item_notes) rows.push({ t: "line", text: `  ملاحظة: ${item.notes}`, size: 20 });
   }
 
   if (data.cancelledItems && data.cancelledItems.length > 0) {
@@ -302,8 +385,8 @@ export function receiptRows(data: ReceiptData, now: Date = new Date()): Row[] {
   rows.push({ t: "rule" });
   rows.push({ t: "two", right: "المجموع الفرعي", left: fmt(data.subtotalCents) });
   if (data.serviceChargeCents > 0) rows.push({ t: "two", right: "خدمة", left: fmt(data.serviceChargeCents) });
-  rows.push({ t: "two", right: "الضريبة", left: fmt(data.taxCents) });
-  if (data.secondaryTaxCents > 0) rows.push({ t: "two", right: "ضريبة إضافية", left: fmt(data.secondaryTaxCents) });
+  if (t.show_tax_line) rows.push({ t: "two", right: "الضريبة", left: fmt(data.taxCents) });
+  if (t.show_tax_line && data.secondaryTaxCents > 0) rows.push({ t: "two", right: "ضريبة إضافية", left: fmt(data.secondaryTaxCents) });
   if (data.deliveryFeeCents && data.deliveryFeeCents > 0) rows.push({ t: "two", right: "رسوم التوصيل", left: fmt(data.deliveryFeeCents) });
   if (data.discountCents > 0) rows.push({ t: "two", right: "الخصم", left: `-${fmt(data.discountCents)}` });
   if (giftValue > 0) rows.push({ t: "two", right: "قيمة الضيافة (غير محتسبة)", left: fmt(giftValue), size: 22 });
@@ -319,10 +402,9 @@ export function receiptRows(data: ReceiptData, now: Date = new Date()): Row[] {
   if (data.referenceCode) rows.push({ t: "two", right: "رقم المرجع", left: data.referenceCode, size: 20 });
 
   rows.push({ t: "gap", h: 10 });
-  rows.push({ t: "line", text: "شكراً لزيارتكم", align: "center", size: 26 });
-  rows.push({ t: "line", text: "نتمنى لكم يوماً سعيداً", align: "center", size: 22 });
+  footerRows(rows, t.footer_lines ?? DEFAULT_BILL_FOOTER);
   rows.push({ t: "gap", h: 24 });
-  return rows;
+  return scaleRows(rows, t.font_size);
 }
 
 /** All the text on a set of rows, for tests and for the on-screen preview. */

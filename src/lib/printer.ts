@@ -2,7 +2,7 @@ import { invoke } from "./invoke";
 import { invokeOnHub } from "./lan";
 import { useAuthStore } from "../stores/authStore";
 import { routeKitchenItems } from "./kitchenRouting";
-import { kitchenTicketRows, receiptRows, type KitchenTicketData, type ReceiptData, type ReceiptItem, type Row } from "./ticketLayout";
+import { kitchenTicketRows, parseTemplateConfig, receiptRows, type KitchenTicketData, type ReceiptData, type ReceiptItem, type Row, type TemplateConfig } from "./ticketLayout";
 
 function token() {
   return useAuthStore.getState().token ?? "";
@@ -212,6 +212,8 @@ interface PrinterRowV3 {
   system_printer_name: string | null;
   /** 'raster' (GS v 0) | 'bitimage' (ESC *) | 'driver' (Windows driver). */
   print_mode?: PrintMode;
+  /** The receipt template this printer prints with; none = the standard layout. */
+  template_id?: string | null;
 }
 
 /** A real, OS-installed printer (winspool/CUPS via the Rust `printers` crate). */
@@ -363,12 +365,37 @@ function drawRows(rows: readonly Row[], paperWidthMm: number): HTMLCanvasElement
   return finalizeCanvas(b);
 }
 
-function renderReceiptCanvas(data: ReceiptData, paperWidthMm: number): HTMLCanvasElement {
-  return drawRows(receiptRows(data), paperWidthMm);
+function renderReceiptCanvas(data: ReceiptData, paperWidthMm: number, template?: TemplateConfig): HTMLCanvasElement {
+  return drawRows(receiptRows(data, new Date(), template), paperWidthMm);
 }
 
-function renderKitchenTicketCanvas(data: KitchenTicketData, paperWidthMm: number): HTMLCanvasElement {
-  return drawRows(kitchenTicketRows(data), paperWidthMm);
+function renderKitchenTicketCanvas(data: KitchenTicketData, paperWidthMm: number, template?: TemplateConfig): HTMLCanvasElement {
+  return drawRows(kitchenTicketRows(data, new Date(), template), paperWidthMm);
+}
+
+/**
+ * The layout a printer was given (Settings > printers > templates), or undefined for the standard
+ * one. Only asked when the printer has a template, so a till with none does no extra work; if the
+ * template cannot be read the slip prints in the standard layout rather than not at all.
+ */
+async function templateOf(p: { template_id?: string | null }, onHub: boolean): Promise<TemplateConfig | undefined> {
+  if (!p.template_id) return undefined;
+  try {
+    const args = { sessionToken: token() };
+    const list = onHub
+      ? (await invokeOnHub<{ id: string; config: unknown }[]>("list_receipt_templates_v3", args)).data
+      : await invoke<{ id: string; config: unknown }[]>("list_receipt_templates_v3", args);
+    const row = list.find((t) => t.id === p.template_id);
+    return row ? parseTemplateConfig(row.config) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** One print job as many times as the template's copies say (1 without a template). */
+async function printCopies(template: TemplateConfig | undefined, once: () => Promise<void>): Promise<void> {
+  const copies = template?.copies ?? 1;
+  for (let i = 0; i < copies; i++) await once();
 }
 
 export async function printToDevice(data: Uint8Array, printer: PrinterConfig): Promise<void> {
@@ -475,7 +502,9 @@ export async function printReceipt(data: ReceiptData): Promise<void> {
     const p = printerPartial;
     try {
       const width = p.paper_width_mm ?? defaultPaperWidth;
-      await printCanvasTo(renderReceiptCanvas(data, width), p, "RECEIPT", width);
+      const template = await templateOf(p, false);
+      const canvas = renderReceiptCanvas(data, width, template);
+      await printCopies(template, () => printCanvasTo(canvas, p, "RECEIPT", width));
       return;
     } catch (err) {
       lastError = err instanceof Error ? err.message : "Print failed";
@@ -518,7 +547,9 @@ async function sendKitchenTicketToPrinter(
   defaultPaperWidthK: number
 ): Promise<void> {
   const width = p.paper_width_mm ?? defaultPaperWidthK;
-  await printCanvasTo(renderKitchenTicketCanvas(data, width), p, "KITCHEN", width, { bell: true });
+  const template = await templateOf(p, true);
+  const canvas = renderKitchenTicketCanvas(data, width, template);
+  await printCopies(template, () => printCanvasTo(canvas, p, "KITCHEN", width, { bell: true }));
 }
 
 /**
@@ -780,10 +811,12 @@ export async function testPrint(printerId?: string): Promise<void> {
       items: [{ name: mine.length ? mine.join("، ") : "كل الأقسام", quantity: 1 }],
       ...(mine.length ? { station: p.name } : {}),
     };
-    await printCanvasTo(renderKitchenTicketCanvas(ticket, width), p, "KITCHEN", width, { bell: true });
+    const template = await templateOf(p, false);
+    await printCanvasTo(renderKitchenTicketCanvas(ticket, width, template), p, "KITCHEN", width, { bell: true });
     return;
   }
-  await printCanvasTo(renderReceiptCanvas(sample, width), p, p.printer_type, width, {
+  const template = await templateOf(p, false);
+  await printCanvasTo(renderReceiptCanvas(sample, width, template), p, p.printer_type, width, {
     testLine: `WENZDES TEST ${p.print_mode ?? "raster"} 1234567890`,
   });
 }

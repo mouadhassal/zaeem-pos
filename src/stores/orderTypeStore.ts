@@ -23,6 +23,10 @@ interface OrderTypeState {
       out). The kitchen ticket still prints. Saved on the order once it exists (set_order_no_bill_v3). */
   noBill: boolean;
   setNoBill: (v: boolean) => void;
+  /** TAKEAWAY / DELIVERY: the delivery app the order came from (null = direct). Saved on the order
+      like noBill (set_order_platform_v3). */
+  platformId: string | null;
+  setPlatformId: (v: string | null) => void;
   setOrderType: (t: OrderType) => void;
   setPickupAtMs: (v: number | null) => void;
   setCustomerName: (v: string) => void;
@@ -43,8 +47,10 @@ export const useOrderTypeStore = create<OrderTypeState>((set) => ({
   debtorName: null,
   pickupAtMs: null,
   noBill: false,
+  platformId: null,
 
   setNoBill: (v) => set({ noBill: v }),
+  setPlatformId: (v) => set({ platformId: v }),
   setOrderType: (t) => set({ orderType: t }),
   setPickupAtMs: (v) => set({ pickupAtMs: v }),
   setCustomerName: (v) => set({ customerName: v }),
@@ -64,5 +70,6 @@ export const useOrderTypeStore = create<OrderTypeState>((set) => ({
       debtorName: null,
       pickupAtMs: null,
       noBill: false,
+      platformId: null,
     }),
 }));

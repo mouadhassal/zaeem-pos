@@ -66,7 +66,7 @@ pub struct EditedItem {
 }
 
 /// Re-prices an open order from its remaining lines and stores the totals.
-fn reprice_open_order(tx: &rusqlite::Transaction, scope: &Scope, order_id: &str) -> Result<i64, String> {
+pub(crate) fn reprice_open_order(tx: &rusqlite::Transaction, scope: &Scope, order_id: &str) -> Result<i64, String> {
     let (tenant_id, _branch, _status, discount_cents, delivery_fee_cents) =
         Repo::new(tx).get_order_pricing_context(scope, order_id).map_err(|e| e.to_string())?;
     // The remaining lines keep the price they were sold at (an offer, an older menu price).

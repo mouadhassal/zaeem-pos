@@ -46,6 +46,8 @@ pub const FULL_ONLY_COMMANDS: &[&str] = &[
     "get_cost_report_v3", "get_finance_settings_v3", "save_finance_settings_v3", "list_rent_contracts_v3", "save_rent_contract_v3", "record_rent_payment_v3", "upload_cost_attachment_v3", "get_cost_attachment_v3", "set_category_cost_class_v3", "get_cost_of_sales_v3", "update_operational_cost_v3",
     "gifts_report_v3", "get_sales_report_v3", "get_sales_strip_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
     "list_pickup_no_shows_v3",
+    // delivery apps: their accounts and settlements
+    "save_delivery_platform_v3", "platform_accounts_v3", "record_platform_settlement_v3", "list_platform_settlements_v3",
     // HR
     "list_attendance_v3", "clock_in_v3", "clock_out_v3",
     "fingerprint_status_v3", "list_fingerprint_enrolments_v3", "enrol_fingerprint_v3", "delete_fingerprint_enrolment_v3",

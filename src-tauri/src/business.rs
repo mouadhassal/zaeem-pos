@@ -40,6 +40,8 @@ const DELIVERY: &[&str] = &[
         "get_delivery_settings_v3", "update_delivery_settings_v3", "list_delivery_drivers_v3", "save_delivery_driver_v3",
         "list_deliveries_v3", "assign_delivery_driver_v3", "set_delivery_status_v3", "get_driver_statement_v3",
         "list_driver_settlements_v3", "settle_driver_v3",
+        "list_delivery_platforms_v3", "set_order_platform_v3", "save_delivery_platform_v3", "platform_accounts_v3",
+        "record_platform_settlement_v3", "list_platform_settlements_v3",
     ];
 const PICKUP: &[&str] = &["list_pickup_orders_v3", "claim_due_pickup_kitchen_v3", "send_pickup_to_kitchen_now_v3", "mark_pickup_no_show_v3", "list_pickup_no_shows_v3"];
 const DEBT: &[&str] = &["list_debtors_v3", "create_debtor_v3", "update_debtor_v3", "deactivate_debtor_v3", "list_debt_entries_v3", "record_debt_payment_v3"];

@@ -20,6 +20,8 @@ pub enum RepoError {
     Db(rusqlite::Error),
     /// Shop stock refused something (the owner chose not to sell what the stock cannot cover); the text is shown as is.
     Stock(String),
+    /// A rule of the till refused the action; the (Arabic) text is shown as is.
+    Refused(String),
     UnscopedRows { table: String, column: String, count: i64 },
     ItemUnavailable { item_id: String, branch_id: String, reason: String },
     OrderOutOfScope { order_id: String },
@@ -208,7 +210,7 @@ impl fmt::Display for RepoError {
             Self::ShiftAlreadyClosed { shift_id } => write!(f, "shift {shift_id} is already closed -- refusing to overwrite its reconciliation numbers"),
             Self::InvalidLoyaltyPoints { points } => write!(f, "points must be positive, got {points}"),
             Self::OrderNotRefundable { order_id: _, reason } => write!(f, "لا يمكن الاسترداد: {reason}"),
-            Self::Stock(message) => write!(f, "{message}"),
+            Self::Stock(message) | Self::Refused(message) => write!(f, "{message}"),
             Self::OrderItemAlreadyVoided { item_id } => write!(f, "order item {item_id} is already voided"),
             Self::StockAdjustmentBelowZero { ingredient_id, current_stock, change_amount } => write!(
                 f, "ingredient {ingredient_id} has {current_stock} in stock -- a change of {change_amount} would drive it below zero"
@@ -407,6 +409,8 @@ pub struct TableInfo {
     pub name: String,
     pub status: String,
     pub current_order_id: Option<String>,
+    /// The dining area this table sits in (`dining_areas`), or None.
+    pub area_id: Option<String>,
 }
 
 /// One gift line in the gifts report (see `Repo::gifts_report`).
@@ -471,6 +475,8 @@ pub struct HeldOrderResult {
     pub delivery_address: Option<String>,
     /// The cashier said "no bill" before holding it.
     pub no_bill: bool,
+    /// The delivery app this order came from, None = direct.
+    pub platform_id: Option<String>,
 }
 
 /// One outstanding (unpaid) PENDING order for a table -- see
@@ -503,6 +509,8 @@ pub struct OpenOrderResult {
     pub total_cents: i64,
     /// The cashier said "no bill" for this order: the customer's bill does not print by itself.
     pub no_bill: bool,
+    /// The delivery app this order came from, None = direct.
+    pub platform_id: Option<String>,
 }
 
 /// True when the order was marked "no bill". False on a database from before Migration AQ.
@@ -1165,6 +1173,32 @@ pub struct InventoryLogRow {
     pub user_name: String,
 }
 
+/// What a table or bill merge did: where the lines went and which orders were folded away.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct MergeOutcome {
+    pub target_order_id: Option<String>,
+    pub source_table_ids: Vec<String>,
+    pub source_order_ids: Vec<String>,
+    /// Every line that changed order (to be re-queued for sync).
+    pub moved_item_ids: Vec<String>,
+}
+
+/// One open bill in the "merge bills" list.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OpenOrderSummary {
+    pub id: String,
+    pub table_id: String,
+    pub table_name: Option<String>,
+    pub order_type: String,
+    pub status: String,
+    pub total_cents: i64,
+    pub customer_name: Option<String>,
+    pub created_at: String,
+    pub item_count: i64,
+    /// The daily number (A-0001), when the order has one.
+    pub label: Option<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PrinterRow {
     pub id: String,
@@ -1197,6 +1231,8 @@ pub struct PrinterRow {
     pub system_printer_name: Option<String>,
     /// 'raster' | 'bitimage' | 'driver' (Migration AC).
     pub print_mode: String,
+    /// The receipt template this printer prints with (Migration AT), or None = the standard layout.
+    pub template_id: Option<String>,
 }
 
 /// One printer -> menu category link (Migration AD).
@@ -3831,7 +3867,7 @@ impl<'a> Repo<'a> {
         self.assert_scope_populated("printers", true)?;
         let (predicate, args) = Self::scope_predicate(scope);
         let sql = format!(
-            "SELECT id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary, is_secondary, is_active, paper_width_mm, ip_address, port, code_page, system_printer_name, print_mode FROM printers WHERE {predicate} ORDER BY name ASC"
+            "SELECT id, name, printer_type, interface, vendor_id, product_id, drawer_pulse_ms, is_primary, is_secondary, is_active, paper_width_mm, ip_address, port, code_page, system_printer_name, print_mode, template_id FROM printers WHERE {predicate} ORDER BY name ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
@@ -3841,6 +3877,7 @@ impl<'a> Repo<'a> {
                 drawer_pulse_ms: r.get(6)?, is_primary: r.get(7)?, is_secondary: r.get(8)?, is_active: r.get(9)?, paper_width_mm: r.get(10)?,
                 ip_address: r.get(11)?, port: r.get(12)?, code_page: r.get(13)?, system_printer_name: r.get(14)?,
                 print_mode: r.get::<_, Option<String>>(15)?.unwrap_or_else(|| "raster".into()),
+                template_id: r.get(16)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
@@ -5016,7 +5053,7 @@ impl<'a> Repo<'a> {
     /// touch any of them.
     pub fn list_tables(&self, scope: &Scope) -> Result<Vec<TableInfo>, RepoError> {
         let (predicate, args) = Self::scope_predicate(scope);
-        let sql = format!("SELECT id, name, status, current_order_id FROM tables WHERE {predicate} ORDER BY name ASC");
+        let sql = format!("SELECT id, name, status, current_order_id, area_id FROM tables WHERE {predicate} ORDER BY name ASC");
         let mut stmt = self.conn.prepare(&sql)?;
         let bind_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(bind_refs.as_slice(), |r| {
@@ -5025,6 +5062,7 @@ impl<'a> Repo<'a> {
                 name: r.get(1)?,
                 status: r.get(2)?,
                 current_order_id: r.get(3)?,
+                area_id: r.get(4)?,
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -5307,7 +5345,8 @@ impl<'a> Repo<'a> {
 
         let items = self.fetch_order_items_for_retrieval(order_id)?;
         let no_bill = order_no_bill(self.conn, order_id);
-        Ok(Some(HeldOrderResult { items, customer_name, customer_phone, delivery_address, no_bill }))
+        let platform_id = crate::venue::order_platform_id(self.conn, order_id);
+        Ok(Some(HeldOrderResult { items, customer_name, customer_phone, delivery_address, no_bill, platform_id }))
     }
 
     /// Shared item+modifier fetch used by both `retrieve_held_order` (DRAFT)
@@ -5386,6 +5425,7 @@ impl<'a> Repo<'a> {
         Ok(Some(OpenOrderResult {
             items, customer_name, customer_phone, delivery_address,
             subtotal_cents, tax_cents, discount_cents, total_cents, no_bill,
+            platform_id: crate::venue::order_platform_id(self.conn, order_id),
         }))
     }
 
@@ -5738,67 +5778,247 @@ impl<'a> Repo<'a> {
 
     /// Merge source tables into a target: set all to MERGED with a common
     /// merge_group_id, move items from source tables' orders to the target
-    /// table's order, cancel source orders.
-    ///
-    /// Every table id (source and target) is verified in-scope BEFORE any
-    /// write -- found and fixed during Slice A verification (this method
-    /// previously did no scope check at all, letting a Branch-scoped actor
-    /// merge tables belonging to any tenant/branch by id).
+    /// table's order, cancel source orders. (The short form the older tests
+    /// use; the till goes through `merge_tables_detailed`.)
+    #[cfg(test)]
     pub fn merge_tables(&self, scope: &Scope, source_table_ids: Vec<String>, target_table_id: &str) -> Result<Option<String>, RepoError> {
+        Ok(self.merge_tables_detailed(scope, source_table_ids, target_table_id, "system", "local")?.target_order_id)
+    }
+
+    /// The text a bill goes by: its daily number (A-0001) when it has one, else the old six-letter
+    /// code the receipts used before numbering existed.
+    pub fn order_label(&self, tenant_id: &str, order_id: &str) -> String {
+        crate::order_history::numbers_for(self.conn, tenant_id, &[order_id.to_string()])
+            .ok()
+            .and_then(|mut m| m.remove(order_id))
+            .map(|n| n.label)
+            .unwrap_or_else(|| {
+                let compact: Vec<char> = order_id.replace('-', "").chars().collect();
+                compact[compact.len().saturating_sub(6)..].iter().collect::<String>().to_uppercase()
+            })
+    }
+
+    /// Folds `source` (an open order) into `survivor`: every line (voided ones too, with its
+    /// options, note and price) changes order, an order-level discount carries over, and the
+    /// source becomes CANCELLED with `reason`. Nothing is charged or restocked: the lines are the
+    /// same lines, so nothing can be counted twice. The caller re-totals the survivor.
+    fn fold_order_into(&self, survivor: &str, source: &str, reason: &str, actor_id: &str, device_id: &str, now: &str) -> Result<Vec<String>, RepoError> {
+        let (tenant_id, branch_id, discount): (String, String, i64) = self.conn.query_row(
+            "SELECT tenant_id, branch_id, discount_cents FROM orders WHERE id = ?1", params![source], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        let moved: Vec<String> = {
+            let mut stmt = self.conn.prepare("SELECT id FROM order_items WHERE order_id = ?1")?;
+            let rows = stmt.query_map(params![source], |r| r.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        self.conn.execute(
+            "UPDATE order_items SET order_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE order_id = ?3",
+            params![survivor, now, source],
+        )?;
+        if discount > 0 {
+            self.conn.execute(
+                "UPDATE orders SET discount_cents = discount_cents + ?1, discount_minor = discount_minor + ?1, discount_base_minor = discount_base_minor + ?1, \
+                 last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
+                params![discount, now, survivor],
+            )?;
+        }
+        self.conn.execute(
+            "UPDATE orders SET status = 'CANCELLED', cancel_reason = ?1, discount_cents = 0, discount_minor = 0, discount_base_minor = 0, \
+             last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
+            params![reason, now, source],
+        )?;
+        self.append_order_status_event(&tenant_id, &branch_id, source, "CANCELLED", actor_id, device_id)?;
+        self.rebuild_order_current(source)?;
+        Ok(moved)
+    }
+
+    fn order_tenant(&self, order_id: &str) -> Result<String, RepoError> {
+        Ok(self.conn.query_row("SELECT tenant_id FROM orders WHERE id = ?1", params![order_id], |r| r.get(0))?)
+    }
+
+    /// `merge_tables` with what it did, for the audit entry. The order the tables are listed in
+    /// does not matter: the target table's own order is found first and every other table's order
+    /// folds into it. Tables in two different dining areas are never merged. A target table with
+    /// no order of its own takes the first source order instead of losing it.
+    pub fn merge_tables_detailed(&self, scope: &Scope, source_table_ids: Vec<String>, target_table_id: &str, actor_id: &str, device_id: &str) -> Result<MergeOutcome, RepoError> {
         self.assert_table_in_scope(target_table_id, scope)?;
         for table_id in &source_table_ids {
             self.assert_table_in_scope(table_id, scope)?;
         }
-        let now = chrono::Utc::now().to_rfc3339();
-        let merge_group_id = uuid::Uuid::now_v7().to_string();
-        let mut target_order_id: Option<String> = None;
-
-        // No transaction management here -- see `create_full_order`'s doc
-        // comment for why (the caller, `merge_tables_v3`, owns the one
-        // transaction boundary).
-        for table_id in &source_table_ids {
-            // `.get::<_, Option<String>>(0)`, not `.get(0)` inferred as
-            // `String` -- an unoccupied table's `current_order_id` is a
-            // genuine SQL NULL, not a missing row (`table_id` was
-            // already confirmed to exist via `assert_table_in_scope`
-            // above). Found and fixed during Slice A verification: the
-            // old inferred-`String` read crashed with
-            // `InvalidColumnType` the moment anyone tried to merge in an
-            // empty/unoccupied table -- an extremely common case, not
-            // an edge case.
-            let table_order_id: Option<String> = self.conn.query_row(
-                "SELECT current_order_id FROM tables WHERE id = ?1", params![table_id],
-                |r| r.get::<_, Option<String>>(0),
-            ).map_err(RepoError::from)?;
-
-            if table_id == target_table_id {
-                self.conn.execute(
-                    "UPDATE tables SET status = 'MERGED', merge_group_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
-                    params![merge_group_id, now, table_id],
-                ).map_err(RepoError::from)?;
-                target_order_id = table_order_id;
-            } else {
-                self.conn.execute(
-                    "UPDATE tables SET status = 'MERGED', merge_group_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
-                    params![merge_group_id, now, table_id],
-                ).map_err(RepoError::from)?;
-
-                if let Some(ref src_order_id) = table_order_id {
-                    if let Some(ref tgt_oid) = target_order_id {
-                        self.conn.execute(
-                            "UPDATE order_items SET order_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE order_id = ?3",
-                            params![tgt_oid, now, src_order_id],
-                        ).map_err(RepoError::from)?;
-                    }
-                    self.conn.execute(
-                        "UPDATE orders SET status = 'CANCELLED', last_modified = ?1, sync_status = 'pending' WHERE id = ?2",
-                        params![now, src_order_id],
-                    ).map_err(RepoError::from)?;
+        // Every table in the group exactly once, the target first.
+        let mut group: Vec<String> = vec![target_table_id.to_string()];
+        for id in &source_table_ids {
+            if !group.contains(id) {
+                group.push(id.clone());
+            }
+        }
+        // Two tables that both sit in an area, and not the same one, are not neighbours.
+        let mut areas: Vec<String> = Vec::new();
+        for id in &group {
+            let area: Option<String> = self.conn.query_row("SELECT area_id FROM tables WHERE id = ?1", params![id], |r| r.get(0))?;
+            if let Some(a) = area {
+                if !areas.contains(&a) {
+                    areas.push(a);
                 }
             }
         }
+        if areas.len() > 1 {
+            return Err(RepoError::Refused("لا يمكن دمج طاولات من أقسام مختلفة".to_string()));
+        }
 
-        Ok(target_order_id)
+        let now = chrono::Utc::now().to_rfc3339();
+        let merge_group_id = uuid::Uuid::now_v7().to_string();
+        // An unoccupied table's `current_order_id` is a genuine SQL NULL, and a pointer to an order
+        // that is already paid or cancelled is as good as none: never touch those.
+        let current_order = |table_id: &str| -> Result<Option<String>, RepoError> {
+            let id: Option<String> = self.conn.query_row("SELECT current_order_id FROM tables WHERE id = ?1", params![table_id], |r| r.get(0))?;
+            Ok(match id {
+                Some(oid) => {
+                    let open: bool = self.conn.query_row(
+                        "SELECT status IN ('DRAFT','PENDING','PREPARING','READY','SERVED') FROM orders WHERE id = ?1", params![oid], |r| r.get(0),
+                    ).optional()?.unwrap_or(false);
+                    open.then_some(oid)
+                }
+                None => None,
+            })
+        };
+
+        // The order everything folds into: the target table's own, else the first source order.
+        let mut survivor = current_order(target_table_id)?;
+        let mut outcome = MergeOutcome { source_table_ids: group.iter().skip(1).cloned().collect(), ..Default::default() };
+        if survivor.is_none() {
+            for table_id in group.iter().skip(1) {
+                if let Some(oid) = current_order(table_id)? {
+                    self.conn.execute(
+                        "UPDATE orders SET table_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
+                        params![target_table_id, now, oid],
+                    )?;
+                    self.conn.execute(
+                        "UPDATE tables SET current_order_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
+                        params![oid, now, target_table_id],
+                    )?;
+                    survivor = Some(oid);
+                    break;
+                }
+            }
+        }
+        if let Some(sid) = &survivor {
+            let reason = format!("دُمجت في الطلب #{}", self.order_label(&self.order_tenant(sid)?, sid));
+            for table_id in group.iter().skip(1) {
+                let Some(oid) = current_order(table_id)? else { continue };
+                if &oid == sid {
+                    continue;
+                }
+                let moved = self.fold_order_into(sid, &oid, &reason, actor_id, device_id, &now)?;
+                outcome.moved_item_ids.extend(moved);
+                outcome.source_order_ids.push(oid);
+            }
+        }
+        for table_id in &group {
+            self.conn.execute(
+                "UPDATE tables SET status = 'MERGED', merge_group_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3",
+                params![merge_group_id, now, table_id],
+            )?;
+        }
+        outcome.target_order_id = survivor;
+        Ok(outcome)
+    }
+
+    /// Open orders this actor can pull into a bill: everything not paid or cancelled in their
+    /// scope (held, takeaway, sent to the kitchen, on a table), newest first.
+    pub fn list_open_orders(&self, scope: &Scope) -> Result<Vec<OpenOrderSummary>, RepoError> {
+        let (pred, args) = Self::scope_predicate(scope);
+        let pred = pred.replace("tenant_id", "o.tenant_id").replace("branch_id", "o.branch_id");
+        let sql = format!(
+            "SELECT o.id, o.table_id, t.name, o.order_type, o.status, o.total_cents, o.customer_name, o.created_at, \
+                    (SELECT COALESCE(SUM(i.quantity), 0) FROM order_items i WHERE i.order_id = o.id AND i.voided = 0) \
+             FROM orders o LEFT JOIN tables t ON t.id = o.table_id \
+             WHERE {pred} AND o.status IN ('DRAFT','PENDING','PREPARING','READY','SERVED') \
+             ORDER BY o.created_at DESC LIMIT 200"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(args.iter()), |r| {
+            Ok(OpenOrderSummary {
+                id: r.get(0)?, table_id: r.get(1)?, table_name: r.get(2)?, order_type: r.get(3)?, status: r.get(4)?,
+                total_cents: r.get(5)?, customer_name: r.get(6)?, created_at: r.get(7)?, item_count: r.get(8)?, label: None,
+            })
+        })?;
+        let mut out = rows.collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        let ids: Vec<String> = out.iter().map(|o| o.id.clone()).collect();
+        let tenant = match scope {
+            Scope::Tenant { tenant_id } | Scope::Branch { tenant_id, .. } => Some(tenant_id.clone()),
+            Scope::Platform => None,
+        };
+        if let Some(tenant) = tenant {
+            let numbers = crate::order_history::numbers_for(self.conn, &tenant, &ids)?;
+            for o in &mut out {
+                o.label = numbers.get(&o.id).map(|n| n.label.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    /// Merges open bills into one: every line of each source order (options, notes, prices, gifts,
+    /// weights) moves to `target_order_id`, which the caller re-totals with the same totals
+    /// function everything else uses; each source is cancelled as "دُمجت في الطلب #N" (no stock
+    /// effect: nothing is voided or restocked) and gives its table back.
+    pub fn merge_orders(&self, scope: &Scope, target_order_id: &str, source_order_ids: &[String], actor_id: &str, device_id: &str) -> Result<MergeOutcome, RepoError> {
+        let mut sources: Vec<String> = Vec::new();
+        for id in source_order_ids {
+            if id != target_order_id && !sources.contains(id) {
+                sources.push(id.clone());
+            }
+        }
+        if sources.is_empty() {
+            return Err(RepoError::Refused("اختر فاتورة أخرى لدمجها".to_string()));
+        }
+        self.assert_order_in_scope(target_order_id, scope)?;
+        let (tenant_id, branch_id, status, target_table): (String, String, String, String) = self.conn.query_row(
+            "SELECT tenant_id, branch_id, status, table_id FROM orders WHERE id = ?1", params![target_order_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
+        let is_open = |s: &str| matches!(s, "DRAFT" | "PENDING" | "PREPARING" | "READY" | "SERVED");
+        if !is_open(&status) {
+            return Err(RepoError::Refused("هذه الفاتورة مغلقة أو مدفوعة، لا يمكن الدمج فيها".to_string()));
+        }
+        let mut source_tables: Vec<(String, String)> = Vec::new();
+        for id in &sources {
+            self.assert_order_in_scope(id, scope)?;
+            let (src_branch, src_status, src_table): (String, String, String) = self.conn.query_row(
+                "SELECT branch_id, status, table_id FROM orders WHERE id = ?1", params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            if src_branch != branch_id {
+                return Err(RepoError::Refused("لا يمكن دمج فواتير من فروع مختلفة".to_string()));
+            }
+            if !is_open(&src_status) {
+                return Err(RepoError::Refused("إحدى الفواتير مغلقة أو مدفوعة، لا يمكن دمجها".to_string()));
+            }
+            source_tables.push((id.clone(), src_table));
+        }
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let reason = format!("دُمجت في الطلب #{}", self.order_label(&tenant_id, target_order_id));
+        let mut outcome = MergeOutcome { target_order_id: Some(target_order_id.to_string()), ..Default::default() };
+        for (src, src_table) in &source_tables {
+            let moved = self.fold_order_into(target_order_id, src, &reason, actor_id, device_id, &now)?;
+            outcome.moved_item_ids.extend(moved);
+            outcome.source_order_ids.push(src.clone());
+            // The bill's table goes free, unless it is the very table the survivor sits on.
+            if src_table != &target_table {
+                self.conn.execute(
+                    "UPDATE tables SET status = 'FREE', current_order_id = NULL, last_modified = ?1, sync_status = 'pending' \
+                     WHERE current_order_id = ?2 AND status != 'MERGED'",
+                    params![now, src],
+                )?;
+            } else {
+                self.conn.execute(
+                    "UPDATE tables SET current_order_id = ?1, last_modified = ?2, sync_status = 'pending' WHERE id = ?3 AND current_order_id = ?4",
+                    params![target_order_id, now, target_table, src],
+                )?;
+            }
+        }
+        Ok(outcome)
     }
 
     /// Unmerge all tables in a merge group: set them back to FREE.
@@ -6628,6 +6848,7 @@ mod tests {
         migrate_v3::run_no_bill_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_finance_ledger_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_inventory_units_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_areas_platforms_templates_migration(&mut conn, &db_path).unwrap();
         db_path
     }
 

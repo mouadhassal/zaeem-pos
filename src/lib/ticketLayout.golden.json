@@ -1,0 +1,983 @@
+{
+ "receipts": [
+  [
+   {
+    "t": "line",
+    "text": "مطعم الياسمين",
+    "size": 42,
+    "bold": true,
+    "align": "center"
+   },
+   {
+    "t": "line",
+    "text": "فرع المزة",
+    "size": 24,
+    "align": "center"
+   },
+   {
+    "t": "gap",
+    "h": 4
+   },
+   {
+    "t": "line",
+    "text": "رقم الطلب",
+    "size": 22,
+    "align": "center"
+   },
+   {
+    "t": "line",
+    "text": "B-0012",
+    "size": 52,
+    "bold": true,
+    "align": "center"
+   },
+   {
+    "t": "gap",
+    "h": 4
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "التاريخ",
+    "left": "20 أكتوبر 2026"
+   },
+   {
+    "t": "two",
+    "right": "وقت الطلب",
+    "left": "02:05 م"
+   },
+   {
+    "t": "two",
+    "right": "وقت الدفع",
+    "left": "02:30 م"
+   },
+   {
+    "t": "two",
+    "right": "الكاشير",
+    "left": "ليلى"
+   },
+   {
+    "t": "two",
+    "right": "طاولة",
+    "left": "5"
+   },
+   {
+    "t": "two",
+    "right": "النوع",
+    "left": "صالة"
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "2 × شاورما دجاج",
+    "left": "3,400 ل.س",
+    "bold": true
+   },
+   {
+    "t": "two",
+    "right": "  ◂ جبنة",
+    "left": "+400 ل.س",
+    "size": 20
+   },
+   {
+    "t": "two",
+    "right": "  ◂ بدون بصل",
+    "left": "",
+    "size": 20
+   },
+   {
+    "t": "line",
+    "text": "  ملاحظة: حار",
+    "size": 20
+   },
+   {
+    "t": "two",
+    "right": "1 × كولا",
+    "left": "300 ل.س",
+    "bold": true
+   },
+   {
+    "t": "two",
+    "right": "1 × تحلية",
+    "left": "ضيافة",
+    "bold": true
+   },
+   {
+    "t": "line",
+    "text": "  ملاحظة: بدون سكر",
+    "size": 20
+   },
+   {
+    "t": "two",
+    "right": "  ضيافة المدير",
+    "left": "القيمة 800 ل.س",
+    "size": 20
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "المجموع الفرعي",
+    "left": "3,700 ل.س"
+   },
+   {
+    "t": "two",
+    "right": "خدمة",
+    "left": "100 ل.س"
+   },
+   {
+    "t": "two",
+    "right": "الضريبة",
+    "left": "370 ل.س"
+   },
+   {
+    "t": "two",
+    "right": "ضريبة إضافية",
+    "left": "50 ل.س"
+   },
+   {
+    "t": "two",
+    "right": "الخصم",
+    "left": "-200 ل.س"
+   },
+   {
+    "t": "two",
+    "right": "قيمة الضيافة (غير محتسبة)",
+    "left": "800 ل.س",
+    "size": 22
+   },
+   {
+    "t": "two",
+    "right": "وفرتم",
+    "left": "150 ل.س",
+    "bold": true
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "الإجمالي",
+    "left": "4,020 ل.س",
+    "size": 34,
+    "bold": true
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "طريقة الدفع",
+    "left": "نقداً"
+   },
+   {
+    "t": "two",
+    "right": "الباقي",
+    "left": "980 ل.س"
+   },
+   {
+    "t": "two",
+    "right": "رقم المرجع",
+    "left": "R-77",
+    "size": 20
+   },
+   {
+    "t": "gap",
+    "h": 10
+   },
+   {
+    "t": "line",
+    "text": "شكراً لزيارتكم",
+    "align": "center",
+    "size": 26
+   },
+   {
+    "t": "line",
+    "text": "نتمنى لكم يوماً سعيداً",
+    "align": "center",
+    "size": 22
+   },
+   {
+    "t": "gap",
+    "h": 24
+   }
+  ],
+  [
+   {
+    "t": "line",
+    "text": "مطعم الياسمين",
+    "size": 42,
+    "bold": true,
+    "align": "center"
+   },
+   {
+    "t": "line",
+    "text": "فرع المزة",
+    "size": 24,
+    "align": "center"
+   },
+   {
+    "t": "line",
+    "text": "(نسخة مكررة)",
+    "size": 24,
+    "align": "center"
+   },
+   {
+    "t": "gap",
+    "h": 4
+   },
+   {
+    "t": "line",
+    "text": "رقم الطلب",
+    "size": 22,
+    "align": "center"
+   },
+   {
+    "t": "line",
+    "text": "C-0003",
+    "size": 52,
+    "bold": true,
+    "align": "center"
+   },
+   {
+    "t": "gap",
+    "h": 4
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "التاريخ",
+    "left": "20 أكتوبر 2026"
+   },
+   {
+    "t": "two",
+    "right": "وقت الطلب",
+    "left": "02:05 م"
+   },
+   {
+    "t": "two",
+    "right": "وقت الدفع",
+    "left": "02:05 م"
+   },
+   {
+    "t": "two",
+    "right": "وقت الطباعة",
+    "left": "20 أكتوبر 2026 02:30 م"
+   },
+   {
+    "t": "two",
+    "right": "الكاشير",
+    "left": "ليلى"
+   },
+   {
+    "t": "two",
+    "right": "النوع",
+    "left": "توصيل"
+   },
+   {
+    "t": "two",
+    "right": "العميل",
+    "left": "علي"
+   },
+   {
+    "t": "two",
+    "right": "الهاتف",
+    "left": "0999"
+   },
+   {
+    "t": "two",
+    "right": "العنوان",
+    "left": "المزة - شارع 3"
+   },
+   {
+    "t": "two",
+    "right": "السائق",
+    "left": "أحمد",
+    "bold": true
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "2 × شاورما دجاج",
+    "left": "3,400 ل.س",
+    "bold": true
+   },
+   {
+    "t": "two",
+    "right": "  ◂ جبنة",
+    "left": "+400 ل.س",
+    "size": 20
+   },
+   {
+    "t": "two",
+    "right": "  ◂ بدون بصل",
+    "left": "",
+    "size": 20
+   },
+   {
+    "t": "line",
+    "text": "  ملاحظة: حار",
+    "size": 20
+   },
+   {
+    "t": "two",
+    "right": "1 × كولا",
+    "left": "300 ل.س",
+    "bold": true
+   },
+   {
+    "t": "two",
+    "right": "1 × تحلية",
+    "left": "ضيافة",
+    "bold": true
+   },
+   {
+    "t": "line",
+    "text": "  ملاحظة: بدون سكر",
+    "size": 20
+   },
+   {
+    "t": "two",
+    "right": "  ضيافة المدير",
+    "left": "القيمة 800 ل.س",
+    "size": 20
+   },
+   {
+    "t": "rule",
+    "dashed": true
+   },
+   {
+    "t": "line",
+    "text": "أصناف ملغاة (غير محتسبة):",
+    "size": 20
+   },
+   {
+    "t": "line",
+    "text": "  ✗ 1 × عصير — خطأ",
+    "size": 20
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "المجموع الفرعي",
+    "left": "3,700 ل.س"
+   },
+   {
+    "t": "two",
+    "right": "خدمة",
+    "left": "100 ل.س"
+   },
+   {
+    "t": "two",
+    "right": "الضريبة",
+    "left": "370 ل.س"
+   },
+   {
+    "t": "two",
+    "right": "ضريبة إضافية",
+    "left": "50 ل.س"
+   },
+   {
+    "t": "two",
+    "right": "رسوم التوصيل",
+    "left": "500 ل.س"
+   },
+   {
+    "t": "two",
+    "right": "الخصم",
+    "left": "-200 ل.س"
+   },
+   {
+    "t": "two",
+    "right": "قيمة الضيافة (غير محتسبة)",
+    "left": "800 ل.س",
+    "size": 22
+   },
+   {
+    "t": "two",
+    "right": "وفرتم",
+    "left": "150 ل.س",
+    "bold": true
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "الإجمالي",
+    "left": "4,020 ل.س",
+    "size": 34,
+    "bold": true
+   },
+   {
+    "t": "two",
+    "right": "مسترد",
+    "left": "-300 ل.س",
+    "bold": true
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "طريقة الدفع",
+    "left": "نقداً"
+   },
+   {
+    "t": "two",
+    "right": "الباقي",
+    "left": "980 ل.س"
+   },
+   {
+    "t": "two",
+    "right": "رقم المرجع",
+    "left": "R-77",
+    "size": 20
+   },
+   {
+    "t": "gap",
+    "h": 10
+   },
+   {
+    "t": "line",
+    "text": "شكراً لزيارتكم",
+    "align": "center",
+    "size": 26
+   },
+   {
+    "t": "line",
+    "text": "نتمنى لكم يوماً سعيداً",
+    "align": "center",
+    "size": 22
+   },
+   {
+    "t": "gap",
+    "h": 24
+   }
+  ],
+  [
+   {
+    "t": "line",
+    "text": "مطعم الياسمين",
+    "size": 42,
+    "bold": true,
+    "align": "center"
+   },
+   {
+    "t": "gap",
+    "h": 4
+   },
+   {
+    "t": "line",
+    "text": "رقم الطلب",
+    "size": 22,
+    "align": "center"
+   },
+   {
+    "t": "line",
+    "text": "B-0012",
+    "size": 52,
+    "bold": true,
+    "align": "center"
+   },
+   {
+    "t": "gap",
+    "h": 4
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "التاريخ",
+    "left": "20 أكتوبر 2026"
+   },
+   {
+    "t": "two",
+    "right": "الوقت",
+    "left": "02:30 م"
+   },
+   {
+    "t": "two",
+    "right": "النوع",
+    "left": "سفري"
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "2 × شاورما دجاج",
+    "left": "3,400 ل.س",
+    "bold": true
+   },
+   {
+    "t": "two",
+    "right": "  ◂ جبنة",
+    "left": "+400 ل.س",
+    "size": 20
+   },
+   {
+    "t": "two",
+    "right": "  ◂ بدون بصل",
+    "left": "",
+    "size": 20
+   },
+   {
+    "t": "line",
+    "text": "  ملاحظة: حار",
+    "size": 20
+   },
+   {
+    "t": "two",
+    "right": "1 × كولا",
+    "left": "300 ل.س",
+    "bold": true
+   },
+   {
+    "t": "two",
+    "right": "1 × تحلية",
+    "left": "ضيافة",
+    "bold": true
+   },
+   {
+    "t": "line",
+    "text": "  ملاحظة: بدون سكر",
+    "size": 20
+   },
+   {
+    "t": "two",
+    "right": "  ضيافة المدير",
+    "left": "القيمة 800 ل.س",
+    "size": 20
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "المجموع الفرعي",
+    "left": "3,700 ل.س"
+   },
+   {
+    "t": "two",
+    "right": "الضريبة",
+    "left": "0 ل.س"
+   },
+   {
+    "t": "two",
+    "right": "قيمة الضيافة (غير محتسبة)",
+    "left": "800 ل.س",
+    "size": 22
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "الإجمالي",
+    "left": "4,020 ل.س",
+    "size": 34,
+    "bold": true
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "طريقة الدفع",
+    "left": "نقداً"
+   },
+   {
+    "t": "two",
+    "right": "الباقي",
+    "left": "980 ل.س"
+   },
+   {
+    "t": "gap",
+    "h": 10
+   },
+   {
+    "t": "line",
+    "text": "شكراً لزيارتكم",
+    "align": "center",
+    "size": 26
+   },
+   {
+    "t": "line",
+    "text": "نتمنى لكم يوماً سعيداً",
+    "align": "center",
+    "size": 22
+   },
+   {
+    "t": "gap",
+    "h": 24
+   }
+  ]
+ ],
+ "tickets": [
+  [
+   {
+    "t": "line",
+    "text": "*** المطبخ ***",
+    "size": 38,
+    "bold": true,
+    "align": "center"
+   },
+   {
+    "t": "gap",
+    "h": 4
+   },
+   {
+    "t": "line",
+    "text": "رقم الطلب",
+    "size": 22,
+    "align": "center"
+   },
+   {
+    "t": "line",
+    "text": "B-0012",
+    "size": 52,
+    "bold": true,
+    "align": "center"
+   },
+   {
+    "t": "gap",
+    "h": 4
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "طاولة",
+    "left": "5"
+   },
+   {
+    "t": "two",
+    "right": "النوع",
+    "left": "صالة"
+   },
+   {
+    "t": "two",
+    "right": "العميل",
+    "left": "سامر"
+   },
+   {
+    "t": "two",
+    "right": "الكاشير",
+    "left": "ليلى"
+   },
+   {
+    "t": "two",
+    "right": "وقت الطلب",
+    "left": "20 أكتوبر 2026 02:05 م"
+   },
+   {
+    "t": "two",
+    "right": "وقت الطباعة",
+    "left": "02:30 م"
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "line",
+    "text": "2 × شاورما دجاج",
+    "bold": true,
+    "size": 28
+   },
+   {
+    "t": "line",
+    "text": "  ◂ بدون بصل",
+    "size": 24,
+    "bold": true
+   },
+   {
+    "t": "line",
+    "text": "  ◂ زيادة جبنة",
+    "size": 24,
+    "bold": false
+   },
+   {
+    "t": "line",
+    "text": "  ملاحظة: حار",
+    "size": 24,
+    "bold": true
+   },
+   {
+    "t": "gap",
+    "h": 6
+   },
+   {
+    "t": "line",
+    "text": "1 × كولا",
+    "bold": true,
+    "size": 28
+   },
+   {
+    "t": "gap",
+    "h": 6
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "gap",
+    "h": 16
+   }
+  ],
+  [
+   {
+    "t": "line",
+    "text": "*** إلغاء ***",
+    "size": 38,
+    "bold": true,
+    "align": "center"
+   },
+   {
+    "t": "gap",
+    "h": 4
+   },
+   {
+    "t": "line",
+    "text": "رقم الطلب",
+    "size": 22,
+    "align": "center"
+   },
+   {
+    "t": "line",
+    "text": "A-0004",
+    "size": 52,
+    "bold": true,
+    "align": "center"
+   },
+   {
+    "t": "gap",
+    "h": 4
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "النوع",
+    "left": "سفري"
+   },
+   {
+    "t": "two",
+    "right": "وقت الطلب",
+    "left": "20 أكتوبر 2026 02:30 م"
+   },
+   {
+    "t": "two",
+    "right": "وقت الطباعة",
+    "left": "02:30 م"
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "line",
+    "text": "ألغِ هذه الأصناف:",
+    "size": 28,
+    "bold": true
+   },
+   {
+    "t": "line",
+    "text": "السبب: الزبون غيّر رأيه",
+    "size": 24
+   },
+   {
+    "t": "line",
+    "text": "✗ 1 × كولا",
+    "bold": true,
+    "size": 28
+   },
+   {
+    "t": "line",
+    "text": "  ملاحظة: مثلج",
+    "size": 24,
+    "bold": true
+   },
+   {
+    "t": "gap",
+    "h": 6
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "gap",
+    "h": 16
+   }
+  ],
+  [
+   {
+    "t": "line",
+    "text": "*** تعديل ***",
+    "size": 38,
+    "bold": true,
+    "align": "center"
+   },
+   {
+    "t": "line",
+    "text": "(نسخة مكررة)",
+    "size": 24,
+    "align": "center"
+   },
+   {
+    "t": "line",
+    "text": "الشواء",
+    "size": 34,
+    "bold": true,
+    "align": "center"
+   },
+   {
+    "t": "line",
+    "text": "قسم 1 من 2",
+    "size": 24,
+    "align": "center"
+   },
+   {
+    "t": "gap",
+    "h": 4
+   },
+   {
+    "t": "line",
+    "text": "رقم الطلب",
+    "size": 22,
+    "align": "center"
+   },
+   {
+    "t": "line",
+    "text": "B-0020",
+    "size": 52,
+    "bold": true,
+    "align": "center"
+   },
+   {
+    "t": "gap",
+    "h": 4
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "two",
+    "right": "طاولة",
+    "left": "7"
+   },
+   {
+    "t": "two",
+    "right": "النوع",
+    "left": "صالة"
+   },
+   {
+    "t": "two",
+    "right": "وقت الطلب",
+    "left": "20 أكتوبر 2026 02:30 م"
+   },
+   {
+    "t": "two",
+    "right": "وقت الطباعة",
+    "left": "02:30 م"
+   },
+   {
+    "t": "two",
+    "right": "مجدول",
+    "left": "04:00 م",
+    "bold": true
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "line",
+    "text": "استلام الساعة 04:15 م",
+    "size": 34,
+    "bold": true,
+    "align": "center"
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "line",
+    "text": "قبل التعديل (ألغِه):",
+    "size": 26,
+    "bold": true
+   },
+   {
+    "t": "line",
+    "text": "✗ 1 × شاورما",
+    "bold": true,
+    "size": 28
+   },
+   {
+    "t": "line",
+    "text": "  ملاحظة: عادي",
+    "size": 24,
+    "bold": true
+   },
+   {
+    "t": "gap",
+    "h": 6
+   },
+   {
+    "t": "rule",
+    "dashed": true
+   },
+   {
+    "t": "line",
+    "text": "بعد التعديل (حضّره):",
+    "size": 26,
+    "bold": true
+   },
+   {
+    "t": "line",
+    "text": "2 × شاورما",
+    "bold": true,
+    "size": 28
+   },
+   {
+    "t": "line",
+    "text": "  ملاحظة: حار",
+    "size": 24,
+    "bold": true
+   },
+   {
+    "t": "gap",
+    "h": 6
+   },
+   {
+    "t": "rule"
+   },
+   {
+    "t": "line",
+    "text": "يُرسل الباقي إلى:",
+    "size": 22
+   },
+   {
+    "t": "line",
+    "text": "  البار (2)",
+    "size": 22
+   },
+   {
+    "t": "gap",
+    "h": 16
+   }
+  ]
+ ]
+}

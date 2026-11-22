@@ -34,3 +34,4 @@ pub mod order_history;
 pub mod role_access;
 pub mod workforce;
 pub mod finance;
+pub mod venue;

@@ -64,6 +64,7 @@ export interface HeldOrderResult {
   customer_phone?: string | null;
   delivery_address?: string | null;
   no_bill?: boolean;
+  platform_id?: string | null;
 }
 
 interface TableInfo {
@@ -71,6 +72,8 @@ interface TableInfo {
   name: string;
   status: string;
   current_order_id?: string | null;
+  /** The dining area the table sits in, if the owner made areas. */
+  area_id?: string | null;
 }
 
 interface ReceiptConfig {
@@ -399,6 +402,7 @@ export async function retrieveHeldOrder(
   customerPhone?: string;
   deliveryAddress?: string;
   noBill: boolean;
+  platformId: string | null;
 } | null> {
   const result = await invoke<HeldOrderResult | null>("retrieve_held_order_v3", {
     sessionToken: token(),
@@ -424,6 +428,7 @@ export async function retrieveHeldOrder(
     ...(result.customer_phone ? { customerPhone: result.customer_phone } : {}),
     ...(result.delivery_address ? { deliveryAddress: result.delivery_address } : {}),
     noBill: !!result.no_bill,
+    platformId: result.platform_id ?? null,
   };
 }
 
@@ -478,6 +483,7 @@ interface OpenOrderApiResult {
   discount_cents: number;
   total_cents: number;
   no_bill?: boolean;
+  platform_id?: string | null;
 }
 
 export interface OpenOrderResult {
@@ -503,6 +509,8 @@ export interface OpenOrderResult {
   discountCents: number;
   totalCents: number;
   noBill: boolean;
+  /** The delivery app the order came from; null = direct. */
+  platformId: string | null;
 }
 
 /// "Send to kitchen now, pay later" dine-in fix: read back a table's OPEN
@@ -543,6 +551,7 @@ export async function retrieveOpenOrder(orderId: string): Promise<OpenOrderResul
     discountCents: result.discount_cents,
     totalCents: result.total_cents,
     noBill: !!result.no_bill,
+    platformId: result.platform_id ?? null,
   };
 }
 
@@ -648,6 +657,60 @@ export async function splitBill(
     splits: inputSplits,
     tableId,
   });
+}
+
+export interface DiningArea {
+  id: string;
+  name: string;
+  sort_order: number;
+}
+
+/** The areas of the dining room (empty = the owner made none and the table grid stays flat). */
+export async function listDiningAreas(): Promise<DiningArea[]> {
+  return invoke<DiningArea[]>("list_dining_areas_v3", { sessionToken: token() });
+}
+
+export interface DeliveryPlatform {
+  id: string;
+  name: string;
+  /** The app's cut in basis points (100 = 1%). */
+  commission_bp: number;
+  active: boolean;
+}
+
+/** The delivery apps an order can come from (active ones). */
+export async function listDeliveryPlatforms(): Promise<DeliveryPlatform[]> {
+  return invoke<DeliveryPlatform[]>("list_delivery_platforms_v3", { sessionToken: token(), includeInactive: false });
+}
+
+/// Which app an order that already exists came from (null = direct). Saved the way "no bill" is,
+/// so it holds when the table is opened again, the pickup is collected or the delivery goes out.
+export async function setOrderPlatform(orderId: string, platformId: string | null): Promise<void> {
+  await invoke<void>("set_order_platform_v3", { sessionToken: token(), orderId, platformId });
+}
+
+export interface OpenOrderSummary {
+  id: string;
+  table_id: string;
+  table_name: string | null;
+  order_type: string;
+  status: string;
+  total_cents: number;
+  customer_name: string | null;
+  created_at: string;
+  item_count: number;
+  /** The daily number (A-0001), when the order has one. */
+  label: string | null;
+}
+
+/** Every open bill (held, takeaway, on a table) that can be pulled into another one. */
+export async function listOpenOrders(): Promise<OpenOrderSummary[]> {
+  return invoke<OpenOrderSummary[]>("list_open_orders_v3", { sessionToken: token() });
+}
+
+/** "دمج فواتير": pulls the other open bills into `targetOrderId`. */
+export async function mergeOrders(targetOrderId: string, sourceOrderIds: string[]): Promise<{ order_id: string; order_total_cents: number; merged_count: number }> {
+  return invoke("merge_orders_v3", { sessionToken: token(), targetOrderId, sourceOrderIds });
 }
 
 export async function mergeTables(

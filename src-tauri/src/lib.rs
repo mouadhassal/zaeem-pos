@@ -47,6 +47,7 @@ mod ops_settings;
 mod role_access;
 mod supplier_link;
 mod inventory_ops;
+mod venue;
 
 // Only the debug-build staff seeding (seed_default_staff) hashes PINs here.
 #[cfg(debug_assertions)]
@@ -135,6 +136,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_no_bill_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_finance_ledger_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_inventory_units_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_areas_platforms_templates_migration(conn, db_path).map_err(|e| e.to_string())?;
     business::refresh_cache(conn);
     Ok(())
 }
@@ -728,6 +730,20 @@ pub fn run() {
             commands::restaurant::delete_option_group_v3,
             commands::restaurant::edit_order_item_v3,
             commands::restaurant::set_order_item_comp_v3,
+            commands::venue::list_dining_areas_v3,
+            commands::venue::save_dining_area_v3,
+            commands::venue::delete_dining_area_v3,
+            commands::venue::set_table_area_v3,
+            commands::venue::list_delivery_platforms_v3,
+            commands::venue::set_order_platform_v3,
+            commands::venue::save_delivery_platform_v3,
+            commands::venue::platform_accounts_v3,
+            commands::venue::record_platform_settlement_v3,
+            commands::venue::list_platform_settlements_v3,
+            commands::venue::list_receipt_templates_v3,
+            commands::venue::save_receipt_template_v3,
+            commands::venue::delete_receipt_template_v3,
+            commands::venue::set_printer_template_v3,
             commands::delivery::get_delivery_settings_v3,
             commands::delivery::update_delivery_settings_v3,
             commands::delivery::list_delivery_drivers_v3,
@@ -799,6 +815,8 @@ pub fn run() {
             commands::orders::add_items_to_order_v3,
             commands::orders::split_bill_v3,
             commands::orders::merge_tables_v3,
+            commands::orders::merge_orders_v3,
+            commands::orders::list_open_orders_v3,
             commands::orders::unmerge_tables_v3,
             commands::orders::void_order_item_v3,
             commands::orders::cancel_order_v3,

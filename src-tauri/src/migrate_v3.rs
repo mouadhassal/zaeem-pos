@@ -3278,6 +3278,79 @@ pub fn run_inventory_units_migration(conn: &mut Connection, _db_path: &Path) -> 
     Ok(())
 }
 
+pub const MIGRATION_AT_VERSION: i64 = 52;
+
+/// Migration AT (2026-11-22): dining areas, delivery apps and receipt templates.
+///  * `dining_areas` + `tables.area_id` (nullable: no area = the table grid looks as before).
+///  * `delivery_platforms` (the apps an order can come from, with the app's commission in basis
+///    points), `platform_settlements` (what the app paid out), `orders.platform_id` (nullable =
+///    a direct order) and `orders.cancel_reason` (why an order was cancelled by a merge).
+///  * `receipt_templates` + `printers.template_id` (nullable: no template = today's layout).
+///
+/// Additive only; every column defaults to "as before".
+pub fn run_areas_platforms_templates_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AT_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS dining_areas (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            branch_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_dining_areas_branch ON dining_areas (branch_id, sort_order);
+        CREATE TABLE IF NOT EXISTS delivery_platforms (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            branch_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            commission_bp INTEGER NOT NULL DEFAULT 0 CHECK (commission_bp >= 0 AND commission_bp <= 10000),
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_delivery_platforms_branch ON delivery_platforms (branch_id);
+        CREATE TABLE IF NOT EXISTS platform_settlements (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            branch_id TEXT NOT NULL,
+            platform_id TEXT NOT NULL,
+            amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+            period_from TEXT,
+            period_to TEXT,
+            note TEXT,
+            staff_id TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_platform_settlements_platform ON platform_settlements (platform_id, created_at);
+        CREATE TABLE IF NOT EXISTS receipt_templates (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            branch_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'BILL' CHECK (kind IN ('BILL', 'KITCHEN')),
+            config TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+    )?;
+    add_column_if_missing(&tx, "tables", "area_id", "TEXT")?;
+    add_column_if_missing(&tx, "orders", "platform_id", "TEXT")?;
+    add_column_if_missing(&tx, "orders", "cancel_reason", "TEXT")?;
+    add_column_if_missing(&tx, "printers", "template_id", "TEXT")?;
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AT_VERSION, "0052_areas_platforms_templates", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
