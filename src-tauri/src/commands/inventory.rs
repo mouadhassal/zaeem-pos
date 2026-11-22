@@ -88,11 +88,11 @@ pub(crate) fn update_ingredient_v3_impl(state: &Db, license: &crate::license::cl
 /// `inventory_logs` fact + the audit entry, same atomicity principle as
 /// `take_payment_v3`.
 #[tauri::command]
-pub fn adjust_stock_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String, change_amount: f64, reason: String) -> Result<String, String> {
-    adjust_stock_v3_impl(&state, &license, session_token, ingredient_id, change_amount, reason)
+pub fn adjust_stock_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String, change_amount: f64, reason: String, warehouse_id: Option<String>) -> Result<String, String> {
+    adjust_stock_v3_impl(&state, &license, session_token, ingredient_id, change_amount, reason, warehouse_id)
 }
 
-pub(crate) fn adjust_stock_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, ingredient_id: String, change_amount: f64, reason: String) -> Result<String, String> {
+pub(crate) fn adjust_stock_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, ingredient_id: String, change_amount: f64, reason: String, warehouse_id: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(state, &session_token)?;
     require_license_not_locked(license)?;
     authorize(&actor, Permission::AdjustStock).map_err(|e| e.to_string())?;
@@ -102,8 +102,8 @@ pub(crate) fn adjust_stock_v3_impl(state: &Db, license: &crate::license::cloud::
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let log_id = Repo::new(&tx).adjust_stock(&actor.scope(), &tenant_id, &branch_id, &ingredient_id, change_amount, &reason, &actor.id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "change_amount": change_amount, "reason": reason, "log_id": log_id }))).map_err(|e| e.to_string())?;
+    let log_id = crate::warehouses::adjust(&tx, &actor.scope(), &tenant_id, &branch_id, &ingredient_id, change_amount, &reason, &actor.id, warehouse_id.as_deref())?;
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "change_amount": change_amount, "reason": reason, "log_id": log_id, "warehouse_id": warehouse_id }))).map_err(|e| e.to_string())?;
 
     let license_status = license.cached_status();
     sync_enqueue_ingredient(&tx, &tenant_id, &branch_id, &ingredient_id, &actor.device_id, &license_status)?;
@@ -122,11 +122,11 @@ pub(crate) fn adjust_stock_v3_impl(state: &Db, license: &crate::license::cloud::
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn record_stock_count_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String, counted_stock: f64, note: Option<String>) -> Result<String, String> {
-    record_stock_count_v3_impl(&state, &license, session_token, ingredient_id, counted_stock, note)
+pub fn record_stock_count_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String, counted_stock: f64, note: Option<String>, warehouse_id: Option<String>) -> Result<String, String> {
+    record_stock_count_v3_impl(&state, &license, session_token, ingredient_id, counted_stock, note, warehouse_id)
 }
 
-pub(crate) fn record_stock_count_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, ingredient_id: String, counted_stock: f64, note: Option<String>) -> Result<String, String> {
+pub(crate) fn record_stock_count_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, ingredient_id: String, counted_stock: f64, note: Option<String>, warehouse_id: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(state, &session_token)?;
     require_license_not_locked(license)?;
     authorize(&actor, Permission::AdjustStock).map_err(|e| e.to_string())?;
@@ -136,8 +136,8 @@ pub(crate) fn record_stock_count_v3_impl(state: &Db, license: &crate::license::c
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let count_id = Repo::new(&tx).record_stock_count(&actor.scope(), &tenant_id, &branch_id, &ingredient_id, counted_stock, &actor.id, note.as_deref()).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "physical_count": counted_stock, "count_id": count_id }))).map_err(|e| e.to_string())?;
+    let count_id = crate::warehouses::count(&tx, &actor.scope(), &tenant_id, &branch_id, &ingredient_id, counted_stock, &actor.id, note.as_deref(), warehouse_id.as_deref())?;
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "physical_count": counted_stock, "count_id": count_id, "warehouse_id": warehouse_id }))).map_err(|e| e.to_string())?;
 
     let license_status = license.cached_status();
     sync_enqueue_ingredient(&tx, &tenant_id, &branch_id, &ingredient_id, &actor.device_id, &license_status)?;
@@ -390,11 +390,13 @@ pub(crate) fn save_batch_recipe_v3_impl(state: &Db, license: &crate::license::cl
 
 /// Runs a production: components go down, the produced ingredient goes up by what really came out and its average cost is re-weighted.
 #[tauri::command]
-pub fn produce_batch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String, batches: f64, actual_qty: Option<f64>, notes: Option<String>) -> Result<ProduceOutcome, String> {
-    produce_batch_v3_impl(&state, &license, session_token, ingredient_id, batches, actual_qty, notes)
+#[allow(clippy::too_many_arguments)]
+pub fn produce_batch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String, batches: f64, actual_qty: Option<f64>, notes: Option<String>, warehouse_id: Option<String>) -> Result<ProduceOutcome, String> {
+    produce_batch_v3_impl(&state, &license, session_token, ingredient_id, batches, actual_qty, notes, warehouse_id)
 }
 
-pub(crate) fn produce_batch_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, ingredient_id: String, batches: f64, actual_qty: Option<f64>, notes: Option<String>) -> Result<ProduceOutcome, String> {
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn produce_batch_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, ingredient_id: String, batches: f64, actual_qty: Option<f64>, notes: Option<String>, warehouse_id: Option<String>) -> Result<ProduceOutcome, String> {
     crate::lan::reject_if_local_kitchen_satellite("produce_batch_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     require_license_not_locked(license)?;
@@ -402,8 +404,8 @@ pub(crate) fn produce_batch_v3_impl(state: &Db, license: &crate::license::cloud:
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let notes = notes.as_deref().map(str::trim).filter(|n| !n.is_empty());
-    let out = inventory_ops::produce(&tx, &actor.scope(), &actor.id, &ingredient_id, batches, actual_qty, notes, &now_iso())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "production_run": out.run_id, "batches": batches, "expected_qty": out.expected_qty, "actual_qty": out.actual_qty, "cost_cents": out.cost_cents }))).map_err(|e| e.to_string())?;
+    let out = inventory_ops::produce(&tx, &actor.scope(), &actor.id, &ingredient_id, batches, actual_qty, notes, &now_iso(), warehouse_id.as_deref())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "production_run": out.run_id, "batches": batches, "expected_qty": out.expected_qty, "actual_qty": out.actual_qty, "cost_cents": out.cost_cents, "warehouse_id": warehouse_id }))).map_err(|e| e.to_string())?;
     enqueue_ingredients(&tx, &out.touched, &actor.device_id, license)?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(out)
@@ -426,20 +428,20 @@ pub(crate) fn list_production_runs_v3_impl(state: &Db, license: &crate::license:
 /// Writes off spoiled / expired / spilled stock (reason from the short list), with its value.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn record_waste_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String, quantity: f64, unit: Option<String>, reason: String, note: Option<String>) -> Result<WasteOutcome, String> {
-    record_waste_v3_impl(&state, &license, session_token, ingredient_id, quantity, unit, reason, note)
+pub fn record_waste_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String, quantity: f64, unit: Option<String>, reason: String, note: Option<String>, warehouse_id: Option<String>) -> Result<WasteOutcome, String> {
+    record_waste_v3_impl(&state, &license, session_token, ingredient_id, quantity, unit, reason, note, warehouse_id)
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn record_waste_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, ingredient_id: String, quantity: f64, unit: Option<String>, reason: String, note: Option<String>) -> Result<WasteOutcome, String> {
+pub(crate) fn record_waste_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, ingredient_id: String, quantity: f64, unit: Option<String>, reason: String, note: Option<String>, warehouse_id: Option<String>) -> Result<WasteOutcome, String> {
     crate::lan::reject_if_local_kitchen_satellite("record_waste_v3")?;
     let actor = authenticate_actor(state, &session_token)?;
     require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageIngredients).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let out = inventory_ops::record_waste(&tx, &actor.scope(), &actor.id, &ingredient_id, quantity, unit.as_deref(), &reason, note.as_deref(), &now_iso())?;
-    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "waste": out.quantity, "reason": reason, "value_cents": out.value_cents, "log_id": out.log_id }))).map_err(|e| e.to_string())?;
+    let out = inventory_ops::record_waste(&tx, &actor.scope(), &actor.id, &ingredient_id, quantity, unit.as_deref(), &reason, note.as_deref(), &now_iso(), warehouse_id.as_deref())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "waste": out.quantity, "reason": reason, "value_cents": out.value_cents, "log_id": out.log_id, "warehouse_id": warehouse_id }))).map_err(|e| e.to_string())?;
     enqueue_ingredients(&tx, std::slice::from_ref(&ingredient_id), &actor.device_id, license)?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(out)
@@ -470,6 +472,77 @@ pub(crate) fn get_stock_report_v3_impl(state: &Db, license: &crate::license::clo
     authorize(&actor, Permission::ManageIngredients).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     inventory_ops::stock_report(&conn, &actor.scope(), &range_start_iso, &range_end_iso)
+}
+
+// ---------------------------------------------------------------------------
+// Warehouses (مخازن). Logic and tests: `warehouses.rs`. A shop with one store room never calls these.
+// ---------------------------------------------------------------------------
+
+/// The branch's warehouses (the first, «المخزن الرئيسي», is made on the first look).
+#[tauri::command]
+pub fn list_warehouses_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::warehouses::Warehouse>, String> {
+    list_warehouses_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_warehouses_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<crate::warehouses::Warehouse>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, license, None)?;
+    crate::warehouses::list(&conn, &tenant_id, &branch_id)
+}
+
+/// How much of every ingredient sits in each shown warehouse (the default one is the total minus the others).
+#[tauri::command]
+pub fn list_warehouse_stock_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::warehouses::StockCell>, String> {
+    list_warehouse_stock_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_warehouse_stock_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<crate::warehouses::StockCell>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, license, None)?;
+    crate::warehouses::stock_table(&conn, &tenant_id, &branch_id)
+}
+
+/// Adds a warehouse (no id) or renames / hides / shows one.
+#[tauri::command]
+pub fn save_warehouse_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, warehouse_id: Option<String>, name: String, active: bool) -> Result<String, String> {
+    save_warehouse_v3_impl(&state, &license, session_token, warehouse_id, name, active)
+}
+
+pub(crate) fn save_warehouse_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, warehouse_id: Option<String>, name: String, active: bool) -> Result<String, String> {
+    crate::lan::reject_if_local_kitchen_satellite("save_warehouse_v3")?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    authorize(&actor, Permission::ManageIngredients).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, license, None)?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let id = crate::warehouses::save(&tx, &tenant_id, &branch_id, warehouse_id.as_deref(), &name, active)?;
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InventoryAdjusted, "warehouse", &id, None, Some(&serde_json::json!({ "name": name.trim(), "active": active, "new": warehouse_id.is_none() }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+/// Moves an amount of an ingredient from one warehouse to another (the total does not change).
+#[tauri::command]
+pub fn transfer_stock_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, ingredient_id: String, from_warehouse_id: String, to_warehouse_id: String, quantity: f64) -> Result<crate::warehouses::TransferOutcome, String> {
+    transfer_stock_v3_impl(&state, &license, session_token, ingredient_id, from_warehouse_id, to_warehouse_id, quantity)
+}
+
+pub(crate) fn transfer_stock_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, ingredient_id: String, from_warehouse_id: String, to_warehouse_id: String, quantity: f64) -> Result<crate::warehouses::TransferOutcome, String> {
+    crate::lan::reject_if_local_kitchen_satellite("transfer_stock_v3")?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    authorize(&actor, Permission::AdjustStock).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let out = crate::warehouses::transfer(&tx, &actor.scope(), &actor.id, &ingredient_id, &from_warehouse_id, &to_warehouse_id, quantity, &now_iso())?;
+    audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::InventoryAdjusted, "ingredient", &ingredient_id, None, Some(&serde_json::json!({ "transfer": out.quantity, "from": out.from_name, "to": out.to_name, "log_id": out.log_id }))).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -510,7 +583,8 @@ pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::C
             let ingredient_id: String = lan_arg(args, "ingredientId")?;
             let change_amount: f64 = lan_arg(args, "changeAmount")?;
             let reason: String = lan_arg(args, "reason")?;
-            let r = adjust_stock_v3_impl(db, license, session_token, ingredient_id, change_amount, reason)?;
+            let warehouse_id: Option<String> = lan_arg(args, "warehouseId")?;
+            let r = adjust_stock_v3_impl(db, license, session_token, ingredient_id, change_amount, reason, warehouse_id)?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
         "record_stock_count_v3" => {
@@ -518,7 +592,8 @@ pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::C
             let ingredient_id: String = lan_arg(args, "ingredientId")?;
             let counted_stock: f64 = lan_arg(args, "countedStock")?;
             let note: Option<String> = lan_arg(args, "note")?;
-            let r = record_stock_count_v3_impl(db, license, session_token, ingredient_id, counted_stock, note)?;
+            let warehouse_id: Option<String> = lan_arg(args, "warehouseId")?;
+            let r = record_stock_count_v3_impl(db, license, session_token, ingredient_id, counted_stock, note, warehouse_id)?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
         "list_stock_counts_v3" => {
@@ -614,7 +689,8 @@ pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::C
             let batches: f64 = lan_arg(args, "batches")?;
             let actual_qty: Option<f64> = lan_arg(args, "actualQty")?;
             let notes: Option<String> = lan_arg(args, "notes")?;
-            let r = produce_batch_v3_impl(db, license, session_token, ingredient_id, batches, actual_qty, notes)?;
+            let warehouse_id: Option<String> = lan_arg(args, "warehouseId")?;
+            let r = produce_batch_v3_impl(db, license, session_token, ingredient_id, batches, actual_qty, notes, warehouse_id)?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
         "list_production_runs_v3" => {
@@ -631,7 +707,8 @@ pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::C
             let unit: Option<String> = lan_arg(args, "unit")?;
             let reason: String = lan_arg(args, "reason")?;
             let note: Option<String> = lan_arg(args, "note")?;
-            let r = record_waste_v3_impl(db, license, session_token, ingredient_id, quantity, unit, reason, note)?;
+            let warehouse_id: Option<String> = lan_arg(args, "warehouseId")?;
+            let r = record_waste_v3_impl(db, license, session_token, ingredient_id, quantity, unit, reason, note, warehouse_id)?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
         "list_waste_v3" => {
@@ -646,6 +723,33 @@ pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::C
             let range_start_iso: String = lan_arg(args, "rangeStartIso")?;
             let range_end_iso: String = lan_arg(args, "rangeEndIso")?;
             let r = get_stock_report_v3_impl(db, license, session_token, range_start_iso, range_end_iso)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_warehouses_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_warehouses_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_warehouse_stock_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_warehouse_stock_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "save_warehouse_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let warehouse_id: Option<String> = lan_arg(args, "warehouseId")?;
+            let name: String = lan_arg(args, "name")?;
+            let active: bool = lan_arg(args, "active")?;
+            let r = save_warehouse_v3_impl(db, license, session_token, warehouse_id, name, active)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "transfer_stock_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let ingredient_id: String = lan_arg(args, "ingredientId")?;
+            let from_warehouse_id: String = lan_arg(args, "fromWarehouseId")?;
+            let to_warehouse_id: String = lan_arg(args, "toWarehouseId")?;
+            let quantity: f64 = lan_arg(args, "quantity")?;
+            let r = transfer_stock_v3_impl(db, license, session_token, ingredient_id, from_warehouse_id, to_warehouse_id, quantity)?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
         _ => return Ok(None),

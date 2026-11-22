@@ -195,11 +195,13 @@ pub(crate) fn list_purchase_order_items_v3_impl(state: &Db, license: &crate::lic
 /// ceiling on "paid more than total_cents" -- that's a legitimate advance,
 /// handled by `Repo::receive_purchase_order`'s payment_status logic.
 #[tauri::command]
-pub fn receive_purchase_order_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, po_id: String, items: Vec<(String, String, f64)>, amount_paid_cents: Option<i64>, method: Option<String>) -> Result<(), String> {
-    receive_purchase_order_v3_impl(&state, &license, session_token, po_id, items, amount_paid_cents, method)
+#[allow(clippy::too_many_arguments)]
+pub fn receive_purchase_order_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, po_id: String, items: Vec<(String, String, f64)>, amount_paid_cents: Option<i64>, method: Option<String>, warehouse_id: Option<String>) -> Result<(), String> {
+    receive_purchase_order_v3_impl(&state, &license, session_token, po_id, items, amount_paid_cents, method, warehouse_id)
 }
 
-pub(crate) fn receive_purchase_order_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, po_id: String, items: Vec<(String, String, f64)>, amount_paid_cents: Option<i64>, method: Option<String>) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn receive_purchase_order_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, po_id: String, items: Vec<(String, String, f64)>, amount_paid_cents: Option<i64>, method: Option<String>, warehouse_id: Option<String>) -> Result<(), String> {
     let actor = authenticate_actor(state, &session_token)?;
     require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
@@ -215,12 +217,12 @@ pub(crate) fn receive_purchase_order_v3_impl(state: &Db, license: &crate::licens
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let (payment_ids, cost_id) = Repo::new(&tx)
-        .receive_purchase_order(&tenant_id, &branch_id, &po_id, &actor.id, &scope, &items, amount_paid_cents, method.as_deref())
+        .receive_purchase_order_into(&tenant_id, &branch_id, &po_id, &actor.id, &scope, &items, amount_paid_cents, method.as_deref(), warehouse_id.as_deref())
         .map_err(|e| e.to_string())?;
     audit::append(
         &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
         audit::Action::PurchaseOrderReceived, "purchase_order", &po_id,
-        None, Some(&serde_json::json!({ "item_count": items.len(), "amount_paid_cents": amount_paid_cents })),
+        None, Some(&serde_json::json!({ "item_count": items.len(), "amount_paid_cents": amount_paid_cents, "warehouse_id": warehouse_id })),
     ).map_err(|e| e.to_string())?;
     if amount_paid_cents > 0 {
         audit::append(
@@ -581,7 +583,8 @@ pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::C
             let items: Vec<(String, String, f64)> = lan_arg(args, "items")?;
             let amount_paid_cents: Option<i64> = lan_arg(args, "amountPaidCents")?;
             let method: Option<String> = lan_arg(args, "method")?;
-            let r = receive_purchase_order_v3_impl(db, license, session_token, po_id, items, amount_paid_cents, method)?;
+            let warehouse_id: Option<String> = lan_arg(args, "warehouseId")?;
+            let r = receive_purchase_order_v3_impl(db, license, session_token, po_id, items, amount_paid_cents, method, warehouse_id)?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
         "record_supplier_payment_v3" => {

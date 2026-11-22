@@ -37,6 +37,7 @@ pub const FULL_ONLY_COMMANDS: &[&str] = &[
     "update_supplier_v3", "delete_supplier_v3", "list_inventory_logs_v3", "list_reorder_suggestions_v3",
     "list_low_stock_ingredients_v3",
     "list_units_v3", "list_ingredient_units_v3", "save_ingredient_unit_v3", "delete_ingredient_unit_v3", "list_batch_recipes_v3", "save_batch_recipe_v3", "produce_batch_v3", "list_production_runs_v3", "record_waste_v3", "list_waste_v3", "get_stock_report_v3", "create_purchase_order_with_units_v3",
+    "list_warehouses_v3", "list_warehouse_stock_v3", "save_warehouse_v3", "transfer_stock_v3",
     // supplier marketplace
     "get_marketplace_context_v3", "list_marketplace_receipts_v3", "receive_marketplace_order_v3",
     "supplier_market_state_v3", "link_supplier_product_v3", "apply_supplier_order_v3", "supplier_market_sync_v3",

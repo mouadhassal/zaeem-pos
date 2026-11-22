@@ -51,6 +51,7 @@ mod ops_settings;
 mod role_access;
 mod supplier_link;
 mod inventory_ops;
+mod warehouses;
 mod venue;
 
 // Only the debug-build staff seeding (seed_default_staff) hashes PINs here.
@@ -143,6 +144,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_areas_platforms_templates_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_payroll_extras_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_remote_back_office_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_warehouses_migration(conn, db_path).map_err(|e| e.to_string())?;
     business::refresh_cache(conn);
     Ok(())
 }
@@ -815,6 +817,10 @@ pub fn run() {
             commands::inventory::produce_batch_v3,
             commands::inventory::list_production_runs_v3,
             commands::inventory::record_waste_v3,
+            commands::inventory::list_warehouses_v3,
+            commands::inventory::list_warehouse_stock_v3,
+            commands::inventory::save_warehouse_v3,
+            commands::inventory::transfer_stock_v3,
             commands::inventory::list_waste_v3,
             commands::inventory::get_stock_report_v3,
             commands::suppliers::create_purchase_order_with_units_v3,
