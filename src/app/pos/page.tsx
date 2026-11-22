@@ -19,6 +19,7 @@ const PaymentModal = lazy(() => import("../../components/PaymentModal"));
 const ManagerPinModal = lazy(() => import("../../components/modals/ManagerPinModal"));
 const SplitBillModal = lazy(() => import("../../components/modals/SplitBillModal"));
 const MergeTablesModal = lazy(() => import("../../components/modals/MergeTablesModal"));
+const MergeBillsModal = lazy(() => import("../../components/modals/MergeBillsModal"));
 const VoidItemModal = lazy(() => import("../../components/modals/VoidItemModal"));
 const TransferOrderModal = lazy(() => import("../../components/modals/TransferOrderModal"));
 const OnScreenReceiptModal = lazy(() => import("../../components/modals/OnScreenReceiptModal"));
@@ -33,7 +34,7 @@ import {
   IconAward as Award,
   IconArrowsSplit2 as Split, IconArrowsLeftRight as ArrowLeftRight,
   IconPrinter as Printer, IconTrash as Trash2,
-  IconToolsKitchen2, IconShoppingBag, IconWallet, IconX, IconTruckDelivery,
+  IconToolsKitchen2, IconShoppingBag, IconWallet, IconX, IconTruckDelivery, IconArrowsJoin2,
 } from "@tabler/icons-react";
 import { useCartStore } from "../../stores/cartStore";
 import { usePlanStore } from "../../stores/planStore";
@@ -45,7 +46,8 @@ import { CURRENCY_SYMBOLS } from "../../hooks/useCurrency";
 import { setCurrency, parseMoneyInput } from "../../lib/money";
 import { useDiscountCap } from "../../hooks/useDiscountCap";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
-import { editOrderItem, setOrderItemComp, printKitchenChange, createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, retrieveOpenOrder, addItemsToOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, setOrderNoBill, lookupLoyaltyCard, listActiveLoyaltyRewards, redeemLoyaltyReward, getBusinessMode, listPendingOrdersForTable } from "../../lib/orderService";
+import { editOrderItem, setOrderItemComp, printKitchenChange, createOrder, finalizeOrder, holdOrder, retrieveHeldOrder, retrieveOpenOrder, addItemsToOrder, splitBill, mergeTables, transferOrder, activateDelayedOrders, voidOrderItem, listTables, getReceiptConfig, setOrderNoBill, lookupLoyaltyCard, listActiveLoyaltyRewards, redeemLoyaltyReward, getBusinessMode, listPendingOrdersForTable, listDiningAreas, listDeliveryPlatforms, setOrderPlatform, mergeOrders, type DiningArea, type DeliveryPlatform } from "../../lib/orderService";
+import OrderSourcePicker from "../../components/ui/OrderSourcePicker";
 import type { LoyaltyRewardOption } from "../../lib/orderService";
 import { enableBarcodeScanner, disableBarcodeScanner } from "../../lib/barcodeScanner";
 import { NO_SHOP_SETTINGS, resolveScan, stockWarning, type ShopSettings } from "../../lib/shop";
@@ -131,6 +133,7 @@ interface TableData {
   name: string;
   status: "FREE" | "OCCUPIED" | "MERGED";
   current_order_id?: string | null;
+  area_id?: string | null;
 }
 
 export default function POSPage() {
@@ -145,6 +148,10 @@ export default function POSPage() {
   const [showPin, setShowPin] = useState(false);
   const [showSplit, setShowSplit] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
+  const [showMergeBills, setShowMergeBills] = useState(false);
+  // The owner's dining areas and active delivery apps (both empty = the till looks as it always did).
+  const [areas, setAreas] = useState<DiningArea[]>([]);
+  const [platforms, setPlatforms] = useState<DeliveryPlatform[]>([]);
   const [showVoid, setShowVoid] = useState(false);
   // Cancel the whole order (one step instead of line by line) and the special-price dialog.
   const [cancelDialog, setCancelDialog] = useState<null | { needsPin: boolean; error: string | null }>(null);
@@ -240,7 +247,7 @@ export default function POSPage() {
   const posLite = usePlanStore((s) => s.posLite);
 
   const { items, tableId, tableName, setTable, addItem, clearCart, voidItem, updateQuantity } = useCartStore();
-  const { orderType, setOrderType, customerName, customerPhone, deliveryAddress, driverId, debtorId, debtorName, resetOrderInfo, pickupAtMs, setPickupAtMs } = useOrderTypeStore();
+  const { orderType, setOrderType, customerName, customerPhone, deliveryAddress, driverId, debtorId, debtorName, resetOrderInfo, pickupAtMs, setPickupAtMs, platformId } = useOrderTypeStore();
   const deliveryFeeCents = useCartStore((s) => s.deliveryFeeCents);
   const setDeliveryFee = useCartStore((s) => s.setDeliveryFee);
   const [feeInput, setFeeInput] = useState("");
@@ -299,6 +306,12 @@ export default function POSPage() {
       setOpeningShift(false);
     }
   };
+
+  useEffect(() => {
+    // Both are optional extras: a refusal (module off, older hub) just leaves the till as it was.
+    listDiningAreas().then(setAreas).catch(() => setAreas([]));
+    listDeliveryPlatforms().then(setPlatforms).catch(() => setPlatforms([]));
+  }, []);
 
   useEffect(() => {
     getReceiptConfig().then((cfg) => {
@@ -484,9 +497,31 @@ export default function POSPage() {
     if (!useOrderTypeStore.getState().noBill) return;
     await setOrderNoBill(orderId, true).catch(() => flash("أُرسل الطلب لكن تعذر حفظ «بدون فاتورة»، أوقف الطباعة من شاشة الدفع"));
   };
-  // An emptied cart starts the next order with the bill on again.
+  // The delivery app a takeaway or delivery order came from, saved the same way: straight away on an
+  // order that exists, right after creation for a new one.
+  const choosePlatform = async (next: string | null) => {
+    const orderId = openOrderId ?? editingRef.current?.orderId ?? null;
+    if (orderId) {
+      try {
+        await setOrderPlatform(orderId, next);
+      } catch (err) {
+        flash(realErrorText(err));
+        return;
+      }
+    }
+    useOrderTypeStore.getState().setPlatformId(next);
+  };
+  const rememberPlatform = async (orderId: string) => {
+    const st = useOrderTypeStore.getState();
+    if (!st.platformId || (st.orderType !== "TAKEAWAY" && st.orderType !== "DELIVERY")) return;
+    await setOrderPlatform(orderId, st.platformId).catch(() => flash("أُرسل الطلب لكن تعذر حفظ مصدره (التطبيق)، عدّله من الطلب"));
+  };
+  // An emptied cart starts the next order with the bill on again, from no app.
   useEffect(() => {
-    if (items.length === 0 && !openOrderId) useOrderTypeStore.getState().setNoBill(false);
+    if (items.length === 0 && !openOrderId) {
+      useOrderTypeStore.getState().setNoBill(false);
+      useOrderTypeStore.getState().setPlatformId(null);
+    }
   }, [items.length, openOrderId]);
 
   const handleHold = async () => {
@@ -512,6 +547,7 @@ export default function POSPage() {
         shiftId ?? undefined
       );
       await rememberNoBill(heldId);
+      await rememberPlatform(heldId);
       clearCart();
       resetOrderInfo();
       fetchTables();
@@ -598,6 +634,7 @@ export default function POSPage() {
     setTable(table.id, table.name);
     setResumableSplits(null);
     useOrderTypeStore.getState().setNoBill(false);
+    useOrderTypeStore.getState().setPlatformId(null);
     if (table.status === "OCCUPIED" && table.current_order_id) {
       const held = await retrieveHeldOrder(table.current_order_id);
       if (held) {
@@ -605,6 +642,7 @@ export default function POSPage() {
           addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
         }
         useOrderTypeStore.getState().setNoBill(held.noBill);
+        useOrderTypeStore.getState().setPlatformId(held.platformId);
         if (held.customerName) {
           useOrderTypeStore.getState().setCustomerName(held.customerName);
           if (held.customerPhone) useOrderTypeStore.getState().setCustomerPhone(held.customerPhone);
@@ -621,6 +659,7 @@ export default function POSPage() {
             addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
           }
           useOrderTypeStore.getState().setNoBill(open.noBill);
+          useOrderTypeStore.getState().setPlatformId(open.platformId);
           if (open.customerName) {
             useOrderTypeStore.getState().setCustomerName(open.customerName);
             if (open.customerPhone) useOrderTypeStore.getState().setCustomerPhone(open.customerPhone);
@@ -690,6 +729,8 @@ export default function POSPage() {
         orderType === "DELIVERY" ? state.deliveryFeeCents : 0,
       );
       setDiscountOverridePin(null);
+      // While it is still open: once paid, the source of an order can no longer change.
+      await rememberPlatform(orderId);
       if (orderType === "DELIVERY" && driverId) {
         // The sale is already recorded; a failed assignment is fixed on the Delivery page.
         await assignDriver(orderId, driverId).catch(() => flash("تم البيع لكن تعذر تعيين السائق، عيّنه من صفحة التوصيل"));
@@ -776,6 +817,7 @@ export default function POSPage() {
         );
         setDiscountOverridePin(null);
         await rememberNoBill(orderId);
+        await rememberPlatform(orderId);
       } else {
         // Only the quantity ABOVE what's already confirmed sent (per
         // `sentQuantities`) -- not just lines with no dbItemId at all, see
@@ -802,6 +844,7 @@ export default function POSPage() {
           addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
         }
         useOrderTypeStore.getState().setNoBill(open.noBill);
+        useOrderTypeStore.getState().setPlatformId(open.platformId);
         if (open.customerName) useOrderTypeStore.getState().setCustomerName(open.customerName);
         setOpenOrderId(orderId);
         setOpenOrderTotals({
@@ -975,6 +1018,20 @@ export default function POSPage() {
     }
   };
 
+  // "دمج فواتير": pulls the chosen open bills into the one on screen, then shows the merged bill.
+  const handleMergeBillsConfirm = async (sourceIds: string[]) => {
+    if (!openOrderId) return;
+    try {
+      const done = await mergeOrders(openOrderId, sourceIds);
+      setShowMergeBills(false);
+      await reloadOpenOrder(openOrderId);
+      fetchTables();
+      flash(`تم دمج ${done.merged_count} فاتورة ✓`, 3000);
+    } catch (err) {
+      flash(`تعذر دمج الفواتير: ${realErrorText(err)}`);
+    }
+  };
+
   // Removes one line. A line already on the server is voided there (and the kitchen is told);
   // one still only in the cart just leaves it. "needs-pin" means the server wants a manager's
   // PIN for a line this valuable, so the caller shows the dialog.
@@ -1139,6 +1196,7 @@ export default function POSPage() {
       );
       setDiscountOverridePin(null);
       await rememberNoBill(orderId);
+      await rememberPlatform(orderId);
       if (driverId) await assignDriver(orderId, driverId).catch(() => flash("أُرسل الطلب لكن تعذر تعيين السائق، عيّنه من صفحة التوصيل"));
       clearCart();
       resetOrderInfo();
@@ -1169,6 +1227,7 @@ export default function POSPage() {
       );
       setDiscountOverridePin(null);
       await rememberNoBill(pickupOrderId);
+      await rememberPlatform(pickupOrderId);
       const at = formatArabicTime(new Date(pickupAtMs));
       clearCart();
       resetOrderInfo();
@@ -1379,6 +1438,7 @@ export default function POSPage() {
     if (editing?.orderType === "DELIVERY") setDeliveryFee(editing.deliveryFeeCents ?? 0);
     for (const item of open.items) addItem({ ...item, modifiers: item.modifiers, notes: item.notes });
     useOrderTypeStore.getState().setNoBill(open.noBill);
+    useOrderTypeStore.getState().setPlatformId(open.platformId);
     if (open.customerName) useOrderTypeStore.getState().setCustomerName(open.customerName);
     setOpenOrderId(orderId);
     setOpenOrderTotals({
@@ -1569,7 +1629,17 @@ export default function POSPage() {
           onSetQuantityLine={handleSetQuantityLine}
           {...(canEditPrice ? { onEditPriceLine: (id: string) => setPriceTargetId(id) } : {})}
           toolbar={
-            <div className="grid grid-cols-4 gap-1.5">
+            <div className="grid grid-cols-5 gap-1.5">
+              <button
+                type="button"
+                onClick={() => setShowMergeBills(true)}
+                disabled={!openOrderId}
+                data-testid="merge-bills"
+                title="دمج فواتير"
+                className="h-9 rounded-[9px] bg-surface-alt text-text-2 flex items-center justify-center hover:bg-line transition-colors disabled:opacity-30 disabled:pointer-events-none"
+              >
+                <IconArrowsJoin2 className="w-4 h-4" />
+              </button>
               <button
                 type="button"
                 onClick={() => setShowSplit(true)}
@@ -1744,6 +1814,9 @@ export default function POSPage() {
           </button>
           )}
           <div className="flex-1" />
+          {(orderType === "TAKEAWAY" || orderType === "DELIVERY") && (
+            <OrderSourcePicker platforms={platforms} value={platformId} onChange={(p) => void choosePlatform(p)} />
+          )}
           {/* Customer info for non-DINE_IN types */}
           {orderType !== "DINE_IN" && orderType !== "DEBT" && !editingOrder && (
             <>
@@ -1890,6 +1963,7 @@ export default function POSPage() {
         {hasTables && tables.length > 0 && (
           <TableBar
             tables={tables}
+            areas={areas}
             selectedId={tableId}
             onSelect={(t) => {
               if (t.status === "FREE" || t.status === "OCCUPIED") handleTableSelect(t);
@@ -2169,6 +2243,9 @@ export default function POSPage() {
 
       {showSplit && <SplitBillModal onClose={() => setShowSplit(false)} onConfirm={handleSplitConfirm} />}
 
+      {showMergeBills && openOrderId && (
+        <MergeBillsModal currentOrderId={openOrderId} onMerge={handleMergeBillsConfirm} onCancel={() => setShowMergeBills(false)} />
+      )}
       {showMerge && (
         <MergeTablesModal tables={tables} selectedTableId={tableId} onMerge={handleMergeConfirm} onCancel={() => setShowMerge(false)} />
       )}

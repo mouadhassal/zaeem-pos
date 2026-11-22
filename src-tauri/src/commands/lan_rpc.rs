@@ -7,10 +7,11 @@ use super::debt::{create_debtor_v3_impl, list_debtors_v3_impl};
 use super::delivery::{assign_delivery_driver_v3_impl, get_delivery_settings_v3_impl, get_driver_statement_v3_impl, list_deliveries_v3_impl, list_delivery_drivers_v3_impl, list_driver_settlements_v3_impl, set_delivery_status_v3_impl, settle_driver_v3_impl};
 use super::loyalty::{list_loyalty_rewards_v3_impl, redeem_loyalty_reward_v3_impl};
 use super::menu::{get_menu_item_photo_v3_impl, list_categories_v3_impl, list_combo_components_v3_impl, list_combo_meal_items_v3_impl, list_combo_meals_v3_impl, list_happy_hour_rules_v3_impl, list_menu_items_v3_impl, toggle_menu_item_availability_v3_impl};
-use super::orders::{get_receipt_config_v3_impl, activate_delayed_orders_v3_impl, add_items_to_order_v3_impl, set_order_no_bill_v3_impl, create_table_v3_impl, delete_table_v3_impl, finalize_order_with_payment_v3_impl, hold_order_v3_impl, list_pending_orders_for_table_v3_impl, lookup_loyalty_card_v3_impl, merge_tables_v3_impl, rename_table_v3_impl, retrieve_held_order_v3_impl, retrieve_open_order_v3_impl, schedule_delayed_order_v3_impl, split_bill_v3_impl, transfer_order_v3_impl, unmerge_tables_v3_impl, verify_manager_override_v3_impl};
+use super::orders::{get_receipt_config_v3_impl, activate_delayed_orders_v3_impl, add_items_to_order_v3_impl, set_order_no_bill_v3_impl, create_table_v3_impl, delete_table_v3_impl, finalize_order_with_payment_v3_impl, hold_order_v3_impl, list_pending_orders_for_table_v3_impl, lookup_loyalty_card_v3_impl, merge_tables_v3_impl, merge_orders_v3_impl, list_open_orders_v3_impl, rename_table_v3_impl, retrieve_held_order_v3_impl, retrieve_open_order_v3_impl, schedule_delayed_order_v3_impl, split_bill_v3_impl, transfer_order_v3_impl, unmerge_tables_v3_impl, verify_manager_override_v3_impl};
 use super::restaurant::{edit_order_item_v3_impl, list_option_groups_v3_impl, set_order_item_comp_v3_impl};
 use super::settings::{get_chain_config_v3_impl, get_business_mode_v3_impl, get_discount_caps_v3_impl, get_manager_thresholds_v3_impl};
 use super::suppliers::{list_active_printers_v3_impl, list_printer_categories_v3_impl};
+use super::venue::{delete_dining_area_v3_impl, list_delivery_platforms_v3_impl, list_dining_areas_v3_impl, list_receipt_templates_v3_impl, save_dining_area_v3_impl, set_order_platform_v3_impl, set_table_area_v3_impl};
 use super::orders::create_full_order_with_pickup_v3_impl;
 use super::pickup::{claim_due_pickup_kitchen_v3_impl, list_pickup_orders_v3_impl, mark_pickup_no_show_v3_impl, send_pickup_to_kitchen_now_v3_impl};
 use super::order_history::{get_order_history_detail_v3_impl, get_order_numbers_v3_impl, list_order_history_v3_impl, record_receipt_reprint_v3_impl};
@@ -55,6 +56,11 @@ pub fn lan_rpc_mutates_orders(command: &str) -> bool {
             | "transfer_order_v3"
             | "split_bill_v3"
             | "merge_tables_v3"
+            | "merge_orders_v3"
+            | "set_order_platform_v3"
+            | "save_dining_area_v3"
+            | "delete_dining_area_v3"
+            | "set_table_area_v3"
             | "unmerge_tables_v3"
             | "add_items_to_order_v3"
             | "set_order_no_bill_v3"
@@ -365,7 +371,63 @@ pub fn dispatch_lan_rpc(
             let session_token: String = lan_arg(&args, "sessionToken")?;
             let source_table_ids: Vec<String> = lan_arg(&args, "sourceTableIds")?;
             let target_table_id: String = lan_arg(&args, "targetTableId")?;
-            let r = merge_tables_v3_impl(db, session_token, source_table_ids, target_table_id)?;
+            let r = merge_tables_v3_impl(db, license, session_token, source_table_ids, target_table_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "merge_orders_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let target_order_id: String = lan_arg(&args, "targetOrderId")?;
+            let source_order_ids: Vec<String> = lan_arg(&args, "sourceOrderIds")?;
+            let r = merge_orders_v3_impl(db, license, session_token, target_order_id, source_order_ids)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_open_orders_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = list_open_orders_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "set_order_platform_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let order_id: String = lan_arg(&args, "orderId")?;
+            let platform_id: Option<String> = lan_arg(&args, "platformId")?;
+            set_order_platform_v3_impl(db, session_token, order_id, platform_id)?;
+            serde_json::Value::Null
+        }
+        "list_delivery_platforms_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let include_inactive: Option<bool> = lan_arg(&args, "includeInactive")?;
+            let r = list_delivery_platforms_v3_impl(db, session_token, include_inactive)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_dining_areas_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = list_dining_areas_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "save_dining_area_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let area_id: Option<String> = lan_arg(&args, "areaId")?;
+            let name: String = lan_arg(&args, "name")?;
+            let sort_order: Option<i64> = lan_arg(&args, "sortOrder")?;
+            let r = save_dining_area_v3_impl(db, license, session_token, area_id, name, sort_order)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_dining_area_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let area_id: String = lan_arg(&args, "areaId")?;
+            delete_dining_area_v3_impl(db, license, session_token, area_id)?;
+            serde_json::Value::Null
+        }
+        "set_table_area_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let table_id: String = lan_arg(&args, "tableId")?;
+            let area_id: Option<String> = lan_arg(&args, "areaId")?;
+            set_table_area_v3_impl(db, license, session_token, table_id, area_id)?;
+            serde_json::Value::Null
+        }
+        "list_receipt_templates_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = list_receipt_templates_v3_impl(db, session_token)?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
         "unmerge_tables_v3" => {

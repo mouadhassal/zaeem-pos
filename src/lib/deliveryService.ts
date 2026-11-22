@@ -79,7 +79,80 @@ export const listSettlements = (driverId: string) => invoke<Settlement[]>("list_
 export const settleDriver = (driverId: string, orderIds: string[], note?: string) =>
   invoke<Settlement>("settle_driver_v3", { sessionToken: token(), driverId, orderIds, note: note ?? null });
 
+// ---- delivery apps (platforms): their accounts ----
+
+export interface Platform {
+  id: string;
+  name: string;
+  /** The app's cut in basis points (100 = 1%). */
+  commission_bp: number;
+  active: boolean;
+}
+
+/** One app's account for a period (the rules are in src-tauri/src/venue.rs). */
+export interface PlatformAccount {
+  platform_id: string;
+  name: string;
+  commission_bp: number;
+  active: boolean;
+  orders: number;
+  sales_cents: number;
+  commission_cents: number;
+  net_due_cents: number;
+  settled_cents: number;
+  outstanding_cents: number;
+}
+
+export interface PlatformSettlement {
+  id: string;
+  platform_id: string;
+  amount_cents: number;
+  period_from: string | null;
+  period_to: string | null;
+  note: string | null;
+  staff_id: string | null;
+  created_at: string;
+}
+
+export const listPlatforms = (includeInactive = true) => invoke<Platform[]>("list_delivery_platforms_v3", { sessionToken: token(), includeInactive });
+export const savePlatform = (platform: { id: string | null; name: string; commission_bp: number; active: boolean }) =>
+  invoke<string>("save_delivery_platform_v3", { sessionToken: token(), platform });
+export const platformAccounts = (from?: string, to?: string) =>
+  invoke<PlatformAccount[]>("platform_accounts_v3", { sessionToken: token(), from: from ?? null, to: to ?? null });
+export const recordPlatformSettlement = (platformId: string, amountCents: number, periodFrom?: string, periodTo?: string, note?: string) =>
+  invoke<string>("record_platform_settlement_v3", { sessionToken: token(), platformId, amountCents, periodFrom: periodFrom ?? null, periodTo: periodTo ?? null, note: note ?? null });
+export const listPlatformSettlements = (platformId: string, limit = 20) =>
+  invoke<PlatformSettlement[]>("list_platform_settlements_v3", { sessionToken: token(), platformId, limit });
+
 // ---- pure helpers ----
+
+/** "15" or "12.5" (percent) -> basis points; null when it is not a percentage from 0 to 100. */
+export function percentToBp(text: string): number | null {
+  const t = text.trim().replace(",", ".").replace("%", "");
+  if (t === "" || !/^\d+(\.\d{1,2})?$/.test(t)) return null;
+  const bp = Math.round(Number(t) * 100);
+  return bp >= 0 && bp <= 10_000 ? bp : null;
+}
+
+/** Basis points as the owner reads them: 1250 -> "12.5%". */
+export function bpToPercentText(bp: number): string {
+  return `${Number((bp / 100).toFixed(2))}%`;
+}
+
+/** Totals row of the apps table. */
+export function sumAccounts(rows: readonly PlatformAccount[]) {
+  return rows.reduce(
+    (t, r) => ({
+      orders: t.orders + r.orders,
+      sales_cents: t.sales_cents + r.sales_cents,
+      commission_cents: t.commission_cents + r.commission_cents,
+      net_due_cents: t.net_due_cents + r.net_due_cents,
+      settled_cents: t.settled_cents + r.settled_cents,
+      outstanding_cents: t.outstanding_cents + r.outstanding_cents,
+    }),
+    { orders: 0, sales_cents: 0, commission_cents: 0, net_due_cents: 0, settled_cents: 0, outstanding_cents: 0 },
+  );
+}
 
 /** What the driver collects from the customer on this delivery (0 when already paid at the till). */
 export function toCollectCents(d: Pick<Delivery, "order_status" | "total_cents">): number {

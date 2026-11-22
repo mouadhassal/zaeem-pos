@@ -9,6 +9,8 @@ import NetworkTab from "./NetworkTab";
 import AccessTab from "./AccessTab";
 import BusinessTab from "./BusinessTab";
 import PreferencesTab from "./PreferencesTab";
+import AreasSection from "./AreasSection";
+import TemplatesSection, { PrinterTemplatePicker } from "./TemplatesSection";
 import { checkForUpdatesManually } from "../../lib/autoUpdate";
 import { createBackup, listBackups, getBackupSettings, updateBackupSettings, type BackupInfo, type BackupSettings } from "../../lib/backup";
 import { realErrorText } from "../../lib/errors";
@@ -37,6 +39,8 @@ interface Printer {
   port: number;
   system_printer_name: string | null;
   print_mode?: "raster" | "bitimage" | "driver";
+  /** The receipt template this printer prints with (Settings > printers > القوالب). */
+  template_id?: string | null;
 }
 
 // Print modes, in the order to try them when a test print comes out wrong.
@@ -183,7 +187,7 @@ export default function SettingsPage({ initialTab = "general" }: { initialTab?: 
   // Physical dining tables -- any count (0, 1, 20, ...), not the old
   // disconnected `max_tables` number that never actually created/removed a
   // row. See create_table_v3/rename_table_v3/delete_table_v3.
-  const [tables, setTables] = useState<{ id: string; name: string; status: string; current_order_id: string | null }[]>([]);
+  const [tables, setTables] = useState<{ id: string; name: string; status: string; current_order_id: string | null; area_id?: string | null }[]>([]);
   const [newTableName, setNewTableName] = useState("");
   const [tableError, setTableError] = useState<string | null>(null);
   const [tableBusy, setTableBusy] = useState(false);
@@ -363,7 +367,7 @@ export default function SettingsPage({ initialTab = "general" }: { initialTab?: 
 
   const fetchTables = useCallback(async () => {
     try {
-      const rows = await invoke<{ id: string; name: string; status: string; current_order_id: string | null }[]>(
+      const rows = await invoke<{ id: string; name: string; status: string; current_order_id: string | null; area_id?: string | null }[]>(
         "list_tables_v3", { sessionToken: token }
       );
       setTables(rows);
@@ -959,6 +963,7 @@ export default function SettingsPage({ initialTab = "general" }: { initialTab?: 
                     ))}
                   </div>
                 </div>
+                <PrinterTemplatePicker printer={printer} onChanged={fetchData} />
                 {printer.printer_type === "KITCHEN" && (
                   <div className="space-y-1.5">
                     <span className="text-sm text-ink-400 font-arabic">أقسام المطبخ (ماذا تطبع هذه الطابعة):</span>
@@ -1001,6 +1006,8 @@ export default function SettingsPage({ initialTab = "general" }: { initialTab?: 
                 </button>
               </div>
             ))}
+
+            <TemplatesSection onChanged={fetchData} />
           </div>
         )}
 
@@ -1273,6 +1280,8 @@ export default function SettingsPage({ initialTab = "general" }: { initialTab?: 
                 </div>
               )}
             </div>
+
+            <AreasSection tables={tables} onChanged={fetchTables} />
           </div>
         )}
 

@@ -1146,19 +1146,47 @@ pub(crate) fn split_bill_v3_impl(
 }
 
 /// Merge source tables into target: all become MERGED, source order items
-/// move to target order, source orders cancelled.
+/// move to the target table's order (whatever order the tables are listed in), source orders are
+/// cancelled and the target is re-totalled. Tables in different dining areas are refused.
 #[tauri::command]
 pub fn merge_tables_v3(
     state: State<Db>,
+    license: State<crate::license::cloud::CloudLicenseState>,
     session_token: String,
     source_table_ids: Vec<String>,
     target_table_id: String,
 ) -> Result<Option<String>, String> {
-    merge_tables_v3_impl(&state, session_token, source_table_ids, target_table_id)
+    merge_tables_v3_impl(&state, &license, session_token, source_table_ids, target_table_id)
+}
+
+/// Queues what a merge changed for sync: every moved line, every cancelled source order and the
+/// order they went into (its lines and total changed).
+fn sync_enqueue_merge(
+    tx: &rusqlite::Transaction,
+    outcome: &crate::repo::MergeOutcome,
+    device_id: &str,
+    license: &crate::license::cloud::CloudLicenseState,
+) -> Result<(), String> {
+    let Some(target) = &outcome.target_order_id else { return Ok(()) };
+    if outcome.source_order_ids.is_empty() {
+        return Ok(());
+    }
+    let (tenant_id, branch_id): (String, String) = tx
+        .query_row("SELECT tenant_id, branch_id FROM orders WHERE id = ?1", params![target], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?;
+    let status = license.cached_status();
+    for item_id in &outcome.moved_item_ids {
+        sync_enqueue_single_order_item(tx, &tenant_id, &branch_id, item_id, device_id, &status)?;
+    }
+    for src in &outcome.source_order_ids {
+        sync_enqueue_order(tx, &tenant_id, &branch_id, src, device_id, &status)?;
+    }
+    sync_enqueue_order(tx, &tenant_id, &branch_id, target, device_id, &status)
 }
 
 pub(crate) fn merge_tables_v3_impl(
     state: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
     session_token: String,
     source_table_ids: Vec<String>,
     target_table_id: String,
@@ -1169,17 +1197,99 @@ pub(crate) fn merge_tables_v3_impl(
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let target_order_id = Repo::new(&tx).merge_tables(&scope, source_table_ids, &target_table_id)
+    let outcome = Repo::new(&tx)
+        .merge_tables_detailed(&scope, source_table_ids, &target_table_id, &actor.id, &actor.device_id)
         .map_err(|e| e.to_string())?;
+    if let (Some(target), false) = (&outcome.target_order_id, outcome.source_order_ids.is_empty()) {
+        super::restaurant::reprice_open_order(&tx, &scope, target)?;
+    }
 
     audit::append(
         &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
         audit::Action::OrderStatusChanged, "table", &target_table_id,
-        None, Some(&serde_json::json!({ "action": "merge" })),
+        None, Some(&serde_json::json!({
+            "action": "merge",
+            "target_order_id": outcome.target_order_id,
+            "source_table_ids": outcome.source_table_ids,
+            "source_order_ids": outcome.source_order_ids,
+        })),
     ).map_err(|e| e.to_string())?;
+    sync_enqueue_merge(&tx, &outcome, &actor.device_id, license)?;
 
     tx.commit().map_err(|e| e.to_string())?;
-    Ok(target_order_id)
+    Ok(outcome.target_order_id)
+}
+
+/// The open bills (held, takeaway, sent to the kitchen, on a table) a cashier can pull into the
+/// bill on screen.
+#[tauri::command]
+pub fn list_open_orders_v3(state: State<Db>, session_token: String) -> Result<Vec<crate::repo::OpenOrderSummary>, String> {
+    list_open_orders_v3_impl(&state, session_token)
+}
+
+pub(crate) fn list_open_orders_v3_impl(state: &Db, session_token: String) -> Result<Vec<crate::repo::OpenOrderSummary>, String> {
+    crate::lan::reject_if_local_kitchen_satellite("list_open_orders_v3")?;
+    let actor = authenticate_actor(state, &session_token)?;
+    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Repo::new(&conn).list_open_orders(&actor.scope()).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MergedOrders {
+    pub order_id: String,
+    pub order_total_cents: i64,
+    pub merged_count: usize,
+}
+
+/// "Merge bills": pulls other open orders into `target_order_id` (same permission as merging
+/// tables). The lines keep their options, notes, prices and gifts; the target is re-totalled with
+/// the same function everything else uses; each source is cancelled as "دُمجت في الطلب #N".
+#[tauri::command]
+pub fn merge_orders_v3(
+    state: State<Db>,
+    license: State<crate::license::cloud::CloudLicenseState>,
+    session_token: String,
+    target_order_id: String,
+    source_order_ids: Vec<String>,
+) -> Result<MergedOrders, String> {
+    merge_orders_v3_impl(&state, &license, session_token, target_order_id, source_order_ids)
+}
+
+pub(crate) fn merge_orders_v3_impl(
+    state: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
+    session_token: String,
+    target_order_id: String,
+    source_order_ids: Vec<String>,
+) -> Result<MergedOrders, String> {
+    crate::lan::reject_if_local_kitchen_satellite("merge_orders_v3")?;
+    let actor = authenticate_actor(state, &session_token)?;
+    authorize(&actor, Permission::CreateOrder).map_err(|e| e.to_string())?;
+    let scope = actor.scope();
+
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let outcome = Repo::new(&tx)
+        .merge_orders(&scope, &target_order_id, &source_order_ids, &actor.id, &actor.device_id)
+        .map_err(|e| e.to_string())?;
+    let total = super::restaurant::reprice_open_order(&tx, &scope, &target_order_id)?;
+
+    let reason = format!("دُمجت في الطلب #{}", Repo::new(&tx).order_label(&actor.tenant_id, &target_order_id));
+    audit::append(
+        &tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id,
+        audit::Action::OrderStatusChanged, "order", &target_order_id,
+        None, Some(&serde_json::json!({
+            "action": "merge_orders",
+            "reason": reason,
+            "source_order_ids": outcome.source_order_ids,
+            "order_total_cents": total,
+        })),
+    ).map_err(|e| e.to_string())?;
+    sync_enqueue_merge(&tx, &outcome, &actor.device_id, license)?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(MergedOrders { order_id: target_order_id, order_total_cents: total, merged_count: outcome.source_order_ids.len() })
 }
 
 /// Unmerge all tables in a merge group back to FREE.

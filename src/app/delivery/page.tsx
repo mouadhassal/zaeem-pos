@@ -1,14 +1,17 @@
 import { useState } from "react";
 import { useAuthStore } from "../../stores/authStore";
+import { usePlanStore } from "../../stores/planStore";
 import LiveTab from "./LiveTab";
 import StatementTab from "./StatementTab";
 import SettingsTab from "./SettingsTab";
+import PlatformsTab from "./PlatformsTab";
 
-type Tab = "live" | "statement" | "settings";
+type Tab = "live" | "statement" | "platforms" | "settings";
 
 const TAB_LABELS: Record<Tab, string> = {
   live: "الطلبات",
   statement: "كشف السائق",
+  platforms: "التطبيقات",
   settings: "السائقون والأجرة",
 };
 
@@ -22,7 +25,9 @@ export default function DeliveryPage() {
   const [tab, setTab] = useState<Tab>("live");
   // Cashiers run deliveries and settle with drivers; managers and owners also set the pay rule.
   const canManage = role === "OWNER" || role === "MANAGER" || role === "ADMIN";
-  const tabs: Tab[] = canManage ? ["live", "statement", "settings"] : ["live", "statement"];
+  // The apps' accounts are back-office work (not in POS Lite).
+  const posLite = usePlanStore((s) => s.posLite);
+  const tabs: Tab[] = canManage ? (posLite ? ["live", "statement", "settings"] : ["live", "statement", "platforms", "settings"]) : ["live", "statement"];
 
   return (
     <div className="p-6 space-y-5 h-full overflow-y-auto" dir="rtl" data-testid="delivery-page">
@@ -47,6 +52,7 @@ export default function DeliveryPage() {
 
       {tab === "live" && <LiveTab />}
       {tab === "statement" && <StatementTab canManage={canManage} />}
+      {tab === "platforms" && canManage && !posLite && <PlatformsTab />}
       {tab === "settings" && canManage && <SettingsTab />}
     </div>
   );

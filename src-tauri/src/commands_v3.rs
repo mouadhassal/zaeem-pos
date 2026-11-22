@@ -79,6 +79,7 @@ mod tests {
             include_str!("commands/payroll.rs"),
             include_str!("commands/stockroom.rs"),
             include_str!("commands/workforce.rs"),
+            include_str!("commands/venue.rs"),
         ].join("\n")
     }
 
@@ -132,6 +133,7 @@ mod tests {
         migrate_v3::run_role_access_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_workforce_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_no_bill_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_areas_platforms_templates_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -1112,7 +1114,7 @@ mod tests {
             // `merge_tables` only picks up an order for a table id that
             // appears in this list (it's the set of all tables in the merge
             // group, not just the ones being folded away).
-            let result = merge_tables_v3_impl(&db, session, vec![table_id, table_2_id.clone()], table_2_id)
+            let result = merge_tables_v3_impl(&db, &license, session, vec![table_id, table_2_id.clone()], table_2_id)
                 .expect("merge_tables_v3 must succeed through the real wrapper body");
             assert!(result.is_some(), "the target table had an order on it, merge must report it");
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
@@ -3366,6 +3368,280 @@ mod tests {
             let err = dispatch_lan_rpc(&db, &license, "set_order_no_bill_v3", serde_json::json!({ "sessionToken": session, "orderId": order_id, "noBill": true })).unwrap_err();
             assert!(err.contains("لم يعد مفتوحاً"), "{err}");
             assert!(crate::commands::lan_rpc::lan_rpc_mutates_orders("set_order_no_bill_v3"));
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        fn ring_order(db: &Db, license: &crate::license::cloud::CloudLicenseState, session: &str, table_id: &str, order_type: &str, items: serde_json::Value) -> String {
+            rpc(db, license, "create_full_order_v3", serde_json::json!({
+                "sessionToken": session, "tableId": table_id, "orderType": order_type,
+                "items": items,
+                "subtotalCents": 0, "taxCents": 0, "totalCents": 0, "discountCents": 0,
+                "discountReason": null, "customerName": null, "customerPhone": null, "deliveryAddress": null,
+                "deliveryFeeCents": 0, "shiftId": null, "managerOverridePin": null,
+            })).as_str().unwrap().to_string()
+        }
+
+        /// A line with an option and a kitchen note, the way the till sends it.
+        fn rich_line(item_id: &str, qty: i64, note: &str) -> serde_json::Value {
+            serde_json::json!({
+                "menu_item_id": item_id, "name": null, "quantity": qty, "unit_price_cents": 1500,
+                "notes": note, "combo_id": null, "modifiers": [{ "name": "جبنة", "price_cents": 200 }],
+                "comped": false, "comp_reason": null,
+            })
+        }
+
+        fn add_table(db: &Db, id: &str, name: &str) {
+            let conn = db.0.lock().unwrap();
+            let (tenant, branch): (String, String) = conn.query_row("SELECT tenant_id, branch_id FROM tables LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            conn.execute("INSERT INTO tables (id, name, tenant_id, branch_id) VALUES (?1, ?2, ?3, ?4)", params![id, name, tenant, branch]).unwrap();
+        }
+
+        fn lines_of(db: &Db, order_id: &str) -> Vec<(i64, Option<String>, i64)> {
+            let conn = db.0.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT i.quantity, i.notes, (SELECT COALESCE(SUM(price_cents), 0) FROM order_modifiers m WHERE m.order_item_id = i.id) \
+                 FROM order_items i WHERE i.order_id = ?1 AND i.voided = 0 ORDER BY i.quantity",
+            ).unwrap();
+            let rows = stmt.query_map(params![order_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+            rows.map(|r| r.unwrap()).collect()
+        }
+
+        fn order_row(db: &Db, order_id: &str) -> (String, i64, Option<String>) {
+            let conn = db.0.lock().unwrap();
+            conn.query_row("SELECT status, total_cents, cancel_reason FROM orders WHERE id = ?1", params![order_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
+        }
+
+        #[test]
+        fn merging_tables_does_not_depend_on_the_order_they_are_listed_in() {
+            // The target table is listed LAST in one run and FIRST in the other: either way every
+            // line lands on the target's order, the others are cancelled, and the audit entry names
+            // the source tables and orders.
+            for (tag, target_last) in [("merge_tables_last", true), ("merge_tables_first", false)] {
+                let (db_path, db, license, session, t1, item) = second_till_fixture(tag);
+                add_table(&db, "tbl-b", "B");
+                add_table(&db, "tbl-c", "C");
+                let o1 = ring_order(&db, &license, &session, &t1, "DINE_IN", serde_json::json!([rich_line(&item, 1, "بدون بصل")]));
+                let o2 = ring_order(&db, &license, &session, "tbl-b", "DINE_IN", serde_json::json!([line(&item, 2, 1500)]));
+                let o3 = ring_order(&db, &license, &session, "tbl-c", "DINE_IN", serde_json::json!([line(&item, 3, 1500)]));
+                let (sources, target, target_order) = if target_last {
+                    (vec![t1.clone(), "tbl-b".to_string(), "tbl-c".to_string()], "tbl-c".to_string(), o3.clone())
+                } else {
+                    (vec!["tbl-c".to_string(), t1.clone(), "tbl-b".to_string()], "tbl-c".to_string(), o3.clone())
+                };
+                let merged = rpc(&db, &license, "merge_tables_v3", serde_json::json!({ "sessionToken": session, "sourceTableIds": sources, "targetTableId": target }));
+                assert_eq!(merged, serde_json::json!(target_order), "{tag}: the target table's own order survives");
+                assert_eq!(lines_of(&db, &target_order).len(), 3, "{tag}: all three lines moved");
+                assert!(lines_of(&db, &target_order).contains(&(1, Some("بدون بصل".to_string()), 200)), "{tag}: option and note travel with the line");
+                for src in [&o1, &o2] {
+                    let (status, _, reason) = order_row(&db, src);
+                    assert_eq!(status, "CANCELLED", "{tag}");
+                    assert!(reason.unwrap().starts_with("دُمجت في الطلب #"), "{tag}");
+                    assert!(lines_of(&db, src).is_empty(), "{tag}: nothing left on a folded order");
+                }
+                // 1 x (1500 + 200) + 2 x 1500 + 3 x 1500
+                assert_eq!(order_row(&db, &target_order).1, 1700 + 3000 + 4500, "{tag}: the merged bill is re-totalled");
+                let conn = db.0.lock().unwrap();
+                let audit: String = conn.query_row(
+                    "SELECT after_json FROM audit_log WHERE entity_id = ?1 AND after_json LIKE '%\"merge\"%' ORDER BY seq DESC LIMIT 1", params![target], |r| r.get(0),
+                ).unwrap();
+                for id in [&o1, &o2, &t1.to_string(), &"tbl-b".to_string()] {
+                    assert!(audit.contains(id.as_str()), "{tag}: audit names {id}: {audit}");
+                }
+                assert!(!audit.contains(&o3) || audit.contains("target_order_id"), "{tag}");
+                drop(conn);
+                let _ = fs::remove_dir_all(db_path.parent().unwrap());
+            }
+        }
+
+        #[test]
+        fn tables_in_different_areas_are_not_merged() {
+            let (db_path, db, license, session, t1, item) = second_till_fixture("merge_areas");
+            add_table(&db, "tbl-b", "B");
+            add_table(&db, "tbl-c", "C");
+            {
+                let conn = db.0.lock().unwrap();
+                let (tenant, branch): (String, String) = conn.query_row("SELECT tenant_id, branch_id FROM tables WHERE id = ?1", params![t1], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+                conn.execute("INSERT INTO dining_areas (id, tenant_id, branch_id, name) VALUES ('a-hall', ?1, ?2, 'الصالة'), ('a-roof', ?1, ?2, 'السطح')", params![tenant, branch]).unwrap();
+                conn.execute("UPDATE tables SET area_id = 'a-hall' WHERE id = ?1", params![t1]).unwrap();
+                conn.execute("UPDATE tables SET area_id = 'a-roof' WHERE id = 'tbl-b'", []).unwrap();
+            }
+            let o1 = ring_order(&db, &license, &session, &t1, "DINE_IN", serde_json::json!([line(&item, 1, 1500)]));
+            let o2 = ring_order(&db, &license, &session, "tbl-b", "DINE_IN", serde_json::json!([line(&item, 1, 1500)]));
+            let o3 = ring_order(&db, &license, &session, "tbl-c", "DINE_IN", serde_json::json!([line(&item, 1, 1500)]));
+            let err = dispatch_lan_rpc(&db, &license, "merge_tables_v3", serde_json::json!({ "sessionToken": session, "sourceTableIds": [t1.clone(), "tbl-b"], "targetTableId": t1 })).unwrap_err();
+            assert!(err.contains("أقسام مختلفة"), "{err}");
+            assert_eq!(order_row(&db, &o2).0, "PENDING", "nothing changed after the refusal");
+            assert_eq!(lines_of(&db, &o1).len(), 1);
+            // A table with no area merges with a table in an area.
+            let ok = rpc(&db, &license, "merge_tables_v3", serde_json::json!({ "sessionToken": session, "sourceTableIds": ["tbl-c", t1.clone()], "targetTableId": t1 }));
+            assert_eq!(ok, serde_json::json!(o1));
+            assert_eq!(order_row(&db, &o3).0, "CANCELLED");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn merging_bills_moves_every_line_and_recounts_the_total() {
+            let (db_path, db, license, session, t1, item) = second_till_fixture("merge_orders");
+            add_table(&db, "tbl-b", "B");
+            let target = ring_order(&db, &license, &session, &t1, "DINE_IN", serde_json::json!([rich_line(&item, 1, "حار")]));
+            let takeaway = ring_order(&db, &license, &session, "", "TAKEAWAY", serde_json::json!([rich_line(&item, 2, "سفري")]));
+            // A bill that was only held (never sent): it can be pulled in too.
+            let held = rpc(&db, &license, "hold_order_v3", serde_json::json!({
+                "sessionToken": session, "tableId": "tbl-b", "orderType": "DINE_IN", "items": [line(&item, 3, 1500)],
+                "subtotalCents": 4500, "taxCents": 0, "totalCents": 4500, "shiftId": null,
+            })).as_str().unwrap().to_string();
+            let before_qty: i64 = db.0.lock().unwrap().query_row("SELECT SUM(quantity) FROM order_items WHERE voided = 0", [], |r| r.get(0)).unwrap();
+
+            let open = rpc(&db, &license, "list_open_orders_v3", serde_json::json!({ "sessionToken": session }));
+            assert_eq!(open.as_array().unwrap().len(), 3, "all three bills are open: {open}");
+
+            let merged = rpc(&db, &license, "merge_orders_v3", serde_json::json!({
+                "sessionToken": session, "targetOrderId": target, "sourceOrderIds": [takeaway, held, target],
+            }));
+            assert_eq!(merged["merged_count"], 2, "the target itself in the list is ignored");
+            // 1 x 1700 + 2 x 1700 + 3 x 1500
+            assert_eq!(merged["order_total_cents"], 1700 + 3400 + 4500);
+            assert_eq!(order_row(&db, &target).1, 9600);
+            let lines = lines_of(&db, &target);
+            assert_eq!(lines, vec![(1, Some("حار".to_string()), 200), (2, Some("سفري".to_string()), 200), (3, None, 0)]);
+            for src in [&takeaway, &held] {
+                let (status, _, reason) = order_row(&db, src);
+                assert_eq!(status, "CANCELLED");
+                assert!(reason.unwrap().starts_with("دُمجت في الطلب #"));
+                assert!(lines_of(&db, src).is_empty());
+            }
+            // Nothing counted twice: the same pieces exist, and only the surviving bill has a total.
+            let (after_qty, live_total): (i64, i64) = {
+                let conn = db.0.lock().unwrap();
+                (
+                    conn.query_row("SELECT SUM(quantity) FROM order_items WHERE voided = 0", [], |r| r.get(0)).unwrap(),
+                    conn.query_row("SELECT SUM(total_cents) FROM orders WHERE status NOT IN ('CANCELLED', 'VOIDED')", [], |r| r.get(0)).unwrap(),
+                )
+            };
+            assert_eq!(after_qty, before_qty);
+            assert_eq!(live_total, 9600);
+            // The held bill's table is free again; the target's table is still taken.
+            {
+                let conn = db.0.lock().unwrap();
+                let b: (String, Option<String>) = conn.query_row("SELECT status, current_order_id FROM tables WHERE id = 'tbl-b'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+                assert_eq!(b, ("FREE".to_string(), None));
+                let t: Option<String> = conn.query_row("SELECT current_order_id FROM tables WHERE id = ?1", params![t1], |r| r.get(0)).unwrap();
+                assert_eq!(t.as_deref(), Some(target.as_str()));
+                let audit: String = conn.query_row("SELECT after_json FROM audit_log WHERE entity_id = ?1 AND after_json LIKE '%merge_orders%'", params![target], |r| r.get(0)).unwrap();
+                assert!(audit.contains(&takeaway) && audit.contains(&held), "{audit}");
+            }
+            // Pulled-in bills are gone from the open list; the merged one stays.
+            let open = rpc(&db, &license, "list_open_orders_v3", serde_json::json!({ "sessionToken": session }));
+            assert_eq!(open.as_array().unwrap().len(), 1);
+            assert!(crate::commands::lan_rpc::lan_rpc_mutates_orders("merge_orders_v3"));
+            for c in ["save_dining_area_v3", "delete_dining_area_v3", "set_table_area_v3"] {
+                assert!(crate::commands::lan_rpc::lan_rpc_mutates_orders(c), "{c} changes the table grid");
+            }
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn a_source_discount_carries_into_the_merged_bill() {
+            let (db_path, db, license, session, t1, item) = second_till_fixture("merge_discount");
+            add_table(&db, "tbl-b", "B");
+            let target = ring_order(&db, &license, &session, &t1, "DINE_IN", serde_json::json!([line(&item, 1, 1500)]));
+            let other = ring_order(&db, &license, &session, "tbl-b", "DINE_IN", serde_json::json!([line(&item, 2, 1500)]));
+            db.0.lock().unwrap().execute("UPDATE orders SET discount_cents = 300, discount_minor = 300, discount_base_minor = 300 WHERE id = ?1", params![other]).unwrap();
+            rpc(&db, &license, "merge_orders_v3", serde_json::json!({ "sessionToken": session, "targetOrderId": target, "sourceOrderIds": [other] }));
+            assert_eq!(order_row(&db, &target).1, 4500 - 300, "the discount the other bill had is not lost");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn merging_bills_refuses_paid_cancelled_and_other_branch_orders() {
+            let (db_path, db, license, session, t1, item) = second_till_fixture("merge_refused");
+            add_table(&db, "tbl-b", "B");
+            add_table(&db, "tbl-c", "C");
+            let target = ring_order(&db, &license, &session, &t1, "DINE_IN", serde_json::json!([line(&item, 1, 1500)]));
+            let paid = ring_order(&db, &license, &session, "tbl-b", "DINE_IN", serde_json::json!([line(&item, 1, 1500)]));
+            let cancelled = ring_order(&db, &license, &session, "tbl-c", "DINE_IN", serde_json::json!([line(&item, 1, 1500)]));
+            {
+                let conn = db.0.lock().unwrap();
+                conn.execute("UPDATE orders SET status = 'PAID' WHERE id = ?1", params![paid]).unwrap();
+                conn.execute("UPDATE orders SET status = 'CANCELLED' WHERE id = ?1", params![cancelled]).unwrap();
+            }
+            let merge = |target: &str, sources: Vec<&str>| dispatch_lan_rpc(&db, &license, "merge_orders_v3", serde_json::json!({ "sessionToken": session, "targetOrderId": target, "sourceOrderIds": sources }));
+            let err = merge(&target, vec![&paid]).unwrap_err();
+            assert!(err.contains("مغلقة أو مدفوعة"), "{err}");
+            let err = merge(&target, vec![&cancelled]).unwrap_err();
+            assert!(err.contains("مغلقة أو مدفوعة"), "{err}");
+            // A closed order cannot be the one merged INTO either.
+            let err = merge(&paid, vec![&target]).unwrap_err();
+            assert!(err.contains("مغلقة أو مدفوعة"), "{err}");
+            assert!(merge(&target, vec![]).is_err(), "nothing chosen");
+            assert!(merge(&target, vec![&target]).is_err(), "an order is not merged into itself");
+            assert_eq!(lines_of(&db, &target).len(), 1, "every refusal left the bill alone");
+            assert_eq!(order_row(&db, &paid).0, "PAID");
+
+            // Another branch: a cashier of branch 1 cannot reach it at all, an owner of both is refused.
+            let other = ring_order(&db, &license, &session, "tbl-b", "DINE_IN", serde_json::json!([line(&item, 1, 1500)]));
+            let owner_session = {
+                let conn = db.0.lock().unwrap();
+                conn.execute("UPDATE orders SET branch_id = 'branch-two' WHERE id = ?1", params![other]).unwrap();
+                let tenant: String = conn.query_row("SELECT tenant_id FROM orders WHERE id = ?1", params![target], |r| r.get(0)).unwrap();
+                let owner = seed_staff(&conn, &tenant, None, Role::Owner, "Owner");
+                security::create_session(&conn, &owner, "owner-till").unwrap()
+            };
+            assert!(merge(&target, vec![&other]).is_err(), "a cashier cannot see another branch's bill");
+            let err = dispatch_lan_rpc(&db, &license, "merge_orders_v3", serde_json::json!({ "sessionToken": owner_session, "targetOrderId": target, "sourceOrderIds": [other] })).unwrap_err();
+            assert!(err.contains("فروع مختلفة"), "{err}");
+            assert_eq!(order_row(&db, &other).0, "PENDING");
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn order_source_is_saved_on_the_open_order_and_read_back() {
+            let (db_path, db, license, session, t1, item) = second_till_fixture("order_platform");
+            let order = ring_order(&db, &license, &session, "", "TAKEAWAY", serde_json::json!([line(&item, 1, 1500)]));
+            let platform = {
+                let conn = db.0.lock().unwrap();
+                let (tenant, branch): (String, String) = conn.query_row("SELECT tenant_id, branch_id FROM orders WHERE id = ?1", params![order], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+                conn.execute("INSERT INTO delivery_platforms (id, tenant_id, branch_id, name, commission_bp) VALUES ('pf-1', ?1, ?2, 'طلبات', 1500)", params![tenant, branch]).unwrap();
+                "pf-1".to_string()
+            };
+            let listed = rpc(&db, &license, "list_delivery_platforms_v3", serde_json::json!({ "sessionToken": session, "includeInactive": false }));
+            assert_eq!(listed[0]["name"], "طلبات");
+            assert_eq!(listed[0]["commission_bp"], 1500);
+            rpc(&db, &license, "set_order_platform_v3", serde_json::json!({ "sessionToken": session, "orderId": order, "platformId": platform }));
+            let open = rpc(&db, &license, "retrieve_open_order_v3", serde_json::json!({ "sessionToken": session, "orderId": order }));
+            assert_eq!(open["platform_id"], "pf-1", "the source comes back when the order is opened again");
+            rpc(&db, &license, "set_order_platform_v3", serde_json::json!({ "sessionToken": session, "orderId": order, "platformId": null }));
+            let open = rpc(&db, &license, "retrieve_open_order_v3", serde_json::json!({ "sessionToken": session, "orderId": order }));
+            assert!(open["platform_id"].is_null());
+            db.0.lock().unwrap().execute("UPDATE orders SET status = 'PAID' WHERE id = ?1", params![order]).unwrap();
+            assert!(dispatch_lan_rpc(&db, &license, "set_order_platform_v3", serde_json::json!({ "sessionToken": session, "orderId": order, "platformId": platform })).is_err());
+            assert!(crate::commands::lan_rpc::lan_rpc_mutates_orders("set_order_platform_v3"));
+            let _ = t1;
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        #[test]
+        fn second_till_manages_dining_areas_over_the_lan_and_a_cashier_cannot() {
+            let (db_path, db, license, session, t1, _item) = second_till_fixture("areas_rpc");
+            // A cashier may read areas but not set them up.
+            assert!(dispatch_lan_rpc(&db, &license, "save_dining_area_v3", serde_json::json!({ "sessionToken": session, "areaId": null, "name": "الصالة", "sortOrder": null })).is_err());
+            let owner_session = {
+                let conn = db.0.lock().unwrap();
+                let tenant: String = conn.query_row("SELECT tenant_id FROM tables LIMIT 1", [], |r| r.get(0)).unwrap();
+                let owner = seed_staff(&conn, &tenant, None, Role::Owner, "Owner");
+                security::create_session(&conn, &owner, "owner-till").unwrap()
+            };
+            let unlocked = unlocked_license(&db_path);
+            let area = rpc(&db, &unlocked, "save_dining_area_v3", serde_json::json!({ "sessionToken": owner_session, "areaId": null, "name": "الصالة", "sortOrder": null }));
+            let area = area.as_str().unwrap().to_string();
+            rpc(&db, &unlocked, "set_table_area_v3", serde_json::json!({ "sessionToken": owner_session, "tableId": t1, "areaId": area }));
+            let tables = rpc(&db, &license, "list_tables_v3", serde_json::json!({ "sessionToken": session }));
+            assert_eq!(tables[0]["area_id"], area.as_str(), "the till sees the table's area");
+            let areas = rpc(&db, &license, "list_dining_areas_v3", serde_json::json!({ "sessionToken": session }));
+            assert_eq!(areas.as_array().unwrap().len(), 1);
+            rpc(&db, &unlocked, "delete_dining_area_v3", serde_json::json!({ "sessionToken": owner_session, "areaId": area }));
+            let tables = rpc(&db, &license, "list_tables_v3", serde_json::json!({ "sessionToken": session }));
+            assert!(tables[0]["area_id"].is_null());
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
@@ -7897,6 +8173,7 @@ mod tests {
         migrate_v3::run_role_access_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_workforce_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_no_bill_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_areas_platforms_templates_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("matrix", &conn);
@@ -8566,6 +8843,8 @@ mod tests {
         /// admin, purchase orders/suppliers, and order analytics (AI page).
         /// Every one of these must be BLOCKED when back-office is locked.
         const GATED: &[&str] = &[
+            "save_dining_area_v3", "delete_dining_area_v3", "set_table_area_v3", "save_delivery_platform_v3", "platform_accounts_v3",
+            "record_platform_settlement_v3", "list_platform_settlements_v3", "save_receipt_template_v3", "delete_receipt_template_v3", "set_printer_template_v3",
             "list_staff_v3", "get_sales_report_v3", "get_sales_strip_v3", "gifts_report_v3", "list_pickup_no_shows_v3", "ask_assistant_v3", "assistant_insights_v3", "detect_anomalies_v3", "forecast_demand_v3", "reconcile_orders_v3",
             "create_branch_v3", "create_staff_v3", "update_staff_v3", "update_staff_profile_v3",
             "set_staff_active_v3", "list_branches_v3", "list_shifts_v3", "force_close_shift_v3",
@@ -8647,7 +8926,8 @@ mod tests {
             // above -- reading back a table's open tab and appending items
             // to it (fires a kitchen ticket) are both mid-service actions
             // that must never be interrupted by a lapsed back-office license.
-            "retrieve_open_order_v3", "add_items_to_order_v3", "set_order_no_bill_v3",
+            "retrieve_open_order_v3", "add_items_to_order_v3", "set_order_no_bill_v3", "merge_orders_v3", "list_open_orders_v3",
+            "list_dining_areas_v3", "list_delivery_platforms_v3", "set_order_platform_v3", "list_receipt_templates_v3",
             "split_bill_v3", "merge_tables_v3", "unmerge_tables_v3", "void_order_item_v3", "cancel_order_v3",
             "edit_order_item_v3", "set_order_item_comp_v3",
             "get_delivery_settings_v3", "list_delivery_drivers_v3", "list_deliveries_v3", "assign_delivery_driver_v3",

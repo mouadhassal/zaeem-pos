@@ -67,6 +67,14 @@ export const LAN_REDIRECT_COMMANDS = new Set([
   "transfer_order_v3",
   "split_bill_v3",
   "merge_tables_v3",
+  "merge_orders_v3",
+  "list_open_orders_v3",
+  "set_order_platform_v3",
+  "list_delivery_platforms_v3",
+  "list_dining_areas_v3",
+  "save_dining_area_v3",
+  "delete_dining_area_v3",
+  "set_table_area_v3",
   "unmerge_tables_v3",
   "schedule_delayed_order_v3",
   "activate_delayed_orders_v3",
@@ -108,7 +116,7 @@ export const LAN_REDIRECT_COMMANDS = new Set([
  * `__resolve_actor_v3` is a third kind -- called by the Hub-fallback in
  * `authenticate_actor`, never by the frontend.)
  */
-export const HUB_ONLY_HELPERS = new Set(["list_active_printers_v3", "list_printer_categories_v3"]);
+export const HUB_ONLY_HELPERS = new Set(["list_active_printers_v3", "list_printer_categories_v3", "list_receipt_templates_v3"]);
 
 /**
  * Menu and kitchen-routing edits refused on a Satellite. Its menu screens
@@ -143,6 +151,9 @@ export const HUB_ONLY_WRITES = new Set([
   "delete_happy_hour_rule_v3",
   "set_happy_hour_rule_active_v3",
   "set_printer_categories_v3",
+  "save_receipt_template_v3",
+  "delete_receipt_template_v3",
+  "set_printer_template_v3",
 ]);
 
 export const HUB_ONLY_WRITE_ERROR = "تعديل القائمة يتم من الجهاز الرئيسي فقط";
