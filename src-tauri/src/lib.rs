@@ -27,6 +27,7 @@ mod hlc;
 mod sync;
 mod obslog;
 mod lan;
+mod cloud_relay;
 pub mod print;
 mod anomaly;
 mod forecast;
@@ -473,10 +474,14 @@ pub fn run() {
             // comment) find this device's own lan_config.json from deep
             // inside a plain `fn` with no `AppHandle` in scope.
             lan::set_db_dir(lan_dir.clone());
+            lan::set_app_handle(app.handle().clone());
             lan::migrate_legacy_lan_config(&lan_dir);
             if lan::load_lan_config(&lan_dir).mode == "hub" {
                 lan::start_hub_server(app.handle().clone(), &lan_dir);
             }
+            // Internet route for a Satellite: long-polls cloud change nudges
+            // (emits the `lan-change` event); idle unless the cloud is its route.
+            cloud_relay::start_satellite_nudges(app.handle().clone());
 
             // 2026-09-13 audit fix: a REAL background backup scheduler --
             // previously the only "automatic" backup was a `setInterval` in
@@ -853,6 +858,9 @@ pub fn run() {
             lan::forget_pairing_v3,
             lan::get_lan_redirect_target_v3,
             lan::lan_relay_v3,
+            lan::get_cloud_relay_status_v3,
+            lan::set_cloud_relay_enabled_v3,
+            lan::join_hub_via_internet_v3,
             print::list_system_printers_v3,
             print::print_raw_bytes_v3,
             print::print_network_raw_v3,
