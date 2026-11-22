@@ -4,7 +4,7 @@ import { monthOf, monthRange, paymentMethodLabel, remainingText, rentPeriodLabel
 
 describe("expense categories", () => {
   it("has the 20 categories, rent and salaries among them", () => {
-    expect(EXPENSE_CATEGORIES).toHaveLength(20);
+    expect(EXPENSE_CATEGORIES).toHaveLength(21);
     expect(EXPENSE_CATEGORIES).toContain("إيجار");
     expect(EXPENSE_CATEGORIES).toContain("وجبات موظفين");
   });

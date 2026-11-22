@@ -60,9 +60,11 @@ pub const FULL_ONLY_COMMANDS: &[&str] = &[
     "payroll_month_v3", "get_payslip_v3", "approve_payslip_v3", "pay_payslip_v3",
     "reopen_payslip_v3", "add_payroll_adjustment_v3", "delete_payroll_adjustment_v3", "add_payroll_advance_v3",
     "list_payroll_advances_v3", "cancel_payroll_advance_v3", "set_paid_leave_v3", "add_manual_punch_v3",
+    "add_payroll_day_deduction_v3", "delete_payroll_day_deduction_v3", "get_attendance_review_v3", "set_attendance_day_v3", "clear_attendance_day_v3", "set_attendance_approval_v3", "get_worker_statement_v3",
     // debt book
     "list_debtors_v3", "create_debtor_v3", "update_debtor_v3", "deactivate_debtor_v3", "list_debt_entries_v3",
-    "record_debt_payment_v3",
+    "record_debt_payment_v3", "get_debt_statement_v3", "link_debtor_customer_v3", "unlink_debtor_customer_v3",
+    "get_customer_debt_v3",
     // loyalty
     "list_loyalty_cards_v3", "issue_loyalty_card_v3", "list_loyalty_transactions_v3", "list_loyalty_tiers_v3",
     "create_loyalty_tier_v3", "update_loyalty_tier_v3", "delete_loyalty_tier_v3", "list_loyalty_rewards_v3",

@@ -41,11 +41,16 @@ pub const RENT_CATEGORY: &str = "إيجار";
 pub const RENT_REFERENCE: &str = "rent";
 
 /// The categories the owner picks from, in the order shown.
-pub const EXPENSE_CATEGORIES: [&str; 20] = [
+pub const EXPENSE_CATEGORIES: [&str; 21] = [
     "مشتريات مواد", "إيجار", "رواتب", "كهرباء", "مياه", "محروقات", "غاز", "ضرائب ورسوم", "تأمينات اجتماعية", "ضيافة",
     "هاتف واتصالات", "تغليف", "خدمات عامة", "مستلزمات", "صيانة وإصلاح", "دعاية وتسويق", "مستلزمات مكتبية", "أجور توصيل",
-    "وجبات موظفين", "نثريات",
+    "وجبات موظفين", "نثريات", "سلفة موظف",
 ];
+
+/// An advance handed to a worker. Entering it here also creates the payroll advance (and entering an advance in
+/// Payroll creates this expense); the expense carries `reference_type = ADVANCE_REFERENCE`, `reference_id` = the advance.
+pub const ADVANCE_CATEGORY: &str = "سلفة موظف";
+pub const ADVANCE_REFERENCE: &str = "payroll_advance";
 
 /// Names stored before the list changed, and the new name each one counts as.
 const LEGACY_CATEGORIES: [(&str, &str); 5] = [
@@ -888,7 +893,7 @@ mod tests {
         assert_eq!(canonical_category("إيجار"), "إيجار");
         assert_eq!(canonical_category("بند خاص"), "بند خاص");
         assert_eq!(names_for("هاتف واتصالات"), vec!["هاتف واتصالات".to_string(), "إنترنت".to_string()]);
-        assert_eq!(EXPENSE_CATEGORIES.len(), 20);
+        assert_eq!(EXPENSE_CATEGORIES.len(), 21);
     }
 
     #[test]

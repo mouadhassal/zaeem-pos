@@ -5,9 +5,10 @@ import { realErrorText } from "../../lib/errors";
 import { useAuthStore } from "../../stores/authStore";
 import { formatMoney } from "../../lib/money";
 import { tzOffsetMinutes } from "../../lib/assistant";
-import { monthLabel, monthOf, shiftMonth, STATUS_LABEL, type MonthRow, type PayType } from "../../lib/payroll";
+import { ATTENDANCE_STATE_LABEL, monthLabel, monthOf, shiftMonth, STATUS_LABEL, type MonthRow, type PayType } from "../../lib/payroll";
 import { Hint } from "./ui";
 import PayslipModal from "./PayslipModal";
+import AttendanceReviewModal from "./AttendanceReviewModal";
 
 const TYPE_SHORT: Record<PayType, string> = { MONTHLY: "شهري", DAILY: "يومي", HOURLY: "بالساعة" };
 
@@ -25,6 +26,7 @@ export default function MonthTab({ configured, isOwner, canApprove, onGoRules, r
   const [rows, setRows] = useState<MonthRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const [reviewOf, setReviewOf] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -36,6 +38,9 @@ export default function MonthTab({ configured, isOwner, canApprove, onGoRules, r
   }, [token, month]);
   useEffect(() => { load(); }, [load, refreshKey]);
 
+  // Overtime and bonuses (the extra days have their own column), and the deductions without the deducted days.
+  const extras = (r: MonthRow) => r.additions_cents - r.extra_day_pay_cents;
+  const plainDeductions = (r: MonthRow) => r.deductions_cents - r.deduction_days_cents;
   const withPay = (rows ?? []).filter((r) => r.pay_set);
   const total = (f: (r: MonthRow) => number) => withPay.reduce((a, r) => a + f(r), 0);
   const noPay = (rows ?? []).filter((r) => !r.pay_set).length;
@@ -54,8 +59,9 @@ export default function MonthTab({ configured, isOwner, canApprove, onGoRules, r
         <button onClick={() => setMonth((m) => shiftMonth(m, 1))} aria-label="الشهر التالي" className="w-9 h-9 rounded-sm border border-ink-200 flex items-center justify-center hover:bg-white"><IconChevronLeft className="w-4 h-4" /></button>
       </div>
       <Hint summary={canApprove ? "الأرقام هنا مسودة تتغير مع الحضور حتى تعتمد الكشف. بعد انتهاء الشهر: افتح كل موظف ← اعتماد ← تأكيد الصرف، فيُسجَّل راتبه مصروفاً تلقائياً في المالية." : "الأرقام هنا مسودة تتغير مع الحضور. جهّز كشف كل موظف من فرعك (أعذار، مكافآت، غرامات، بصمات منسية) ثم يعتمده المالك."}>
-        <p><b>المستحق</b> = الأساسي − الخصومات + الإضافي والمكافآت. <b>الصافي</b> = المستحق − قسط السلفة، وهو ما يُسلَّم للموظف.</p>
-        <p>يُسجَّل في المصروفات «المستحق» (لا الصافي)، لأن السلفة سُلّمت سابقاً.</p>
+        <p><b>الإجمالي</b> = الأساسي + الإضافي والمكافآت وأيام العمل في العطل. <b>المستحق</b> = الإجمالي − الخصومات (التأخير والغياب والخروج المبكر وخصم الأيام والغرامات). <b>الصافي</b> = المستحق − قسط السلفة، وهو ما يُسلَّم للموظف.</p>
+        <p>يُسجَّل في المصروفات «المستحق» (لا الصافي)، لأن السلفة سُلّمت سابقاً. والسلفة التي سُجّلت مصروفاً يوم سُلّمت يُستبعد قسطها من مصروف الراتب فلا تُحسب مرتين.</p>
+        <p>إن فعّل المالك «اعتماد الحضور قبل الراتب» فاضغط «مراجعة» عند كل موظف لتصحيح أيامه واعتماد حضوره أولاً.</p>
       </Hint>
       {error && <p className="text-danger font-arabic text-sm">{error}</p>}
       {noPay > 0 && <p className="text-xs font-arabic text-warn">{noPay} من الموظفين بلا راتب محدد. حدّده من تبويب «الموظفون».</p>}
@@ -66,11 +72,15 @@ export default function MonthTab({ configured, isOwner, canApprove, onGoRules, r
               <th className="text-right p-3 font-medium">الموظف</th>
               <th className="text-center p-3 font-medium">النوع</th>
               <th className="text-center p-3 font-medium">الأساسي</th>
+              <th className="text-center p-3 font-medium">إضافي ومكافآت</th>
+              <th className="text-center p-3 font-medium">أيام العطل</th>
+              <th className="text-center p-3 font-medium">الإجمالي</th>
               <th className="text-center p-3 font-medium">الخصومات</th>
-              <th className="text-center p-3 font-medium">الإضافات</th>
+              <th className="text-center p-3 font-medium">خصم أيام</th>
               <th className="text-center p-3 font-medium">المستحق</th>
               <th className="text-center p-3 font-medium">قسط سلفة</th>
               <th className="text-center p-3 font-medium">الصافي</th>
+              <th className="text-center p-3 font-medium">الحضور</th>
               <th className="text-center p-3 font-medium">الحالة</th>
               <th className="p-3" />
             </tr>
@@ -81,17 +91,25 @@ export default function MonthTab({ configured, isOwner, canApprove, onGoRules, r
                 <td className="p-3 font-arabic font-medium text-ink-900">{r.name}{r.warnings > 0 && <span className="text-warn mr-1" title="يحتاج مراجعة">⚠</span>}</td>
                 <td className="p-3 text-center font-arabic text-ink-500">{r.pay_type ? TYPE_SHORT[r.pay_type] : ""}</td>
                 <td className="p-3 text-center font-mono">{formatMoney(r.base_cents)}</td>
-                <td className="p-3 text-center font-mono text-danger">{r.deductions_cents ? formatMoney(r.deductions_cents) : "—"}</td>
-                <td className="p-3 text-center font-mono text-ok">{r.additions_cents ? formatMoney(r.additions_cents) : "—"}</td>
+                <td className="p-3 text-center font-mono text-ok">{extras(r) ? formatMoney(extras(r)) : "—"}</td>
+                <td className="p-3 text-center font-mono text-ok" data-testid={`extra-days-${r.user_id}`}>{r.extra_day_pay_cents ? formatMoney(r.extra_day_pay_cents) : "—"}</td>
+                <td className="p-3 text-center font-mono">{formatMoney(r.gross_cents)}</td>
+                <td className="p-3 text-center font-mono text-danger">{plainDeductions(r) ? formatMoney(plainDeductions(r)) : "—"}</td>
+                <td className="p-3 text-center font-mono text-danger" data-testid={`deduction-days-${r.user_id}`}>{r.deduction_days_cents ? formatMoney(r.deduction_days_cents) : "—"}</td>
                 <td className="p-3 text-center font-mono">{formatMoney(r.earned_cents)}</td>
                 <td className="p-3 text-center font-mono text-ink-500">{r.advance_repaid_cents ? formatMoney(r.advance_repaid_cents) : "—"}</td>
                 <td className="p-3 text-center font-mono font-bold text-saffron-600">{formatMoney(r.net_cents)}</td>
+                <td className="p-3 text-center">
+                  <button onClick={() => setReviewOf(r.user_id)} data-testid={`review-${r.user_id}`} className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-arabic ${r.attendance_status === "APPROVED" ? "bg-ok-100 text-ok-700" : r.attendance_status === "PENDING" ? "bg-warn-100 text-warn-700" : "bg-white text-ink-500 border border-ink-200"}`}>
+                    {r.attendance_status === "NOT_REQUIRED" ? "مراجعة" : ATTENDANCE_STATE_LABEL[r.attendance_status]}
+                  </button>
+                </td>
                 <td className="p-3 text-center"><span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-arabic ${BADGE[r.status]}`}>{STATUS_LABEL[r.status]}</span></td>
                 <td className="p-3 text-left"><button onClick={() => setOpen(r.user_id)} className="text-saffron-600 font-bold font-arabic" data-testid={`open-${r.user_id}`}>فتح الكشف</button></td>
               </tr>
             ))}
             {withPay.length === 0 && rows && (
-              <tr><td colSpan={10} className="p-6 text-center text-ink-500 font-arabic">لم تُحدَّد رواتب بعد. افتح تبويب «الموظفون» وحدّد راتب كل شخص.</td></tr>
+              <tr><td colSpan={15} className="p-6 text-center text-ink-500 font-arabic">لم تُحدَّد رواتب بعد. افتح تبويب «الموظفون» وحدّد راتب كل شخص.</td></tr>
             )}
           </tbody>
           {withPay.length > 0 && (
@@ -99,17 +117,21 @@ export default function MonthTab({ configured, isOwner, canApprove, onGoRules, r
               <tr className="bg-surface-alt font-bold font-arabic" data-testid="month-totals">
                 <td className="p-3" colSpan={2}>المجموع</td>
                 <td className="p-3 text-center font-mono">{formatMoney(total((r) => r.base_cents))}</td>
-                <td className="p-3 text-center font-mono text-danger">{formatMoney(total((r) => r.deductions_cents))}</td>
-                <td className="p-3 text-center font-mono text-ok">{formatMoney(total((r) => r.additions_cents))}</td>
+                <td className="p-3 text-center font-mono text-ok">{formatMoney(total(extras))}</td>
+                <td className="p-3 text-center font-mono text-ok">{formatMoney(total((r) => r.extra_day_pay_cents))}</td>
+                <td className="p-3 text-center font-mono">{formatMoney(total((r) => r.gross_cents))}</td>
+                <td className="p-3 text-center font-mono text-danger">{formatMoney(total(plainDeductions))}</td>
+                <td className="p-3 text-center font-mono text-danger">{formatMoney(total((r) => r.deduction_days_cents))}</td>
                 <td className="p-3 text-center font-mono">{formatMoney(total((r) => r.earned_cents))}</td>
                 <td className="p-3 text-center font-mono">{formatMoney(total((r) => r.advance_repaid_cents))}</td>
                 <td className="p-3 text-center font-mono text-saffron-600">{formatMoney(total((r) => r.net_cents))}</td>
-                <td colSpan={2} />
+                <td colSpan={3} />
               </tr>
             </tfoot>
           )}
         </table>
       </div>
+      {reviewOf && <AttendanceReviewModal userId={reviewOf} month={month} onClose={() => setReviewOf(null)} onChanged={() => { load(); onChanged(); }} />}
       {open && <PayslipModal userId={open} month={month} canApprove={canApprove} onClose={() => setOpen(null)} onChanged={() => { load(); onChanged(); }} />}
     </div>
   );

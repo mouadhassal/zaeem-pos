@@ -85,6 +85,7 @@ export const LAN_REDIRECT_COMMANDS = new Set([
   // customers on the till: debtors and loyalty
   "list_debtors_v3",
   "create_debtor_v3",
+  "link_debtor_customer_v3",
   "lookup_loyalty_card_v3",
   "list_loyalty_rewards_v3",
   "redeem_loyalty_reward_v3",

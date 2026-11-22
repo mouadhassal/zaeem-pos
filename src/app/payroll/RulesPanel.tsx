@@ -9,6 +9,7 @@ import {
   exampleLines,
   type AbsenceRule,
   type EarlyRule,
+  type ExtraDayRule,
   type LateRule,
   type LateTier,
   type ManagerAccess,
@@ -30,7 +31,7 @@ interface Props {
   onSaved: (s: PayrollSettings) => void;
 }
 
-const STEP_TITLES = ["أيام العمل والدوام", "التأخير", "الغياب", "الخروج المبكر والوقت الإضافي", "صلاحية المشرفين", "المراجعة والحفظ"];
+const STEP_TITLES = ["أيام العمل والدوام", "التأخير", "الغياب", "الخروج المبكر والوقت الإضافي", "العطل الرسمية واعتماد الحضور", "صلاحية المشرفين", "المراجعة والحفظ"];
 
 /**
  * The owner's payroll rules. Nothing is deducted until he chooses here, every choice says in plain words
@@ -46,6 +47,7 @@ export default function RulesPanel({ settings, wizard, onSaved }: Props) {
   const [sample, setSample] = useState("780000");
   const [fixedLate, setFixedLate] = useState(String(settings.late_fixed_cents || ""));
   const [fixedAbsence, setFixedAbsence] = useState(String(settings.absence_fixed_cents || ""));
+  const [newHoliday, setNewHoliday] = useState("");
 
   useEffect(() => {
     invoke<AttendanceSettings>("get_attendance_settings_v3", { sessionToken: token }).then(setAtt).catch(() => {});
@@ -58,6 +60,12 @@ export default function RulesPanel({ settings, wizard, onSaved }: Props) {
 
   const toggleOffDay = (d: number) =>
     patch({ weekly_off_days: s.weekly_off_days.includes(d) ? s.weekly_off_days.filter((x) => x !== d) : [...s.weekly_off_days, d].sort() });
+
+  const addHoliday = () => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(newHoliday) || s.holidays.includes(newHoliday)) return;
+    patch({ holidays: [...s.holidays, newHoliday].sort() });
+    setNewHoliday("");
+  };
 
   const setTier = (i: number, t: Partial<LateTier>) => patch({ late_tiers: s.late_tiers.map((x, j) => (j === i ? { ...x, ...t } : x)) });
 
@@ -244,7 +252,59 @@ export default function RulesPanel({ settings, wizard, onSaved }: Props) {
       </div>
     </div>,
 
-    // 4 -- what managers may do
+    // 4 -- official holidays, extra days, attendance approval
+    <div key="holidays" className="space-y-5" data-testid="rules-holidays">
+      <div className="space-y-3">
+        <h3 className="font-bold font-arabic text-ink-900">العطل الرسمية</h3>
+        <Hint summary="أيام تعدّها عطلة لكل الفريق غير العطلة الأسبوعية (عيد، مناسبة وطنية).">
+          <p>العطلة الرسمية لا تُعدّ غياباً، ولا تُنقص من الراتب الشهري. من عمل فيها يُحسب له يوم عمل إضافي (إن فعّلت ذلك أدناه) أو وقت إضافي.</p>
+        </Hint>
+        <div className="flex flex-wrap items-end gap-2">
+          <input type="date" value={newHoliday} onChange={(e) => setNewHoliday(e.target.value)} className={`${inputCls} max-w-[200px]`} dir="ltr" data-testid="holiday-date" />
+          <button type="button" onClick={addHoliday} className={btnGhost} data-testid="holiday-add">إضافة عطلة</button>
+        </div>
+        <div className="flex flex-wrap gap-2" data-testid="holiday-list">
+          {s.holidays.length === 0 && <span className="text-xs font-arabic text-ink-400">لا عطل رسمية مسجلة.</span>}
+          {s.holidays.map((h) => (
+            <span key={h} className="inline-flex items-center gap-2 px-3 h-8 rounded-full bg-white border border-ink-200 text-sm font-mono" dir="ltr">
+              {h}
+              <button type="button" onClick={() => patch({ holidays: s.holidays.filter((x) => x !== h) })} aria-label="حذف" className="text-danger text-xs">×</button>
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="space-y-3">
+        <h3 className="font-bold font-arabic text-ink-900">العمل في العطلة (الأسبوعية أو الرسمية)</h3>
+        <ChoiceCards<ExtraDayRule>
+          testId="extra-day-rule"
+          value={s.extra_day_rule}
+          onChange={(v) => patch({ extra_day_rule: v })}
+          options={[
+            { value: "NONE", title: "وقت إضافي فقط", text: "يُحسب وقته وقتاً إضافياً بقاعدة الوقت الإضافي (إن كانت مفعّلة)، كما كان." },
+            { value: "DAY_PAY", title: "يوم عمل إضافي", text: "يُدفع له يوم كامل بنسبة تحددها (150% = يوم ونصف) بدل الوقت الإضافي. يظهر سطراً مستقلاً في الكشف." },
+          ]}
+        />
+        {s.extra_day_rule === "DAY_PAY" && (
+          <Field label="أجر يوم العطلة %" hint="150 = يوم ونصف عن كل يوم عمل. 200 = الضعف.">
+            <input type="number" min={100} max={1000} value={s.holiday_multiplier_pct} onChange={(e) => patch({ holiday_multiplier_pct: Number(e.target.value) || 100 })} className={`${inputCls} max-w-[140px]`} dir="ltr" data-testid="holiday-multiplier" />
+          </Field>
+        )}
+      </div>
+      <div className="space-y-3">
+        <h3 className="font-bold font-arabic text-ink-900">اعتماد الحضور قبل الراتب</h3>
+        <ChoiceCards<"OFF" | "ON">
+          testId="attendance-approval"
+          value={s.require_attendance_approval ? "ON" : "OFF"}
+          onChange={(v) => patch({ require_attendance_approval: v === "ON" })}
+          options={[
+            { value: "OFF", title: "لا يُشترط (كما هو)", text: "يُحسب الراتب من الحضور كما هو. يمكنك مع ذلك مراجعة الحضور واعتماده متى شئت." },
+            { value: "ON", title: "يُشترط اعتماد الحضور", text: "لكل موظف ولكل شهر: يراجع المالك أو المشرف أيام الحضور ويصحح الخطأ ثم يضغط «اعتماد الحضور». لا يُعتمد الراتب قبل ذلك." },
+          ]}
+        />
+      </div>
+    </div>,
+
+    // 5 -- what managers may do
     <div key="managers" className="space-y-4" data-testid="rules-managers">
       <Hint summary="أنت صاحب القرار: هل يعمل المشرفون في الرواتب، وإلى أي حد؟">
         <p>المشرف يرى فقط موظفي فرعه الأقل منه رتبة (الكاشير والمطبخ). لا يرى راتبك ولا رواتب المشرفين الآخرين ولا راتب نفسه.</p>
@@ -263,7 +323,7 @@ export default function RulesPanel({ settings, wizard, onSaved }: Props) {
       />
     </div>,
 
-    // 5 -- review
+    // 6 -- review
     <div key="review" className="space-y-4" data-testid="rules-review">
       <Hint summary="هكذا ستُحسب الرواتب. جرّب راتباً لترى المبالغ الفعلية لكل قاعدة." />
       <Field label="راتب شهري للتجربة">

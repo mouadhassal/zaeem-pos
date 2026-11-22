@@ -41,7 +41,11 @@ CREATE TABLE IF NOT EXISTS payroll_settings (
     overtime_rule TEXT NOT NULL DEFAULT 'NONE',
     overtime_multiplier_pct INTEGER NOT NULL DEFAULT 150,
     overtime_after_minutes INTEGER NOT NULL DEFAULT 30,
-    manager_access TEXT NOT NULL DEFAULT 'NONE'
+    manager_access TEXT NOT NULL DEFAULT 'NONE',
+    extra_day_rule TEXT NOT NULL DEFAULT 'NONE',
+    holiday_multiplier_pct INTEGER NOT NULL DEFAULT 150,
+    holidays TEXT NOT NULL DEFAULT '[]',
+    require_attendance_approval INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS payroll_employees (
     user_id TEXT PRIMARY KEY REFERENCES staff(id),
@@ -106,7 +110,40 @@ CREATE TABLE IF NOT EXISTS payroll_payslips (
     expense_id TEXT,
     UNIQUE (user_id, month)
 );
-CREATE INDEX IF NOT EXISTS idx_payroll_punch_lookup ON payroll_payslips (tenant_id, month);";
+CREATE INDEX IF NOT EXISTS idx_payroll_punch_lookup ON payroll_payslips (tenant_id, month);
+CREATE TABLE IF NOT EXISTS payroll_day_deductions (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES staff(id),
+    month TEXT NOT NULL,
+    days_x100 INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS payroll_day_overrides (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES staff(id),
+    day TEXT NOT NULL,
+    absent INTEGER NOT NULL DEFAULT 0,
+    in_time TEXT,
+    out_time TEXT,
+    reason TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (user_id, day)
+);
+CREATE TABLE IF NOT EXISTS payroll_attendance_approvals (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES staff(id),
+    month TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    approved_by TEXT NOT NULL,
+    approved_at TEXT NOT NULL,
+    UNIQUE (user_id, month)
+);";
 
 // ---------------------------------------------------------------------------
 // Who may do what (the hierarchy)
@@ -252,6 +289,29 @@ pub struct PayrollSettings {
     /// Pay rates and these rules stay with the owner either way, and a manager never sees the owner's or
     /// another manager's pay.
     pub manager_access: String,
+    /// NONE | DAY_PAY. DAY_PAY: a day worked on a weekly day off or on a holiday the owner marked is paid as an
+    /// extra day at `holiday_multiplier_pct` of one day's pay (and its minutes are no longer counted as overtime).
+    /// NONE (the default): such a day is paid by the overtime rule only, as before.
+    #[serde(default = "default_extra_day_rule")]
+    pub extra_day_rule: String,
+    /// Percent of one day's pay paid for an extra day (150 = a day and a half).
+    #[serde(default = "default_holiday_pct")]
+    pub holiday_multiplier_pct: i64,
+    /// Official holidays (`YYYY-MM-DD`), marked by the owner. A holiday is a non-working day like the weekly day off.
+    #[serde(default)]
+    pub holidays: Vec<String>,
+    /// ON: a person's month must have its attendance approved ("اعتماد الحضور") before the payslip can be approved.
+    /// OFF (the default): payroll uses the attendance as it is, as before.
+    #[serde(default)]
+    pub require_attendance_approval: bool,
+}
+
+fn default_extra_day_rule() -> String {
+    "NONE".to_string()
+}
+
+fn default_holiday_pct() -> i64 {
+    150
 }
 
 impl Default for PayrollSettings {
@@ -275,6 +335,10 @@ impl Default for PayrollSettings {
             overtime_multiplier_pct: 150,
             overtime_after_minutes: 30,
             manager_access: "NONE".into(),
+            extra_day_rule: "NONE".into(),
+            holiday_multiplier_pct: 150,
+            holidays: vec![],
+            require_attendance_approval: false,
         }
     }
 }
@@ -290,6 +354,16 @@ impl PayrollSettings {
         one_of(&self.early_rule, &["NONE", "PER_MINUTE"], "قاعدة الخروج المبكر")?;
         one_of(&self.overtime_rule, &["NONE", "PER_HOUR"], "قاعدة الوقت الإضافي")?;
         one_of(&self.manager_access, &["NONE", "PREPARE", "FULL"], "صلاحية المشرف")?;
+        one_of(&self.extra_day_rule, &["NONE", "DAY_PAY"], "قاعدة أجر العطلة")?;
+        if !(100..=1000).contains(&self.holiday_multiplier_pct) {
+            return Err("نسبة أجر يوم العطلة يجب أن تكون بين 100 و1000".into());
+        }
+        if self.holidays.len() > 400 {
+            return Err("عدد أيام العطل كبير جداً".into());
+        }
+        if self.holidays.iter().any(|h| parse_date(h).is_none()) {
+            return Err("تاريخ عطلة غير صالح، اكتبه بصيغة 2026-11-01".into());
+        }
         if self.weekly_off_days.iter().any(|d| *d > 6) || self.weekly_off_days.len() > 6 {
             return Err("أيام العطلة الأسبوعية غير صالحة".into());
         }
@@ -342,40 +416,39 @@ pub fn load_settings(conn: &Connection, tenant_id: &str) -> Result<PayrollSettin
         .query_row(
             "SELECT configured, weekly_off_days, days_per_month, shift_minutes, late_rule, late_counts_from_start, late_multiplier_pct, \
                     late_fixed_cents, late_tiers, absence_rule, absence_multiplier_pct, absence_fixed_cents, early_rule, early_multiplier_pct, \
-                    overtime_rule, overtime_multiplier_pct, overtime_after_minutes, manager_access FROM payroll_settings WHERE tenant_id = ?1",
+                    overtime_rule, overtime_multiplier_pct, overtime_after_minutes, manager_access, \
+                    extra_day_rule, holiday_multiplier_pct, holidays, require_attendance_approval FROM payroll_settings WHERE tenant_id = ?1",
             params![tenant_id],
             |r| {
-                Ok((
-                    r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, String>(4)?,
-                    r.get::<_, i64>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?, r.get::<_, String>(8)?, r.get::<_, String>(9)?,
-                    r.get::<_, i64>(10)?, r.get::<_, i64>(11)?, r.get::<_, String>(12)?, r.get::<_, i64>(13)?, r.get::<_, String>(14)?,
-                    r.get::<_, i64>(15)?, r.get::<_, i64>(16)?, r.get::<_, String>(17)?,
-                ))
+                Ok(PayrollSettings {
+                    configured: r.get::<_, i64>(0)? != 0,
+                    weekly_off_days: r.get::<_, String>(1)?.split(',').filter_map(|d| d.trim().parse::<u8>().ok()).filter(|d| *d <= 6).collect(),
+                    days_per_month: r.get(2)?,
+                    shift_minutes: r.get(3)?,
+                    late_rule: r.get(4)?,
+                    late_counts_from_start: r.get::<_, i64>(5)? != 0,
+                    late_multiplier_pct: r.get(6)?,
+                    late_fixed_cents: r.get(7)?,
+                    late_tiers: serde_json::from_str(&r.get::<_, String>(8)?).unwrap_or_default(),
+                    absence_rule: r.get(9)?,
+                    absence_multiplier_pct: r.get(10)?,
+                    absence_fixed_cents: r.get(11)?,
+                    early_rule: r.get(12)?,
+                    early_multiplier_pct: r.get(13)?,
+                    overtime_rule: r.get(14)?,
+                    overtime_multiplier_pct: r.get(15)?,
+                    overtime_after_minutes: r.get(16)?,
+                    manager_access: r.get(17)?,
+                    extra_day_rule: r.get(18)?,
+                    holiday_multiplier_pct: r.get(19)?,
+                    holidays: serde_json::from_str(&r.get::<_, String>(20)?).unwrap_or_default(),
+                    require_attendance_approval: r.get::<_, i64>(21)? != 0,
+                })
             },
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    let Some(r) = row else { return Ok(PayrollSettings::default()) };
-    Ok(PayrollSettings {
-        configured: r.0 != 0,
-        weekly_off_days: r.1.split(',').filter_map(|d| d.trim().parse::<u8>().ok()).filter(|d| *d <= 6).collect(),
-        days_per_month: r.2,
-        shift_minutes: r.3,
-        late_rule: r.4,
-        late_counts_from_start: r.5 != 0,
-        late_multiplier_pct: r.6,
-        late_fixed_cents: r.7,
-        late_tiers: serde_json::from_str(&r.8).unwrap_or_default(),
-        absence_rule: r.9,
-        absence_multiplier_pct: r.10,
-        absence_fixed_cents: r.11,
-        early_rule: r.12,
-        early_multiplier_pct: r.13,
-        overtime_rule: r.14,
-        overtime_multiplier_pct: r.15,
-        overtime_after_minutes: r.16,
-        manager_access: r.17,
-    })
+    Ok(row.unwrap_or_default())
 }
 
 /// Saves the owner's rules and marks the setup as done.
@@ -383,19 +456,25 @@ pub fn save_settings(conn: &Connection, tenant_id: &str, s: &PayrollSettings) ->
     s.validate()?;
     let off = s.weekly_off_days.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(",");
     let tiers = serde_json::to_string(&s.late_tiers).map_err(|e| e.to_string())?;
+    let mut holidays = s.holidays.clone();
+    holidays.sort();
+    holidays.dedup();
+    let holidays = serde_json::to_string(&holidays).map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT INTO payroll_settings (tenant_id, configured, weekly_off_days, days_per_month, shift_minutes, late_rule, late_counts_from_start, \
             late_multiplier_pct, late_fixed_cents, late_tiers, absence_rule, absence_multiplier_pct, absence_fixed_cents, early_rule, early_multiplier_pct, \
-            overtime_rule, overtime_multiplier_pct, overtime_after_minutes, manager_access) \
-         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18) \
+            overtime_rule, overtime_multiplier_pct, overtime_after_minutes, manager_access, extra_day_rule, holiday_multiplier_pct, holidays, require_attendance_approval) \
+         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22) \
          ON CONFLICT(tenant_id) DO UPDATE SET configured = 1, weekly_off_days = ?2, days_per_month = ?3, shift_minutes = ?4, late_rule = ?5, \
             late_counts_from_start = ?6, late_multiplier_pct = ?7, late_fixed_cents = ?8, late_tiers = ?9, absence_rule = ?10, \
             absence_multiplier_pct = ?11, absence_fixed_cents = ?12, early_rule = ?13, early_multiplier_pct = ?14, overtime_rule = ?15, \
-            overtime_multiplier_pct = ?16, overtime_after_minutes = ?17, manager_access = ?18",
+            overtime_multiplier_pct = ?16, overtime_after_minutes = ?17, manager_access = ?18, extra_day_rule = ?19, holiday_multiplier_pct = ?20, \
+            holidays = ?21, require_attendance_approval = ?22",
         params![
             tenant_id, off, s.days_per_month, s.shift_minutes, s.late_rule, s.late_counts_from_start as i64, s.late_multiplier_pct, s.late_fixed_cents,
             tiers, s.absence_rule, s.absence_multiplier_pct, s.absence_fixed_cents, s.early_rule, s.early_multiplier_pct, s.overtime_rule,
-            s.overtime_multiplier_pct, s.overtime_after_minutes, s.manager_access
+            s.overtime_multiplier_pct, s.overtime_after_minutes, s.manager_access, s.extra_day_rule, s.holiday_multiplier_pct, holidays,
+            s.require_attendance_approval as i64
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -639,6 +718,12 @@ pub fn cancel_advance(conn: &Connection, tenant_id: &str, advance_id: &str) -> R
         None => Err("السلفة غير موجودة".into()),
         Some(r) if r > 0 => Err("بدأ تسديد هذه السلفة من الراتب، لا يمكن إلغاؤها".into()),
         Some(_) => {
+            // The expense recorded for it goes with it (nothing was ever taken back, so nothing was spent).
+            conn.execute(
+                "DELETE FROM operational_costs WHERE reference_type = ?1 AND reference_id = ?2",
+                params![crate::finance::ADVANCE_REFERENCE, advance_id],
+            )
+            .map_err(|e| e.to_string())?;
             conn.execute("DELETE FROM payroll_advances WHERE id = ?1", params![advance_id]).map_err(|e| e.to_string())?;
             Ok(())
         }
@@ -670,9 +755,7 @@ pub fn list_advances(conn: &Connection, tenant_id: &str, user_id: Option<&str>, 
 pub fn mark_paid_leave(conn: &Connection, tenant_id: &str, user_id: &str, day: &str, note: Option<&str>, actor_id: &str) -> Result<(), String> {
     let Some(d) = parse_date(day) else { return Err("التاريخ غير صالح".into()) };
     let month = d.format("%Y-%m").to_string();
-    if month_is_locked(conn, user_id, &month)? {
-        return Err("راتب هذا الشهر معتمد، أعد فتحه أولاً لتعديله".into());
-    }
+    attendance_edit_guard(conn, user_id, &month)?;
     conn.execute(
         "INSERT INTO payroll_day_marks (id, tenant_id, user_id, day, note, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
          ON CONFLICT(user_id, day) DO UPDATE SET note = ?5",
@@ -684,9 +767,7 @@ pub fn mark_paid_leave(conn: &Connection, tenant_id: &str, user_id: &str, day: &
 
 pub fn unmark_paid_leave(conn: &Connection, user_id: &str, day: &str) -> Result<(), String> {
     let Some(d) = parse_date(day) else { return Err("التاريخ غير صالح".into()) };
-    if month_is_locked(conn, user_id, &d.format("%Y-%m").to_string())? {
-        return Err("راتب هذا الشهر معتمد، أعد فتحه أولاً لتعديله".into());
-    }
+    attendance_edit_guard(conn, user_id, &d.format("%Y-%m").to_string())?;
     conn.execute("DELETE FROM payroll_day_marks WHERE user_id = ?1 AND day = ?2", params![user_id, day]).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -706,7 +787,385 @@ pub fn add_manual_punch(conn: &Connection, tenant_id: &str, branch_id: &str, use
     if at < now - Duration::days(400) {
         return Err("الوقت قديم جداً".into());
     }
+    // A day near a month's edge may belong to either month in the till's local time, so both are checked.
+    for edge in [at - Duration::days(1), at + Duration::days(1)] {
+        if attendance_is_approved(conn, user_id, &edge.format("%Y-%m").to_string())? {
+            return Err("حضور هذا الشهر معتمد، ألغِ اعتماد الحضور أولاً لتعديله".into());
+        }
+    }
     crate::attendance::log_punch(conn, tenant_id, branch_id, user_id, dir, crate::attendance::Source::Manual, None, Some(actor_id), at)
+}
+
+// ---------------------------------------------------------------------------
+// Deduction days, corrected days, attendance approval
+// ---------------------------------------------------------------------------
+
+/// Days the owner deducted by hand ("deduction days"), kept apart from absence. Hundredths of a day, so a half day is 50.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DayDeductionRow {
+    pub id: String,
+    pub month: String,
+    pub days_x100: i64,
+    pub reason: String,
+    pub created_at: String,
+}
+
+pub fn add_day_deduction(conn: &Connection, tenant_id: &str, user_id: &str, month: &str, days_x100: i64, reason: &str, actor_id: &str) -> Result<String, String> {
+    if valid_month(month).is_none() {
+        return Err("الشهر غير صالح".into());
+    }
+    if !(1..=3100).contains(&days_x100) {
+        return Err("عدد أيام الخصم يجب أن يكون بين ربع يوم و31 يوماً".into());
+    }
+    if reason.trim().is_empty() {
+        return Err("اكتب سبب خصم الأيام".into());
+    }
+    if month_is_locked(conn, user_id, month)? {
+        return Err("راتب هذا الشهر معتمد، أعد فتحه أولاً لتعديله".into());
+    }
+    let id = uuid::Uuid::now_v7().to_string();
+    conn.execute(
+        "INSERT INTO payroll_day_deductions (id, tenant_id, user_id, month, days_x100, reason, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![id, tenant_id, user_id, month, days_x100, reason.trim(), actor_id, Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+pub fn delete_day_deduction(conn: &Connection, tenant_id: &str, id: &str) -> Result<(), String> {
+    let row: Option<(String, String)> = conn
+        .query_row("SELECT user_id, month FROM payroll_day_deductions WHERE id = ?1 AND tenant_id = ?2", params![id, tenant_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some((user_id, month)) = row else { return Err("خصم الأيام غير موجود".into()) };
+    if month_is_locked(conn, &user_id, &month)? {
+        return Err("راتب هذا الشهر معتمد، أعد فتحه أولاً لتعديله".into());
+    }
+    conn.execute("DELETE FROM payroll_day_deductions WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn day_deduction_person_in_scope(conn: &Connection, tenant_id: &str, id: &str, scope: &PayrollScope) -> Result<(), String> {
+    let user: Option<String> = conn
+        .query_row("SELECT user_id FROM payroll_day_deductions WHERE id = ?1 AND tenant_id = ?2", params![id, tenant_id], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(user_id) = user else { return Err("خصم الأيام غير موجود".into()) };
+    person_in_scope(conn, tenant_id, &user_id, scope)
+}
+
+fn list_day_deductions(conn: &Connection, user_id: &str, month: &str) -> Result<Vec<DayDeductionRow>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, month, days_x100, reason, created_at FROM payroll_day_deductions WHERE user_id = ?1 AND month = ?2 ORDER BY created_at")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![user_id, month], |r| Ok(DayDeductionRow { id: r.get(0)?, month: r.get(1)?, days_x100: r.get(2)?, reason: r.get(3)?, created_at: r.get(4)? }))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// A day the attendance review corrected: the day's own in/out times replace what the punches say (or the day is
+/// forced absent). The punch log is never edited; this sits on top of it and says who and why.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DayOverride {
+    pub day: String,
+    pub absent: bool,
+    pub in_time: Option<String>,
+    pub out_time: Option<String>,
+    pub reason: String,
+}
+
+pub fn attendance_is_approved(conn: &Connection, user_id: &str, month: &str) -> Result<bool, String> {
+    conn.query_row("SELECT COUNT(*) > 0 FROM payroll_attendance_approvals WHERE user_id = ?1 AND month = ?2", params![user_id, month], |r| r.get(0)).map_err(|e| e.to_string())
+}
+
+/// What may not change any more: a frozen payslip, or attendance the owner/manager approved.
+fn attendance_edit_guard(conn: &Connection, user_id: &str, month: &str) -> Result<(), String> {
+    if month_is_locked(conn, user_id, month)? {
+        return Err("راتب هذا الشهر معتمد، أعد فتحه أولاً لتعديله".into());
+    }
+    if attendance_is_approved(conn, user_id, month)? {
+        return Err("حضور هذا الشهر معتمد، ألغِ اعتماد الحضور أولاً لتعديله".into());
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn set_day_override(conn: &Connection, tenant_id: &str, user_id: &str, day: &str, absent: bool, in_time: Option<&str>, out_time: Option<&str>, reason: &str, actor_id: &str) -> Result<(), String> {
+    let Some(d) = parse_date(day) else { return Err("التاريخ غير صالح".into()) };
+    attendance_edit_guard(conn, user_id, &d.format("%Y-%m").to_string())?;
+    if reason.trim().is_empty() {
+        return Err("اكتب سبب تصحيح اليوم".into());
+    }
+    let (in_time, out_time) = if absent {
+        (None, None)
+    } else {
+        let i = in_time.map(str::trim).filter(|s| !s.is_empty()).ok_or("اكتب وقت الدخول")?;
+        if crate::attendance::parse_hhmm(i).is_none() {
+            return Err("وقت الدخول غير صالح، اكتبه بصيغة 09:00".into());
+        }
+        let o = out_time.map(str::trim).filter(|s| !s.is_empty());
+        if let Some(o) = o {
+            if crate::attendance::parse_hhmm(o).is_none() {
+                return Err("وقت الخروج غير صالح، اكتبه بصيغة 17:00".into());
+            }
+        }
+        (Some(i.to_string()), o.map(str::to_string))
+    };
+    conn.execute(
+        "INSERT INTO payroll_day_overrides (id, tenant_id, user_id, day, absent, in_time, out_time, reason, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+         ON CONFLICT(user_id, day) DO UPDATE SET absent = ?5, in_time = ?6, out_time = ?7, reason = ?8, created_by = ?9, created_at = ?10",
+        params![uuid::Uuid::now_v7().to_string(), tenant_id, user_id, day, absent as i64, in_time, out_time, reason.trim(), actor_id, Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn clear_day_override(conn: &Connection, user_id: &str, day: &str) -> Result<(), String> {
+    let Some(d) = parse_date(day) else { return Err("التاريخ غير صالح".into()) };
+    attendance_edit_guard(conn, user_id, &d.format("%Y-%m").to_string())?;
+    conn.execute("DELETE FROM payroll_day_overrides WHERE user_id = ?1 AND day = ?2", params![user_id, day]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn list_day_overrides(conn: &Connection, user_id: &str, month: &str) -> Result<Vec<DayOverride>, String> {
+    let mut stmt = conn
+        .prepare("SELECT day, absent, in_time, out_time, reason FROM payroll_day_overrides WHERE user_id = ?1 AND substr(day, 1, 7) = ?2 ORDER BY day")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![user_id, month], |r| Ok(DayOverride { day: r.get(0)?, absent: r.get::<_, i64>(1)? != 0, in_time: r.get(2)?, out_time: r.get(3)?, reason: r.get(4)? }))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// NOT_REQUIRED (the owner did not turn the approval on and nothing was approved) | PENDING | APPROVED.
+pub fn attendance_state(conn: &Connection, user_id: &str, month: &str, required: bool) -> Result<String, String> {
+    Ok(if attendance_is_approved(conn, user_id, month)? {
+        "APPROVED"
+    } else if required {
+        "PENDING"
+    } else {
+        "NOT_REQUIRED"
+    }
+    .to_string())
+}
+
+/// A person's month of attendance, day by day, for the owner or manager to check and correct before payroll.
+#[derive(Debug, Clone, Serialize)]
+pub struct AttendanceReview {
+    pub user_id: String,
+    pub user_name: String,
+    pub month: String,
+    /// The owner requires approval before a payslip can be approved.
+    pub required: bool,
+    pub approved: bool,
+    pub approved_at: Option<String>,
+    /// The payslip is already approved: nothing about the month can change.
+    pub payslip_locked: bool,
+    pub days: Vec<DayLine>,
+    pub overrides: Vec<DayOverride>,
+    pub present_days: i64,
+    pub absent_days: i64,
+    pub late_days: i64,
+    pub late_minutes: i64,
+    pub early_minutes: i64,
+    pub overtime_minutes: i64,
+    pub extra_days: i64,
+    pub paid_leave_days: i64,
+    pub warnings: Vec<String>,
+}
+
+pub fn attendance_review(conn: &Connection, tenant_id: &str, user_id: &str, month: &str, tz_offset_minutes: i64, as_of: NaiveDate) -> Result<AttendanceReview, String> {
+    let settings = load_settings(conn, tenant_id)?;
+    let p = compute_draft(conn, tenant_id, user_id, month, tz_offset_minutes, as_of)?;
+    let approved_at: Option<String> = conn
+        .query_row("SELECT approved_at FROM payroll_attendance_approvals WHERE user_id = ?1 AND month = ?2", params![user_id, month], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let count = |f: &dyn Fn(&DayLine) -> bool| p.days.iter().filter(|d| f(d)).count() as i64;
+    Ok(AttendanceReview {
+        user_id: user_id.to_string(),
+        user_name: p.user_name.clone(),
+        month: month.to_string(),
+        required: settings.require_attendance_approval,
+        approved: approved_at.is_some(),
+        approved_at,
+        payslip_locked: month_is_locked(conn, user_id, month)?,
+        present_days: count(&|d| matches!(d.status.as_str(), "PRESENT" | "LATE")),
+        absent_days: p.absent_days,
+        late_days: p.late_days,
+        late_minutes: p.late_minutes,
+        early_minutes: p.days.iter().map(|d| d.early_minutes).sum(),
+        overtime_minutes: p.days.iter().map(|d| d.overtime_minutes).sum(),
+        extra_days: count(&|d| d.status == "OFF_WORKED"),
+        paid_leave_days: p.paid_leave_days,
+        warnings: p.warnings.iter().filter(|w| !w.contains("اعتماد")).cloned().collect(),
+        overrides: list_day_overrides(conn, user_id, month)?,
+        days: p.days,
+    })
+}
+
+/// "اعتماد الحضور": the person's month of attendance is checked and frozen. Only a finished month.
+pub fn approve_attendance(conn: &Connection, tenant_id: &str, user_id: &str, month: &str, tz_offset_minutes: i64, as_of: NaiveDate, actor_id: &str) -> Result<AttendanceReview, String> {
+    let (_, last) = month_bounds(month)?;
+    if as_of < last {
+        return Err("لا يمكن اعتماد حضور شهر لم ينتهِ بعد. انتظر آخر يوم من الشهر".into());
+    }
+    if attendance_is_approved(conn, user_id, month)? {
+        return Err("حضور هذا الشهر معتمد بالفعل".into());
+    }
+    let mut review = attendance_review(conn, tenant_id, user_id, month, tz_offset_minutes, as_of)?;
+    let summary = serde_json::json!({
+        "present_days": review.present_days, "absent_days": review.absent_days, "late_days": review.late_days, "late_minutes": review.late_minutes,
+        "early_minutes": review.early_minutes, "overtime_minutes": review.overtime_minutes, "extra_days": review.extra_days, "paid_leave_days": review.paid_leave_days,
+        "corrected_days": review.overrides.len(),
+    });
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO payroll_attendance_approvals (id, tenant_id, user_id, month, summary, approved_by, approved_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![uuid::Uuid::now_v7().to_string(), tenant_id, user_id, month, summary.to_string(), actor_id, now],
+    )
+    .map_err(|e| e.to_string())?;
+    review.approved = true;
+    review.approved_at = Some(now);
+    Ok(review)
+}
+
+/// Takes the approval back so the month can be corrected again. Not possible once the payslip is approved.
+pub fn unapprove_attendance(conn: &Connection, user_id: &str, month: &str) -> Result<(), String> {
+    if month_is_locked(conn, user_id, month)? {
+        return Err("راتب هذا الشهر معتمد، أعد فتحه أولاً".into());
+    }
+    conn.execute("DELETE FROM payroll_attendance_approvals WHERE user_id = ?1 AND month = ?2", params![user_id, month]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Advances that are also an expense (once)
+// ---------------------------------------------------------------------------
+
+/// Is there already an expense for this advance? (The expense carries the advance's id as its reference.)
+pub fn advance_has_cost(conn: &Connection, advance_id: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT COUNT(*) > 0 FROM operational_costs WHERE reference_type = ?1 AND reference_id = ?2",
+        params![crate::finance::ADVANCE_REFERENCE, advance_id],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Records the expense for an advance, unless it already has one (checked by reference, so the two ways of entering
+/// an advance, from Payroll and from Finance, can never both record it). `fields` is what the Finance form typed.
+/// Returns the new expense's id, or None when the advance already had its expense.
+pub fn ensure_advance_cost(conn: &Connection, tenant_id: &str, branch_id: &str, advance_id: &str, actor_id: &str, fields: Option<crate::finance::CostFields>) -> Result<Option<String>, String> {
+    if advance_has_cost(conn, advance_id)? {
+        return Ok(None);
+    }
+    let (user_id, amount, given_on, reason): (String, i64, String, Option<String>) = conn
+        .query_row("SELECT user_id, amount_cents, given_on, reason FROM payroll_advances WHERE id = ?1 AND tenant_id = ?2", params![advance_id, tenant_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or("السلفة غير موجودة")?;
+    let name = staff_name(conn, &user_id)?;
+    let mut f = fields.unwrap_or_default();
+    f.category = crate::finance::ADVANCE_CATEGORY.to_string();
+    f.amount_cents = amount;
+    f.date = given_on;
+    f.reference_type = Some(crate::finance::ADVANCE_REFERENCE.to_string());
+    f.reference_id = Some(advance_id.to_string());
+    f.payee = Some(name.clone());
+    if f.notes.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        f.notes = Some(match reason.as_deref().filter(|r| !r.trim().is_empty()) {
+            Some(r) => format!("سلفة {name}: {r}"),
+            None => format!("سلفة {name}"),
+        });
+    }
+    f.normalise()?;
+    let id = crate::finance::insert_cost(conn, tenant_id, branch_id, actor_id, &f).map_err(|e| e.to_string())?;
+    Ok(Some(id))
+}
+
+/// A new advance and its expense, together. Returns (advance id, expense id when one was recorded).
+#[allow(clippy::too_many_arguments)]
+pub fn add_advance_with_cost(conn: &Connection, tenant_id: &str, branch_id: &str, user_id: &str, amount_cents: i64, instalment_cents: i64, given_on: &str, reason: Option<&str>, actor_id: &str, fields: Option<crate::finance::CostFields>) -> Result<(String, Option<String>), String> {
+    let advance_id = add_advance(conn, tenant_id, Some(branch_id), user_id, amount_cents, instalment_cents, given_on, reason, actor_id)?;
+    let cost_id = ensure_advance_cost(conn, tenant_id, branch_id, &advance_id, actor_id, fields)?;
+    Ok((advance_id, cost_id))
+}
+
+/// One line of a worker's account with the business.
+#[derive(Debug, Clone, Serialize)]
+pub struct StatementLine {
+    pub date: String,
+    /// ADVANCE (given to the worker) | REPAYMENT (taken off a payslip)
+    pub kind: String,
+    pub label: String,
+    /// Positive: the worker owes more. Negative: they paid some back.
+    pub amount_cents: i64,
+    /// What the worker owes after this line.
+    pub balance_cents: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StatementPayslip {
+    pub month: String,
+    pub status: String,
+    pub earned_cents: i64,
+    pub advance_repaid_cents: i64,
+    pub net_cents: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkerStatement {
+    pub user_id: String,
+    pub user_name: String,
+    pub lines: Vec<StatementLine>,
+    pub total_advanced_cents: i64,
+    pub total_repaid_cents: i64,
+    pub owed_cents: i64,
+    pub payslips: Vec<StatementPayslip>,
+}
+
+/// The worker's statement: every advance given, every instalment taken off an approved payslip, and what is still owed.
+pub fn worker_statement(conn: &Connection, tenant_id: &str, user_id: &str) -> Result<WorkerStatement, String> {
+    let name = staff_name(conn, user_id)?;
+    let advances = list_advances(conn, tenant_id, Some(user_id), false)?;
+    // (date, order within a day, label, amount, kind)
+    let mut raw: Vec<(String, u8, String, i64, &'static str)> = Vec::new();
+    for a in &advances {
+        let label = match a.reason.as_deref() {
+            Some(r) => format!("سلفة: {r}"),
+            None => "سلفة".to_string(),
+        };
+        raw.push((a.given_on.clone(), 0, label, a.amount_cents, "ADVANCE"));
+    }
+    let mut payslips = Vec::new();
+    let mut stmt = conn
+        .prepare("SELECT month, status, earned_cents, net_cents, details, approved_at FROM payroll_payslips WHERE user_id = ?1 AND tenant_id = ?2 ORDER BY month")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![user_id, tenant_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?)))
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let (month, status, earned, net, details, approved_at) = row.map_err(|e| e.to_string())?;
+        let p: Payslip = serde_json::from_str(&details).map_err(|e| e.to_string())?;
+        for (_, amount) in &p.advance_repayments {
+            raw.push((approved_at.chars().take(10).collect(), 1, format!("قسط من راتب {month}"), -amount, "REPAYMENT"));
+        }
+        payslips.push(StatementPayslip { month, status, earned_cents: earned, advance_repaid_cents: p.advance_repaid_cents, net_cents: net });
+    }
+    raw.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+    let mut balance = 0;
+    let lines: Vec<StatementLine> = raw
+        .into_iter()
+        .map(|(date, _, label, amount, kind)| {
+            balance += amount;
+            StatementLine { date, kind: kind.to_string(), label, amount_cents: amount, balance_cents: balance }
+        })
+        .collect();
+    let total_advanced: i64 = advances.iter().map(|a| a.amount_cents).sum();
+    let total_repaid: i64 = advances.iter().map(|a| a.repaid_cents).sum();
+    Ok(WorkerStatement { user_id: user_id.to_string(), user_name: name, lines, total_advanced_cents: total_advanced, total_repaid_cents: total_repaid, owed_cents: total_advanced - total_repaid, payslips })
 }
 
 // ---------------------------------------------------------------------------
@@ -726,6 +1185,12 @@ pub struct DayLine {
     pub early_minutes: i64,
     pub overtime_minutes: i64,
     pub note: Option<String>,
+    /// An official holiday the owner marked.
+    #[serde(default)]
+    pub holiday: bool,
+    /// The day was corrected by hand in the attendance review (the punch log itself is never edited).
+    #[serde(default)]
+    pub corrected: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -750,9 +1215,30 @@ pub struct Payslip {
     pub overtime_minutes: i64,
     pub overtime_pay_cents: i64,
     pub paid_leave_days: i64,
+    /// Days worked on a weekly day off or a holiday, paid as extra days (rule `DAY_PAY`).
+    #[serde(default)]
+    pub extra_days: i64,
+    #[serde(default)]
+    pub extra_day_pay_cents: i64,
+    /// The percent of a day's pay each extra day was paid at (frozen with the payslip).
+    #[serde(default)]
+    pub extra_day_multiplier_pct: i64,
+    /// Days the owner deducted by hand (hundredths of a day: 150 = one and a half), separate from absence.
+    #[serde(default)]
+    pub deduction_days_x100: i64,
+    #[serde(default)]
+    pub deduction_days_cents: i64,
+    #[serde(default)]
+    pub day_deductions: Vec<DayDeductionRow>,
     pub bonus_cents: i64,
     pub fine_cents: i64,
-    /// What the person earned this month (base − deductions + overtime + bonus − fines, never below 0).
+    /// Everything added before any deduction: base + overtime + extra days + bonuses.
+    #[serde(default)]
+    pub gross_cents: i64,
+    /// Everything deducted: late + absence + early + deduction days + fines.
+    #[serde(default)]
+    pub total_deductions_cents: i64,
+    /// What the person earned this month (gross − deductions, never below 0).
     pub earned_cents: i64,
     pub advance_repaid_cents: i64,
     /// What is handed over: earned minus the advance instalments.
@@ -764,6 +1250,22 @@ pub struct Payslip {
     pub warnings: Vec<String>,
     pub approved_at: Option<String>,
     pub paid_at: Option<String>,
+    /// NOT_REQUIRED | PENDING | APPROVED: whether this month's attendance is approved (see `attendance_state`).
+    #[serde(default = "default_attendance_state")]
+    pub attendance_status: String,
+}
+
+fn default_attendance_state() -> String {
+    "NOT_REQUIRED".to_string()
+}
+
+impl Payslip {
+    /// Works out `gross_cents` and `total_deductions_cents` from the components (also for a payslip stored before
+    /// those two existed, so every payslip shows every component and both totals).
+    pub fn fill_totals(&mut self) {
+        self.gross_cents = self.base_cents + self.overtime_pay_cents + self.extra_day_pay_cents + self.bonus_cents;
+        self.total_deductions_cents = self.late_deduction_cents + self.absence_deduction_cents + self.early_deduction_cents + self.deduction_days_cents + self.fine_cents;
+    }
 }
 
 fn muldiv(a: i64, b: i64, c: i64) -> i64 {
@@ -848,7 +1350,26 @@ pub fn compute_draft(conn: &Connection, tenant_id: &str, user_id: &str, month: &
         .iter()
         .filter_map(|(at, dir)| DateTime::parse_from_rfc3339(at).ok().map(|t| (t.naive_utc() + tz, dir == "IN")))
         .collect();
-    let intervals = pair_punches(&punches);
+    let mut intervals = pair_punches(&punches);
+
+    // Days corrected by hand in the attendance review replace what the punches say for that day.
+    let overrides = list_day_overrides(conn, user_id, month)?;
+    for o in &overrides {
+        let Some(od) = parse_date(&o.day) else { continue };
+        intervals.retain(|iv| iv.start.date() != od);
+        if o.absent {
+            continue;
+        }
+        let Some(start_t) = o.in_time.as_deref().and_then(crate::attendance::parse_hhmm) else { continue };
+        let start = NaiveDateTime::new(od, start_t);
+        let end = o.out_time.as_deref().and_then(crate::attendance::parse_hhmm).map(|t| {
+            let e = NaiveDateTime::new(od, t);
+            if e > start { e } else { e + Duration::days(1) }
+        });
+        intervals.push(Interval { start, end });
+    }
+    let corrected_days: std::collections::BTreeSet<NaiveDate> = overrides.iter().filter_map(|o| parse_date(&o.day)).collect();
+    let holidays: std::collections::BTreeSet<NaiveDate> = settings.holidays.iter().filter_map(|h| parse_date(h)).collect();
 
     // Group the intervals by the local day they started on.
     let mut by_day: BTreeMap<NaiveDate, Vec<&Interval>> = BTreeMap::new();
@@ -876,9 +1397,9 @@ pub fn compute_draft(conn: &Connection, tenant_id: &str, user_id: &str, month: &
     let emp_start = pay.start_date.as_deref().and_then(parse_date);
     let emp_end = pay.end_date.as_deref().and_then(parse_date);
     let in_employment = |d: NaiveDate| emp_start.map_or(true, |s| d >= s) && emp_end.map_or(true, |e| d <= e);
-    let is_off_day = |d: NaiveDate| settings.weekly_off_days.contains(&(d.weekday().num_days_from_sunday() as u8));
+    let is_off_day = |d: NaiveDate| holidays.contains(&d) || settings.weekly_off_days.contains(&(d.weekday().num_days_from_sunday() as u8));
 
-    let any_punch_in_month = by_day.keys().any(|d| *d >= first && *d <= last);
+    let any_punch_in_month = by_day.keys().any(|d| *d >= first && *d <= last) || corrected_days.iter().any(|d| *d >= first && *d <= last);
     let tracked = pay.track_attendance;
     if tracked && !any_punch_in_month && as_of > first {
         warnings.push("لا توجد أي بصمة لهذا الشهر، لذلك لا تُحسب الغيابات. سجّل الحضور أو أوقف «احتساب الحضور» لهذا الموظف.".into());
@@ -899,6 +1420,8 @@ pub fn compute_draft(conn: &Connection, tenant_id: &str, user_id: &str, month: &
     let (mut absent_days, mut early_total, mut overtime_total, mut paid_leave_days) = (0i64, 0i64, 0i64, 0i64);
     let (mut worked_total, mut present_scheduled_days, mut scheduled_days, mut employed_scheduled_days) = (0i64, 0i64, 0i64, 0i64);
     let mut missing_out_days = 0i64;
+    let extra_day_pay_on = settings.extra_day_rule == "DAY_PAY";
+    let (mut extra_days, mut extra_minutes) = (0i64, 0i64);
 
     let mut day = first;
     while day <= last {
@@ -914,7 +1437,7 @@ pub fn compute_draft(conn: &Connection, tenant_id: &str, user_id: &str, month: &
         let has_leave = leave.contains_key(&day);
         let note = leave.get(&day).cloned().flatten();
         let finished = day < as_of;
-        let mut line = DayLine { date: day.format("%Y-%m-%d").to_string(), status: "OFF".into(), first_in: None, last_out: None, worked_minutes: 0, late_minutes: 0, early_minutes: 0, overtime_minutes: 0, note };
+        let mut line = DayLine { date: day.format("%Y-%m-%d").to_string(), status: "OFF".into(), first_in: None, last_out: None, worked_minutes: 0, late_minutes: 0, early_minutes: 0, overtime_minutes: 0, note, holiday: holidays.contains(&day), corrected: corrected_days.contains(&day) };
 
         if !employed {
             // not employed that day: nothing
@@ -933,9 +1456,15 @@ pub fn compute_draft(conn: &Connection, tenant_id: &str, user_id: &str, month: &
             }
 
             if !scheduled {
-                // Worked on a weekly day off: the whole time is extra.
+                // Worked on a weekly day off or a holiday: the whole time is extra, paid either as an extra day
+                // (when the owner chose that) or as overtime, never both.
                 line.status = "OFF_WORKED".into();
-                if tracked && settings.overtime_rule == "PER_HOUR" {
+                if tracked && extra_day_pay_on {
+                    if worked > 0 {
+                        extra_days += 1;
+                        extra_minutes += worked;
+                    }
+                } else if tracked && settings.overtime_rule == "PER_HOUR" {
                     line.overtime_minutes = worked;
                     overtime_total += worked;
                 }
@@ -970,14 +1499,18 @@ pub fn compute_draft(conn: &Connection, tenant_id: &str, user_id: &str, month: &
                             _ => 0,
                         };
                     }
-                    if early > 0 && settings.early_rule == "PER_MINUTE" {
+                    if early > 0 {
                         line.early_minutes = early;
-                        early_total += early;
+                        if settings.early_rule == "PER_MINUTE" {
+                            early_total += early;
+                        }
                     }
                 }
-                if tracked && overtime > 0 && settings.overtime_rule == "PER_HOUR" {
+                if tracked && overtime > 0 {
                     line.overtime_minutes = overtime;
-                    overtime_total += overtime;
+                    if settings.overtime_rule == "PER_HOUR" {
+                        overtime_total += overtime;
+                    }
                 }
             }
         } else if has_leave && scheduled {
@@ -1043,11 +1576,29 @@ pub fn compute_draft(conn: &Connection, tenant_id: &str, user_id: &str, month: &
         0
     };
 
+    // Extra days (worked on a day off or a holiday). A monthly or daily person's base never includes those days, so
+    // each is paid at the owner's multiplier of a day's pay; an hourly person's base already paid the hours, so only
+    // the extra share is added (as overtime does).
+    let extra_day_pay = if !extra_day_pay_on {
+        0
+    } else if pay.pay_type == "HOURLY" {
+        minute_pay(extra_minutes, (settings.holiday_multiplier_pct - 100).max(0))
+    } else {
+        muldiv(day_pay * extra_days, settings.holiday_multiplier_pct, 100)
+    };
+
     let adjustments = list_adjustments(conn, user_id, month)?;
     let bonus: i64 = adjustments.iter().filter(|a| a.kind == "BONUS").map(|a| a.amount_cents).sum();
     let fine: i64 = adjustments.iter().filter(|a| a.kind == "FINE").map(|a| a.amount_cents).sum();
 
-    let raw_earned = base - late_ded - absence_ded - early_ded + overtime_pay + bonus - fine;
+    // Days the owner deducted by hand, on top of (and separate from) any absence.
+    let day_deductions = list_day_deductions(conn, user_id, month)?;
+    let deduction_days_x100: i64 = day_deductions.iter().map(|d| d.days_x100).sum();
+    let deduction_days_cents = muldiv(day_pay, deduction_days_x100, 100);
+
+    let gross = base + overtime_pay + extra_day_pay + bonus;
+    let total_deductions = late_ded + absence_ded + early_ded + deduction_days_cents + fine;
+    let raw_earned = gross - total_deductions;
     if raw_earned < 0 {
         warnings.push("الخصومات والغرامات أكبر من الراتب، فصار المستحق صفراً.".into());
     }
@@ -1068,7 +1619,13 @@ pub fn compute_draft(conn: &Connection, tenant_id: &str, user_id: &str, month: &
     }
     let advance_repaid: i64 = repayments.iter().map(|(_, a)| a).sum();
 
-    Ok(Payslip {
+    let required = settings.require_attendance_approval;
+    let attendance_status = attendance_state(conn, user_id, month, required)?;
+    if attendance_status == "PENDING" {
+        warnings.push("حضور هذا الشهر لم يُعتمد بعد. اعتمده من «مراجعة الحضور» قبل اعتماد الراتب.".into());
+    }
+
+    let mut payslip = Payslip {
         id: None,
         user_id: user_id.to_string(),
         user_name: name,
@@ -1088,8 +1645,16 @@ pub fn compute_draft(conn: &Connection, tenant_id: &str, user_id: &str, month: &
         overtime_minutes: overtime_total,
         overtime_pay_cents: overtime_pay,
         paid_leave_days,
+        extra_days,
+        extra_day_pay_cents: extra_day_pay,
+        extra_day_multiplier_pct: settings.holiday_multiplier_pct,
+        deduction_days_x100,
+        deduction_days_cents,
+        day_deductions,
         bonus_cents: bonus,
         fine_cents: fine,
+        gross_cents: gross,
+        total_deductions_cents: total_deductions,
         earned_cents: earned,
         advance_repaid_cents: advance_repaid,
         net_cents: earned - advance_repaid,
@@ -1099,7 +1664,10 @@ pub fn compute_draft(conn: &Connection, tenant_id: &str, user_id: &str, month: &
         warnings,
         approved_at: None,
         paid_at: None,
-    })
+        attendance_status,
+    };
+    payslip.fill_totals();
+    Ok(payslip)
 }
 
 /// The stored payslip when the month is approved or paid, else a fresh draft.
@@ -1118,6 +1686,7 @@ pub fn payslip(conn: &Connection, tenant_id: &str, user_id: &str, month: &str, t
         p.status = status;
         p.approved_at = Some(approved_at);
         p.paid_at = paid_at;
+        p.fill_totals();
         return Ok(p);
     }
     compute_draft(conn, tenant_id, user_id, month, tz_offset_minutes, as_of)
@@ -1134,6 +1703,9 @@ pub fn approve(conn: &Connection, tenant_id: &str, branch_id: Option<&str>, user
         return Err("لا يمكن اعتماد راتب شهر لم ينتهِ بعد. انتظر آخر يوم من الشهر".into());
     }
     let mut p = compute_draft(conn, tenant_id, user_id, month, tz_offset_minutes, as_of)?;
+    if p.attendance_status == "PENDING" {
+        return Err("اعتمد حضور هذا الشهر أولاً من «مراجعة الحضور» ثم اعتمد الراتب".into());
+    }
     let id = uuid::Uuid::now_v7().to_string();
     let now = Utc::now().to_rfc3339();
     p.status = "APPROVED".into();
@@ -1162,10 +1734,20 @@ pub fn pay(conn: &Connection, tenant_id: &str, payslip_id: &str, pay_date: Naive
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    let Some((status, user_id, branch_id, month, earned, _details)) = row else { return Err("كشف الراتب غير موجود".into()) };
+    let Some((status, user_id, branch_id, month, earned, details)) = row else { return Err("كشف الراتب غير موجود".into()) };
     if status == "PAID" {
         return Err("هذا الراتب مصروف بالفعل".into());
     }
+    // An advance that was already recorded as an expense when it was handed over (category «سلفة موظف») is not an
+    // expense a second time when it is taken back off the salary: only the rest of what was earned is.
+    let stored: Payslip = serde_json::from_str(&details).map_err(|e| e.to_string())?;
+    let mut already_expensed = 0;
+    for (advance_id, amount) in &stored.advance_repayments {
+        if advance_has_cost(conn, advance_id)? {
+            already_expensed += amount;
+        }
+    }
+    let earned = (earned - already_expensed).max(0);
     let name = staff_name(conn, &user_id)?;
     let now = Utc::now().to_rfc3339();
     let expense_id = if earned > 0 {
@@ -1223,6 +1805,11 @@ pub struct MonthRow {
     pub net_cents: i64,
     pub warnings: usize,
     pub payslip_id: Option<String>,
+    pub gross_cents: i64,
+    pub extra_day_pay_cents: i64,
+    pub deduction_days_cents: i64,
+    /// NOT_REQUIRED | PENDING | APPROVED (attendance approval).
+    pub attendance_status: String,
 }
 
 /// Everyone's month at a glance.
@@ -1231,7 +1818,7 @@ pub fn month_overview(conn: &Connection, tenant_id: &str, scope: &PayrollScope, 
     let mut out = Vec::new();
     for e in list_employees(conn, tenant_id, scope)? {
         if e.pay.is_none() {
-            out.push(MonthRow { user_id: e.user_id, name: e.name, role: e.role, pay_set: false, pay_type: None, status: "NO_PAY".into(), base_cents: 0, deductions_cents: 0, additions_cents: 0, earned_cents: 0, advance_repaid_cents: 0, net_cents: 0, warnings: 0, payslip_id: None });
+            out.push(MonthRow { user_id: e.user_id, name: e.name, role: e.role, pay_set: false, pay_type: None, status: "NO_PAY".into(), base_cents: 0, deductions_cents: 0, additions_cents: 0, earned_cents: 0, advance_repaid_cents: 0, net_cents: 0, warnings: 0, payslip_id: None, gross_cents: 0, extra_day_pay_cents: 0, deduction_days_cents: 0, attendance_status: "NOT_REQUIRED".into() });
             continue;
         }
         let p = payslip(conn, tenant_id, &e.user_id, month, tz_offset_minutes, as_of)?;
@@ -1243,13 +1830,17 @@ pub fn month_overview(conn: &Connection, tenant_id: &str, scope: &PayrollScope, 
             pay_type: Some(p.pay_type.clone()),
             status: p.status.clone(),
             base_cents: p.base_cents,
-            deductions_cents: p.late_deduction_cents + p.absence_deduction_cents + p.early_deduction_cents + p.fine_cents,
-            additions_cents: p.overtime_pay_cents + p.bonus_cents,
+            deductions_cents: p.total_deductions_cents,
+            additions_cents: p.gross_cents - p.base_cents,
             earned_cents: p.earned_cents,
             advance_repaid_cents: p.advance_repaid_cents,
             net_cents: p.net_cents,
             warnings: p.warnings.len(),
             payslip_id: p.id.clone(),
+            gross_cents: p.gross_cents,
+            extra_day_pay_cents: p.extra_day_pay_cents,
+            deduction_days_cents: p.deduction_days_cents,
+            attendance_status: p.attendance_status.clone(),
         });
     }
     Ok(out)
@@ -1263,7 +1854,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE staff (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, branch_id TEXT, role TEXT NOT NULL, role_rank INTEGER NOT NULL DEFAULT 1, name TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1, deleted_at TEXT);
-             CREATE TABLE operational_costs (id TEXT PRIMARY KEY, tenant_id TEXT, branch_id TEXT, category TEXT NOT NULL, amount_cents INTEGER NOT NULL, date TEXT NOT NULL, notes TEXT, user_id TEXT NOT NULL, reference_type TEXT, reference_id TEXT, last_modified TEXT, sync_status TEXT);",
+             CREATE TABLE operational_costs (id TEXT PRIMARY KEY, tenant_id TEXT, branch_id TEXT, category TEXT NOT NULL, amount_cents INTEGER NOT NULL, date TEXT NOT NULL, notes TEXT, user_id TEXT NOT NULL, reference_type TEXT, reference_id TEXT, last_modified TEXT, sync_status TEXT, payment_date TEXT, payee TEXT, payment_method TEXT, reference_no TEXT, cost_centre TEXT, attachment_path TEXT, accrual_period TEXT);",
         )
         .unwrap();
         conn.execute_batch(crate::attendance::SCHEMA_SQL).unwrap();
@@ -1573,5 +2164,328 @@ mod tests {
         assert!(s.validate().is_err());
         let bad = EmployeePay { user_id: "u".into(), pay_type: "MONTHLY".into(), rate_cents: 0, shift_start: None, shift_minutes: None, start_date: None, end_date: None, track_attendance: true };
         assert!(bad.validate().is_err());
+    }
+
+    // ---- holiday / extra-day pay, deduction days, gross and net -------------------------------------------------
+
+    fn extra_rules(pct: i64) -> PayrollSettings {
+        PayrollSettings { configured: true, extra_day_rule: "DAY_PAY".into(), holiday_multiplier_pct: pct, ..PayrollSettings::default() }
+    }
+
+    #[test]
+    fn a_day_worked_on_a_holiday_or_a_day_off_is_an_extra_day_paid_at_the_owners_multiplier() {
+        let conn = db();
+        monthly(&conn, 780_000); // one day = 30,000
+        // The 10th and 11th are holidays: the 10th is worked, nobody comes on the 11th. The Friday the 6th is worked too.
+        full_attendance(&conn, &["2026-11-11"]);
+        punch(&conn, "2026-11-06", "10:00", Some("14:00"));
+        let mut s = PayrollSettings { absence_rule: "DAY_PAY".into(), overtime_rule: "PER_HOUR".into(), holidays: vec!["2026-11-10".into(), "2026-11-11".into()], ..extra_rules(200) };
+        save_settings(&conn, "t1", &s).unwrap();
+        let p = compute_draft(&conn, "t1", "u1", MONTH, 0, after_month()).unwrap();
+        // A holiday nobody works is not an absence, and it does not shrink a full month's salary.
+        assert_eq!((p.absent_days, p.absence_deduction_cents, p.base_cents), (0, 0, 780_000));
+        assert_eq!((p.extra_days, p.extra_day_pay_cents, p.extra_day_multiplier_pct), (2, 120_000, 200), "2 days x 30,000 x 200%");
+        assert_eq!(p.overtime_pay_cents, 0, "an extra day is not also overtime");
+        assert_eq!(p.gross_cents, 900_000);
+        assert_eq!(p.earned_cents, 900_000);
+        let holiday = p.days.iter().find(|d| d.date == "2026-11-10").unwrap();
+        assert_eq!((holiday.status.as_str(), holiday.holiday), ("OFF_WORKED", true));
+        assert_eq!(p.days.iter().find(|d| d.date == "2026-11-11").unwrap().status, "OFF");
+
+        // The owner's default is no extra-day pay: the same two days are overtime, exactly as before.
+        s.extra_day_rule = "NONE".into();
+        save_settings(&conn, "t1", &s).unwrap();
+        let p = compute_draft(&conn, "t1", "u1", MONTH, 0, after_month()).unwrap();
+        assert_eq!((p.extra_days, p.extra_day_pay_cents), (0, 0));
+        assert_eq!(p.overtime_minutes, 480 + 240, "the holiday's 8 hours and the Friday's 4");
+        assert!(p.overtime_pay_cents > 0);
+    }
+
+    #[test]
+    fn an_hourly_person_gets_only_the_extra_share_on_top_of_the_hours_already_paid() {
+        let conn = db();
+        save_employee_pay(&conn, "t1", Some("b1"), &EmployeePay { user_id: "u1".into(), pay_type: "HOURLY".into(), rate_cents: 4_000, shift_start: None, shift_minutes: None, start_date: None, end_date: None, track_attendance: true }).unwrap();
+        full_attendance(&conn, &[]); // 26 working days, 8 hours each
+        punch(&conn, "2026-11-06", "09:00", Some("17:00")); // a Friday: 8 hours
+        save_settings(&conn, "t1", &extra_rules(150)).unwrap();
+        let p = compute_draft(&conn, "t1", "u1", MONTH, 0, after_month()).unwrap();
+        assert_eq!(p.base_cents, 4_000 * 8 * 27, "every hour worked, the Friday's included");
+        assert_eq!(p.extra_day_pay_cents, 16_000, "the half that the plain hours did not pay: 8h x 4,000 x 50%");
+    }
+
+    #[test]
+    fn deduction_days_are_their_own_line_apart_from_absence() {
+        let conn = db();
+        monthly(&conn, 780_000);
+        full_attendance(&conn, &["2026-11-02"]); // one absence
+        save_settings(&conn, "t1", &PayrollSettings { configured: true, absence_rule: "DAY_PAY".into(), ..PayrollSettings::default() }).unwrap();
+        add_day_deduction(&conn, "t1", "u1", MONTH, 150, "تجاوز تعليمات", "boss").unwrap(); // a day and a half
+        assert!(add_day_deduction(&conn, "t1", "u1", MONTH, 0, "x", "boss").is_err());
+        assert!(add_day_deduction(&conn, "t1", "u1", MONTH, 100, "  ", "boss").is_err(), "a reason is required");
+        let p = compute_draft(&conn, "t1", "u1", MONTH, 0, after_month()).unwrap();
+        assert_eq!((p.absent_days, p.absence_deduction_cents), (1, 30_000));
+        assert_eq!((p.deduction_days_x100, p.deduction_days_cents), (150, 45_000));
+        assert_eq!(p.day_deductions.len(), 1);
+        assert_eq!(p.total_deductions_cents, 75_000);
+        assert_eq!(p.earned_cents, 780_000 - 75_000);
+        // The register row shows it too.
+        let owner = PayrollScope::for_actor(crate::security::Role::Owner, None, "NONE").unwrap();
+        let row = month_overview(&conn, "t1", &owner, MONTH, 0, after_month()).unwrap().into_iter().find(|r| r.user_id == "u1").unwrap();
+        assert_eq!((row.deduction_days_cents, row.deductions_cents), (45_000, 75_000));
+        // Frozen with the payslip, and taken off the draft only while it is still a draft.
+        let a = approve(&conn, "t1", Some("b1"), "u1", MONTH, 0, after_month(), "boss").unwrap();
+        assert_eq!(a.deduction_days_cents, 45_000);
+        assert!(add_day_deduction(&conn, "t1", "u1", MONTH, 100, "x", "boss").is_err());
+        assert!(delete_day_deduction(&conn, "t1", &a.day_deductions[0].id).is_err());
+        reopen(&conn, "t1", a.id.as_deref().unwrap()).unwrap();
+        delete_day_deduction(&conn, "t1", &a.day_deductions[0].id).unwrap();
+        assert_eq!(compute_draft(&conn, "t1", "u1", MONTH, 0, after_month()).unwrap().deduction_days_cents, 0);
+    }
+
+    #[test]
+    fn gross_deductions_earned_and_net_always_add_up() {
+        let conn = db();
+        monthly(&conn, 780_000);
+        full_attendance(&conn, &["2026-11-02", "2026-11-03"]);
+        punch(&conn, "2026-11-03", "09:30", Some("19:00")); // late 30 and 2 hours past the shift
+        punch(&conn, "2026-11-13", "10:00", Some("18:00")); // a Friday: an extra day
+        let s = PayrollSettings {
+            absence_rule: "DAY_PAY".into(),
+            late_rule: "PER_MINUTE".into(),
+            overtime_rule: "PER_HOUR".into(),
+            ..extra_rules(150)
+        };
+        save_settings(&conn, "t1", &s).unwrap();
+        add_adjustment(&conn, "t1", "u1", MONTH, "BONUS", 20_000, "ممتاز", "boss").unwrap();
+        add_adjustment(&conn, "t1", "u1", MONTH, "FINE", 5_000, "كسر", "boss").unwrap();
+        add_day_deduction(&conn, "t1", "u1", MONTH, 50, "نصف يوم", "boss").unwrap();
+        add_advance(&conn, "t1", Some("b1"), "u1", 100_000, 40_000, "2026-10-20", None, "boss").unwrap();
+        let p = compute_draft(&conn, "t1", "u1", MONTH, 0, after_month()).unwrap();
+        assert_eq!(p.gross_cents, p.base_cents + p.overtime_pay_cents + p.extra_day_pay_cents + p.bonus_cents);
+        assert_eq!(p.total_deductions_cents, p.late_deduction_cents + p.absence_deduction_cents + p.early_deduction_cents + p.deduction_days_cents + p.fine_cents);
+        assert_eq!(p.earned_cents, (p.gross_cents - p.total_deductions_cents).max(0));
+        assert_eq!(p.net_cents, p.earned_cents - p.advance_repaid_cents);
+        assert_eq!(p.advance_repaid_cents, 40_000);
+        assert!(p.extra_day_pay_cents > 0 && p.overtime_pay_cents > 0 && p.deduction_days_cents > 0 && p.late_deduction_cents > 0 && p.absence_deduction_cents > 0);
+    }
+
+    #[test]
+    fn a_payslip_stored_before_these_lines_existed_still_opens_and_shows_gross() {
+        let conn = db();
+        monthly(&conn, 780_000);
+        full_attendance(&conn, &[]);
+        add_adjustment(&conn, "t1", "u1", MONTH, "BONUS", 10_000, "x", "boss").unwrap();
+        let a = approve(&conn, "t1", Some("b1"), "u1", MONTH, 0, after_month(), "boss").unwrap();
+        // Strip everything the new version added, as an old install's stored JSON would look.
+        let mut v: serde_json::Value = serde_json::to_value(&a).unwrap();
+        for k in ["extra_days", "extra_day_pay_cents", "extra_day_multiplier_pct", "deduction_days_x100", "deduction_days_cents", "day_deductions", "gross_cents", "total_deductions_cents", "attendance_status"] {
+            v.as_object_mut().unwrap().remove(k);
+        }
+        for d in v["days"].as_array_mut().unwrap() {
+            d.as_object_mut().unwrap().remove("holiday");
+            d.as_object_mut().unwrap().remove("corrected");
+        }
+        conn.execute("UPDATE payroll_payslips SET details = ?1", params![v.to_string()]).unwrap();
+        let again = payslip(&conn, "t1", "u1", MONTH, 0, after_month()).unwrap();
+        assert_eq!((again.gross_cents, again.total_deductions_cents, again.earned_cents), (790_000, 0, 790_000));
+        assert_eq!(again.attendance_status, "NOT_REQUIRED");
+    }
+
+    // ---- attendance review and approval -------------------------------------------------------------------------
+
+    fn require_approval(conn: &Connection) {
+        save_settings(conn, "t1", &PayrollSettings { configured: true, absence_rule: "DAY_PAY".into(), require_attendance_approval: true, ..PayrollSettings::default() }).unwrap();
+    }
+
+    #[test]
+    fn by_default_no_attendance_approval_is_needed_and_nothing_changes() {
+        let conn = db();
+        monthly(&conn, 780_000);
+        full_attendance(&conn, &[]);
+        assert!(!PayrollSettings::default().require_attendance_approval);
+        let p = compute_draft(&conn, "t1", "u1", MONTH, 0, after_month()).unwrap();
+        assert_eq!(p.attendance_status, "NOT_REQUIRED");
+        assert!(p.warnings.is_empty());
+        approve(&conn, "t1", Some("b1"), "u1", MONTH, 0, after_month(), "boss").unwrap();
+    }
+
+    #[test]
+    fn payroll_waits_for_the_attendance_approval_when_the_owner_turns_it_on() {
+        let conn = db();
+        monthly(&conn, 780_000);
+        full_attendance(&conn, &["2026-11-02"]);
+        require_approval(&conn);
+        let p = compute_draft(&conn, "t1", "u1", MONTH, 0, after_month()).unwrap();
+        assert_eq!(p.attendance_status, "PENDING");
+        assert!(p.warnings.iter().any(|w| w.contains("اعتماد")), "{:?}", p.warnings);
+        assert_eq!(p.absent_days, 1);
+        let err = approve(&conn, "t1", Some("b1"), "u1", MONTH, 0, after_month(), "boss").unwrap_err();
+        assert!(err.contains("اعتمد حضور"), "{err}");
+
+        // The review shows the month; the manager corrects the 2nd (he came, the fingerprint failed).
+        let r = attendance_review(&conn, "t1", "u1", MONTH, 0, after_month()).unwrap();
+        assert_eq!((r.required, r.approved, r.absent_days, r.present_days), (true, false, 1, 25));
+        set_day_override(&conn, "t1", "u1", "2026-11-02", false, Some("09:00"), Some("17:00"), "البصمة معطلة", "mgr").unwrap();
+        let r = attendance_review(&conn, "t1", "u1", MONTH, 0, after_month()).unwrap();
+        assert_eq!((r.absent_days, r.present_days, r.overrides.len()), (0, 26, 1));
+        let day = r.days.iter().find(|d| d.date == "2026-11-02").unwrap();
+        assert_eq!((day.status.as_str(), day.corrected, day.first_in.as_deref(), day.last_out.as_deref()), ("PRESENT", true, Some("09:00"), Some("17:00")));
+        // A day can also be forced absent, and a correction cleared.
+        set_day_override(&conn, "t1", "u1", "2026-11-04", true, None, None, "لم يحضر", "mgr").unwrap();
+        assert_eq!(attendance_review(&conn, "t1", "u1", MONTH, 0, after_month()).unwrap().absent_days, 1);
+        clear_day_override(&conn, "u1", "2026-11-04").unwrap();
+        assert!(set_day_override(&conn, "t1", "u1", "2026-11-02", false, Some("9"), None, "x", "mgr").is_err(), "a bad time is refused");
+        assert!(set_day_override(&conn, "t1", "u1", "2026-11-02", false, Some("09:00"), None, "  ", "mgr").is_err(), "a reason is required");
+
+        // Not before the month is over.
+        assert!(approve_attendance(&conn, "t1", "u1", MONTH, 0, d("2026-11-15"), "mgr").is_err());
+        approve_attendance(&conn, "t1", "u1", MONTH, 0, after_month(), "mgr").unwrap();
+        assert!(approve_attendance(&conn, "t1", "u1", MONTH, 0, after_month(), "mgr").is_err(), "once");
+        let p = compute_draft(&conn, "t1", "u1", MONTH, 0, after_month()).unwrap();
+        assert_eq!(p.attendance_status, "APPROVED");
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+        assert_eq!((p.absent_days, p.absence_deduction_cents), (0, 0));
+
+        // Approved attendance does not move: no new corrections, excuses or punches until it is taken back.
+        for r in [
+            set_day_override(&conn, "t1", "u1", "2026-11-05", true, None, None, "x", "mgr"),
+            clear_day_override(&conn, "u1", "2026-11-02"),
+            mark_paid_leave(&conn, "t1", "u1", "2026-11-05", None, "mgr"),
+            unmark_paid_leave(&conn, "u1", "2026-11-05"),
+        ] {
+            assert!(r.unwrap_err().contains("معتمد"));
+        }
+        let now = DateTime::parse_from_rfc3339("2026-12-02T10:00:00+00:00").unwrap().with_timezone(&Utc);
+        let at = DateTime::parse_from_rfc3339("2026-11-05T17:00:00+00:00").unwrap().with_timezone(&Utc);
+        assert!(add_manual_punch(&conn, "t1", "b1", "u1", at, "OUT", "mgr", now).is_err());
+
+        // Now the payslip can be approved, and the attendance approval cannot be taken back under it.
+        let a = approve(&conn, "t1", Some("b1"), "u1", MONTH, 0, after_month(), "boss").unwrap();
+        assert_eq!(a.attendance_status, "APPROVED");
+        assert!(unapprove_attendance(&conn, "u1", MONTH).is_err());
+        reopen(&conn, "t1", a.id.as_deref().unwrap()).unwrap();
+        unapprove_attendance(&conn, "u1", MONTH).unwrap();
+        assert_eq!(compute_draft(&conn, "t1", "u1", MONTH, 0, after_month()).unwrap().attendance_status, "PENDING");
+        set_day_override(&conn, "t1", "u1", "2026-11-05", true, None, None, "x", "mgr").unwrap();
+    }
+
+    #[test]
+    fn the_register_row_says_where_each_persons_attendance_stands() {
+        let conn = db();
+        monthly(&conn, 780_000);
+        full_attendance(&conn, &[]);
+        require_approval(&conn);
+        let owner = PayrollScope::for_actor(crate::security::Role::Owner, None, "NONE").unwrap();
+        let status = |c: &Connection| month_overview(c, "t1", &owner, MONTH, 0, after_month()).unwrap().into_iter().find(|r| r.user_id == "u1").unwrap().attendance_status;
+        assert_eq!(status(&conn), "PENDING");
+        approve_attendance(&conn, "t1", "u1", MONTH, 0, after_month(), "boss").unwrap();
+        assert_eq!(status(&conn), "APPROVED");
+    }
+
+    // ---- advances once, from either side ------------------------------------------------------------------------
+
+    fn costs(conn: &Connection, category: &str) -> Vec<(i64, Option<String>)> {
+        let mut stmt = conn.prepare("SELECT amount_cents, reference_id FROM operational_costs WHERE category = ?1 ORDER BY amount_cents").unwrap();
+        stmt.query_map(params![category], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|x| x.unwrap()).collect()
+    }
+
+    #[test]
+    fn an_advance_entered_in_payroll_records_its_expense_once() {
+        let conn = db();
+        let (advance, cost) = add_advance_with_cost(&conn, "t1", "b1", "u1", 60_000, 30_000, "2026-11-03", Some("ظرف طارئ"), "boss", None).unwrap();
+        assert!(cost.is_some());
+        let rows = costs(&conn, crate::finance::ADVANCE_CATEGORY);
+        assert_eq!(rows, vec![(60_000, Some(advance.clone()))]);
+        let (reference_type, payee, date): (String, String, String) = conn
+            .query_row("SELECT reference_type, payee, date FROM operational_costs WHERE reference_id = ?1", params![advance], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap();
+        assert_eq!((reference_type.as_str(), payee.as_str(), date.as_str()), ("payroll_advance", "Sami", "2026-11-03"));
+        // Asking again, from either side, never makes a second expense.
+        assert_eq!(ensure_advance_cost(&conn, "t1", "b1", &advance, "boss", None).unwrap(), None);
+        assert_eq!(costs(&conn, crate::finance::ADVANCE_CATEGORY).len(), 1);
+        // Cancelling the advance (nothing was taken back) takes its expense with it.
+        cancel_advance(&conn, "t1", &advance).unwrap();
+        assert!(costs(&conn, crate::finance::ADVANCE_CATEGORY).is_empty());
+    }
+
+    #[test]
+    fn an_advance_paid_in_finance_creates_the_payroll_advance_once() {
+        let conn = db();
+        let fields = crate::finance::CostFields { category: crate::finance::ADVANCE_CATEGORY.into(), amount_cents: 50_000, date: "2026-11-04".into(), payment_method: Some("cash".into()), notes: Some("سلفة نقدية".into()), ..Default::default() };
+        let (advance, cost) = add_advance_with_cost(&conn, "t1", "b1", "u1", 50_000, 25_000, "2026-11-04", Some("سلفة نقدية"), "boss", Some(fields)).unwrap();
+        assert!(cost.is_some());
+        let adv = list_advances(&conn, "t1", Some("u1"), false).unwrap();
+        assert_eq!(adv.len(), 1);
+        assert_eq!((adv[0].id.as_str(), adv[0].amount_cents, adv[0].instalment_cents), (advance.as_str(), 50_000, 25_000));
+        let notes: String = conn.query_row("SELECT notes FROM operational_costs WHERE reference_id = ?1", params![advance], |r| r.get(0)).unwrap();
+        assert_eq!(notes, "سلفة نقدية", "what the Finance form typed is kept");
+        // The payroll side asking for the same advance's expense finds it there already.
+        assert_eq!(ensure_advance_cost(&conn, "t1", "b1", &advance, "boss", None).unwrap(), None);
+        assert_eq!(costs(&conn, crate::finance::ADVANCE_CATEGORY).len(), 1);
+        // The instalment is then taken off the next payslip like any advance.
+        monthly(&conn, 100_000);
+        full_attendance(&conn, &[]);
+        let p = compute_draft(&conn, "t1", "u1", MONTH, 0, after_month()).unwrap();
+        assert_eq!((p.advance_repaid_cents, p.net_cents), (25_000, 75_000));
+    }
+
+    #[test]
+    fn the_salary_expense_leaves_out_what_was_already_an_advance_expense() {
+        let conn = db();
+        monthly(&conn, 100_000);
+        full_attendance(&conn, &[]);
+        let (advance, _) = add_advance_with_cost(&conn, "t1", "b1", "u1", 60_000, 30_000, "2026-10-20", None, "boss", None).unwrap();
+        // An older advance, entered before this existed: no expense of its own, so the salary expense still covers it.
+        let old = add_advance(&conn, "t1", Some("b1"), "u1", 20_000, 10_000, "2026-09-01", None, "boss").unwrap();
+        let a = approve(&conn, "t1", Some("b1"), "u1", MONTH, 0, after_month(), "boss").unwrap();
+        assert_eq!(a.advance_repaid_cents, 40_000, "30,000 of the new advance and 10,000 of the old one");
+        pay(&conn, "t1", a.id.as_deref().unwrap(), d("2026-12-02"), "boss").unwrap();
+        let salary = costs(&conn, "رواتب");
+        assert_eq!(salary.iter().map(|c| c.0).sum::<i64>(), 100_000 - 30_000, "the 30,000 was spent when the advance was handed over");
+        assert_eq!(costs(&conn, crate::finance::ADVANCE_CATEGORY), vec![(60_000, Some(advance.clone()))]);
+        assert!(old != advance);
+    }
+
+    #[test]
+    fn the_workers_statement_shows_each_advance_and_each_instalment_and_what_is_left() {
+        let conn = db();
+        monthly(&conn, 100_000);
+        full_attendance(&conn, &[]);
+        add_advance_with_cost(&conn, "t1", "b1", "u1", 60_000, 30_000, "2025-10-20", Some("ظرف"), "boss", None).unwrap();
+        let before = worker_statement(&conn, "t1", "u1").unwrap();
+        assert_eq!((before.lines.len(), before.owed_cents, before.total_advanced_cents, before.total_repaid_cents), (1, 60_000, 60_000, 0));
+        let a = approve(&conn, "t1", Some("b1"), "u1", MONTH, 0, after_month(), "boss").unwrap();
+        let st = worker_statement(&conn, "t1", "u1").unwrap();
+        assert_eq!(st.lines.iter().map(|l| (l.kind.as_str(), l.amount_cents, l.balance_cents)).collect::<Vec<_>>(), vec![("ADVANCE", 60_000, 60_000), ("REPAYMENT", -30_000, 30_000)]);
+        assert_eq!((st.owed_cents, st.total_repaid_cents), (30_000, 30_000));
+        assert_eq!(st.payslips.len(), 1);
+        assert_eq!((st.payslips[0].advance_repaid_cents, st.payslips[0].net_cents), (30_000, a.net_cents));
+        // Reopening the payslip gives the instalment back, and the statement follows.
+        reopen(&conn, "t1", a.id.as_deref().unwrap()).unwrap();
+        assert_eq!(worker_statement(&conn, "t1", "u1").unwrap().owed_cents, 60_000);
+    }
+
+    #[test]
+    fn the_new_rules_are_saved_validated_and_default_to_no_change() {
+        let conn = db();
+        let d0 = load_settings(&conn, "t1").unwrap();
+        assert_eq!((d0.extra_day_rule.as_str(), d0.holiday_multiplier_pct, d0.holidays.len(), d0.require_attendance_approval), ("NONE", 150, 0, false));
+        let s = PayrollSettings { configured: true, extra_day_rule: "DAY_PAY".into(), holiday_multiplier_pct: 175, holidays: vec!["2026-11-10".into(), "2026-11-10".into(), "2026-10-06".into()], require_attendance_approval: true, ..PayrollSettings::default() };
+        save_settings(&conn, "t1", &s).unwrap();
+        let back = load_settings(&conn, "t1").unwrap();
+        assert_eq!((back.extra_day_rule.as_str(), back.holiday_multiplier_pct, back.require_attendance_approval), ("DAY_PAY", 175, true));
+        assert_eq!(back.holidays, vec!["2026-10-06".to_string(), "2026-11-10".to_string()], "sorted, no repeats");
+        let mut bad = PayrollSettings::default();
+        bad.holidays = vec!["10/11/2026".into()];
+        assert!(bad.validate().is_err());
+        bad.holidays.clear();
+        bad.holiday_multiplier_pct = 50;
+        assert!(bad.validate().is_err());
+        bad.holiday_multiplier_pct = 150;
+        bad.extra_day_rule = "ALWAYS".into();
+        assert!(bad.validate().is_err());
+        // Rules saved by an older screen (without the new keys) still load.
+        let old: PayrollSettings = serde_json::from_str(&serde_json::to_string(&PayrollSettings::default()).unwrap().replace(",\"extra_day_rule\":\"NONE\",\"holiday_multiplier_pct\":150,\"holidays\":[],\"require_attendance_approval\":false", "")).unwrap();
+        assert_eq!(old, PayrollSettings::default());
     }
 }

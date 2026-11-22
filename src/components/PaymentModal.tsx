@@ -17,6 +17,9 @@ interface DebtorRow {
   id: string;
   name: string;
   phone: string;
+  /** The customer this credit account is linked to, if any. */
+  customer_id?: string | null;
+  customer_name?: string | null;
 }
 
 type PaymentMethod = "CASH" | "CARD" | "WALLET" | "CREDIT";
@@ -71,6 +74,8 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
   const [debtorPhone, setDebtorPhone] = useState("");
   const [debtorName, setDebtorName] = useState<string | null>(initialDebtorName ?? null);
   const [debtorId, setDebtorId] = useState<string | null>(initialDebtorId ?? null);
+  // The customer the picked credit account belongs to (linked by phone, never made just by picking).
+  const [customerName, setCustomerName] = useState<string | null>(null);
   const [showNewDebtorForm, setShowNewDebtorForm] = useState(false);
   const [newDebtorName, setNewDebtorName] = useState("");
   // 2026-09-13 audit fix: CARD/WALLET used to be "sufficient" unconditionally
@@ -144,6 +149,22 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
   // 300ms timing this replaced) and filters by phone-prefix client-side, so
   // this stays genuinely "fetch mode" (not pre-loaded into component state)
   // rather than an in-memory filter over a one-time load.
+  // A credit account picked on the pay screen: show its customer, and link it to the customer with the same phone when
+  // it is not linked yet (best effort; the sale never waits on it).
+  const showCustomerOf = useCallback(async (d: { id: string; customer_id?: string | null; customer_name?: string | null }) => {
+    if (d.customer_id) {
+      setCustomerName(d.customer_name ?? null);
+      return;
+    }
+    try {
+      const token = useAuthStore.getState().token;
+      const link = await invoke<{ customer_id: string | null; customer_name: string | null }>("link_debtor_customer_v3", { sessionToken: token, debtorId: d.id, customerId: null, createIfMissing: false });
+      setCustomerName(link.customer_name);
+    } catch {
+      setCustomerName(null);
+    }
+  }, []);
+
   const fetchDebtorSuggestions = useCallback(async (query: string): Promise<DebtorRow[]> => {
     const token = useAuthStore.getState().token;
     const debtors = await invoke<DebtorRow[]>("list_debtors_v3", { sessionToken: token });
@@ -370,12 +391,13 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
                   // of clearing debtorName/debtorId until a fresh match.
                   setDebtorName(null);
                   setDebtorId(null);
+                  setCustomerName(null);
                   setError(null);
                 }}
                 fetchSuggestions={fetchDebtorSuggestions}
                 minChars={3}
                 getKey={(d) => d.id}
-                onSelect={(d) => { setDebtorName(d.name); setDebtorId(d.id); setError(null); setShowNewDebtorForm(false); }}
+                onSelect={(d) => { setDebtorName(d.name); setDebtorId(d.id); setError(null); setShowNewDebtorForm(false); void showCustomerOf(d); }}
                 renderItem={(d) => (
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-ink-900 font-medium">{d.name}</span>
@@ -393,6 +415,11 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
                 <span className="font-arabic text-sm text-accent-text">العميل: {debtorName}</span>
                 <span className="font-mono text-sm text-accent-text font-bold">{fmt(totalCents)}</span>
               </div>
+            )}
+            {debtorName && (
+              <p className="font-arabic text-xs text-ink-500" data-testid="credit-customer">
+                {customerName ? `الزبون المرتبط: ${customerName}` : "غير مرتبط بزبون (يمكن ربطه من صفحة الديون)"}
+              </p>
             )}
             {!debtorName && debtorPhone.trim().length >= 8 && !showNewDebtorForm && (
               <div className="space-y-2">
@@ -434,6 +461,8 @@ export default function PaymentModal({ onClose, onSuccess, initialMethod, initia
                         });
                         setDebtorName(newDebtorName.trim());
                         setDebtorId(id);
+                        // The new credit account also became (or matched) a customer with this phone.
+                        void showCustomerOf({ id });
                         setError(null);
                         setShowNewDebtorForm(false);
                         setNewDebtorName("");
