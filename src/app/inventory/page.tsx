@@ -9,6 +9,7 @@ import { IconPencil, IconTrash, IconClipboardList, IconEye, IconPackageImport, I
 import EmptyState from "../../components/ui/EmptyState";
 import DatePicker from "../../components/ui/DatePicker";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
+import ExcelButton from "../../components/ui/ExcelButton";
 import { openMarketplace, openMarketplaceReorder, MARKETPLACE_ENABLED } from "../../lib/marketplace";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { formatArabicDateTime, formatArabicDate } from "../../lib/dateLocal";
@@ -1186,6 +1187,16 @@ function SuppliersTab() {
         >
           {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
         </button>
+        <ExcelButton
+          filename="الموردون"
+          tables={() => [{
+            title: "الموردون",
+            headers: ["اسم المورد", "الهاتف", "إجمالي المشتريات", "المدفوع", "الرصيد المستحق"],
+            moneyCols: [2, 3, 4],
+            rows: suppliers.map((s) => [s.name, s.phone || "-", s.total_purchases_cents, s.total_paid_cents, s.balance_cents]),
+          }]}
+          className="h-10 px-4 rounded-sm bg-ok-soft text-ok border border-ok-soft text-sm font-bold hover:opacity-90 transition-opacity disabled:opacity-50"
+        />
       </div>
 
       <div className="zc-card overflow-x-auto">
@@ -2215,6 +2226,16 @@ function MovementsTab() {
           >
             {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
           </button>
+        </div>
+        <div className="flex items-end">
+          <ExcelButton
+            filename="حركات-المخزون"
+            tables={() => [{
+              title: "الحركات",
+              headers: ["التاريخ", "المادة", "النوع", "الكمية", "السبب", "المستخدم"],
+              rows: filteredLogs.map((log) => [formatDate(log.created_at), log.ingredient_name, getTypeLabel(log.change_amount, log.reason), log.change_amount, log.reason, log.user_name]),
+            }]}
+          />
         </div>
       </div>
 

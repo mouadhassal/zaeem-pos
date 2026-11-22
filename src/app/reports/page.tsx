@@ -1,5 +1,5 @@
 import { useTerms } from "../../lib/terms";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { businessPeriodStart } from "../../lib/businessDay";
 import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
@@ -20,6 +20,14 @@ import { printableShopName } from "../../lib/shopName";
 import { salesStripRows, type SalesStripData } from "../../lib/ticketLayout";
 import { usePrefsStore } from "../../stores/prefsStore";
 import ReportOptionsForm from "../settings/ReportOptionsForm";
+import ExcelButton from "../../components/ui/ExcelButton";
+import type { ReportTable } from "../../lib/exportExcel";
+import SalesBreakdowns from "./SalesBreakdowns";
+import CustomersReport from "./CustomersReport";
+import KitchenDeliveryReport from "./KitchenDeliveryReport";
+import MenuEngineering from "./MenuEngineering";
+import ActivityLog from "./ActivityLog";
+import type { ReportRange } from "./ReportParts";
 
 interface SalesSummary {
   totalSales: number;
@@ -202,6 +210,8 @@ interface MenuMarginRow {
 const VARIANCE_FLAG_THRESHOLD_PCT = 0.05;
 const MARGIN_FLOOR_PCT = 40;
 
+type ReportTab = "sales" | "customers" | "kitchen" | "menu" | "activity";
+
 export default function ReportsPage() {
   const tm = useTerms();
   const { fmt } = useCurrency();
@@ -211,6 +221,10 @@ export default function ReportsPage() {
   const [dateRange, setDateRange] = useState<DateRange>("today");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
+  const [tab, setTab] = useState<ReportTab>("sales");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const role = String(useAuthStore((s) => s.user?.role) ?? "").toUpperCase();
+  const isOwner = role === "OWNER" || role === "PLATFORM";
   const [summary, setSummary] = useState<SalesSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -343,6 +357,13 @@ export default function ReportsPage() {
     const end = rangeEnd(dateRange, customEnd) ?? new Date();
     return [start.toISOString(), end.toISOString()];
   }, [dateRange, customStart, customEnd]);
+
+  // The period the new report tabs share. "Up to now" is fixed when the period or the refresh changes, so the tabs do not reload on every render.
+  const range = useMemo<ReportRange>(() => {
+    const [startIso, endIso] = currentRangeIso();
+    return { startIso, endIso, tz: -new Date().getTimezoneOffset() };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentRangeIso, refreshKey]);
 
   // The whole report as a long strip on the receipt printer (every item sold under its category, the money,
   // the totals). A dialog first: the owner picks the period down to the hour and which blocks to print.
@@ -478,22 +499,16 @@ export default function ReportsPage() {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full text-ink-500 font-arabic">
-        جاري التحميل...
-      </div>
-    );
-  }
-
-  if (!summary) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-2">
-        <p className="text-danger font-arabic">{loadError || "حدث خطأ في تحميل التقرير"}</p>
-        <button onClick={fetchReports} className="text-sm text-saffron-600 hover:text-saffron-700 font-bold font-arabic">إعادة المحاولة</button>
-      </div>
-    );
-  }
+  // The same tables as the PDF, for the Excel button.
+  const summaryTables = (): ReportTable[] =>
+    summary
+      ? [
+          { title: "ملخص المبيعات", headers: ["البيان", "القيمة"], rows: [["صافي المبيعات", summary.totalSales], ["المبيعات قبل المرتجعات", summary.grossSales], ["المرتجعات", summary.refunds], ["عدد الطلبات", summary.orderCount], ["متوسط الفاتورة", Math.round(summary.avgTicket)]] },
+          { title: tm.topItems, headers: [tm.theItem, "الكمية"], rows: summary.topItems.map((i) => [i.name, i.quantity]) },
+          { title: "أداء الموظفين", headers: ["الموظف", "الطلبات"], rows: summary.staffPerformance.map((st) => [st.name, st.orderCount]) },
+          { title: "حالة المخزون", headers: [tm.theItem, "المخزون", "الحد الأدنى"], rows: summary.inventoryStatus.map((inv) => [inv.name, inv.currentStock, inv.minStock]) },
+        ]
+      : [];
 
   return (
     <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
@@ -539,6 +554,8 @@ export default function ReportsPage() {
           طباعة على الطابعة
         </button>
 )}
+        {tab === "sales" && summary && (
+          <>
         <button
           onClick={exportPdf}
           disabled={exportingPdf}
@@ -546,6 +563,9 @@ export default function ReportsPage() {
         >
           {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
         </button>
+        <ExcelButton filename="تقرير-المبيعات" tables={summaryTables} />
+          </>
+        )}
         </div>
       </div>
 
@@ -579,6 +599,94 @@ export default function ReportsPage() {
         )}
       </div>
 
+      <div className="flex items-center justify-between gap-2 border-b border-ink-200 pb-2 flex-wrap" role="tablist" data-testid="report-tabs">
+        <div className="flex gap-1.5 flex-wrap">
+          {([
+            ["sales", "المبيعات"],
+            ["customers", "الزبائن"],
+            ["kitchen", "المطبخ والتوصيل"],
+            ["menu", "تحليل القائمة"],
+            ...(isOwner ? ([["activity", "سجل النشاط"]] as [ReportTab, string][]) : []),
+          ] as [ReportTab, string][]).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={tab === id}
+              onClick={() => setTab(id)}
+              data-testid={`report-tab-${id}`}
+              className={`px-4 py-2 rounded-lg font-arabic text-sm font-bold transition-colors ${tab === id ? "bg-ink-900 text-white" : "bg-white text-ink-500 hover:bg-ink-200"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <button type="button" onClick={() => { setRefreshKey((k) => k + 1); void fetchReports(); }} className="h-9 px-3 rounded-sm border border-ink-200 bg-white text-sm font-arabic text-ink-500 hover:bg-surface-alt" data-testid="report-refresh">تحديث</button>
+      </div>
+
+      {tab === "customers" && <CustomersReport range={range} />}
+      {tab === "kitchen" && <KitchenDeliveryReport range={range} />}
+      {tab === "menu" && (
+        <>
+      <div className="zc-card p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="font-bold text-ink-900 font-arabic">{tm.itemMargins}</h2>
+            <p className="text-xs text-ink-400 font-arabic mt-0.5">
+              السعر ناقص تكلفة المكونات لكل {tm.item}، للفترة المحددة أعلاه — الأسوأ هامشًا أولًا
+            </p>
+          </div>
+          <button
+            onClick={runMarginReport}
+            disabled={marginsLoading}
+            className="h-10 px-4 rounded-sm bg-ink-900 text-white text-sm font-bold hover:bg-ink-800 transition-colors disabled:opacity-50 shrink-0 font-arabic"
+          >
+            {marginsLoading ? "جاري الحساب..." : "احسب الآن"}
+          </button>
+        </div>
+
+        {marginsError && <p className="text-sm text-danger font-arabic">{marginsError}</p>}
+
+        {margins && margins.length === 0 && !marginsError && (
+          <p className="text-sm text-ink-400 font-arabic">لا توجد مبيعات في هذه الفترة</p>
+        )}
+
+        {margins && margins.length > 0 && (
+          <div className="space-y-1.5">
+            {margins.map((row) => {
+              const poor = row.margin_pct < MARGIN_FLOOR_PCT;
+              return (
+                <div key={row.menu_item_id} className="flex items-center justify-between text-sm border-b border-ink-100 last:border-0 pb-1.5 last:pb-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-ink-900">{row.name}</span>
+                    <span className="text-ink-300 text-xs">×{row.units_sold}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-ink-400 text-xs font-mono">{fmt(row.revenue_cents)}</span>
+                    <span className={`font-mono font-bold text-xs px-1.5 py-0.5 rounded-sm ${poor ? "text-danger bg-danger-soft" : "text-ink-700"}`}>
+                      {row.margin_pct.toFixed(0)}%
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+          <MenuEngineering range={range} />
+        </>
+      )}
+      {tab === "activity" && isOwner && <ActivityLog range={range} />}
+
+      {tab === "sales" && loading && <div className="text-ink-500 font-arabic py-8 text-center">جاري التحميل...</div>}
+      {tab === "sales" && !loading && !summary && (
+        <div className="flex flex-col items-center justify-center gap-2 py-8">
+          <p className="text-danger font-arabic">{loadError || "حدث خطأ في تحميل التقرير"}</p>
+          <button onClick={fetchReports} className="text-sm text-saffron-600 hover:text-saffron-700 font-bold font-arabic">إعادة المحاولة</button>
+        </div>
+      )}
+      {tab === "sales" && !loading && summary && (
+      <>
       <div className="grid grid-cols-3 gap-4">
         <div className="zc-card p-4 space-y-1">
           <p className="text-ink-400 text-sm font-arabic">صافي المبيعات</p>
@@ -643,6 +751,8 @@ export default function ReportsPage() {
           </div>
         ))}
       </div>
+
+      <SalesBreakdowns range={range} />
 
       <GiftsReport
         startIso={rangeStart(dateRange, customStart).toISOString()}
@@ -953,51 +1063,8 @@ export default function ReportsPage() {
         )}
       </div>
 
-      <div className="zc-card p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="font-bold text-ink-900 font-arabic">{tm.itemMargins}</h2>
-            <p className="text-xs text-ink-400 font-arabic mt-0.5">
-              السعر ناقص تكلفة المكونات لكل {tm.item}، للفترة المحددة أعلاه — الأسوأ هامشًا أولًا
-            </p>
-          </div>
-          <button
-            onClick={runMarginReport}
-            disabled={marginsLoading}
-            className="h-10 px-4 rounded-sm bg-ink-900 text-white text-sm font-bold hover:bg-ink-800 transition-colors disabled:opacity-50 shrink-0 font-arabic"
-          >
-            {marginsLoading ? "جاري الحساب..." : "احسب الآن"}
-          </button>
-        </div>
-
-        {marginsError && <p className="text-sm text-danger font-arabic">{marginsError}</p>}
-
-        {margins && margins.length === 0 && !marginsError && (
-          <p className="text-sm text-ink-400 font-arabic">لا توجد مبيعات في هذه الفترة</p>
-        )}
-
-        {margins && margins.length > 0 && (
-          <div className="space-y-1.5">
-            {margins.map((row) => {
-              const poor = row.margin_pct < MARGIN_FLOOR_PCT;
-              return (
-                <div key={row.menu_item_id} className="flex items-center justify-between text-sm border-b border-ink-100 last:border-0 pb-1.5 last:pb-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-ink-900">{row.name}</span>
-                    <span className="text-ink-300 text-xs">×{row.units_sold}</span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-ink-400 text-xs font-mono">{fmt(row.revenue_cents)}</span>
-                    <span className={`font-mono font-bold text-xs px-1.5 py-0.5 rounded-sm ${poor ? "text-danger bg-danger-soft" : "text-ink-700"}`}>
-                      {row.margin_pct.toFixed(0)}%
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+      </>
+      )}
 
       {countModalIngredient && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" dir="rtl">

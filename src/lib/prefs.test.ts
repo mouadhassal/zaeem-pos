@@ -81,3 +81,13 @@ describe("reportOptions", () => {
     expect(normalizePrefs({ reportOptions: 5 }).reportOptions).toEqual(DEFAULT_PREFS.reportOptions);
   });
 });
+
+describe("report thresholds", () => {
+  it("default to 20 minutes late and 30 days quiet, and stay inside sane limits", () => {
+    expect(DEFAULT_PREFS.kitchenLateMinutes).toBe(20);
+    expect(DEFAULT_PREFS.inactiveCustomerDays).toBe(30);
+    expect(normalizePrefs({ kitchenLateMinutes: 45, inactiveCustomerDays: 60 })).toMatchObject({ kitchenLateMinutes: 45, inactiveCustomerDays: 60 });
+    expect(normalizePrefs({ kitchenLateMinutes: 0, inactiveCustomerDays: 99999 })).toMatchObject({ kitchenLateMinutes: 1, inactiveCustomerDays: 3650 });
+    expect(normalizePrefs({ kitchenLateMinutes: "x", inactiveCustomerDays: Number.NaN })).toMatchObject({ kitchenLateMinutes: 20, inactiveCustomerDays: 30 });
+  });
+});

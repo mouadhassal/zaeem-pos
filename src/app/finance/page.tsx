@@ -4,6 +4,8 @@ import { invoke } from "../../lib/invoke";
 import { useAuthStore } from "../../stores/authStore";
 import type { TaxMode } from "../../db/types";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
+import { pdfRows, type ReportTable } from "../../lib/exportExcel";
+import ExcelButton from "../../components/ui/ExcelButton";
 import { IconEye, IconCreditCard, IconX } from "@tabler/icons-react";
 import DatePicker from "../../components/ui/DatePicker";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
@@ -236,65 +238,68 @@ export default function FinancePage() {
   const tabTitle = (t: Tab) =>
     t === "pnl" ? "الأرباح والخسائر" : t === "revenue" ? "الإيرادات" : t === "costs" ? "التكاليف" : t === "rent" ? "الإيجار" : t === "invoices" ? "الفواتير" : "الضرائب";
 
+  /** The tables of the open tab, once, for both the PDF and the Excel button. Money stays a number (Excel can add it up); the PDF formats it. */
+  const financeTables = (): ReportTable[] => {
+    if (tab === "pnl") {
+      const t = pnlSummary?.profit;
+      return [
+        {
+          title: "ملخص الأرباح والخسائر",
+          headers: ["البيان", "القيمة"],
+          moneyCols: [1],
+          rows: [
+            ["المبيعات (قبل الخصم، بدون ضريبة)", t?.gross_sales_cents ?? 0],
+            ["الخصومات", t?.discounts_cents ?? 0],
+            ["المرتجعات", t?.refunds_cents ?? 0],
+            ["صافي المبيعات (بدون ضريبة)", t?.net_sales_cents ?? 0],
+            ["الضريبة المحصلة (ليست دخلاً)", (t?.tax_cents ?? 0) - (t?.tax_refunded_cents ?? 0)],
+            [tm.soldItemsCost, t?.cogs_cents ?? 0],
+            ["ربح الهامش", t?.margin_profit_cents ?? 0],
+            ["كل المصروفات", t?.expenses_cents ?? 0],
+            ["الربح بالمصروفات", t?.expense_profit_cents ?? 0],
+            ["مصروفات جارية (إيجار، رواتب، فواتير)", t?.operating_expenses_cents ?? 0],
+            ["صافي الربح الفعلي", t?.net_profit_cents ?? 0],
+          ],
+        },
+        {
+          title: "الاتجاه اليومي",
+          headers: ["التاريخ", "صافي المبيعات", "ربح الهامش", "الربح بالمصروفات", "صافي الربح الفعلي"],
+          moneyCols: [1, 2, 3, 4],
+          rows: pnlTrend.map((p) => [p.date ?? "", p.net_sales_cents, p.margin_profit_cents, p.expense_profit_cents, p.net_profit_cents]),
+        },
+      ];
+    }
+    if (tab === "revenue") {
+      return [{ title: "الإيرادات", headers: ["التاريخ", "عدد الطلبات", "نقدي", "بطاقة", "محفظة", "إجمالي"], moneyCols: [2, 3, 4, 5], rows: revenueData.map((r) => [r.date, r.orderCount, r.cash, r.card, r.wallet, r.total]) }];
+    }
+    if (tab === "costs") {
+      return [{ title: "التكاليف", headers: ["التاريخ", "البند", "المستفيد", "مركز التكلفة", "التكلفة", "الملاحظات"], moneyCols: [4], rows: costs.map((c) => [c.date.slice(0, 10), c.category_label, c.payee ?? "", c.cost_centre ?? "", c.amount_cents, c.notes ?? ""]) }];
+    }
+    if (tab === "invoices") {
+      return [{ title: "الفواتير", headers: ["رقم الفاتورة", "الفترة", "المبلغ", "الحالة", "تاريخ الاستحقاق"], moneyCols: [2], rows: invoices.map((inv) => [inv.id.slice(0, 8), `${inv.period_start.slice(0, 10)} - ${inv.period_end.slice(0, 10)}`, inv.amount_cents, inv.status, inv.due_date.slice(0, 10)]) }];
+    }
+    if (tab === "taxes") {
+      return [
+        {
+          title: "الضرائب",
+          headers: ["البيان", "القيمة"],
+          moneyCols: [1],
+          rows: [
+            ["نظام الضريبة", taxInfo?.tax_mode === "inclusive" ? "شامل" : "غير شامل"],
+            ["نسبة الضريبة", `${((taxInfo?.tax_rate_cents ?? 0) / 100).toFixed(2)}%`],
+            ["إجمالي الضريبة المحصلة اليوم", taxCollectedToday],
+          ],
+        },
+      ];
+    }
+    return [];
+  };
+
   const exportPdf = async () => {
     if (exportingPdf) return;
     setExportingPdf(true);
     try {
-      let tableHtml = "";
-      if (tab === "pnl") {
-        const t = pnlSummary?.profit;
-        tableHtml =
-          pdfTableHtml(
-            "ملخص الأرباح والخسائر",
-            ["البيان", "القيمة"],
-            [
-              ["المبيعات (قبل الخصم، بدون ضريبة)", formatMoney(t?.gross_sales_cents ?? 0)],
-              ["الخصومات", formatMoney(t?.discounts_cents ?? 0)],
-              ["المرتجعات", formatMoney(t?.refunds_cents ?? 0)],
-              ["صافي المبيعات (بدون ضريبة)", formatMoney(t?.net_sales_cents ?? 0)],
-              ["الضريبة المحصلة (ليست دخلاً)", formatMoney((t?.tax_cents ?? 0) - (t?.tax_refunded_cents ?? 0))],
-              [tm.soldItemsCost, formatMoney(t?.cogs_cents ?? 0)],
-              ["ربح الهامش", formatMoney(t?.margin_profit_cents ?? 0)],
-              ["كل المصروفات", formatMoney(t?.expenses_cents ?? 0)],
-              ["الربح بالمصروفات", formatMoney(t?.expense_profit_cents ?? 0)],
-              ["مصروفات جارية (إيجار، رواتب، فواتير)", formatMoney(t?.operating_expenses_cents ?? 0)],
-              ["صافي الربح الفعلي", formatMoney(t?.net_profit_cents ?? 0)],
-            ]
-          ) +
-          pdfTableHtml(
-            "الاتجاه اليومي",
-            ["التاريخ", "صافي المبيعات", "ربح الهامش", "الربح بالمصروفات", "صافي الربح الفعلي"],
-            pnlTrend.map((p) => [p.date ?? "", formatMoney(p.net_sales_cents), formatMoney(p.margin_profit_cents), formatMoney(p.expense_profit_cents), formatMoney(p.net_profit_cents)])
-          );
-      } else if (tab === "revenue") {
-        tableHtml = pdfTableHtml(
-          "الإيرادات",
-          ["التاريخ", "عدد الطلبات", "نقدي", "بطاقة", "محفظة", "إجمالي"],
-          revenueData.map((r) => [r.date, String(r.orderCount), formatMoney(r.cash), formatMoney(r.card), formatMoney(r.wallet), formatMoney(r.total)])
-        );
-      } else if (tab === "costs") {
-        tableHtml = pdfTableHtml(
-          "التكاليف",
-          ["التاريخ", "البند", "المستفيد", "مركز التكلفة", "التكلفة", "الملاحظات"],
-          costs.map((c) => [c.date.slice(0, 10), c.category_label, c.payee ?? "", c.cost_centre ?? "", formatMoney(c.amount_cents), c.notes ?? ""])
-        );
-      } else if (tab === "invoices") {
-        tableHtml = pdfTableHtml(
-          "الفواتير",
-          ["رقم الفاتورة", "الفترة", "المبلغ", "الحالة", "تاريخ الاستحقاق"],
-          invoices.map((inv) => [inv.id.slice(0, 8), `${inv.period_start.slice(0, 10)} - ${inv.period_end.slice(0, 10)}`, formatMoney(inv.amount_cents), inv.status, inv.due_date.slice(0, 10)])
-        );
-      } else if (tab === "taxes") {
-        tableHtml = pdfTableHtml(
-          "الضرائب",
-          ["البيان", "القيمة"],
-          [
-            ["نظام الضريبة", taxInfo?.tax_mode === "inclusive" ? "شامل" : "غير شامل"],
-            ["نسبة الضريبة", `${((taxInfo?.tax_rate_cents ?? 0) / 100).toFixed(2)}%`],
-            ["إجمالي الضريبة المحصلة اليوم", formatMoney(taxCollectedToday)],
-          ]
-        );
-      }
+      const tableHtml = financeTables().map((t) => pdfTableHtml(t.title, t.headers, pdfRows(t))).join("");
       const bodyHtml = `
         <h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 4px">تقرير ${tabTitle(tab)}</h1>
         <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${formatArabicDate(new Date())}</p>
@@ -360,6 +365,7 @@ export default function FinancePage() {
     <div className="p-6 space-y-6 overflow-y-auto h-full" dir="rtl">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-ink-900">المالية والمحاسبة</h1>
+        <div className="flex items-center gap-2">
         <button
           onClick={exportPdf}
           disabled={exportingPdf}
@@ -367,6 +373,8 @@ export default function FinancePage() {
         >
           {exportingPdf ? "جاري التصدير..." : "تصدير PDF"}
         </button>
+        {tab !== "rent" && <ExcelButton filename={`تقرير-${tabTitle(tab)}`} tables={financeTables} />}
+        </div>
       </div>
 
       <div className="flex gap-2 border-b border-ink-200 pb-2">
@@ -679,6 +687,7 @@ export default function FinancePage() {
               >
                 {exportingPdf ? "جاري التصدير..." : "تصدير PDF للإقرار"}
               </button>
+              <ExcelButton filename="تقرير-الضرائب" tables={financeTables} />
             </div>
           </div>
         </div>

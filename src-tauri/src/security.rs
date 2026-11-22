@@ -198,6 +198,8 @@ pub enum Permission {
     /// switched payroll on for managers (`payroll_settings.manager_access`), and only for the staff
     /// under them in their own branch -- that part is `payroll::PayrollScope`, not this rank check.
     UsePayroll,
+    /// 2026-11-22: reading the activity log (every sensitive action, who did it). Owner only.
+    ViewActivityLog,
 }
 
 impl Permission {
@@ -225,6 +227,7 @@ impl Permission {
             Permission::RefundOrder => Role::Manager.rank(),
             Permission::ManagePayroll => Role::Owner.rank(),
             Permission::UsePayroll => Role::Manager.rank(),
+            Permission::ViewActivityLog => Role::Owner.rank(),
         }
     }
 }
@@ -463,6 +466,7 @@ pub fn authorize(actor: &Actor, perm: Permission) -> Result<(), SecurityError> {
                 Permission::RefundOrder => "RefundOrder",
                 Permission::ManagePayroll => "ManagePayroll",
                 Permission::UsePayroll => "UsePayroll",
+                Permission::ViewActivityLog => "ViewActivityLog",
             },
             reason: if crate::role_access::Feature::of(perm).is_some_and(|f| actor.access.decision(f).is_some()) {
                 format!("role {:?} is not allowed this area (set by the owner)", actor.role)

@@ -83,6 +83,10 @@ export interface Prefs {
   categoryColumns: number;
   /** What the long printed sales report contains. */
   reportOptions: ReportOptions;
+  /** A kitchen order is "late" in the kitchen report after this many minutes. */
+  kitchenLateMinutes: number;
+  /** A customer is "inactive" in the customers report after this many days without a visit. */
+  inactiveCustomerDays: number;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -115,11 +119,15 @@ export const DEFAULT_PREFS: Prefs = {
   notifyLongShift: true,
   categoryColumns: 0,
   reportOptions: DEFAULT_REPORT_OPTIONS,
+  kitchenLateMinutes: 20,
+  inactiveCustomerDays: 30,
 };
 
 const oneOf = <T extends string>(v: unknown, allowed: readonly T[], fallback: T): T =>
   typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : fallback;
 const bool = (v: unknown, fallback: boolean): boolean => (typeof v === "boolean" ? v : fallback);
+const wholeBetween = (v: unknown, min: number, max: number, fallback: number): number =>
+  typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, Math.round(v))) : fallback;
 
 /** Reads whatever was stored (possibly old, partial or hand-edited) into a valid Prefs. */
 export function normalizePrefs(raw: unknown): Prefs {
@@ -160,6 +168,8 @@ export function normalizePrefs(raw: unknown): Prefs {
     notifyLongShift: bool(r.notifyLongShift, DEFAULT_PREFS.notifyLongShift),
     categoryColumns: typeof r.categoryColumns === "number" && (CATEGORY_COLUMN_CHOICES as readonly number[]).includes(r.categoryColumns) ? r.categoryColumns : DEFAULT_PREFS.categoryColumns,
     reportOptions: normalizeReportOptions(r.reportOptions),
+    kitchenLateMinutes: wholeBetween(r.kitchenLateMinutes, 1, 240, DEFAULT_PREFS.kitchenLateMinutes),
+    inactiveCustomerDays: wholeBetween(r.inactiveCustomerDays, 1, 3650, DEFAULT_PREFS.inactiveCustomerDays),
   };
 }
 

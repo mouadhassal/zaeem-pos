@@ -42,6 +42,8 @@ mod attendance;
 mod profit;
 mod finance;
 mod sales_strip;
+mod sales_reports;
+mod activity_log;
 mod payroll;
 mod stockroom;
 mod ops_settings;
@@ -700,6 +702,14 @@ pub fn run() {
             commands::reports::mark_invoice_paid_v3,
             commands::reports::get_sales_report_v3,
             commands::reports::get_sales_strip_v3,
+            commands::reports::get_sales_breakdown_v3,
+            commands::reports::list_breakdown_orders_v3,
+            commands::reports::get_cancellations_report_v3,
+            commands::reports::get_customers_report_v3,
+            commands::reports::get_kitchen_delivery_report_v3,
+            commands::reports::get_menu_engineering_v3,
+            commands::reports::list_activity_log_v3,
+            commands::reports::list_activity_kinds_v3,
             commands::reports::ask_help_v3,
             commands::reports::gifts_report_v3,
             commands::reports::ask_assistant_v3,

@@ -135,7 +135,7 @@ pub struct HistoryRow {
     pub parent_order_id: Option<String>,
 }
 
-const ROW_SELECT: &str = "SELECT o.id, COALESCE(n.series, pn.series), COALESCE(n.seq, pn.seq), o.created_at, o.closed_at, o.order_type, o.status, \
+pub(crate) const ROW_SELECT: &str = "SELECT o.id, COALESCE(n.series, pn.series), COALESCE(n.seq, pn.seq), o.created_at, o.closed_at, o.order_type, o.status, \
      t.name, s.name, o.customer_name, o.customer_phone, \
      (SELECT COALESCE(SUM(quantity), 0) FROM order_items WHERE order_id = o.id AND voided = 0), \
      o.total_cents, COALESCE(o.refunded_cents, 0), \
@@ -146,7 +146,7 @@ const ROW_SELECT: &str = "SELECT o.id, COALESCE(n.series, pn.series), COALESCE(n
      LEFT JOIN tables t ON t.id = o.table_id \
      LEFT JOIN staff s ON s.id = o.user_id";
 
-fn row_from(r: &rusqlite::Row) -> rusqlite::Result<HistoryRow> {
+pub(crate) fn row_from(r: &rusqlite::Row) -> rusqlite::Result<HistoryRow> {
     let series: Option<String> = r.get(1)?;
     let seq: Option<i64> = r.get(2)?;
     Ok(HistoryRow {
