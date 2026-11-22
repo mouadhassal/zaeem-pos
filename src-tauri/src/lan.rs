@@ -78,7 +78,7 @@ fn sha256_hex(input: &str) -> String {
 // Lives next to zaeem_pos.db. Determines this terminal's own role.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LanConfig {
     /// "standalone" (default -- today's exact single-terminal behavior),
@@ -99,6 +99,31 @@ pub struct LanConfig {
     /// row is what's actually authoritative and enforced.
     pub device_role: Option<String>,
     pub device_name: String,
+    /// Internet route between the tills of one branch (`cloud_relay.rs`):
+    /// the Hub answers commands other tills send through the cloud, and a
+    /// Satellite falls back to it when the LAN link is down (or has no LAN
+    /// address at all). Defaults to ON, also for a `lan_config.json` written
+    /// before this field existed; the owner can switch it off.
+    #[serde(default = "default_true")]
+    pub cloud: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for LanConfig {
+    fn default() -> Self {
+        Self {
+            mode: String::new(),
+            hub_addr: None,
+            trust_token: None,
+            pairing_request_id: None,
+            device_role: None,
+            device_name: String::new(),
+            cloud: true,
+        }
+    }
 }
 
 /// `dir` is this install's own data folder (every caller passes the folder,
@@ -133,6 +158,31 @@ static DB_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
 
 pub fn set_db_dir(dir: std::path::PathBuf) {
     let _ = DB_DIR.set(dir);
+}
+
+/// Same idea as `DB_DIR`: lets `resolve_actor_via_hub` (a plain `fn` with no
+/// `AppHandle`) read this till's own cloud device token for the internet route.
+static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
+
+pub fn set_app_handle(app: AppHandle) {
+    let _ = APP_HANDLE.set(app);
+}
+
+/// This till's own licence device token, if it was cloud-activated. `None`
+/// in unit tests (no app handle), which keeps them off the internet route.
+pub fn current_device_token() -> Option<String> {
+    let app = APP_HANDLE.get()?;
+    app.try_state::<crate::license::cloud::CloudLicenseState>()?.device_token()
+}
+
+/// The Hub's own "something changed" fan-out, kept here so commands answered
+/// through the cloud (`cloud_relay.rs`) can nudge the LAN satellites too.
+static HUB_EVENT_TX: OnceLock<broadcast::Sender<String>> = OnceLock::new();
+
+pub fn broadcast_orders_changed() {
+    if let Some(tx) = HUB_EVENT_TX.get() {
+        let _ = tx.send("orders_changed".to_string());
+    }
 }
 
 pub fn load_lan_config(db_path: &std::path::Path) -> LanConfig {
@@ -205,6 +255,7 @@ pub fn start_hub_server(app: AppHandle, db_path: &std::path::Path) {
     }
 
     let (event_tx, _rx) = broadcast::channel::<String>(256);
+    let _ = HUB_EVENT_TX.set(event_tx.clone());
     let state = LanState { app: app.clone(), event_tx };
 
     let router = Router::new()
@@ -227,6 +278,11 @@ pub fn start_hub_server(app: AppHandle, db_path: &std::path::Path) {
             crate::obslog::log_lan_error(&format!("hub server exited: {e}"));
         }
     });
+
+    // Internet route: answer commands other tills of the branch send through
+    // the cloud. Idle (cheap loop) unless config says hub + cloud and this
+    // till has a device token; never touches the LAN server above.
+    crate::cloud_relay::start_hub_tasks(app.clone());
 
     // mDNS advertisement -- best-effort. A restaurant LAN that blocks
     // multicast (rare, but real on some locked-down routers) just means a
@@ -484,6 +540,64 @@ fn broadcast_change(state: &LanState, event: &str) {
 // outside Tauri's own IPC dispatch just as well as from inside it.
 // ---------------------------------------------------------------------------
 
+/// The role the Hub assumes for a command that arrived through the cloud
+/// relay (`cloud_relay.rs`). The `pos-relay` edge function only forwards a
+/// command after checking that the sender holds an active licence of THIS
+/// branch, which is the same bar `request_pairing_v3` sets for a 'register'
+/// Satellite; free 'kitchen' screens have no licence and cannot use it.
+pub const CLOUD_RELAY_ROLE: &str = "register";
+
+/// What running one forwarded command produced: the HTTP status the LAN
+/// route answers with, the `{ok, data}` / `{ok: false, error}` envelope (the
+/// same JSON both routes hand back to the Satellite), and whether the
+/// command changed orders (so everyone should re-fetch).
+pub struct RpcOutcome {
+    pub status: StatusCode,
+    pub body: Value,
+    pub mutated: bool,
+}
+
+/// The one path every forwarded command takes on the Hub, whether it came in
+/// over the LAN (`rpc_dispatch`, after `authorize_satellite`) or through the
+/// cloud (`cloud_relay.rs`, role `CLOUD_RELAY_ROLE`).
+///
+/// Licensing kill-switch (2026-07-26 audit): a 'kitchen' Satellite is free
+/// and read-mostly by design -- it does NOT get a free pass into the full
+/// order/payment/shift command set just because it's on the same allowlist as
+/// a licensed 'register' terminal. This check is authoritative regardless of
+/// what `dispatch_lan_rpc`'s own allowlist would otherwise permit.
+///
+/// `State<T>` derefs to `&T`, so callers pass exactly the plain references a
+/// unit test builds with `real_db()`/`never_checked_license()`.
+pub fn execute_rpc(
+    db: &Db,
+    license: &crate::license::cloud::CloudLicenseState,
+    device_role: &str,
+    command: &str,
+    args: Value,
+) -> RpcOutcome {
+    let fail = |status: StatusCode, message: &str| RpcOutcome {
+        status,
+        body: serde_json::json!({ "ok": false, "error": message }),
+        mutated: false,
+    };
+    if device_role == "kitchen" && !kitchen_role_may_call(command) {
+        return fail(
+            StatusCode::FORBIDDEN,
+            "this device is paired as a kitchen-screen-only terminal and cannot run cash register commands -- pair it as a register terminal with its own active license instead",
+        );
+    }
+    match crate::commands::lan_rpc::dispatch_lan_rpc(db, license, command, args) {
+        Ok(value) => RpcOutcome {
+            status: StatusCode::OK,
+            body: serde_json::json!({ "ok": true, "data": value }),
+            mutated: crate::commands::lan_rpc::lan_rpc_mutates_orders(command),
+        },
+        Err(e) if e == "UNKNOWN_COMMAND" => fail(StatusCode::NOT_FOUND, &format!("'{command}' is not exposed over LAN RPC")),
+        Err(e) => fail(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
 async fn rpc_dispatch(
     AxumState(state): AxumState<LanState>,
     Path(command): Path<String>,
@@ -509,34 +623,12 @@ async fn rpc_dispatch(
             Err(e) => return rpc_error(StatusCode::UNAUTHORIZED, &e),
         }
     };
-    // Licensing kill-switch (2026-07-26 audit): a 'kitchen' Satellite is
-    // free and read-mostly by design -- it does NOT get a free pass into
-    // the full order/payment/shift command set just because it's on the
-    // same allowlist as a licensed 'register' terminal. This check is
-    // authoritative regardless of what `dispatch_lan_rpc`'s own allowlist
-    // would otherwise permit.
-    if device_role == "kitchen" && !kitchen_role_may_call(&command) {
-        return rpc_error(
-            StatusCode::FORBIDDEN,
-            "this device is paired as a kitchen-screen-only terminal and cannot run cash register commands -- pair it as a register terminal with its own active license instead",
-        );
-    }
 
-    // `State<T>` derefs to `&T`, so `&db`/`&license` here are exactly the
-    // plain references `dispatch_lan_rpc` takes -- same values a unit
-    // test builds with `real_db()`/`never_checked_license()`, just
-    // sourced from Tauri's managed state instead.
-    let result = crate::commands::lan_rpc::dispatch_lan_rpc(&db, &license, &command, args);
-    match result {
-        Ok(value) => {
-            if crate::commands::lan_rpc::lan_rpc_mutates_orders(&command) {
-                broadcast_change(&state, "orders_changed");
-            }
-            (StatusCode::OK, Json(serde_json::json!({ "ok": true, "data": value }))).into_response()
-        }
-        Err(e) if e == "UNKNOWN_COMMAND" => rpc_error(StatusCode::NOT_FOUND, &format!("'{command}' is not exposed over LAN RPC")),
-        Err(e) => rpc_error(StatusCode::BAD_REQUEST, &e),
+    let outcome = execute_rpc(&db, &license, &device_role, &command, args);
+    if outcome.mutated {
+        broadcast_change(&state, "orders_changed");
     }
+    (outcome.status, Json(outcome.body)).into_response()
 }
 
 fn rpc_error(status: StatusCode, message: &str) -> axum::response::Response {
@@ -566,9 +658,17 @@ pub struct LanStatusV3 {
     /// False when this device's own licence would refuse a 'register' pairing,
     /// so the screen only warns about a licence when one is really missing.
     pub licensed: bool,
+    /// The owner's switch "السماح بالاتصال عبر الإنترنت" (`LanConfig::cloud`).
+    pub cloud: bool,
+    /// True when this till can use the internet route at all: it holds its
+    /// own licence device token and is not a free kitchen screen.
+    pub cloud_available: bool,
+    /// Satellite only: the route the last relayed command used ("lan" or
+    /// "cloud"); `None` when nothing was relayed in the last minute.
+    pub route: Option<String>,
 }
 
-fn db_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+pub(crate) fn db_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     app.path()
         .app_config_dir()
         .map_err(|e| e.to_string())
@@ -585,13 +685,17 @@ pub fn get_lan_status_v3(
     crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
     let dir = db_dir(&app)?;
     let config = load_lan_config(&dir);
+    let paired = config.mode == "satellite" && (config.trust_token.is_some() || crate::cloud_relay::is_cloud_only(&config));
     Ok(LanStatusV3 {
         mode: config.mode.clone(),
         device_name: config.device_name,
         hub_addr: config.hub_addr,
-        paired: config.mode == "satellite" && config.trust_token.is_some(),
+        paired,
         local_addr: local_ip().map(|ip| format!("{ip}:{LAN_HUB_PORT}")),
         licensed: !license.cached_status().back_office_locked(),
+        cloud: config.cloud,
+        cloud_available: license.device_token().is_some() && config.device_role.as_deref() != Some("kitchen"),
+        route: if config.mode == "satellite" { crate::cloud_relay::route_in_use().map(|r| r.as_str().to_string()) } else { None },
     })
 }
 
@@ -1003,21 +1107,17 @@ fn resolve_actor_via_hub_with_config(config: &LanConfig, session_token: &str) ->
     if config.mode != "satellite" {
         return Ok(None);
     }
-    let (Some(hub_addr), Some(trust_token)) = (config.hub_addr.clone(), config.trust_token.clone()) else {
+    // LAN first, the internet as fallback (or the only route for a till
+    // joined over the internet) -- see `cloud_relay::plan_routes`.
+    let device_token = current_device_token();
+    if crate::cloud_relay::plan_routes(&crate::cloud_relay::route_inputs(config, device_token.is_some())).is_empty() {
         return Ok(None);
-    };
+    }
+    let config = config.clone();
     let session_token = session_token.to_string();
 
     let fetch = async move {
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(format!("http://{hub_addr}/rpc/__resolve_actor_v3"))
-            .bearer_auth(trust_token)
-            .json(&serde_json::json!({ "sessionToken": session_token }))
-            .send()
-            .await
-            .map_err(|e| format!("could not reach hub: {e}"))?;
-        resp.json::<Value>().await.map_err(|e| e.to_string())
+        crate::cloud_relay::relay(&config, device_token.as_deref(), "__resolve_actor_v3", &serde_json::json!({ "sessionToken": session_token })).await
     };
     let body = match tokio::runtime::Handle::try_current() {
         Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fetch))?,
@@ -1054,21 +1154,27 @@ fn resolve_actor_via_hub_with_config(config: &LanConfig, session_token: &str) ->
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LanRedirectTargetV3 {
+    /// Empty for a till that joined over the internet (no LAN address).
     pub hub_addr: String,
+    /// True when the internet route is on for this satellite.
+    pub cloud: bool,
 }
 
-/// Lets the frontend open its own WebSocket to the paired Hub without
-/// needing an authenticated round-trip first -- just "am I a satellite,
-/// and if so, where's my Hub." Returns `None` for standalone/hub terminals
-/// (the overwhelming majority of calls), so this is deliberately cheap: a
-/// sync file read, no DB, no network.
+/// Lets the frontend know "am I a satellite, and if so, where's my Hub"
+/// without an authenticated round-trip first. Returns `None` for
+/// standalone/hub terminals (the overwhelming majority of calls), so this is
+/// deliberately cheap: a sync file read, no DB, no network. A till joined
+/// over the internet is a satellite with an empty `hub_addr`.
 #[tauri::command]
 pub fn get_lan_redirect_target_v3(app: AppHandle) -> Result<Option<LanRedirectTargetV3>, String> {
     let dir = db_dir(&app)?;
     let config = load_lan_config(&dir);
     if config.mode == "satellite" {
-        if let Some(hub_addr) = config.hub_addr {
-            return Ok(Some(LanRedirectTargetV3 { hub_addr }));
+        if let Some(hub_addr) = config.hub_addr.clone().filter(|a| !a.trim().is_empty()) {
+            return Ok(Some(LanRedirectTargetV3 { hub_addr, cloud: config.cloud }));
+        }
+        if crate::cloud_relay::is_cloud_only(&config) {
+            return Ok(Some(LanRedirectTargetV3 { hub_addr: String::new(), cloud: true }));
         }
     }
     Ok(None)
@@ -1093,33 +1199,35 @@ pub struct LanRelayResultV3 {
 /// of a browser `fetch`) so it shares the app's existing CSP-free `reqwest`
 /// client, exactly like `request_pairing_v3`/`check_pairing_status_v3`
 /// already do.
+///
+/// Route: the LAN first; if the Hub cannot be reached there (or this till has
+/// no LAN address) and the internet route is on, through the cloud relay.
+/// See `cloud_relay::relay`.
 #[tauri::command]
 pub async fn lan_relay_v3(app: AppHandle, command: String, args: Value) -> Result<LanRelayResultV3, String> {
     let dir = db_dir(&app)?;
     let config = load_lan_config(&dir);
-    let (Some(hub_addr), Some(trust_token)) = (
-        (config.mode == "satellite").then_some(config.hub_addr).flatten(),
-        config.trust_token,
-    ) else {
+    if config.mode != "satellite" {
         return Ok(LanRelayResultV3 { redirected: false, data: None, error: None });
-    };
-
-    let client = reqwest::Client::new();
-    let resp = match client
-        .post(format!("http://{hub_addr}/rpc/{command}"))
-        .bearer_auth(trust_token)
-        .json(&args)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            return Ok(LanRelayResultV3 { redirected: true, data: None, error: Some(format!("could not reach hub: {e}")) });
+    }
+    let device_token = current_device_token();
+    let inputs = crate::cloud_relay::route_inputs(&config, device_token.is_some());
+    if crate::cloud_relay::plan_routes(&inputs).is_empty() {
+        // A till set up for the internet whose licence/switch no longer
+        // allows it must say so, not quietly sell against its own empty DB.
+        if crate::cloud_relay::is_cloud_only(&config) {
+            return Ok(LanRelayResultV3 {
+                redirected: true,
+                data: None,
+                error: Some("هذا الجهاز مضبوط للعمل عبر الإنترنت لكن الاتصال عبر الإنترنت غير متاح (الترخيص غير مفعّل أو الخيار مغلق). فعّل الترخيص أو «السماح بالاتصال عبر الإنترنت» من «الشبكة المحلية».".to_string()),
+            });
         }
-    };
-    let body: Value = match resp.json().await {
+        return Ok(LanRelayResultV3 { redirected: false, data: None, error: None });
+    }
+
+    let body = match crate::cloud_relay::relay(&config, device_token.as_deref(), &command, &args).await {
         Ok(b) => b,
-        Err(e) => return Ok(LanRelayResultV3 { redirected: true, data: None, error: Some(e.to_string()) }),
+        Err(e) => return Ok(LanRelayResultV3 { redirected: true, data: None, error: Some(e) }),
     };
     if body.get("ok").and_then(Value::as_bool) == Some(true) {
         Ok(LanRelayResultV3 { redirected: true, data: Some(body.get("data").cloned().unwrap_or(Value::Null)), error: None })
@@ -1127,6 +1235,123 @@ pub async fn lan_relay_v3(app: AppHandle, command: String, args: Value) -> Resul
         let err = body.get("error").and_then(Value::as_str).unwrap_or("hub rejected request").to_string();
         Ok(LanRelayResultV3 { redirected: true, data: None, error: Some(err) })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Internet route: the owner's switch, "is the Hub online", and joining a Hub
+// over the internet instead of the LAN. The plumbing is `cloud_relay.rs`.
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudRelayStatusV3 {
+    /// This till can use the internet route at all (own licence token, not a
+    /// free kitchen screen).
+    pub available: bool,
+    pub enabled: bool,
+    /// `None` when the question could not be asked (no token / offline).
+    pub hub_online: Option<bool>,
+    pub hub_label: Option<String>,
+    pub last_seen_at: Option<String>,
+    /// This till is the one the cloud knows as the branch's hub.
+    pub is_hub: bool,
+    /// Plain Arabic reason when `hub_online` is unknown.
+    pub error: Option<String>,
+}
+
+/// Asks the cloud whether the branch's Hub is online. One short request;
+/// the settings screen calls it every ~15 s.
+#[tauri::command]
+pub async fn get_cloud_relay_status_v3(
+    app: AppHandle,
+    state: State<'_, Db>,
+    license: State<'_, crate::license::cloud::CloudLicenseState>,
+    session_token: String,
+) -> Result<CloudRelayStatusV3, String> {
+    let actor = crate::commands::shared::authenticate_actor(&state, &session_token)?;
+    crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
+    let config = load_lan_config(&db_dir(&app)?);
+    let token = license.device_token();
+    let is_kitchen = config.device_role.as_deref() == Some("kitchen");
+    let available = token.is_some() && !is_kitchen;
+    let mut out = CloudRelayStatusV3 {
+        available,
+        enabled: config.cloud,
+        hub_online: None,
+        hub_label: None,
+        last_seen_at: None,
+        is_hub: false,
+        error: None,
+    };
+    let Some(token) = token.filter(|_| available) else {
+        out.error = Some(if is_kitchen {
+            "شاشة المطبخ المجانية لا تعمل عبر الإنترنت. تحتاج ترخيصاً خاصاً بهذا الجهاز.".to_string()
+        } else {
+            "هذا الجهاز بلا ترخيص مفعّل، فلا يمكنه الاتصال عبر الإنترنت.".to_string()
+        });
+        return Ok(out);
+    };
+    match crate::cloud_relay::hub_status(&token).await {
+        Ok(s) => {
+            out.hub_online = Some(s.hub_online);
+            out.hub_label = s.hub_label;
+            out.last_seen_at = s.last_seen_at;
+            out.is_hub = s.is_hub;
+        }
+        Err(e) => out.error = Some(e.message),
+    }
+    Ok(out)
+}
+
+/// The owner's switch "السماح بالاتصال عبر الإنترنت". On a Hub it decides
+/// whether it answers cloud commands; on a Satellite whether it may use the
+/// internet route. Takes effect within seconds, no restart.
+#[tauri::command]
+pub fn set_cloud_relay_enabled_v3(app: AppHandle, state: State<Db>, session_token: String, enabled: bool) -> Result<(), String> {
+    let actor = crate::commands::shared::authenticate_actor(&state, &session_token)?;
+    crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
+    let dir = db_dir(&app)?;
+    let mut config = load_lan_config(&dir);
+    config.cloud = enabled;
+    save_lan_config(&dir, &config)
+}
+
+/// "الاتصال عبر الإنترنت": makes this till a Satellite of its branch's Hub
+/// without any LAN address, if the Hub is online in the cloud. Needs this
+/// till's own active licence, exactly like pairing as a LAN 'register'.
+#[tauri::command]
+pub async fn join_hub_via_internet_v3(
+    app: AppHandle,
+    state: State<'_, Db>,
+    license: State<'_, crate::license::cloud::CloudLicenseState>,
+    session_token: String,
+) -> Result<(), String> {
+    let actor = crate::commands::shared::authenticate_actor(&state, &session_token)?;
+    crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
+    if license.cached_status().back_office_locked() {
+        return Err(
+            "هذا الجهاز لا يملك ترخيصاً فعّالاً. كل نقطة بيع (كاشير) يجب أن يكون لها ترخيص خاص بها -- فعّل ترخيص هذا الجهاز أولاً من تبويب الترخيص. شاشة المطبخ المجانية لا تعمل عبر الإنترنت.".to_string(),
+        );
+    }
+    let Some(token) = license.device_token() else {
+        return Err("هذا الجهاز غير مفعّل على السحابة، فلا يمكنه الاتصال عبر الإنترنت. فعّل الترخيص أولاً.".to_string());
+    };
+    let status = crate::cloud_relay::hub_status(&token).await.map_err(|e| e.message)?;
+    if status.is_hub {
+        return Err("هذا الجهاز هو المركزي نفسه في السحابة. افعل هذا على جهاز آخر.".to_string());
+    }
+    if !status.hub_online {
+        return Err("الجهاز المركزي غير متصل بالإنترنت الآن. تأكد أنه مفتوح وأن «السماح بالاتصال عبر الإنترنت» مفعّل عليه.".to_string());
+    }
+    let dir = db_dir(&app)?;
+    let mut config = load_lan_config(&dir);
+    config.mode = "satellite".to_string();
+    config.hub_addr = None;
+    config.trust_token = None;
+    config.pairing_request_id = None;
+    config.device_role = Some("register".to_string());
+    config.cloud = true;
+    save_lan_config(&dir, &config)
 }
 
 #[cfg(test)]
@@ -1165,6 +1390,7 @@ mod tests {
             pairing_request_id: None,
             device_role: Some("register".to_string()),
             device_name: "Test Satellite".to_string(),
+            cloud: false,
         }
     }
 
@@ -1335,6 +1561,29 @@ mod tests {
         migrate_legacy_lan_config(&a);
         assert_eq!(load_lan_config(&a).mode, "hub");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A `lan_config.json` written before the internet route existed has no
+    /// `cloud` key: it must load with the route ON (a hub then answers cloud
+    /// commands, a satellite may fall back to it) and keep every other field.
+    #[test]
+    fn old_lan_config_without_cloud_loads_with_the_internet_route_on() {
+        let old = r#"{"mode":"satellite","hubAddr":"192.168.1.5:47811","trustToken":"abc","pairingRequestId":"r1","deviceRole":"register","deviceName":"Till 2"}"#;
+        let cfg: LanConfig = serde_json::from_str(old).expect("old file must still parse");
+        assert!(cfg.cloud);
+        assert_eq!(cfg.mode, "satellite");
+        assert_eq!(cfg.hub_addr.as_deref(), Some("192.168.1.5:47811"));
+        assert_eq!(cfg.trust_token.as_deref(), Some("abc"));
+        assert_eq!(cfg.device_name, "Till 2");
+        // the smallest old file too
+        let tiny: LanConfig = serde_json::from_str(r#"{"mode":"hub","deviceName":"X"}"#).unwrap();
+        assert!(tiny.cloud);
+        // an explicit off survives a save/load round trip
+        let off = LanConfig { cloud: false, ..tiny };
+        let back: LanConfig = serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
+        assert!(!back.cloud);
+        // and so does a freshly built default (no file at all)
+        assert!(LanConfig::default().cloud);
     }
 
     #[test]

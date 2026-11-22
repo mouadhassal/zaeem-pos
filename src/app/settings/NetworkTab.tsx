@@ -11,6 +11,21 @@ interface LanStatus {
   localAddr?: string | null;
   /** False only when this device's licence would refuse a cashier pairing. */
   licensed?: boolean;
+  /** The owner's switch "السماح بالاتصال عبر الإنترنت". */
+  cloud?: boolean;
+  /** Satellite only: the route the last command took (null = nothing in the last minute). */
+  route?: "lan" | "cloud" | null;
+}
+
+/** What the cloud says about the branch's hub (`get_cloud_relay_status_v3`). */
+interface CloudStatus {
+  available: boolean;
+  enabled: boolean;
+  hubOnline: boolean | null;
+  hubLabel: string | null;
+  lastSeenAt: string | null;
+  isHub: boolean;
+  error: string | null;
 }
 
 interface PendingPairing {
@@ -59,6 +74,7 @@ export default function NetworkTab({ token }: { token: string | null }) {
   const [manualAddr, setManualAddr] = useState("");
   const [firewallBusy, setFirewallBusy] = useState(false);
   const [firewallDone, setFirewallDone] = useState(false);
+  const [cloudStatus, setCloudStatus] = useState<CloudStatus | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -82,6 +98,21 @@ export default function NetworkTab({ token }: { token: string | null }) {
     const interval = setInterval(refresh, 5000);
     return () => clearInterval(interval);
   }, [refresh]);
+
+  // Is the branch's hub online over the internet? One short request, every 15 s.
+  const refreshCloud = useCallback(async () => {
+    try {
+      setCloudStatus(await invoke<CloudStatus>("get_cloud_relay_status_v3", { sessionToken: token }));
+    } catch {
+      setCloudStatus(null);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    refreshCloud();
+    const interval = setInterval(refreshCloud, 15000);
+    return () => clearInterval(interval);
+  }, [refreshCloud]);
 
   // While a satellite pairing request is PENDING on the Hub, poll every
   // couple of seconds until the Hub operator approves it -- the frontend
@@ -180,6 +211,36 @@ export default function NetworkTab({ token }: { token: string | null }) {
     }
   };
 
+  const joinOverInternet = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("join_hub_via_internet_v3", { sessionToken: token });
+      invalidateLanTargetCache();
+      await refresh();
+      await refreshCloud();
+    } catch (err) {
+      setError(typeof err === "string" ? err : "تعذّر الاتصال عبر الإنترنت");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleCloud = async (enabled: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("set_cloud_relay_enabled_v3", { sessionToken: token, enabled });
+      invalidateLanTargetCache();
+      await refresh();
+      await refreshCloud();
+    } catch (err) {
+      setError(typeof err === "string" ? err : "حدث خطأ");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const forgetPairing = async () => {
     setBusy(true);
     setError(null);
@@ -223,6 +284,49 @@ export default function NetworkTab({ token }: { token: string | null }) {
   };
 
   const licenceMissing = status?.licensed === false;
+
+  const hubOnlineLine = (forHub: boolean) => {
+    if (!cloudStatus) return null;
+    if (cloudStatus.hubOnline === null) {
+      return (
+        <p data-testid="cloud-unknown" className="text-xs font-arabic text-ink-500">
+          {cloudStatus.error ?? "تعذّر معرفة حالة الاتصال عبر الإنترنت."}
+        </p>
+      );
+    }
+    if (cloudStatus.hubOnline) {
+      return (
+        <p data-testid="cloud-hub-online" className="text-sm font-arabic text-ok">
+          {forHub && cloudStatus.isHub
+            ? "هذا الجهاز ظاهر في السحابة، والأجهزة الأخرى تستطيع الوصول إليه عبر الإنترنت."
+            : `الجهاز المركزي متصل بالإنترنت${cloudStatus.hubLabel ? ` (${cloudStatus.hubLabel})` : ""}.`}
+        </p>
+      );
+    }
+    return (
+      <p data-testid="cloud-hub-offline" className="text-sm font-arabic text-warn">
+        {forHub ? "هذا الجهاز غير ظاهر في السحابة الآن (تحقق من الإنترنت عليه)." : "الجهاز المركزي غير متصل بالإنترنت الآن."}
+      </p>
+    );
+  };
+
+  const cloudSwitch = (
+    <div className="space-y-1">
+      <label className="flex items-center gap-2 text-sm font-arabic text-ink-900 font-bold cursor-pointer">
+        <input
+          data-testid="cloud-switch"
+          type="checkbox"
+          checked={status?.cloud !== false}
+          disabled={busy || cloudStatus?.available === false}
+          onChange={(e) => toggleCloud(e.target.checked)}
+        />
+        السماح بالاتصال عبر الإنترنت
+      </label>
+      {cloudStatus?.available === false && cloudStatus.error && (
+        <p data-testid="cloud-unavailable" className="text-xs font-arabic text-warn">{cloudStatus.error}</p>
+      )}
+    </div>
+  );
 
   if (!status) {
     return <div className="max-w-xl text-sm text-ink-400 font-arabic">جاري التحميل...</div>;
@@ -365,6 +469,25 @@ export default function NetworkTab({ token }: { token: string | null }) {
             </div>
             <div className="mt-4">{firewallButton}</div>
           </div>
+          <div className="border-t border-ink-200 pt-4 space-y-2">
+            <p className="text-sm font-arabic text-ink-900 font-bold">الاتصال عبر الإنترنت</p>
+            <p className="text-xs font-arabic text-ink-400">
+              إذا لم يكن الجهاز المركزي على نفس الراوتر، يتصل به هذا الجهاز عبر الإنترنت. يحتاج هذا الجهاز ترخيصه الخاص
+              (ككاشير)، ويجب أن يكون الجهاز المركزي مفتوحاً ومتصلاً بالإنترنت. شاشة المطبخ المجانية لا تعمل بهذه الطريقة.
+            </p>
+            {hubOnlineLine(false)}
+            <button
+              data-testid="cloud-join"
+              onClick={joinOverInternet}
+              disabled={busy || licenceMissing || cloudStatus?.available === false}
+              className="h-10 px-6 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm font-bold hover:bg-ink-100 transition-colors disabled:opacity-50"
+            >
+              الاتصال عبر الإنترنت
+            </button>
+            {cloudStatus?.available === false && cloudStatus.error && (
+              <p className="text-xs font-arabic text-warn">{cloudStatus.error}</p>
+            )}
+          </div>
         </div>
       )}
 
@@ -372,8 +495,20 @@ export default function NetworkTab({ token }: { token: string | null }) {
         <div className="bg-white rounded-md p-5 border border-ink-200 space-y-3">
           <div className="flex justify-between text-sm">
             <span className="font-arabic text-ink-400">الجهاز المركزي</span>
-            <span className="font-mono text-ink-900" dir="ltr">{status.hubAddr}</span>
+            <span className="font-mono text-ink-900" dir="ltr">{status.hubAddr || "عبر الإنترنت"}</span>
           </div>
+          <div className="flex justify-between text-sm">
+            <span className="font-arabic text-ink-400">طريقة الاتصال الآن</span>
+            <span data-testid="lan-route" className="font-arabic font-bold text-ink-900">
+              {(status.route ?? (status.hubAddr ? null : "cloud")) === "cloud"
+                ? "الإنترنت"
+                : status.route === "lan"
+                  ? "الشبكة المحلية"
+                  : "الشبكة المحلية (تلقائي)"}
+            </span>
+          </div>
+          {hubOnlineLine(false)}
+          {cloudSwitch}
           {status.paired ? (
             <p className="text-sm font-arabic text-ok">متصل ويعمل بشكل طبيعي.</p>
           ) : (
@@ -415,6 +550,16 @@ export default function NetworkTab({ token }: { token: string | null }) {
             <p className="text-xs text-ink-400 font-arabic">
               يعيد هذا الجهاز إلى الوضع المستقل. يسري التغيير بالكامل بعد إعادة تشغيل التطبيق.
             </p>
+          </div>
+
+          <div className="bg-white rounded-md p-5 border border-ink-200 space-y-2">
+            <p className="text-sm font-arabic text-ink-900 font-bold">الاتصال عبر الإنترنت</p>
+            <p className="text-xs text-ink-400 font-arabic">
+              الشبكة المحلية تبقى الأساس. وإذا كان جهاز آخر خارج هذه الشبكة، يصل إلى هذا الجهاز عبر الإنترنت، بشرط أن
+              يكون لهذا الجهاز ترخيصه وأن يبقى التطبيق مفتوحاً.
+            </p>
+            {hubOnlineLine(true)}
+            {cloudSwitch}
           </div>
 
           <div className="bg-white rounded-md p-5 border border-ink-200 space-y-2">

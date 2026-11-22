@@ -1,4 +1,5 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { invoke } from "./invoke";
 
 /**
@@ -149,7 +150,7 @@ export const HUB_ONLY_WRITE_ERROR = "تعديل القائمة يتم من ال�
 
 /** True when this terminal is a paired Satellite (cached; see `invalidateLanTargetCache`). */
 export async function isSatellite(): Promise<boolean> {
-  return (await getHubAddr()) !== null;
+  return (await getLanTarget()) !== null;
 }
 
 
@@ -200,23 +201,35 @@ export async function invokeOnHub<T>(command: string, args?: Record<string, unkn
   return { data: await invoke<T>(command, args), viaHub: false };
 }
 
-let cachedHubAddr: string | null | undefined;
+/**
+ * `hubAddr` is empty for a till that joined over the internet (no LAN
+ * address); `cloud` says the internet route is on for it.
+ */
+interface LanTarget {
+  hubAddr: string;
+  cloud: boolean;
+}
 
-async function getHubAddr(): Promise<string | null> {
-  if (cachedHubAddr !== undefined) return cachedHubAddr;
+let cachedTarget: LanTarget | null | undefined;
+
+async function getLanTarget(): Promise<LanTarget | null> {
+  if (cachedTarget !== undefined) return cachedTarget;
   try {
-    const target = await tauriInvoke<{ hubAddr: string } | null>("get_lan_redirect_target_v3");
-    cachedHubAddr = target?.hubAddr ?? null;
+    const target = await tauriInvoke<{ hubAddr?: string | null; cloud?: boolean } | null>("get_lan_redirect_target_v3");
+    cachedTarget = target ? { hubAddr: target.hubAddr ?? "", cloud: target.cloud ?? false } : null;
   } catch {
-    cachedHubAddr = null;
+    cachedTarget = null;
   }
-  return cachedHubAddr;
+  return cachedTarget;
 }
 
 /** Call after pairing/forgetting so the next `connectLanChangeSocket` picks up the new role without an app restart. */
 export function invalidateLanTargetCache(): void {
-  cachedHubAddr = undefined;
+  cachedTarget = undefined;
 }
+
+/** The Tauri event the Rust side emits for a "something changed" nudge that arrived over the internet. */
+export const LAN_CHANGE_EVENT = "lan-change";
 
 /**
  * Opens a WebSocket to the paired Hub's "something changed" broadcast
@@ -231,13 +244,26 @@ export function connectLanChangeSocket(onChange: () => void): () => void {
   let socket: WebSocket | null = null;
   let stopped = false;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let unlisten: (() => void) | null = null;
 
   async function connect() {
     if (stopped) return;
-    const hubAddr = await getHubAddr();
-    if (!hubAddr || stopped) return;
+    const target = await getLanTarget();
+    if (!target || stopped) return;
+    // Nudges that arrive through the internet route (the Hub is not on this
+    // till's LAN, or the LAN is down). Harmless when the LAN socket works too.
+    if (target.cloud && !unlisten) {
+      try {
+        const off = await listen(LAN_CHANGE_EVENT, () => onChange());
+        if (stopped) off();
+        else unlisten = off;
+      } catch {
+        // no Tauri event bridge (tests, browser preview): LAN socket + polling remain
+      }
+    }
+    if (!target.hubAddr || stopped) return;
     try {
-      socket = new WebSocket(`ws://${hubAddr}/ws`);
+      socket = new WebSocket(`ws://${target.hubAddr}/ws`);
       socket.onmessage = () => onChange();
       socket.onclose = scheduleRetry;
       socket.onerror = () => socket?.close();
@@ -257,5 +283,6 @@ export function connectLanChangeSocket(onChange: () => void): () => void {
     stopped = true;
     if (retryTimer) clearTimeout(retryTimer);
     socket?.close();
+    unlisten?.();
   };
 }
