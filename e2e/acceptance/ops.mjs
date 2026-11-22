@@ -1394,6 +1394,8 @@ try {
     // The owner starts on the dashboard: leave and come back so it loads the numbers afresh.
     await nav("shift");
     await nav("dashboard");
+    // 0.10.2: the summary tab keeps the detailed cards behind «تفاصيل الأرباح».
+    await clickId("dash-details-toggle");
     await byId("profit-cards");
     ok((await textOf("profit-net-sales")).includes("المرتجعات"), `net sales shows the refunds: ${await textOf("profit-net-sales")}`);
     for (const id of ["profit-margin", "profit-expenses", "profit-net"]) await byId(id);
