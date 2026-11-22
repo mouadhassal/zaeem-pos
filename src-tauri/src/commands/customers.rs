@@ -118,3 +118,21 @@ pub fn get_customer_detail_v3(state: State<Db>, license: State<crate::license::c
 }
 
 // ---------------------------------------------------------------------------
+
+/// What a customer owes on credit, with the statement (credit invoices and payments): for the customer page.
+/// Needs the debt permission too, so the page simply hides the section for someone without it.
+#[tauri::command]
+pub fn get_customer_debt_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, customer_id: String) -> Result<crate::credit::CustomerDebt, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
+    authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut debt = crate::credit::customer_debt(&conn, &actor.tenant_id, &customer_id)?;
+    // A branch cashier only sees the credit accounts of their own branch.
+    let repo = Repo::new(&conn);
+    let scope = actor.scope();
+    debt.statements.retain(|s| repo.assert_debtor_in_scope(&scope, &s.debtor_id).is_ok());
+    debt.balance_cents = debt.statements.iter().map(|s| s.balance_cents).sum();
+    Ok(debt)
+}

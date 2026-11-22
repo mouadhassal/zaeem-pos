@@ -3,13 +3,17 @@ import {
   DEFAULT_SETTINGS,
   absenceCost,
   dayPay,
+  deductionDaysCost,
   describeLateRule,
   earlyCost,
   exampleLines,
+  extraDayPay,
+  formatDaysX100,
   lateCost,
   monthLabel,
   muldiv,
   overtimePay,
+  parseDaysX100,
   shiftMonth,
   type PayrollSettings,
 } from "./payroll";
@@ -70,5 +74,40 @@ describe("months", () => {
     expect(shiftMonth("2026-01", -1)).toBe("2025-12");
     expect(shiftMonth("2026-12", 1)).toBe("2027-01");
     expect(monthLabel("2026-11")).toBe("تشرين الثاني 2026");
+  });
+});
+
+// The same numbers payroll.rs asserts: a 780,000 salary is 30,000 a day.
+describe("extra days and deduction days", () => {
+  it("an extra day is paid at the owner's percent of a day's pay", () => {
+    expect(extraDayPay(2, 30_000, 200)).toBe(120_000);
+    expect(extraDayPay(1, 30_000, 150)).toBe(45_000);
+    expect(extraDayPay(0, 30_000, 150)).toBe(0);
+  });
+
+  it("deduction days are hundredths of a day of pay, apart from absence", () => {
+    expect(deductionDaysCost(150, 30_000)).toBe(45_000);
+    expect(deductionDaysCost(50, 30_000)).toBe(15_000);
+  });
+
+  it("days are typed as decimals, Arabic digits too, and shown without noise", () => {
+    expect(parseDaysX100("1.5")).toBe(150);
+    expect(parseDaysX100("٢")).toBe(200);
+    expect(parseDaysX100("٠٫٥")).toBe(50);
+    expect(parseDaysX100("0")).toBe(0);
+    expect(parseDaysX100("abc")).toBe(0);
+    expect(formatDaysX100(150)).toBe("1.5");
+    expect(formatDaysX100(100)).toBe("1");
+    expect(formatDaysX100(25)).toBe("0.25");
+  });
+
+  it("the example lines show the extra day only when the owner turned the rule on", () => {
+    expect(exampleLines(DEFAULT_SETTINGS, 780_000).some((l) => l.label === "عمل يوماً في عطلة")).toBe(false);
+    const on = exampleLines(S({ extra_day_rule: "DAY_PAY", holiday_multiplier_pct: 200 }), 780_000);
+    expect(on.find((l) => l.label === "عمل يوماً في عطلة")?.amount).toBe(60_000);
+  });
+
+  it("nothing new is switched on by default", () => {
+    expect([DEFAULT_SETTINGS.extra_day_rule, DEFAULT_SETTINGS.holiday_multiplier_pct, DEFAULT_SETTINGS.holidays.length, DEFAULT_SETTINGS.require_attendance_approval]).toEqual(["NONE", 150, 0, false]);
   });
 });

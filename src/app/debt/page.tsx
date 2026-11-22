@@ -9,6 +9,8 @@ import { IconCash, IconPencil, IconTrash, IconX } from "@tabler/icons-react";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 import { formatArabicDateTime, formatArabicDate } from "../../lib/dateLocal";
 import { useToast } from "../../hooks/useToast";
+import CreditStatement from "../../components/CreditStatement";
+import type { DebtStatement, DebtorLink } from "../../lib/credit";
 
 interface DebtorRow {
   id: string;
@@ -22,22 +24,14 @@ interface DebtorRow {
   balance_cents: number;
   last_transaction_at: string | null;
   is_active: number;
-}
-
-interface DebtEntryRow {
-  id: string;
-  debtor_id: string;
-  order_id: string | null;
-  amount_cents: number;
-  entry_type: "DEBT" | "PAYMENT";
-  notes: string | null;
-  created_by: string;
-  created_at: string;
+  /** The customer this credit account is linked to (null = not linked yet). */
+  customer_id: string | null;
+  customer_name: string | null;
 }
 
 interface DebtorDetail {
   debtor: DebtorRow;
-  entries: DebtEntryRow[];
+  statement: DebtStatement;
 }
 
 // phone is optional here to match the backend: create_debtor_v3/
@@ -194,10 +188,35 @@ export default function DebtPage() {
 
   const openDetail = async (debtor: DebtorRow) => {
     try {
-      const entries = await invoke<DebtEntryRow[]>("list_debt_entries_v3", { sessionToken: token, debtorId: debtor.id });
-      setDetail({ debtor, entries });
+      const statement = await invoke<DebtStatement>("get_debt_statement_v3", { sessionToken: token, debtorId: debtor.id });
+      setDetail({ debtor, statement });
       setDetailOpen(true);
     } catch (err) { setError(`حدث خطأ في تحميل التفاصيل: ${realErrorText(err)}`); }
+  };
+
+  // The list, and the open detail panel if it is this debtor's, show the new link.
+  const refreshAfterLink = async (debtorId: string) => {
+    const rows = await invoke<DebtorRow[]>("list_debtors_v3", { sessionToken: token });
+    setDebtors(rows);
+    const fresh = rows.find((r) => r.id === debtorId);
+    if (fresh && detail && detail.debtor.id === debtorId) await openDetail(fresh);
+  };
+
+  // One tap: link this credit account to the customer with the same phone, or make that customer.
+  const linkToCustomer = async (debtor: DebtorRow) => {
+    try {
+      const link = await invoke<DebtorLink>("link_debtor_customer_v3", { sessionToken: token, debtorId: debtor.id, customerId: null, createIfMissing: true });
+      toast.success(link.created ? `أُنشئ الزبون «${link.customer_name}» وربط به ✓` : `رُبط بالزبون «${link.customer_name}» ✓`);
+      await refreshAfterLink(debtor.id);
+    } catch (err) { setError(`تعذر الربط: ${realErrorText(err)}`); }
+  };
+
+  const unlinkCustomer = async (debtor: DebtorRow) => {
+    try {
+      await invoke("unlink_debtor_customer_v3", { sessionToken: token, debtorId: debtor.id });
+      toast.success("أُلغي الربط بالزبون");
+      await refreshAfterLink(debtor.id);
+    } catch (err) { setError(`تعذر إلغاء الربط: ${realErrorText(err)}`); }
   };
 
   const handlePay = async () => {
@@ -289,6 +308,7 @@ export default function DebtPage() {
             <tr className="bg-surface-alt border-b border-ink-200 text-ink-400 font-arabic">
               <th className="text-right p-3 font-medium">الاسم</th>
               <th className="text-right p-3 font-medium">الهاتف</th>
+              <th className="text-right p-3 font-medium">الزبون</th>
               <th className="text-center p-3 font-medium">إجمالي الديون</th>
               <th className="text-center p-3 font-medium">المدفوع</th>
               <th className="text-center p-3 font-medium">المتبقي</th>
@@ -302,6 +322,13 @@ export default function DebtPage() {
               <tr key={d.id} className="border-b border-ink-200 hover:bg-saffron-50 cursor-pointer" onClick={() => openDetail(d)}>
                 <td className="p-3 font-arabic text-ink-900 font-medium">{d.name}</td>
                 <td className="p-3 font-mono text-ink-500" dir="ltr">{d.phone}</td>
+                <td className="p-3 font-arabic text-xs" onClick={(e) => e.stopPropagation()} data-testid={`customer-link-${d.id}`}>
+                  {d.customer_id ? (
+                    <span className="text-ink-900">{d.customer_name}</span>
+                  ) : (
+                    <button onClick={() => linkToCustomer(d)} disabled={!d.phone && !d.email} className="px-2 py-1 rounded-sm border border-saffron-300 text-saffron-700 font-bold hover:bg-saffron-50 disabled:opacity-40" data-testid={`link-customer-${d.id}`}>اربط بزبون</button>
+                  )}
+                </td>
                 <td className="p-3 text-center font-mono text-danger font-bold">{fmt(d.total_debt_cents)}</td>
                 <td className="p-3 text-center font-mono text-saffron-600 font-bold">{fmt(d.total_paid_cents)}</td>
                 <td className={`p-3 text-center font-mono font-bold ${d.balance_cents > 0 ? "text-danger" : "text-ok"}`}>{fmt(d.balance_cents)}</td>
@@ -317,7 +344,7 @@ export default function DebtPage() {
               </tr>
             ))}
             {filtered.length === 0 && (
-              <tr><td colSpan={8} className="p-6 text-center text-ink-500 font-arabic">{searchQuery ? "لا توجد نتائج" : "لا يوجد مدينون"}</td></tr>
+              <tr><td colSpan={9} className="p-6 text-center text-ink-500 font-arabic">{searchQuery ? "لا توجد نتائج" : "لا يوجد مدينون"}</td></tr>
             )}
           </tbody>
         </table>
@@ -421,40 +448,29 @@ export default function DebtPage() {
 
               <div className="grid grid-cols-3 gap-3">
                 <div className="bg-danger-soft rounded-sm p-3 text-center">
-                  <p className="text-2xl font-bold text-danger font-mono">{fmt(detail.debtor.total_debt_cents)}</p>
+                  <p className="text-2xl font-bold text-danger font-mono">{fmt(detail.statement.total_debt_cents)}</p>
                   <p className="text-xs text-danger font-arabic mt-1">إجمالي الديون</p>
                 </div>
                 <div className="bg-saffron-50 rounded-sm p-3 text-center">
-                  <p className="text-2xl font-bold text-saffron-600 font-mono">{fmt(detail.debtor.total_paid_cents)}</p>
+                  <p className="text-2xl font-bold text-saffron-600 font-mono">{fmt(detail.statement.total_paid_cents)}</p>
                   <p className="text-xs text-saffron-600 font-arabic mt-1">المدفوع</p>
                 </div>
-                <div className={`rounded-sm p-3 text-center ${detail.debtor.balance_cents > 0 ? "bg-danger-soft" : "bg-saffron-50"}`}>
-                  <p className={`text-2xl font-bold font-mono ${detail.debtor.balance_cents > 0 ? "text-danger" : "text-saffron-600"}`}>{fmt(detail.debtor.balance_cents)}</p>
+                <div className={`rounded-sm p-3 text-center ${detail.statement.balance_cents > 0 ? "bg-danger-soft" : "bg-saffron-50"}`}>
+                  <p className={`text-2xl font-bold font-mono ${detail.statement.balance_cents > 0 ? "text-danger" : "text-saffron-600"}`}>{fmt(detail.statement.balance_cents)}</p>
                   <p className="text-xs font-arabic mt-1">المتبقي</p>
                 </div>
               </div>
 
-              <div className="bg-white rounded-md p-4 space-y-2 border border-ink-200">
-                <h3 className="font-bold font-arabic text-sm text-ink-900">سجل المعاملات</h3>
-                {detail.entries.length > 0 ? (
-                  <div className="space-y-1">
-                    {detail.entries.map((e) => (
-                      <div key={e.id} className="flex justify-between items-center text-xs py-1.5 border-b border-ink-200 last:border-0">
-                        <div className="flex items-center gap-2">
-                          <span className={`inline-block w-2 h-2 rounded-full ${e.entry_type === "DEBT" ? "bg-danger" : "bg-saffron-400"}`} />
-                          <span className="font-arabic text-ink-400">{e.entry_type === "DEBT" ? "دين" : "دفعة"}</span>
-                          <span className="font-arabic text-ink-500">{fmtDateTime(e.created_at)}</span>
-                        </div>
-                        <span className={`font-mono font-bold ${e.entry_type === "DEBT" ? "text-danger" : "text-saffron-600"}`}>
-                          {e.entry_type === "DEBT" ? "+" : "-"}{fmt(e.amount_cents)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
+              <div className="bg-white rounded-md p-3 border border-ink-200 flex items-center justify-between gap-3 text-sm font-arabic">
+                <span className="text-ink-400">الزبون المرتبط</span>
+                {detail.debtor.customer_id ? (
+                  <span className="flex items-center gap-3"><span className="text-ink-900 font-bold" data-testid="detail-customer">{detail.debtor.customer_name}</span><button onClick={() => unlinkCustomer(detail.debtor)} className="text-xs text-ink-400 hover:text-danger">إلغاء الربط</button></span>
                 ) : (
-                  <p className="text-xs text-ink-500 font-arabic">لا توجد معاملات</p>
+                  <button onClick={() => linkToCustomer(detail.debtor)} disabled={!detail.debtor.phone && !detail.debtor.email} className="px-2 py-1 rounded-sm border border-saffron-300 text-saffron-700 font-bold text-xs hover:bg-saffron-50 disabled:opacity-40">اربط بزبون</button>
                 )}
               </div>
+
+              <CreditStatement statement={detail.statement} onChanged={async () => { const rows = await invoke<DebtorRow[]>("list_debtors_v3", { sessionToken: token }); setDebtors(rows); await openDetail(rows.find((r) => r.id === detail.debtor.id) ?? detail.debtor); }} />
 
               <div className="bg-white rounded-md p-4 space-y-2">
                 <h3 className="font-bold font-arabic text-sm text-ink-900">معلومات الاتصال</h3>

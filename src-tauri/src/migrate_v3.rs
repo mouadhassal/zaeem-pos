@@ -3351,6 +3351,47 @@ pub fn run_areas_platforms_templates_migration(conn: &mut Connection, _db_path: 
     Ok(())
 }
 
+pub const MIGRATION_AX_VERSION: i64 = 56;
+
+/// Migration AX (2026-11-22): payroll extras and credit customers linked to customers.
+///  * `payroll_settings` learns the holiday / extra-day rule (`extra_day_rule`, `holiday_multiplier_pct`, `holidays`)
+///    and the attendance-approval switch (`require_attendance_approval`, default off = as before).
+///  * New tables `payroll_day_deductions` (days deducted by hand), `payroll_day_overrides` (days corrected in the
+///    attendance review) and `payroll_attendance_approvals` ("اعتماد الحضور" per person and month).
+///  * `debtors.customer_id` (nullable): a credit customer linked to a row of `customers`. Unlinked debtors keep working.
+///
+/// Additive only; every column defaults to "as before".
+pub fn run_payroll_extras_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AX_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    if table_exists(&tx, "payroll_settings")? {
+        add_column_if_missing(&tx, "payroll_settings", "extra_day_rule", "TEXT NOT NULL DEFAULT 'NONE'")?;
+        add_column_if_missing(&tx, "payroll_settings", "holiday_multiplier_pct", "INTEGER NOT NULL DEFAULT 150")?;
+        add_column_if_missing(&tx, "payroll_settings", "holidays", "TEXT NOT NULL DEFAULT '[]'")?;
+        add_column_if_missing(&tx, "payroll_settings", "require_attendance_approval", "INTEGER NOT NULL DEFAULT 0")?;
+    }
+    if table_exists(&tx, "staff")? {
+        // The three new tables point at staff; the rest of the payroll schema is already there (CREATE IF NOT EXISTS).
+        tx.execute_batch(crate::payroll::SCHEMA_SQL)?;
+    }
+    if table_exists(&tx, "debtors")? {
+        add_column_if_missing(&tx, "debtors", "customer_id", "TEXT")?;
+        tx.execute_batch("CREATE INDEX IF NOT EXISTS idx_debtors_customer ON debtors (customer_id);")?;
+    }
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AX_VERSION, "0056_payroll_extras_credit_link", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

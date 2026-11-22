@@ -12,6 +12,8 @@ interface DebtorRow {
   email: string | null;
   balance_cents: number;
   is_active: number;
+  customer_id?: string | null;
+  customer_name?: string | null;
 }
 
 interface Props {
@@ -109,6 +111,7 @@ export default function DebtSelectModal({ onClose, onSelect }: Props) {
                   <div>
                     <p className="font-arabic font-bold text-sm text-text">{d.name}</p>
                     <p className="font-mono text-xs text-text-muted" dir="ltr">{d.phone}</p>
+                    <p className="font-arabic text-[11px] text-text-muted">{d.customer_name ? `زبون: ${d.customer_name}` : "غير مرتبط بزبون"}</p>
                   </div>
                   <div className="text-left">
                     <p className="text-xs font-arabic text-text-muted">المتبقي</p>

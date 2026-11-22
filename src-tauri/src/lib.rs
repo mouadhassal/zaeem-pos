@@ -43,6 +43,7 @@ mod profit;
 mod finance;
 mod sales_strip;
 mod payroll;
+mod credit;
 mod stockroom;
 mod ops_settings;
 mod role_access;
@@ -135,6 +136,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_role_access_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_workforce_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_no_bill_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_payroll_extras_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_finance_ledger_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_inventory_units_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_areas_platforms_templates_migration(conn, db_path).map_err(|e| e.to_string())?;
@@ -650,6 +652,13 @@ pub fn run() {
             commands::payroll::cancel_payroll_advance_v3,
             commands::payroll::set_paid_leave_v3,
             commands::payroll::add_manual_punch_v3,
+            commands::payroll::add_payroll_day_deduction_v3,
+            commands::payroll::delete_payroll_day_deduction_v3,
+            commands::payroll::get_attendance_review_v3,
+            commands::payroll::set_attendance_day_v3,
+            commands::payroll::clear_attendance_day_v3,
+            commands::payroll::set_attendance_approval_v3,
+            commands::payroll::get_worker_statement_v3,
             commands::staff::list_roster_entries_v3,
             commands::staff::create_roster_entry_v3,
             commands::staff::update_roster_entry_v3,
@@ -678,6 +687,10 @@ pub fn run() {
             commands::debt::deactivate_debtor_v3,
             commands::debt::list_debt_entries_v3,
             commands::debt::record_debt_payment_v3,
+            commands::debt::get_debt_statement_v3,
+            commands::debt::link_debtor_customer_v3,
+            commands::debt::unlink_debtor_customer_v3,
+            commands::customers::get_customer_debt_v3,
             commands::reports::get_finance_revenue_v3,
             commands::reports::get_dashboard_summary_v3,
             commands::reports::get_profit_trend_v3,

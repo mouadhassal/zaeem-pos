@@ -68,7 +68,7 @@ pub fn list_operational_costs_v3(state: State<Db>, license: State<crate::license
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn create_operational_cost_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category: String, amount_cents: i64, date: String, notes: Option<String>, payment_date: Option<String>, payee: Option<String>, payment_method: Option<String>, reference_no: Option<String>, cost_centre: Option<String>, accrual_period: Option<String>) -> Result<String, String> {
+pub fn create_operational_cost_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category: String, amount_cents: i64, date: String, notes: Option<String>, payment_date: Option<String>, payee: Option<String>, payment_method: Option<String>, reference_no: Option<String>, cost_centre: Option<String>, accrual_period: Option<String>, advance_user_id: Option<String>, advance_instalment_cents: Option<i64>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
@@ -80,7 +80,19 @@ pub fn create_operational_cost_v3(state: State<Db>, license: State<crate::licens
     fields.normalise()?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let cost_id = crate::finance::insert_cost(&tx, &tenant_id, &branch_id, &actor.id, &fields).map_err(|e| e.to_string())?;
+    let cost_id = if fields.category == crate::finance::ADVANCE_CATEGORY {
+        // An advance paid to a worker: the payroll advance is created together with this expense (once), and
+        // payroll never records a second expense for it.
+        let worker = advance_user_id.as_deref().map(str::trim).filter(|w| !w.is_empty()).ok_or("اختر الموظف الذي أخذ السلفة")?;
+        let scope = super::payroll::scope_of(&tx, &actor)?;
+        crate::payroll::person_in_scope(&tx, &tenant_id, worker, &scope)?;
+        let instalment = advance_instalment_cents.filter(|i| *i > 0).unwrap_or(amount_cents);
+        let (advance_id, cost_id) = crate::payroll::add_advance_with_cost(&tx, &tenant_id, &branch_id, worker, fields.amount_cents, instalment, &fields.date, fields.notes.as_deref(), &actor.id, Some(fields.clone()))?;
+        audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::SettingsChanged, "payroll_advance", &advance_id, None, Some(&serde_json::json!({ "user_id": worker, "amount_cents": amount_cents, "instalment_cents": instalment, "from": "finance" }))).map_err(|e| e.to_string())?;
+        cost_id.ok_or("تعذر تسجيل مصروف السلفة")?
+    } else {
+        crate::finance::insert_cost(&tx, &tenant_id, &branch_id, &actor.id, &fields).map_err(|e| e.to_string())?
+    };
     audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::OperationalCostRecorded, "operational_cost", &cost_id, None, Some(&serde_json::json!({ "category": fields.category, "amount_cents": amount_cents }))).map_err(|e| e.to_string())?;
     // T2.0 plan §0 flag #4: operational_costs' first-ever sync wire-up.
     let license_status = license.cached_status();
@@ -98,6 +110,9 @@ pub fn update_operational_cost_v3(state: State<Db>, license: State<crate::licens
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let mut fields = crate::finance::CostFields { category, amount_cents, date, notes, payment_date, payee, payment_method, reference_no, cost_centre, accrual_period, ..Default::default() };
     fields.normalise()?;
+    if fields.category == crate::finance::ADVANCE_CATEGORY {
+        return Err("السلفة تُسجَّل كمصروف جديد مع اختيار الموظف، ولا يُحوَّل إليها مصروف قديم".to_string());
+    }
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = crate::finance::update_cost(&tx, &actor.scope(), &cost_id, &fields)?;

@@ -47,8 +47,11 @@ export function formatMarginPercent(bp: number): string {
 export const EXPENSE_CATEGORIES = [
   "مشتريات مواد", "إيجار", "رواتب", "كهرباء", "مياه", "محروقات", "غاز", "ضرائب ورسوم", "تأمينات اجتماعية", "ضيافة",
   "هاتف واتصالات", "تغليف", "خدمات عامة", "مستلزمات", "صيانة وإصلاح", "دعاية وتسويق", "مستلزمات مكتبية", "أجور توصيل",
-  "وجبات موظفين", "نثريات",
+  "وجبات موظفين", "نثريات", "سلفة موظف",
 ] as const;
+
+/** The category that also creates a payroll advance for the picked worker (and the reverse). */
+export const ADVANCE_CATEGORY = "سلفة موظف";
 
 /** Names stored before the list changed, and the new name each one counts as (never rewritten in the data). */
 const LEGACY_CATEGORIES: Record<string, string> = {
@@ -73,6 +76,9 @@ export function categoryHint(category: string): string {
   }
   if (c === "رواتب") {
     return "تدخل في «الربح بالمصروفات» وفي «صافي الربح الفعلي». الأفضل أن تُسجَّل من «الرواتب» تلقائياً عند صرف الراتب.";
+  }
+  if (c === ADVANCE_CATEGORY) {
+    return "سلفة تُعطى لموظف: اختر الموظف فتُسجَّل سلفةً عليه تُخصم من رواتبه القادمة، ولا تُسجَّل مرتين. ما يُخصم من راتبه لاحقاً لا يُحسب مصروفاً ثانية.";
   }
   if (c === "إيجار") {
     return "الأفضل تسجيله من تبويب «الإيجار» ليظهر المستحق والمدفوع والباقي. يُحسب على شهر استحقاقه.";

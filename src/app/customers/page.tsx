@@ -12,6 +12,8 @@ import { formatMoney } from "../../lib/money";
 import { formatArabicDate } from "../../lib/dateLocal";
 import { useToast } from "../../hooks/useToast";
 import { usePlanStore } from "../../stores/planStore";
+import CreditStatement from "../../components/CreditStatement";
+import type { CustomerDebt } from "../../lib/credit";
 
 interface Customer {
   id: string;
@@ -135,6 +137,8 @@ export default function CustomersPage() {
 
   const [detailCustomer, setDetailCustomer] = useState<CustomerDetail | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+  // What this customer owes on credit (the debt book), when the debt book is on and the person may see it.
+  const [customerDebt, setCustomerDebt] = useState<CustomerDebt | null>(null);
 
   const filtered = customers.filter((c) => {
     const q = searchQuery.trim().toLowerCase();
@@ -256,6 +260,15 @@ export default function CustomersPage() {
     }
   };
 
+  const loadCustomerDebt = useCallback(async (customerId: string) => {
+    try {
+      setCustomerDebt(await invoke<CustomerDebt>("get_customer_debt_v3", { sessionToken: token, customerId }));
+    } catch {
+      // No debt book (POS Lite, module off) or no permission: the section just is not shown.
+      setCustomerDebt(null);
+    }
+  }, [token]);
+
   const openDetail = async (customer: Customer) => {
     try {
       const detail = await invoke<{
@@ -286,6 +299,8 @@ export default function CustomersPage() {
         avgOrderValue: avgValue,
       });
       setDetailOpen(true);
+      setCustomerDebt(null);
+      void loadCustomerDebt(customer.id);
     } catch (err) {
       setError(`حدث خطأ في تحميل التفاصيل: ${realErrorText(err)}`);
     }
@@ -294,6 +309,7 @@ export default function CustomersPage() {
   const closeDetail = () => {
     setDetailOpen(false);
     setDetailCustomer(null);
+    setCustomerDebt(null);
   };
 
   // 2026-09-13 audit fix: this page used to have two separate, unexplained
@@ -686,6 +702,19 @@ export default function CustomersPage() {
                   <p className="text-xs text-saffron-700 font-arabic mt-1">نقاط الولاء</p>
                 </div>
               </div>
+
+              {/* Credit: what the customer owes, invoice by invoice, and how to settle it */}
+              {customerDebt && customerDebt.statements.length > 0 && (
+                <div className="bg-white rounded-md p-4 space-y-3 border border-ink-200" data-testid="customer-debt">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-bold font-arabic text-sm text-ink-900">الدين الآجل</h3>
+                    <span className={`font-mono font-bold ${customerDebt.balance_cents > 0 ? "text-danger" : "text-ok"}`} data-testid="customer-debt-balance">{formatMoney(customerDebt.balance_cents)}</span>
+                  </div>
+                  {customerDebt.statements.map((st) => (
+                    <CreditStatement key={st.debtor_id} statement={st} onChanged={() => void loadCustomerDebt(st.customer_id ?? detailCustomer.customer.id)} />
+                  ))}
+                </div>
+              )}
 
               {/* Favorite Items */}
               <div className="bg-white rounded-md p-4 space-y-2 border border-ink-200">

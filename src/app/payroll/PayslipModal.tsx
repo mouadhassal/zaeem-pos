@@ -6,8 +6,9 @@ import { useToast } from "../../hooks/useToast";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { exportHtmlToPdf, pdfTableHtml } from "../../lib/pdfExport";
 import { tzOffsetMinutes } from "../../lib/assistant";
-import { DAY_STATUS_LABEL, monthLabel, PAY_TYPE_LABEL, type DayLine, type Payslip } from "../../lib/payroll";
+import { DAY_STATUS_LABEL, formatDaysX100, monthLabel, parseDaysX100, PAY_TYPE_LABEL, type DayLine, type Payslip } from "../../lib/payroll";
 import { Field, Hint, Modal, btnGhost, btnPrimary, inputCls } from "./ui";
+import AttendanceReviewModal from "./AttendanceReviewModal";
 
 const STATUS_CLS: Record<string, string> = {
   PRESENT: "text-ok", LATE: "text-warn", ABSENT: "text-danger", OFF: "text-ink-400", OFF_WORKED: "text-saffron-600",
@@ -35,6 +36,9 @@ export default function PayslipModal({ userId, month, canApprove, onClose, onCha
   const [punchTime, setPunchTime] = useState("17:00");
   const [punchDir, setPunchDir] = useState<"IN" | "OUT">("OUT");
   const [punchReason, setPunchReason] = useState("");
+  const [dedDays, setDedDays] = useState("");
+  const [dedReason, setDedReason] = useState("");
+  const [reviewing, setReviewing] = useState(false);
 
   const tz = tzOffsetMinutes();
   const load = useCallback(async () => {
@@ -92,12 +96,16 @@ export default function PayslipModal({ userId, month, canApprove, onClose, onCha
       <p style="font-size:11px;color:#667085;text-align:center;margin:0 0 16px">${monthLabel(p.month)}</p>
       ${pdfTableHtml("الراتب", ["البند", "المبلغ"], [
         ["الراتب الأساسي", formatMoney(p.base_cents)],
+        ["الوقت الإضافي", formatMoney(p.overtime_pay_cents)],
+        [`أيام العمل في العطل (${p.extra_days} يوم)`, formatMoney(p.extra_day_pay_cents)],
+        ["مكافآت", formatMoney(p.bonus_cents)],
+        ["الإجمالي قبل الخصم", formatMoney(p.gross_cents)],
         ["خصم التأخير", formatMoney(p.late_deduction_cents)],
         ["خصم الغياب", formatMoney(p.absence_deduction_cents)],
         ["خصم الخروج المبكر", formatMoney(p.early_deduction_cents)],
-        ["الوقت الإضافي", formatMoney(p.overtime_pay_cents)],
-        ["مكافآت", formatMoney(p.bonus_cents)],
+        [`خصم أيام (${formatDaysX100(p.deduction_days_x100)} يوم)`, formatMoney(p.deduction_days_cents)],
         ["غرامات", formatMoney(p.fine_cents)],
+        ["إجمالي الخصومات", formatMoney(p.total_deductions_cents)],
         ["المستحق", formatMoney(p.earned_cents)],
         ["قسط السلفة", formatMoney(p.advance_repaid_cents)],
         ["الصافي المدفوع", formatMoney(p.net_cents)],
@@ -116,22 +124,32 @@ export default function PayslipModal({ userId, month, canApprove, onClose, onCha
         </span>
       </div>
 
-      {p.warnings.length > 0 && (
+      {p.attendance_status === "PENDING" && (
+        <div className="rounded-md border border-warn bg-warn-soft p-3 flex flex-wrap items-center justify-between gap-3 text-sm font-arabic text-ink-900" data-testid="attendance-pending">
+          <span>حضور هذا الشهر لم يُعتمد بعد. لا يُعتمد الراتب قبل اعتماد الحضور (يمكنك إيقاف هذا الشرط من «القواعد»).</span>
+          <button className={btnPrimary} onClick={() => setReviewing(true)} data-testid="attendance-review-open">مراجعة الحضور واعتماده</button>
+        </div>
+      )}
+      {p.warnings.filter((w) => !(p.attendance_status === "PENDING" && w.includes("لم يُعتمد"))).length > 0 && (
         <ul className="rounded-md border border-warn bg-warn-soft p-3 space-y-1 text-sm font-arabic text-ink-900" data-testid="payslip-warnings">
-          {p.warnings.map((w) => <li key={w}>• {w}</li>)}
+          {p.warnings.filter((w) => !(p.attendance_status === "PENDING" && w.includes("لم يُعتمد"))).map((w) => <li key={w}>• {w}</li>)}
         </ul>
       )}
 
       <div data-testid="payslip-lines">
         {row("الراتب الأساسي", p.pay_type === "MONTHLY" ? "الراتب الشهري المتفق عليه" : p.pay_type === "DAILY" ? "أجر اليوم × أيام العمل الفعلية" : "أجر الساعة × ساعات العمل الفعلية", p.base_cents, "+")}
+        {p.overtime_pay_cents > 0 && row("الوقت الإضافي", `${Math.round(p.overtime_minutes / 6) / 10} ساعة`, p.overtime_pay_cents, "+")}
+        {p.extra_day_pay_cents > 0 && row("أيام العمل في العطل", `${p.extra_days} يوم × ${p.extra_day_multiplier_pct}% من أجر اليوم`, p.extra_day_pay_cents, "+")}
+        {p.bonus_cents > 0 && row("مكافآت", null, p.bonus_cents, "+")}
+        {row("الإجمالي قبل الخصم", "الأساسي + الإضافات", p.gross_cents, "=")}
         {p.late_deduction_cents > 0 && row("خصم التأخير", `${p.late_days} يوم · ${p.late_minutes} دقيقة`, p.late_deduction_cents, "-")}
         {p.absence_deduction_cents > 0 && row("خصم الغياب", `${p.absent_days} يوم`, p.absence_deduction_cents, "-")}
         {p.early_deduction_cents > 0 && row("خصم الخروج المبكر", `${p.early_minutes} دقيقة`, p.early_deduction_cents, "-")}
-        {p.overtime_pay_cents > 0 && row("الوقت الإضافي", `${Math.round(p.overtime_minutes / 6) / 10} ساعة`, p.overtime_pay_cents, "+")}
-        {p.bonus_cents > 0 && row("مكافآت", null, p.bonus_cents, "+")}
+        {p.deduction_days_cents > 0 && row("خصم أيام", `${formatDaysX100(p.deduction_days_x100)} يوم × أجر اليوم (غير الغياب)`, p.deduction_days_cents, "-")}
         {p.fine_cents > 0 && row("غرامات", null, p.fine_cents, "-")}
-        {row("المستحق عن الشهر", "هذا ما يُسجَّل مصروفاً (رواتب) عند الصرف", p.earned_cents, "=")}
-        {p.advance_repaid_cents > 0 && row("قسط السلفة", "يُخصم من المبلغ المسلَّم لا من المستحق", p.advance_repaid_cents, "-")}
+        {p.total_deductions_cents > 0 && row("إجمالي الخصومات", null, p.total_deductions_cents, "=")}
+        {row("المستحق عن الشهر", "الإجمالي − الخصومات", p.earned_cents, "=")}
+        {p.advance_repaid_cents > 0 && row("قسط السلفة", "يُخصم من المبلغ المسلَّم لا من المستحق (السلفة سُجّلت مصروفاً يوم سُلّمت)", p.advance_repaid_cents, "-")}
         <div className="flex justify-between items-center pt-3 font-arabic">
           <span className="font-bold text-ink-900">الصافي الذي يُسلَّم للموظف</span>
           <span className="text-2xl font-bold font-mono text-saffron-600" data-testid="payslip-net">{formatMoney(p.net_cents)}</span>
@@ -142,7 +160,12 @@ export default function PayslipModal({ userId, month, canApprove, onClose, onCha
       )}
 
       <section className="space-y-2">
-        <h3 className="font-bold font-arabic text-ink-900">أيام الشهر</h3>
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="font-bold font-arabic text-ink-900">أيام الشهر</h3>
+          <button className="text-saffron-600 font-bold font-arabic text-sm" onClick={() => setReviewing(true)} data-testid="attendance-review-link">
+            مراجعة الحضور{p.attendance_status === "APPROVED" ? " (معتمد)" : ""}
+          </button>
+        </div>
         <Hint summary={editable ? "اضغط «عذر مقبول» على يوم تأخر أو غاب فيه بعذر ليُعفى من الخصم. وإن نسي بصمة خروج أضفها." : "الكشف معتمد، وللتعديل أعد فتحه."} />
         {!canApprove && <p className="text-xs font-arabic text-ink-500" data-testid="prepare-only-note">أنت تجهّز الكشف فقط. يعتمده المالك ويصرفه.</p>}
         <div className="rounded-md border border-ink-200 max-h-72 overflow-y-auto">
@@ -206,11 +229,33 @@ export default function PayslipModal({ userId, month, canApprove, onClose, onCha
         )}
       </section>
 
+      <section className="space-y-2" data-testid="day-deductions">
+        <h3 className="font-bold font-arabic text-ink-900">خصم أيام</h3>
+        <Hint summary="عدد أيام تخصمها من راتبه بقرارك، وهي غير الغياب الذي يحسبه النظام." />
+        {p.day_deductions.map((d) => (
+          <div key={d.id} className="flex items-center justify-between text-sm font-arabic border-b border-ink-100 py-1.5">
+            <span>{formatDaysX100(d.days_x100)} يوم · {d.reason}</span>
+            {editable && <button className="text-danger text-xs" disabled={busy} onClick={() => run(() => invoke("delete_payroll_day_deduction_v3", { sessionToken: token, deductionId: d.id }), "تم الحذف")}>حذف</button>}
+          </div>
+        ))}
+        {editable && (
+          <div className="flex flex-wrap items-end gap-2" data-testid="day-deduction-form">
+            <input value={dedDays} onChange={(e) => setDedDays(e.target.value)} placeholder="عدد الأيام (1 أو 0.5)" className={`${inputCls} max-w-[170px]`} dir="ltr" inputMode="decimal" data-testid="ded-days" />
+            <input value={dedReason} onChange={(e) => setDedReason(e.target.value)} placeholder="السبب (إجباري)" className={`${inputCls} flex-1 min-w-[160px]`} data-testid="ded-reason" />
+            <button className={btnGhost} disabled={busy} data-testid="ded-add"
+              onClick={() => run(async () => {
+                await invoke("add_payroll_day_deduction_v3", { sessionToken: token, userId, month, days: parseDaysX100(dedDays) / 100, reason: dedReason });
+                setDedDays(""); setDedReason("");
+              }, "أُضيف خصم الأيام")}>إضافة</button>
+          </div>
+        )}
+      </section>
+
       {editable && (
         <section className="space-y-2">
           <h3 className="font-bold font-arabic text-ink-900">سلفة جديدة لهذا الموظف</h3>
           <Hint summary="السلفة مبلغ يأخذه الموظف الآن ويُخصم من رواتبه القادمة على أقساط.">
-            <p>مثال: سلفة 300,000 بقسط 100,000: يُخصم 100,000 من كل راتب حتى تنتهي. القسط يُؤخذ من المبلغ المسلَّم للموظف، ولا يُعدّ مصروفاً مرة ثانية.</p>
+            <p>مثال: سلفة 300,000 بقسط 100,000: يُخصم 100,000 من كل راتب حتى تنتهي. تُسجَّل السلفة مصروفاً (سلفة موظف) في المالية يوم تُسلَّم، فلا تُسجَّل مرة ثانية من هناك، وقسطها لا يُعدّ مصروفاً مرة ثانية عند الصرف.</p>
           </Hint>
           <div className="flex flex-wrap items-end gap-2" data-testid="advance-form">
             <input value={advAmount} onChange={(e) => setAdvAmount(e.target.value)} placeholder="مبلغ السلفة" className={`${inputCls} max-w-[150px]`} dir="ltr" inputMode="numeric" data-testid="adv-amount" />
@@ -233,7 +278,7 @@ export default function PayslipModal({ userId, month, canApprove, onClose, onCha
               onClick={() => run(() => invoke("reopen_payslip_v3", { sessionToken: token, payslipId: p.id }), "أُعيد فتح الكشف")}>إعادة فتح</button>
           )}
           {canApprove && p.status === "DRAFT" && (
-            <button className={btnPrimary} disabled={busy} data-testid="payslip-approve"
+            <button className={btnPrimary} disabled={busy || p.attendance_status === "PENDING"} data-testid="payslip-approve"
               onClick={() => run(() => invoke("approve_payslip_v3", { sessionToken: token, userId, month, tzOffsetMinutes: tz }), "اعتُمد الكشف")}>اعتماد الكشف</button>
           )}
           {canApprove && p.status === "APPROVED" && p.id && (
@@ -242,6 +287,8 @@ export default function PayslipModal({ userId, month, canApprove, onClose, onCha
           )}
         </div>
       </div>
+
+      {reviewing && <AttendanceReviewModal userId={userId} month={month} onClose={() => setReviewing(false)} onChanged={() => { load(); onChanged(); }} />}
 
       {punchDay && (
         <Modal title={`إضافة بصمة · ${punchDay}`} onClose={() => setPunchDay(null)}>
