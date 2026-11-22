@@ -26,8 +26,12 @@ pub(crate) fn list_option_groups_v3_impl(state: &Db, session_token: String, incl
 
 #[tauri::command]
 pub fn save_option_group_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, group: ops::OptionGroupInput) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    save_option_group_v3_impl(&state, &license, session_token, group)
+}
+
+pub(crate) fn save_option_group_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, group: ops::OptionGroupInput) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -39,8 +43,12 @@ pub fn save_option_group_v3(state: State<Db>, license: State<crate::license::clo
 
 #[tauri::command]
 pub fn delete_option_group_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, group_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    delete_option_group_v3_impl(&state, &license, session_token, group_id)
+}
+
+pub(crate) fn delete_option_group_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, group_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -248,4 +256,30 @@ pub fn set_order_item_comp_v3(
     reason: Option<String>,
 ) -> Result<i64, String> {
     set_order_item_comp_v3_impl(&state, &license, session_token, item_id, comped, reason)
+}
+
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "save_option_group_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let group: ops::OptionGroupInput = lan_arg(args, "group")?;
+            let r = save_option_group_v3_impl(db, license, session_token, group)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_option_group_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let group_id: String = lan_arg(args, "groupId")?;
+            let r = delete_option_group_v3_impl(db, license, session_token, group_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
 }

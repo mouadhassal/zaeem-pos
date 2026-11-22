@@ -130,9 +130,13 @@ pub fn get_history_access_v3(state: State<Db>, license: State<crate::license::cl
 
 #[tauri::command]
 pub fn save_history_access_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, access: HistoryAccess) -> Result<(), String> {
+    save_history_access_v3_impl(&state, &license, session_token, access)
+}
+
+pub(crate) fn save_history_access_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, access: HistoryAccess) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("save_history_access_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -141,4 +145,24 @@ pub fn save_history_access_v3(state: State<Db>, license: State<crate::license::c
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "ops_settings", &actor.tenant_id, serde_json::to_value(&before).ok().as_ref(), serde_json::to_value(&access).ok().as_ref()).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "save_history_access_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let access: HistoryAccess = lan_arg(args, "access")?;
+            let r = save_history_access_v3_impl(db, license, session_token, access)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
 }

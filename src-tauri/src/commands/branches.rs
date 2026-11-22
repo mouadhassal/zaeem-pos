@@ -13,8 +13,12 @@ use super::shared::*;
 
 #[tauri::command]
 pub fn list_branches_full_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::LegacyBranchFullRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_branches_full_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_branches_full_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<crate::repo::LegacyBranchFullRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_branches_full(&actor.tenant_id).map_err(|e| e.to_string())
@@ -23,8 +27,13 @@ pub fn list_branches_full_v3(state: State<Db>, license: State<crate::license::cl
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn create_branch_full_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, address: Option<String>, city: Option<String>, phone: Option<String>, timezone: String, currency: String, tax_rate_cents: i64, max_tables: i64) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    create_branch_full_v3_impl(&state, &license, session_token, name, address, city, phone, timezone, currency, tax_rate_cents, max_tables)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_branch_full_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, name: String, address: Option<String>, city: Option<String>, phone: Option<String>, timezone: String, currency: String, tax_rate_cents: i64, max_tables: i64) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -37,8 +46,13 @@ pub fn create_branch_full_v3(state: State<Db>, license: State<crate::license::cl
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn update_branch_full_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, branch_id: String, name: String, address: Option<String>, city: Option<String>, phone: Option<String>, timezone: String, currency: String, tax_rate_cents: i64, max_tables: i64) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    update_branch_full_v3_impl(&state, &license, session_token, branch_id, name, address, city, phone, timezone, currency, tax_rate_cents, max_tables)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_branch_full_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, branch_id: String, name: String, address: Option<String>, city: Option<String>, phone: Option<String>, timezone: String, currency: String, tax_rate_cents: i64, max_tables: i64) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -50,8 +64,12 @@ pub fn update_branch_full_v3(state: State<Db>, license: State<crate::license::cl
 
 #[tauri::command]
 pub fn set_branch_full_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, branch_id: String, is_active: bool) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    set_branch_full_active_v3_impl(&state, &license, session_token, branch_id, is_active)
+}
+
+pub(crate) fn set_branch_full_active_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, branch_id: String, is_active: bool) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -63,8 +81,12 @@ pub fn set_branch_full_active_v3(state: State<Db>, license: State<crate::license
 
 #[tauri::command]
 pub fn update_branch_detail_field_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, branch_id: String, field: String, value: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    update_branch_detail_field_v3_impl(&state, &license, session_token, branch_id, field, value)
+}
+
+pub(crate) fn update_branch_detail_field_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, branch_id: String, field: String, value: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -76,8 +98,12 @@ pub fn update_branch_detail_field_v3(state: State<Db>, license: State<crate::lic
 
 #[tauri::command]
 pub fn list_terminals_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, branch_id: String) -> Result<Vec<crate::repo::TerminalRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_terminals_v3_impl(&state, &license, session_token, branch_id)
+}
+
+pub(crate) fn list_terminals_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, branch_id: String) -> Result<Vec<crate::repo::TerminalRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_terminals(&actor.tenant_id, &branch_id).map_err(|e| e.to_string())
@@ -92,8 +118,12 @@ pub struct TenantTodayStats {
 
 #[tauri::command]
 pub fn get_tenant_today_stats_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<TenantTodayStats, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_tenant_today_stats_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn get_tenant_today_stats_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<TenantTodayStats, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let (order_count, revenue_cents, staff_count) = Repo::new(&conn).tenant_today_stats(&actor.tenant_id).map_err(|e| e.to_string())?;
@@ -105,8 +135,12 @@ pub fn get_tenant_today_stats_v3(state: State<Db>, license: State<crate::license
 /// `get_tenant_today_stats_v3` -- real per-branch numbers now.
 #[tauri::command]
 pub fn get_branch_today_stats_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<(String, i64, i64)>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_branch_today_stats_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn get_branch_today_stats_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<(String, i64, i64)>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).branch_today_stats(&actor.tenant_id).map_err(|e| e.to_string())
@@ -114,8 +148,12 @@ pub fn get_branch_today_stats_v3(state: State<Db>, license: State<crate::license
 
 #[tauri::command]
 pub fn get_staff_counts_by_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<(String, i64)>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_staff_counts_by_branch_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn get_staff_counts_by_branch_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<(String, i64)>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).staff_counts_by_branch(&actor.tenant_id).map_err(|e| e.to_string())
@@ -123,10 +161,100 @@ pub fn get_staff_counts_by_branch_v3(state: State<Db>, license: State<crate::lic
 
 #[tauri::command]
 pub fn get_terminal_counts_by_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<(String, i64)>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_terminal_counts_by_branch_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn get_terminal_counts_by_branch_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<(String, i64)>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageBranches).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).terminal_counts_by_branch(&actor.tenant_id).map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "list_branches_full_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_branches_full_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "create_branch_full_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let name: String = lan_arg(args, "name")?;
+            let address: Option<String> = lan_arg(args, "address")?;
+            let city: Option<String> = lan_arg(args, "city")?;
+            let phone: Option<String> = lan_arg(args, "phone")?;
+            let timezone: String = lan_arg(args, "timezone")?;
+            let currency: String = lan_arg(args, "currency")?;
+            let tax_rate_cents: i64 = lan_arg(args, "taxRateCents")?;
+            let max_tables: i64 = lan_arg(args, "maxTables")?;
+            let r = create_branch_full_v3_impl(db, license, session_token, name, address, city, phone, timezone, currency, tax_rate_cents, max_tables)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_branch_full_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let branch_id: String = lan_arg(args, "branchId")?;
+            let name: String = lan_arg(args, "name")?;
+            let address: Option<String> = lan_arg(args, "address")?;
+            let city: Option<String> = lan_arg(args, "city")?;
+            let phone: Option<String> = lan_arg(args, "phone")?;
+            let timezone: String = lan_arg(args, "timezone")?;
+            let currency: String = lan_arg(args, "currency")?;
+            let tax_rate_cents: i64 = lan_arg(args, "taxRateCents")?;
+            let max_tables: i64 = lan_arg(args, "maxTables")?;
+            let r = update_branch_full_v3_impl(db, license, session_token, branch_id, name, address, city, phone, timezone, currency, tax_rate_cents, max_tables)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "set_branch_full_active_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let branch_id: String = lan_arg(args, "branchId")?;
+            let is_active: bool = lan_arg(args, "isActive")?;
+            let r = set_branch_full_active_v3_impl(db, license, session_token, branch_id, is_active)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_branch_detail_field_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let branch_id: String = lan_arg(args, "branchId")?;
+            let field: String = lan_arg(args, "field")?;
+            let value: Option<String> = lan_arg(args, "value")?;
+            let r = update_branch_detail_field_v3_impl(db, license, session_token, branch_id, field, value)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_terminals_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let branch_id: String = lan_arg(args, "branchId")?;
+            let r = list_terminals_v3_impl(db, license, session_token, branch_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_tenant_today_stats_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = get_tenant_today_stats_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_branch_today_stats_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = get_branch_today_stats_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_staff_counts_by_branch_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = get_staff_counts_by_branch_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_terminal_counts_by_branch_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = get_terminal_counts_by_branch_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
+}

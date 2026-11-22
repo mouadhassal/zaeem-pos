@@ -138,6 +138,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_finance_ledger_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_inventory_units_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_areas_platforms_templates_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_remote_back_office_migration(conn, db_path).map_err(|e| e.to_string())?;
     business::refresh_cache(conn);
     Ok(())
 }
@@ -860,6 +861,9 @@ pub fn run() {
             lan::lan_relay_v3,
             lan::get_cloud_relay_status_v3,
             lan::set_cloud_relay_enabled_v3,
+            lan::list_remote_devices_v3,
+            lan::set_remote_device_back_office_v3,
+            lan::get_back_office_access_v3,
             lan::join_hub_via_internet_v3,
             print::list_system_printers_v3,
             print::print_raw_bytes_v3,

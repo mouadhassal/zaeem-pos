@@ -68,8 +68,12 @@ pub struct PayrollAccess {
 
 #[tauri::command]
 pub fn get_payroll_access_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<PayrollAccess, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_payroll_access_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn get_payroll_access_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<PayrollAccess, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let manager_access = payroll::load_settings(&conn, &actor.tenant_id)?.manager_access;
@@ -79,8 +83,12 @@ pub fn get_payroll_access_v3(state: State<Db>, license: State<crate::license::cl
 
 #[tauri::command]
 pub fn get_payroll_settings_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<PayrollSettings, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_payroll_settings_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn get_payroll_settings_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<PayrollSettings, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     owner_only(&scope_of(&conn, &actor)?)?;
@@ -89,9 +97,13 @@ pub fn get_payroll_settings_v3(state: State<Db>, license: State<crate::license::
 
 #[tauri::command]
 pub fn save_payroll_settings_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, settings: PayrollSettings) -> Result<(), String> {
+    save_payroll_settings_v3_impl(&state, &license, session_token, settings)
+}
+
+pub(crate) fn save_payroll_settings_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, settings: PayrollSettings) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("save_payroll_settings_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePayroll).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -104,8 +116,12 @@ pub fn save_payroll_settings_v3(state: State<Db>, license: State<crate::license:
 
 #[tauri::command]
 pub fn list_payroll_employees_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<EmployeeRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_payroll_employees_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_payroll_employees_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<EmployeeRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let scope = scope_of(&conn, &actor)?;
@@ -114,15 +130,19 @@ pub fn list_payroll_employees_v3(state: State<Db>, license: State<crate::license
 
 #[tauri::command]
 pub fn save_payroll_employee_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, pay: EmployeePay) -> Result<(), String> {
+    save_payroll_employee_v3_impl(&state, &license, session_token, pay)
+}
+
+pub(crate) fn save_payroll_employee_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, pay: EmployeePay) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("save_payroll_employee_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePayroll).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let scope = scope_of(&conn, &actor)?;
     owner_only(&scope)?;
     payroll::person_in_scope(&conn, &actor.tenant_id, &pay.user_id, &scope)?;
-    let branch = home_branch(&conn, &pay.user_id, &actor, &license)?;
+    let branch = home_branch(&conn, &pay.user_id, &actor, license)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let before = payroll::load_employee_pay(&tx, &pay.user_id)?;
     payroll::save_employee_pay(&tx, &actor.tenant_id, Some(&branch), &pay)?;
@@ -133,8 +153,12 @@ pub fn save_payroll_employee_v3(state: State<Db>, license: State<crate::license:
 
 #[tauri::command]
 pub fn payroll_month_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, month: String, tz_offset_minutes: Option<i64>) -> Result<Vec<MonthRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    payroll_month_v3_impl(&state, &license, session_token, month, tz_offset_minutes)
+}
+
+pub(crate) fn payroll_month_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, month: String, tz_offset_minutes: Option<i64>) -> Result<Vec<MonthRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
     let tz = tz_offset_minutes.unwrap_or(0);
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -144,8 +168,12 @@ pub fn payroll_month_v3(state: State<Db>, license: State<crate::license::cloud::
 
 #[tauri::command]
 pub fn get_payslip_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String, month: String, tz_offset_minutes: Option<i64>) -> Result<Payslip, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_payslip_v3_impl(&state, &license, session_token, user_id, month, tz_offset_minutes)
+}
+
+pub(crate) fn get_payslip_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String, month: String, tz_offset_minutes: Option<i64>) -> Result<Payslip, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
     let tz = tz_offset_minutes.unwrap_or(0);
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -156,16 +184,20 @@ pub fn get_payslip_v3(state: State<Db>, license: State<crate::license::cloud::Cl
 
 #[tauri::command]
 pub fn approve_payslip_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String, month: String, tz_offset_minutes: Option<i64>) -> Result<Payslip, String> {
+    approve_payslip_v3_impl(&state, &license, session_token, user_id, month, tz_offset_minutes)
+}
+
+pub(crate) fn approve_payslip_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String, month: String, tz_offset_minutes: Option<i64>) -> Result<Payslip, String> {
     crate::lan::reject_if_local_kitchen_satellite("approve_payslip_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
     let tz = tz_offset_minutes.unwrap_or(0);
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let scope = scope_of(&conn, &actor)?;
     approvers_only(&scope)?;
     payroll::person_in_scope(&conn, &actor.tenant_id, &user_id, &scope)?;
-    let branch = home_branch(&conn, &user_id, &actor, &license)?;
+    let branch = home_branch(&conn, &user_id, &actor, license)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let p = payroll::approve(&tx, &actor.tenant_id, Some(&branch), &user_id, &month, tz, local_today(tz), &actor.id)?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, Some(&branch), &actor.id, audit::Action::OperationalCostRecorded, "payroll_payslip", p.id.as_deref().unwrap_or(""), None, Some(&serde_json::json!({ "user_id": user_id, "month": month, "earned_cents": p.earned_cents, "net_cents": p.net_cents, "action": "approved" }))).map_err(|e| e.to_string())?;
@@ -175,9 +207,13 @@ pub fn approve_payslip_v3(state: State<Db>, license: State<crate::license::cloud
 
 #[tauri::command]
 pub fn pay_payslip_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, payslip_id: String, tz_offset_minutes: Option<i64>) -> Result<(), String> {
+    pay_payslip_v3_impl(&state, &license, session_token, payslip_id, tz_offset_minutes)
+}
+
+pub(crate) fn pay_payslip_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, payslip_id: String, tz_offset_minutes: Option<i64>) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("pay_payslip_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
     let tz = tz_offset_minutes.unwrap_or(0);
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -193,9 +229,13 @@ pub fn pay_payslip_v3(state: State<Db>, license: State<crate::license::cloud::Cl
 
 #[tauri::command]
 pub fn reopen_payslip_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, payslip_id: String) -> Result<(), String> {
+    reopen_payslip_v3_impl(&state, &license, session_token, payslip_id)
+}
+
+pub(crate) fn reopen_payslip_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, payslip_id: String) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("reopen_payslip_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let scope = scope_of(&conn, &actor)?;
@@ -211,9 +251,14 @@ pub fn reopen_payslip_v3(state: State<Db>, license: State<crate::license::cloud:
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn add_payroll_adjustment_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String, month: String, kind: String, amount_cents: i64, reason: String) -> Result<String, String> {
+    add_payroll_adjustment_v3_impl(&state, &license, session_token, user_id, month, kind, amount_cents, reason)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn add_payroll_adjustment_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String, month: String, kind: String, amount_cents: i64, reason: String) -> Result<String, String> {
     crate::lan::reject_if_local_kitchen_satellite("add_payroll_adjustment_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let scope = scope_of(&conn, &actor)?;
@@ -227,9 +272,13 @@ pub fn add_payroll_adjustment_v3(state: State<Db>, license: State<crate::license
 
 #[tauri::command]
 pub fn delete_payroll_adjustment_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, adjustment_id: String) -> Result<(), String> {
+    delete_payroll_adjustment_v3_impl(&state, &license, session_token, adjustment_id)
+}
+
+pub(crate) fn delete_payroll_adjustment_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, adjustment_id: String) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("delete_payroll_adjustment_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let scope = scope_of(&conn, &actor)?;
@@ -244,14 +293,19 @@ pub fn delete_payroll_adjustment_v3(state: State<Db>, license: State<crate::lice
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn add_payroll_advance_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String, amount_cents: i64, instalment_cents: i64, given_on: String, reason: Option<String>) -> Result<String, String> {
+    add_payroll_advance_v3_impl(&state, &license, session_token, user_id, amount_cents, instalment_cents, given_on, reason)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn add_payroll_advance_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String, amount_cents: i64, instalment_cents: i64, given_on: String, reason: Option<String>) -> Result<String, String> {
     crate::lan::reject_if_local_kitchen_satellite("add_payroll_advance_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let scope = scope_of(&conn, &actor)?;
     payroll::person_in_scope(&conn, &actor.tenant_id, &user_id, &scope)?;
-    let branch = home_branch(&conn, &user_id, &actor, &license)?;
+    let branch = home_branch(&conn, &user_id, &actor, license)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let id = payroll::add_advance(&tx, &actor.tenant_id, Some(&branch), &user_id, amount_cents, instalment_cents, &given_on, reason.as_deref(), &actor.id)?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, Some(&branch), &actor.id, audit::Action::SettingsChanged, "payroll_advance", &id, None, Some(&serde_json::json!({ "user_id": user_id, "amount_cents": amount_cents, "instalment_cents": instalment_cents }))).map_err(|e| e.to_string())?;
@@ -261,8 +315,12 @@ pub fn add_payroll_advance_v3(state: State<Db>, license: State<crate::license::c
 
 #[tauri::command]
 pub fn list_payroll_advances_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: Option<String>) -> Result<Vec<AdvanceRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_payroll_advances_v3_impl(&state, &license, session_token, user_id)
+}
+
+pub(crate) fn list_payroll_advances_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: Option<String>) -> Result<Vec<AdvanceRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let scope = scope_of(&conn, &actor)?;
@@ -276,9 +334,13 @@ pub fn list_payroll_advances_v3(state: State<Db>, license: State<crate::license:
 
 #[tauri::command]
 pub fn cancel_payroll_advance_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, advance_id: String) -> Result<(), String> {
+    cancel_payroll_advance_v3_impl(&state, &license, session_token, advance_id)
+}
+
+pub(crate) fn cancel_payroll_advance_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, advance_id: String) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("cancel_payroll_advance_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let scope = scope_of(&conn, &actor)?;
@@ -293,9 +355,13 @@ pub fn cancel_payroll_advance_v3(state: State<Db>, license: State<crate::license
 /// Marks a day as an accepted excuse / paid leave (`on = true`) or clears the mark.
 #[tauri::command]
 pub fn set_paid_leave_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String, day: String, note: Option<String>, on: bool) -> Result<(), String> {
+    set_paid_leave_v3_impl(&state, &license, session_token, user_id, day, note, on)
+}
+
+pub(crate) fn set_paid_leave_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String, day: String, note: Option<String>, on: bool) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("set_paid_leave_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let scope = scope_of(&conn, &actor)?;
@@ -314,9 +380,13 @@ pub fn set_paid_leave_v3(state: State<Db>, license: State<crate::license::cloud:
 /// A missed arrival or departure added by hand, for a time that has passed.
 #[tauri::command]
 pub fn add_manual_punch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, user_id: String, punched_at_iso: String, direction: String, reason: String) -> Result<String, String> {
+    add_manual_punch_v3_impl(&state, &license, session_token, user_id, punched_at_iso, direction, reason)
+}
+
+pub(crate) fn add_manual_punch_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, user_id: String, punched_at_iso: String, direction: String, reason: String) -> Result<String, String> {
     crate::lan::reject_if_local_kitchen_satellite("add_manual_punch_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UsePayroll).map_err(|e| e.to_string())?;
     if reason.trim().is_empty() {
         return Err("اكتب سبب إضافة البصمة".to_string());
@@ -325,10 +395,143 @@ pub fn add_manual_punch_v3(state: State<Db>, license: State<crate::license::clou
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let scope = scope_of(&conn, &actor)?;
     payroll::person_in_scope(&conn, &actor.tenant_id, &user_id, &scope)?;
-    let branch = home_branch(&conn, &user_id, &actor, &license)?;
+    let branch = home_branch(&conn, &user_id, &actor, license)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let id = payroll::add_manual_punch(&tx, &actor.tenant_id, &branch, &user_id, at, &direction, &actor.id, Utc::now())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, Some(&branch), &actor.id, audit::Action::SettingsChanged, "attendance", &user_id, None, Some(&serde_json::json!({ "action": "manual_punch", "direction": direction, "at": punched_at_iso, "reason": reason }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(id)
+}
+
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "get_payroll_access_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = get_payroll_access_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_payroll_settings_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = get_payroll_settings_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "save_payroll_settings_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let settings: PayrollSettings = lan_arg(args, "settings")?;
+            let r = save_payroll_settings_v3_impl(db, license, session_token, settings)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_payroll_employees_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_payroll_employees_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "save_payroll_employee_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let pay: EmployeePay = lan_arg(args, "pay")?;
+            let r = save_payroll_employee_v3_impl(db, license, session_token, pay)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "payroll_month_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let month: String = lan_arg(args, "month")?;
+            let tz_offset_minutes: Option<i64> = lan_arg(args, "tzOffsetMinutes")?;
+            let r = payroll_month_v3_impl(db, license, session_token, month, tz_offset_minutes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_payslip_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let user_id: String = lan_arg(args, "userId")?;
+            let month: String = lan_arg(args, "month")?;
+            let tz_offset_minutes: Option<i64> = lan_arg(args, "tzOffsetMinutes")?;
+            let r = get_payslip_v3_impl(db, license, session_token, user_id, month, tz_offset_minutes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "approve_payslip_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let user_id: String = lan_arg(args, "userId")?;
+            let month: String = lan_arg(args, "month")?;
+            let tz_offset_minutes: Option<i64> = lan_arg(args, "tzOffsetMinutes")?;
+            let r = approve_payslip_v3_impl(db, license, session_token, user_id, month, tz_offset_minutes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "pay_payslip_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let payslip_id: String = lan_arg(args, "payslipId")?;
+            let tz_offset_minutes: Option<i64> = lan_arg(args, "tzOffsetMinutes")?;
+            let r = pay_payslip_v3_impl(db, license, session_token, payslip_id, tz_offset_minutes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "reopen_payslip_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let payslip_id: String = lan_arg(args, "payslipId")?;
+            let r = reopen_payslip_v3_impl(db, license, session_token, payslip_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "add_payroll_adjustment_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let user_id: String = lan_arg(args, "userId")?;
+            let month: String = lan_arg(args, "month")?;
+            let kind: String = lan_arg(args, "kind")?;
+            let amount_cents: i64 = lan_arg(args, "amountCents")?;
+            let reason: String = lan_arg(args, "reason")?;
+            let r = add_payroll_adjustment_v3_impl(db, license, session_token, user_id, month, kind, amount_cents, reason)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_payroll_adjustment_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let adjustment_id: String = lan_arg(args, "adjustmentId")?;
+            let r = delete_payroll_adjustment_v3_impl(db, license, session_token, adjustment_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "add_payroll_advance_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let user_id: String = lan_arg(args, "userId")?;
+            let amount_cents: i64 = lan_arg(args, "amountCents")?;
+            let instalment_cents: i64 = lan_arg(args, "instalmentCents")?;
+            let given_on: String = lan_arg(args, "givenOn")?;
+            let reason: Option<String> = lan_arg(args, "reason")?;
+            let r = add_payroll_advance_v3_impl(db, license, session_token, user_id, amount_cents, instalment_cents, given_on, reason)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_payroll_advances_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let user_id: Option<String> = lan_arg(args, "userId")?;
+            let r = list_payroll_advances_v3_impl(db, license, session_token, user_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "cancel_payroll_advance_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let advance_id: String = lan_arg(args, "advanceId")?;
+            let r = cancel_payroll_advance_v3_impl(db, license, session_token, advance_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "set_paid_leave_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let user_id: String = lan_arg(args, "userId")?;
+            let day: String = lan_arg(args, "day")?;
+            let note: Option<String> = lan_arg(args, "note")?;
+            let on: bool = lan_arg(args, "on")?;
+            let r = set_paid_leave_v3_impl(db, license, session_token, user_id, day, note, on)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "add_manual_punch_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let user_id: String = lan_arg(args, "userId")?;
+            let punched_at_iso: String = lan_arg(args, "punchedAtIso")?;
+            let direction: String = lan_arg(args, "direction")?;
+            let reason: String = lan_arg(args, "reason")?;
+            let r = add_manual_punch_v3_impl(db, license, session_token, user_id, punched_at_iso, direction, reason)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
 }

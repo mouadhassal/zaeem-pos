@@ -137,6 +137,7 @@ mod tests {
         migrate_v3::run_finance_ledger_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_inventory_units_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_areas_platforms_templates_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_remote_back_office_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -3228,6 +3229,132 @@ mod tests {
             let bad_args = dispatch_lan_rpc(&db, &license, "list_kitchen_orders_v3", serde_json::json!({}));
             assert!(bad_args.is_err(), "a missing sessionToken must be rejected, not treated as an empty/anonymous session");
 
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// Remote back office, end to end through the hub's own `execute_rpc`: a second till is
+        /// refused until the owner allows THAT device, then gets the hub's own data; the
+        /// signed-in person's permissions still apply; a kitchen screen never gets in; an
+        /// internet device is told apart by the licence id the relay stamped on its message.
+        #[test]
+        fn a_second_till_opens_the_back_office_only_when_the_hub_allows_that_device() {
+            use crate::lan::{execute_rpc, RpcCaller, BACK_OFFICE_ACCESS_PROBE, BACK_OFFICE_REFUSED};
+            use axum::http::StatusCode;
+
+            let (db_path, tenant_id, branch_id, _table_id) = seeded_db("remote_back_office");
+            let (owner_session, cashier_session) = {
+                let conn = Connection::open(&db_path).unwrap();
+                let owner = seed_staff(&conn, &tenant_id, None, Role::Owner, "Owner");
+                let cashier = seed_staff(&conn, &tenant_id, Some(&branch_id), Role::Cashier, "Cashier");
+                conn.execute(
+                    "INSERT INTO paired_terminal (id, device_name, device_role, status, requested_at) VALUES ('t-reg', 'Till 2', 'register', 'APPROVED', 'now'), ('t-kds', 'Kitchen', 'kitchen', 'APPROVED', 'now'), ('t-old', 'Old', 'register', 'REVOKED', 'now')",
+                    [],
+                ).unwrap();
+                (
+                    security::create_session(&conn, &owner, "hub").unwrap(),
+                    security::create_session(&conn, &cashier, "till-2").unwrap(),
+                )
+            };
+            let db = real_db(&db_path);
+            let license = unlocked_license(&db_path);
+            let lan = |id: &str, role: &str| RpcCaller::Lan { terminal_id: id.to_string(), role: role.to_string() };
+            let list = |caller: &RpcCaller, session: &str| {
+                execute_rpc(&db, &license, caller, "list_suppliers_v3", serde_json::json!({ "sessionToken": session }))
+            };
+
+            // Default OFF: refused with the Arabic sentence, and nothing ran.
+            let refused = list(&lan("t-reg", "register"), &owner_session);
+            assert_eq!(refused.status, StatusCode::FORBIDDEN);
+            assert_eq!(refused.body["error"], serde_json::json!(BACK_OFFICE_REFUSED));
+            // The same device is not locked out of the till itself.
+            let till = execute_rpc(&db, &license, &lan("t-reg", "register"), "list_tables_v3", serde_json::json!({ "sessionToken": owner_session }));
+            assert_eq!(till.status, StatusCode::OK, "{}", till.body);
+            // Its own question "may I?" answers no.
+            let probe = execute_rpc(&db, &license, &lan("t-reg", "register"), BACK_OFFICE_ACCESS_PROBE, serde_json::json!({}));
+            assert_eq!(probe.body["data"]["allowed"], serde_json::json!(false));
+
+            // Only a person who may manage settings can flip the switch.
+            let denied = crate::lan::set_remote_device_back_office_impl(&db, cashier_session.clone(), "lan".into(), "t-reg".into(), true);
+            assert!(denied.is_err(), "a cashier must not be able to allow a device");
+            crate::lan::set_remote_device_back_office_impl(&db, owner_session.clone(), "lan".into(), "t-reg".into(), true).unwrap();
+            let audited: i64 = Connection::open(&db_path).unwrap()
+                .query_row("SELECT COUNT(*) FROM audit_log WHERE entity_type = 'remote_device_back_office' AND entity_id = 't-reg'", [], |r| r.get(0)).unwrap();
+            assert_eq!(audited, 1, "changing the switch is audited");
+
+            // Allowed: the hub's own data comes back, written by the same relayed path.
+            let created = execute_rpc(&db, &license, &lan("t-reg", "register"), "create_supplier_v3", serde_json::json!({ "sessionToken": owner_session, "name": "Hub Supplier", "phone": null, "email": null }));
+            assert_eq!(created.status, StatusCode::OK, "{}", created.body);
+            let listed = list(&lan("t-reg", "register"), &owner_session);
+            assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+            assert!(listed.body["data"].as_array().unwrap().iter().any(|s| s["name"] == "Hub Supplier"), "{}", listed.body);
+            let probe = execute_rpc(&db, &license, &lan("t-reg", "register"), BACK_OFFICE_ACCESS_PROBE, serde_json::json!({}));
+            assert_eq!(probe.body["data"]["allowed"], serde_json::json!(true));
+
+            // The person's own permissions still apply on an allowed device.
+            let cashier = list(&lan("t-reg", "register"), &cashier_session);
+            assert_ne!(cashier.body["ok"], serde_json::json!(true), "a cashier must not read purchasing data just because the device is allowed");
+            assert_ne!(cashier.body["error"], serde_json::json!(BACK_OFFICE_REFUSED));
+
+            // Another device, a revoked one and an unknown id are not allowed by this device's switch.
+            assert_eq!(list(&lan("t-old", "register"), &owner_session).status, StatusCode::FORBIDDEN);
+            assert_eq!(list(&lan("nobody", "register"), &owner_session).status, StatusCode::FORBIDDEN);
+
+            // A kitchen screen never gets the back office, even if its row were set by hand.
+            Connection::open(&db_path).unwrap().execute("UPDATE paired_terminal SET back_office = 1 WHERE id = 't-kds'", []).unwrap();
+            let kitchen = list(&lan("t-kds", "kitchen"), &owner_session);
+            assert_eq!(kitchen.status, StatusCode::FORBIDDEN);
+            assert_eq!(kitchen.body["error"], serde_json::json!(BACK_OFFICE_REFUSED));
+            assert!(crate::lan::set_remote_device_back_office_impl(&db, owner_session.clone(), "lan".into(), "t-kds".into(), true).is_err(), "the switch cannot be turned on for a kitchen screen");
+            let kitchen_probe = execute_rpc(&db, &license, &lan("t-kds", "kitchen"), BACK_OFFICE_ACCESS_PROBE, serde_json::json!({}));
+            assert_eq!(kitchen_probe.body["data"]["allowed"], serde_json::json!(false));
+
+            // Internet devices: listed on their first message, off by default, per licence id.
+            let cloud = |id: Option<&str>| RpcCaller::Cloud { license_id: id.map(str::to_string) };
+            let first = execute_rpc(&db, &license, &cloud(Some("lic-aaaa-1111")), "list_suppliers_v3", serde_json::json!({ "sessionToken": owner_session }));
+            assert_eq!(first.status, StatusCode::FORBIDDEN);
+            let known: i64 = Connection::open(&db_path).unwrap().query_row("SELECT COUNT(*) FROM cloud_terminal WHERE license_id = 'lic-aaaa-1111' AND back_office = 0", [], |r| r.get(0)).unwrap();
+            assert_eq!(known, 1, "an internet device is auto-registered, switched off");
+            crate::lan::set_remote_device_back_office_impl(&db, owner_session.clone(), "internet".into(), "lic-aaaa-1111".into(), true).unwrap();
+            let ok = execute_rpc(&db, &license, &cloud(Some("lic-aaaa-1111")), "list_suppliers_v3", serde_json::json!({ "sessionToken": owner_session }));
+            assert_eq!(ok.status, StatusCode::OK, "{}", ok.body);
+            // Another licence is still off; a message with no sender (old relay) is never allowed.
+            assert_eq!(execute_rpc(&db, &license, &cloud(Some("lic-bbbb-2222")), "list_suppliers_v3", serde_json::json!({ "sessionToken": owner_session })).status, StatusCode::FORBIDDEN);
+            assert_eq!(execute_rpc(&db, &license, &cloud(None), "list_suppliers_v3", serde_json::json!({ "sessionToken": owner_session })).status, StatusCode::FORBIDDEN);
+
+            // Both kinds show up in the owner's list, with the switch.
+            let all = crate::lan::list_remote_devices(&Connection::open(&db_path).unwrap()).unwrap();
+            assert!(all.iter().any(|d| d.kind == "lan" && d.id == "t-reg" && d.back_office));
+            assert!(all.iter().any(|d| d.kind == "internet" && d.id == "lic-aaaa-1111" && d.back_office));
+            assert!(all.iter().any(|d| d.kind == "internet" && d.id == "lic-bbbb-2222" && !d.back_office));
+            assert!(!all.iter().any(|d| d.id == "t-old"), "a revoked device is not listed");
+
+            let _ = fs::remove_dir_all(db_path.parent().unwrap());
+        }
+
+        /// The allowlist and the gate agree: every listed command is gated, nothing else is, and
+        /// the till's own commands are never behind the switch.
+        #[test]
+        fn the_back_office_allowlist_is_one_gated_set_apart_from_the_till() {
+            use crate::commands::lan_rpc_office::{dispatch_back_office_rpc, is_back_office_command, BACK_OFFICE_REMOTE_COMMANDS};
+            let (db_path, _t, _b, _tb) = seeded_db("remote_back_office_list");
+            let db = real_db(&db_path);
+            let license = never_checked_license(&db_path);
+            let mut dupes = std::collections::HashSet::new();
+            for c in BACK_OFFICE_REMOTE_COMMANDS {
+                assert!(dupes.insert(*c), "{c} listed twice");
+                assert!(is_back_office_command(c));
+                // Every listed command has an arm: with no arguments it fails on the missing
+                // session token, never with UNKNOWN_COMMAND.
+                let r = dispatch_back_office_rpc(&db, &license, c, &serde_json::json!({}));
+                assert!(matches!(&r, Err(e) if e != "UNKNOWN_COMMAND"), "{c}: {r:?}");
+            }
+            for till in ["create_full_order_v3", "list_tables_v3", "take_payment_v3", "login_pin_v3", "list_menu_items_v3", "get_my_access_v3"] {
+                assert!(!is_back_office_command(till), "{till} is the till's own command");
+            }
+            for local in ["backup_database_v3", "list_printers_v3", "activate_license_v3", "get_lan_status_v3", "enrol_fingerprint_v3"] {
+                assert!(!is_back_office_command(local), "{local} stays on the device it runs on");
+                assert_eq!(dispatch_back_office_rpc(&db, &license, local, &serde_json::json!({})), Err("UNKNOWN_COMMAND".to_string()));
+            }
             let _ = fs::remove_dir_all(db_path.parent().unwrap());
         }
 
@@ -8181,6 +8308,7 @@ mod tests {
         migrate_v3::run_finance_ledger_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_inventory_units_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_areas_platforms_templates_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_remote_back_office_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("matrix", &conn);

@@ -24,8 +24,12 @@ pub(crate) fn list_categories_v3_impl(state: &Db, session_token: String) -> Resu
 
 #[tauri::command]
 pub fn create_category_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, color: Option<String>, sort_order: i64, image_path: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    create_category_v3_impl(&state, &license, session_token, name, color, sort_order, image_path)
+}
+
+pub(crate) fn create_category_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, name: String, color: Option<String>, sort_order: i64, image_path: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -38,8 +42,13 @@ pub fn create_category_v3(state: State<Db>, license: State<crate::license::cloud
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn update_category_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category_id: String, name: String, color: Option<String>, sort_order: i64, image_path: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    update_category_v3_impl(&state, &license, session_token, category_id, name, color, sort_order, image_path)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_category_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, category_id: String, name: String, color: Option<String>, sort_order: i64, image_path: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -51,8 +60,12 @@ pub fn update_category_v3(state: State<Db>, license: State<crate::license::cloud
 
 #[tauri::command]
 pub fn delete_category_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    delete_category_v3_impl(&state, &license, session_token, category_id)
+}
+
+pub(crate) fn delete_category_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, category_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -69,12 +82,15 @@ pub fn delete_category_v3(state: State<Db>, license: State<crate::license::cloud
 /// upload flow, and most owners don't have an image URL handy.
 #[tauri::command]
 pub fn upload_category_photo_v3(app: tauri::AppHandle, state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category_id: String, photo_bytes: Vec<u8>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-
     let app_data_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    let file_path = crate::photos::store_photo(&app_data_dir, &actor.tenant_id, &category_id, &photo_bytes).map_err(|e| e.to_string())?;
+    upload_category_photo_v3_impl(&app_data_dir, &state, &license, session_token, category_id, photo_bytes)
+}
+
+pub(crate) fn upload_category_photo_v3_impl(app_data_dir: &std::path::Path, state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, category_id: String, photo_bytes: Vec<u8>) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    let file_path = crate::photos::store_photo(app_data_dir, &actor.tenant_id, &category_id, &photo_bytes).map_err(|e| e.to_string())?;
     let path_str = file_path.to_string_lossy().to_string();
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -87,8 +103,13 @@ pub fn upload_category_photo_v3(app: tauri::AppHandle, state: State<Db>, license
 
 #[tauri::command]
 pub fn delete_category_photo_v3(app: tauri::AppHandle, state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let app_data_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    delete_category_photo_v3_impl(&app_data_dir, &state, &license, session_token, category_id)
+}
+
+pub(crate) fn delete_category_photo_v3_impl(app_data_dir: &std::path::Path, state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, category_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -96,15 +117,17 @@ pub fn delete_category_photo_v3(app: tauri::AppHandle, state: State<Db>, license
     Repo::new(&tx).set_category_photo(&actor.tenant_id, &category_id, None).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "category", &category_id, Some(&serde_json::json!({ "photo_uploaded": true })), Some(&serde_json::json!({ "photo_uploaded": false }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
-
-    let app_data_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    crate::photos::delete_photo(&app_data_dir, &actor.tenant_id, &category_id);
+    crate::photos::delete_photo(app_data_dir, &actor.tenant_id, &category_id);
     Ok(())
 }
 
 #[tauri::command]
 pub fn get_category_photo_v3(state: State<Db>, session_token: String, category_id: String) -> Result<Option<String>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    get_category_photo_v3_impl(&state, session_token, category_id)
+}
+
+pub(crate) fn get_category_photo_v3_impl(state: &Db, session_token: String, category_id: String) -> Result<Option<String>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let path = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         Repo::new(&conn).get_category_photo_path(&actor.tenant_id, &category_id).map_err(|e| e.to_string())?
@@ -187,12 +210,15 @@ pub(crate) fn get_menu_item_photo_v3_impl(state: &Db, session_token: String, ite
 /// their own tenant's product, never another tenant's by id.
 #[tauri::command]
 pub fn upload_menu_item_photo_v3(app: tauri::AppHandle, state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, photo_bytes: Vec<u8>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
-
     let app_data_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    let file_path = crate::photos::store_photo(&app_data_dir, &actor.tenant_id, &item_id, &photo_bytes).map_err(|e| e.to_string())?;
+    upload_menu_item_photo_v3_impl(&app_data_dir, &state, &license, session_token, item_id, photo_bytes)
+}
+
+pub(crate) fn upload_menu_item_photo_v3_impl(app_data_dir: &std::path::Path, state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String, photo_bytes: Vec<u8>) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
+    let file_path = crate::photos::store_photo(app_data_dir, &actor.tenant_id, &item_id, &photo_bytes).map_err(|e| e.to_string())?;
     let path_str = file_path.to_string_lossy().to_string();
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -206,8 +232,13 @@ pub fn upload_menu_item_photo_v3(app: tauri::AppHandle, state: State<Db>, licens
 /// Removes a product's photo (falls back to the category glyph).
 #[tauri::command]
 pub fn delete_menu_item_photo_v3(app: tauri::AppHandle, state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let app_data_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    delete_menu_item_photo_v3_impl(&app_data_dir, &state, &license, session_token, item_id)
+}
+
+pub(crate) fn delete_menu_item_photo_v3_impl(app_data_dir: &std::path::Path, state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -215,9 +246,7 @@ pub fn delete_menu_item_photo_v3(app: tauri::AppHandle, state: State<Db>, licens
     Repo::new(&tx).set_menu_item_photo(&actor.tenant_id, &item_id, None).map_err(|e| e.to_string())?;
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::MenuItemChanged, "menu_item", &item_id, Some(&serde_json::json!({ "photo_uploaded": true })), Some(&serde_json::json!({ "photo_uploaded": false }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
-
-    let app_data_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    crate::photos::delete_photo(&app_data_dir, &actor.tenant_id, &item_id);
+    crate::photos::delete_photo(app_data_dir, &actor.tenant_id, &item_id);
     Ok(())
 }
 
@@ -264,8 +293,13 @@ pub(crate) fn list_combo_components_v3_impl(state: &Db, session_token: String, m
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn create_menu_item_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, description: Option<String>, barcode: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    create_menu_item_v3_impl(&state, &license, session_token, name, category_id, price_cents, cost_cents, description, barcode)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_menu_item_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, description: Option<String>, barcode: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     if price_cents < 0 || cost_cents < 0 {
         return Err("negative amounts are not valid".to_string());
@@ -283,8 +317,13 @@ pub fn create_menu_item_v3(state: State<Db>, license: State<crate::license::clou
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn update_menu_item_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, description: Option<String>, barcode: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    update_menu_item_v3_impl(&state, &license, session_token, item_id, name, category_id, price_cents, cost_cents, description, barcode)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_menu_item_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String, name: String, category_id: String, price_cents: i64, cost_cents: i64, description: Option<String>, barcode: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     if price_cents < 0 || cost_cents < 0 {
         return Err("negative amounts are not valid".to_string());
@@ -303,8 +342,12 @@ pub fn update_menu_item_v3(state: State<Db>, license: State<crate::license::clou
 /// the item's price is per kilogram). The owner changes this on the menu screen.
 #[tauri::command]
 pub fn set_menu_item_sold_by_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, sold_by: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    set_menu_item_sold_by_v3_impl(&state, &license, session_token, item_id, sold_by)
+}
+
+pub(crate) fn set_menu_item_sold_by_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String, sold_by: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     if sold_by != crate::weighing::SOLD_BY_UNIT && sold_by != crate::weighing::SOLD_BY_WEIGHT {
         return Err("طريقة البيع غير صالحة".to_string());
@@ -319,8 +362,12 @@ pub fn set_menu_item_sold_by_v3(state: State<Db>, license: State<crate::license:
 
 #[tauri::command]
 pub fn delete_menu_item_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    delete_menu_item_v3_impl(&state, &license, session_token, item_id)
+}
+
+pub(crate) fn delete_menu_item_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -332,8 +379,12 @@ pub fn delete_menu_item_v3(state: State<Db>, license: State<crate::license::clou
 
 #[tauri::command]
 pub fn set_menu_item_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, is_active: bool) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    set_menu_item_active_v3_impl(&state, &license, session_token, item_id, is_active)
+}
+
+pub(crate) fn set_menu_item_active_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String, is_active: bool) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -413,8 +464,12 @@ pub(crate) fn list_combo_meal_items_v3_impl(state: &Db, session_token: String) -
 
 #[tauri::command]
 pub fn create_combo_meal_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, bundle_price_cents: i64, items: Vec<(String, i64)>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    create_combo_meal_v3_impl(&state, &license, session_token, name, bundle_price_cents, items)
+}
+
+pub(crate) fn create_combo_meal_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, name: String, bundle_price_cents: i64, items: Vec<(String, i64)>) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -426,8 +481,12 @@ pub fn create_combo_meal_v3(state: State<Db>, license: State<crate::license::clo
 
 #[tauri::command]
 pub fn update_combo_meal_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, combo_id: String, name: String, bundle_price_cents: i64, items: Vec<(String, i64)>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    update_combo_meal_v3_impl(&state, &license, session_token, combo_id, name, bundle_price_cents, items)
+}
+
+pub(crate) fn update_combo_meal_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, combo_id: String, name: String, bundle_price_cents: i64, items: Vec<(String, i64)>) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -439,8 +498,12 @@ pub fn update_combo_meal_v3(state: State<Db>, license: State<crate::license::clo
 
 #[tauri::command]
 pub fn delete_combo_meal_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, combo_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    delete_combo_meal_v3_impl(&state, &license, session_token, combo_id)
+}
+
+pub(crate) fn delete_combo_meal_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, combo_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -468,8 +531,13 @@ pub(crate) fn list_happy_hour_rules_v3_impl(state: &Db, session_token: String) -
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn create_happy_hour_rule_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, menu_item_id: String, discount_percent: i64, day_of_week: i64, start_time: String, end_time: String, is_active: bool) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    create_happy_hour_rule_v3_impl(&state, &license, session_token, menu_item_id, discount_percent, day_of_week, start_time, end_time, is_active)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_happy_hour_rule_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, menu_item_id: String, discount_percent: i64, day_of_week: i64, start_time: String, end_time: String, is_active: bool) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -482,8 +550,13 @@ pub fn create_happy_hour_rule_v3(state: State<Db>, license: State<crate::license
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn update_happy_hour_rule_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, rule_id: String, menu_item_id: String, discount_percent: i64, day_of_week: i64, start_time: String, end_time: String, is_active: bool) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    update_happy_hour_rule_v3_impl(&state, &license, session_token, rule_id, menu_item_id, discount_percent, day_of_week, start_time, end_time, is_active)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_happy_hour_rule_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, rule_id: String, menu_item_id: String, discount_percent: i64, day_of_week: i64, start_time: String, end_time: String, is_active: bool) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -495,8 +568,12 @@ pub fn update_happy_hour_rule_v3(state: State<Db>, license: State<crate::license
 
 #[tauri::command]
 pub fn delete_happy_hour_rule_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, rule_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    delete_happy_hour_rule_v3_impl(&state, &license, session_token, rule_id)
+}
+
+pub(crate) fn delete_happy_hour_rule_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, rule_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -508,8 +585,12 @@ pub fn delete_happy_hour_rule_v3(state: State<Db>, license: State<crate::license
 
 #[tauri::command]
 pub fn set_happy_hour_rule_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, rule_id: String, is_active: bool) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    set_happy_hour_rule_active_v3_impl(&state, &license, session_token, rule_id, is_active)
+}
+
+pub(crate) fn set_happy_hour_rule_active_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, rule_id: String, is_active: bool) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -519,3 +600,175 @@ pub fn set_happy_hour_rule_active_v3(state: State<Db>, license: State<crate::lic
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "create_category_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let name: String = lan_arg(args, "name")?;
+            let color: Option<String> = lan_arg(args, "color")?;
+            let sort_order: i64 = lan_arg(args, "sortOrder")?;
+            let image_path: Option<String> = lan_arg(args, "imagePath")?;
+            let r = create_category_v3_impl(db, license, session_token, name, color, sort_order, image_path)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_category_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let category_id: String = lan_arg(args, "categoryId")?;
+            let name: String = lan_arg(args, "name")?;
+            let color: Option<String> = lan_arg(args, "color")?;
+            let sort_order: i64 = lan_arg(args, "sortOrder")?;
+            let image_path: Option<String> = lan_arg(args, "imagePath")?;
+            let r = update_category_v3_impl(db, license, session_token, category_id, name, color, sort_order, image_path)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_category_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let category_id: String = lan_arg(args, "categoryId")?;
+            let r = delete_category_v3_impl(db, license, session_token, category_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "upload_category_photo_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let category_id: String = lan_arg(args, "categoryId")?;
+            let photo_bytes: Vec<u8> = lan_arg(args, "photoBytes")?;
+            let r = upload_category_photo_v3_impl(&crate::lan::rpc_app_data_dir()?, db, license, session_token, category_id, photo_bytes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_category_photo_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let category_id: String = lan_arg(args, "categoryId")?;
+            let r = delete_category_photo_v3_impl(&crate::lan::rpc_app_data_dir()?, db, license, session_token, category_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_category_photo_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let category_id: String = lan_arg(args, "categoryId")?;
+            let r = get_category_photo_v3_impl(db, session_token, category_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "upload_menu_item_photo_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let item_id: String = lan_arg(args, "itemId")?;
+            let photo_bytes: Vec<u8> = lan_arg(args, "photoBytes")?;
+            let r = upload_menu_item_photo_v3_impl(&crate::lan::rpc_app_data_dir()?, db, license, session_token, item_id, photo_bytes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_menu_item_photo_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let item_id: String = lan_arg(args, "itemId")?;
+            let r = delete_menu_item_photo_v3_impl(&crate::lan::rpc_app_data_dir()?, db, license, session_token, item_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "create_menu_item_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let name: String = lan_arg(args, "name")?;
+            let category_id: String = lan_arg(args, "categoryId")?;
+            let price_cents: i64 = lan_arg(args, "priceCents")?;
+            let cost_cents: i64 = lan_arg(args, "costCents")?;
+            let description: Option<String> = lan_arg(args, "description")?;
+            let barcode: Option<String> = lan_arg(args, "barcode")?;
+            let r = create_menu_item_v3_impl(db, license, session_token, name, category_id, price_cents, cost_cents, description, barcode)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_menu_item_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let item_id: String = lan_arg(args, "itemId")?;
+            let name: String = lan_arg(args, "name")?;
+            let category_id: String = lan_arg(args, "categoryId")?;
+            let price_cents: i64 = lan_arg(args, "priceCents")?;
+            let cost_cents: i64 = lan_arg(args, "costCents")?;
+            let description: Option<String> = lan_arg(args, "description")?;
+            let barcode: Option<String> = lan_arg(args, "barcode")?;
+            let r = update_menu_item_v3_impl(db, license, session_token, item_id, name, category_id, price_cents, cost_cents, description, barcode)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "set_menu_item_sold_by_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let item_id: String = lan_arg(args, "itemId")?;
+            let sold_by: String = lan_arg(args, "soldBy")?;
+            let r = set_menu_item_sold_by_v3_impl(db, license, session_token, item_id, sold_by)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_menu_item_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let item_id: String = lan_arg(args, "itemId")?;
+            let r = delete_menu_item_v3_impl(db, license, session_token, item_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "set_menu_item_active_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let item_id: String = lan_arg(args, "itemId")?;
+            let is_active: bool = lan_arg(args, "isActive")?;
+            let r = set_menu_item_active_v3_impl(db, license, session_token, item_id, is_active)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "create_combo_meal_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let name: String = lan_arg(args, "name")?;
+            let bundle_price_cents: i64 = lan_arg(args, "bundlePriceCents")?;
+            let items: Vec<(String, i64)> = lan_arg(args, "items")?;
+            let r = create_combo_meal_v3_impl(db, license, session_token, name, bundle_price_cents, items)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_combo_meal_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let combo_id: String = lan_arg(args, "comboId")?;
+            let name: String = lan_arg(args, "name")?;
+            let bundle_price_cents: i64 = lan_arg(args, "bundlePriceCents")?;
+            let items: Vec<(String, i64)> = lan_arg(args, "items")?;
+            let r = update_combo_meal_v3_impl(db, license, session_token, combo_id, name, bundle_price_cents, items)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_combo_meal_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let combo_id: String = lan_arg(args, "comboId")?;
+            let r = delete_combo_meal_v3_impl(db, license, session_token, combo_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "create_happy_hour_rule_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let menu_item_id: String = lan_arg(args, "menuItemId")?;
+            let discount_percent: i64 = lan_arg(args, "discountPercent")?;
+            let day_of_week: i64 = lan_arg(args, "dayOfWeek")?;
+            let start_time: String = lan_arg(args, "startTime")?;
+            let end_time: String = lan_arg(args, "endTime")?;
+            let is_active: bool = lan_arg(args, "isActive")?;
+            let r = create_happy_hour_rule_v3_impl(db, license, session_token, menu_item_id, discount_percent, day_of_week, start_time, end_time, is_active)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_happy_hour_rule_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let rule_id: String = lan_arg(args, "ruleId")?;
+            let menu_item_id: String = lan_arg(args, "menuItemId")?;
+            let discount_percent: i64 = lan_arg(args, "discountPercent")?;
+            let day_of_week: i64 = lan_arg(args, "dayOfWeek")?;
+            let start_time: String = lan_arg(args, "startTime")?;
+            let end_time: String = lan_arg(args, "endTime")?;
+            let is_active: bool = lan_arg(args, "isActive")?;
+            let r = update_happy_hour_rule_v3_impl(db, license, session_token, rule_id, menu_item_id, discount_percent, day_of_week, start_time, end_time, is_active)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_happy_hour_rule_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let rule_id: String = lan_arg(args, "ruleId")?;
+            let r = delete_happy_hour_rule_v3_impl(db, license, session_token, rule_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "set_happy_hour_rule_active_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let rule_id: String = lan_arg(args, "ruleId")?;
+            let is_active: bool = lan_arg(args, "isActive")?;
+            let r = set_happy_hour_rule_active_v3_impl(db, license, session_token, rule_id, is_active)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
+}

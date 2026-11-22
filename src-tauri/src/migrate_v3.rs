@@ -3351,6 +3351,41 @@ pub fn run_areas_platforms_templates_migration(conn: &mut Connection, _db_path: 
     Ok(())
 }
 
+pub const MIGRATION_AY_VERSION: i64 = 57;
+
+/// Migration AY: which second tills may open the back office on this hub. `paired_terminal`
+/// (LAN devices) gains `back_office` (0 = no, the default); `cloud_terminal` lists the devices that
+/// reach the hub over the internet, by their licence id, filled in on their first message.
+/// Additive, default OFF.
+pub fn run_remote_back_office_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AY_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    if table_exists(&tx, "paired_terminal")? {
+        add_column_if_missing(&tx, "paired_terminal", "back_office", "INTEGER NOT NULL DEFAULT 0")?;
+    }
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cloud_terminal (
+            license_id TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            back_office INTEGER NOT NULL DEFAULT 0
+        );",
+    )?;
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AY_VERSION, "0057_remote_back_office", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

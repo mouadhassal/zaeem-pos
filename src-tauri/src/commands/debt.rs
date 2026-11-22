@@ -96,9 +96,14 @@ pub(crate) fn create_debtor_v3_impl(
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn update_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String, name: String, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>, credit_limit_cents: Option<i64>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    update_debtor_v3_impl(&state, &license, session_token, debtor_id, name, phone, email, address, notes, credit_limit_cents)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_debtor_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, debtor_id: String, name: String, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>, credit_limit_cents: Option<i64>) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
     let phone = phone.filter(|p| !p.trim().is_empty());
     let email = email.filter(|e| !e.trim().is_empty());
@@ -117,9 +122,13 @@ pub fn update_debtor_v3(state: State<Db>, license: State<crate::license::cloud::
 
 #[tauri::command]
 pub fn deactivate_debtor_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    deactivate_debtor_v3_impl(&state, &license, session_token, debtor_id)
+}
+
+pub(crate) fn deactivate_debtor_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, debtor_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -131,9 +140,13 @@ pub fn deactivate_debtor_v3(state: State<Db>, license: State<crate::license::clo
 
 #[tauri::command]
 pub fn list_debt_entries_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String) -> Result<Vec<crate::repo::DebtEntryRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    list_debt_entries_v3_impl(&state, &license, session_token, debtor_id)
+}
+
+pub(crate) fn list_debt_entries_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, debtor_id: String) -> Result<Vec<crate::repo::DebtEntryRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_debt_entries(&actor.scope(), &debtor_id).map_err(|e| e.to_string())
@@ -154,9 +167,13 @@ pub fn list_debt_entries_v3(state: State<Db>, license: State<crate::license::clo
 /// amount input simply not working.
 #[tauri::command]
 pub fn record_debt_payment_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, debtor_id: String, amount_cents: i64, notes: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    record_debt_payment_v3_impl(&state, &license, session_token, debtor_id, amount_cents, notes)
+}
+
+pub(crate) fn record_debt_payment_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, debtor_id: String, amount_cents: i64, notes: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     authorize(&actor, Permission::ManageDebt).map_err(|e| e.to_string())?;
     if amount_cents <= 0 {
         return Err("payment amount must be positive".to_string());
@@ -169,3 +186,48 @@ pub fn record_debt_payment_v3(state: State<Db>, license: State<crate::license::c
     Ok(entry_id)
 }
 
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "update_debtor_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let debtor_id: String = lan_arg(args, "debtorId")?;
+            let name: String = lan_arg(args, "name")?;
+            let phone: Option<String> = lan_arg(args, "phone")?;
+            let email: Option<String> = lan_arg(args, "email")?;
+            let address: Option<String> = lan_arg(args, "address")?;
+            let notes: Option<String> = lan_arg(args, "notes")?;
+            let credit_limit_cents: Option<i64> = lan_arg(args, "creditLimitCents")?;
+            let r = update_debtor_v3_impl(db, license, session_token, debtor_id, name, phone, email, address, notes, credit_limit_cents)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "deactivate_debtor_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let debtor_id: String = lan_arg(args, "debtorId")?;
+            let r = deactivate_debtor_v3_impl(db, license, session_token, debtor_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_debt_entries_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let debtor_id: String = lan_arg(args, "debtorId")?;
+            let r = list_debt_entries_v3_impl(db, license, session_token, debtor_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "record_debt_payment_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let debtor_id: String = lan_arg(args, "debtorId")?;
+            let amount_cents: i64 = lan_arg(args, "amountCents")?;
+            let notes: Option<String> = lan_arg(args, "notes")?;
+            let r = record_debt_payment_v3_impl(db, license, session_token, debtor_id, amount_cents, notes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
+}

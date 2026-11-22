@@ -264,8 +264,12 @@ pub(crate) fn logout_v3_impl(state: &Db, session_token: String) -> Result<(), St
 
 #[tauri::command]
 pub fn create_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, tenant_id: String, name: String, currency: String) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    create_branch_v3_impl(&state, &license, session_token, tenant_id, name, currency)
+}
+
+pub(crate) fn create_branch_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, tenant_id: String, name: String, currency: String) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::CreateBranch).map_err(|e| e.to_string())?;
     // Platform's authorize_scope is unconditional true, but the target tenant
     // must still exist -- validate, don't trust the argument blindly.
@@ -288,16 +292,18 @@ pub fn create_branch_v3(state: State<Db>, license: State<crate::license::cloud::
 }
 
 #[tauri::command]
-pub fn create_staff_v3(
-    state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>,
+pub fn create_staff_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>,
     session_token: String,
     target_branch_id: Option<String>,
     role: String,
     name: String,
-    pin: String,
-) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    pin: String,) -> Result<String, String> {
+    create_staff_v3_impl(&state, &license, session_token, target_branch_id, role, name, pin)
+}
+
+pub(crate) fn create_staff_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, target_branch_id: Option<String>, role: String, name: String, pin: String) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::CreateStaff).map_err(|e| e.to_string())?;
 
     let target_role = Role::from_str(&role).ok_or_else(|| "دور غير معروف".to_string())?;
@@ -358,8 +364,12 @@ pub fn create_staff_v3(
 /// the rule, and cannot touch a target who already outranks them.
 #[tauri::command]
 pub fn update_staff_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, target_staff_id: String, new_role: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    update_staff_v3_impl(&state, &license, session_token, target_staff_id, new_role)
+}
+
+pub(crate) fn update_staff_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, target_staff_id: String, new_role: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
 
     let new_role_parsed = Role::from_str(&new_role).ok_or_else(|| "دور غير معروف".to_string())?;
@@ -398,8 +408,12 @@ pub fn update_staff_v3(state: State<Db>, license: State<crate::license::cloud::C
 /// sensitive read by itself; `create_staff_v3` re-checks everything).
 #[tauri::command]
 pub fn list_branches_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<(String, String)>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_branches_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_branches_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<(String, String)>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_branches(&actor.tenant_id).map_err(|e| e.to_string())
 }
@@ -410,9 +424,13 @@ pub fn list_branches_v3(state: State<Db>, license: State<crate::license::cloud::
 /// payment/print commands must never be gated this way.
 #[tauri::command]
 pub fn list_staff_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::StaffRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    list_staff_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_staff_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<crate::repo::StaffRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
-    require_license_not_locked(&license)?;
+    require_license_not_locked(license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_staff(&actor.scope()).map_err(|e| e.to_string())
 }
@@ -424,8 +442,12 @@ pub fn list_staff_v3(state: State<Db>, license: State<crate::license::cloud::Clo
 /// rank-checked path); this command never touches `role`/`role_rank`.
 #[tauri::command]
 pub fn update_staff_profile_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, target_staff_id: String, name: String, new_pin: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    update_staff_profile_v3_impl(&state, &license, session_token, target_staff_id, name, new_pin)
+}
+
+pub(crate) fn update_staff_profile_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, target_staff_id: String, name: String, new_pin: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -461,8 +483,12 @@ pub fn update_staff_profile_v3(state: State<Db>, license: State<crate::license::
 
 #[tauri::command]
 pub fn set_staff_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, target_staff_id: String, is_active: bool) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    set_staff_active_v3_impl(&state, &license, session_token, target_staff_id, is_active)
+}
+
+pub(crate) fn set_staff_active_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, target_staff_id: String, is_active: bool) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
 
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -519,3 +545,65 @@ pub fn change_own_password_v3(state: State<Db>, session_token: String, old_passw
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "create_branch_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let tenant_id: String = lan_arg(args, "tenantId")?;
+            let name: String = lan_arg(args, "name")?;
+            let currency: String = lan_arg(args, "currency")?;
+            let r = create_branch_v3_impl(db, license, session_token, tenant_id, name, currency)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "create_staff_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let target_branch_id: Option<String> = lan_arg(args, "targetBranchId")?;
+            let role: String = lan_arg(args, "role")?;
+            let name: String = lan_arg(args, "name")?;
+            let pin: String = lan_arg(args, "pin")?;
+            let r = create_staff_v3_impl(db, license, session_token, target_branch_id, role, name, pin)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_staff_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let target_staff_id: String = lan_arg(args, "targetStaffId")?;
+            let new_role: String = lan_arg(args, "newRole")?;
+            let r = update_staff_v3_impl(db, license, session_token, target_staff_id, new_role)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_branches_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_branches_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_staff_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_staff_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_staff_profile_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let target_staff_id: String = lan_arg(args, "targetStaffId")?;
+            let name: String = lan_arg(args, "name")?;
+            let new_pin: Option<String> = lan_arg(args, "newPin")?;
+            let r = update_staff_profile_v3_impl(db, license, session_token, target_staff_id, name, new_pin)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "set_staff_active_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let target_staff_id: String = lan_arg(args, "targetStaffId")?;
+            let is_active: bool = lan_arg(args, "isActive")?;
+            let r = set_staff_active_v3_impl(db, license, session_token, target_staff_id, is_active)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
+}

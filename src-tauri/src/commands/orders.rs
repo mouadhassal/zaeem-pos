@@ -25,8 +25,12 @@ pub fn list_orders_v3(state: State<Db>, license: State<crate::license::cloud::Cl
 /// of list_orders_v3 above.
 #[tauri::command]
 pub fn list_recent_paid_orders_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::RefundableOrderRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_recent_paid_orders_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_recent_paid_orders_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<crate::repo::RefundableOrderRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::RefundOrder).map_err(|e| e.to_string())?;
     let scope = actor.scope();
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -2043,3 +2047,21 @@ pub(crate) fn sync_enqueue_operational_cost(
     crate::sync::enqueue(tx, "operational_costs", cost_id, tenant_id, branch_id, &payload, rev, device_id, license_status).map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "list_recent_paid_orders_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_recent_paid_orders_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
+}

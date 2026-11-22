@@ -1,6 +1,6 @@
 import { invoke as tauriInvoke, type InvokeArgs, type InvokeOptions } from "@tauri-apps/api/core";
 import { useSessionStore } from "../stores/sessionStore";
-import { HUB_ONLY_WRITE_ERROR, HUB_ONLY_WRITES, LAN_REDIRECT_COMMANDS, isSatellite, relayIfSatellite } from "./lan";
+import { BACK_OFFICE_REMOTE_COMMANDS, HUB_ONLY_WRITE_ERROR, HUB_ONLY_WRITES, LAN_REDIRECT_COMMANDS, isSatellite, relayIfSatellite } from "./lan";
 
 /**
  * Drop-in replacement for `@tauri-apps/api/core`'s `invoke` -- same
@@ -32,11 +32,15 @@ import { HUB_ONLY_WRITE_ERROR, HUB_ONLY_WRITES, LAN_REDIRECT_COMMANDS, isSatelli
  * machine see the same orders/tables as the Hub. On a standalone or Hub
  * terminal, `relayIfSatellite` returns `redirected: false` immediately and
  * this falls through to the exact same local call as before.
+ *
+ * Back-office commands (`BACK_OFFICE_REMOTE_COMMANDS`: reports, finance, stock, menu edits, staff...)
+ * are relayed the same way, but the hub only runs them for a device its owner allowed; otherwise the
+ * hub's refusal (Arabic, plain) is what the page's own catch block shows.
  */
 export async function invoke<T>(cmd: string, args?: InvokeArgs, options?: InvokeOptions): Promise<T> {
   try {
     if (HUB_ONLY_WRITES.has(cmd) && (await isSatellite())) throw new Error(HUB_ONLY_WRITE_ERROR);
-    if (LAN_REDIRECT_COMMANDS.has(cmd)) {
+    if (LAN_REDIRECT_COMMANDS.has(cmd) || BACK_OFFICE_REMOTE_COMMANDS.has(cmd)) {
       const relayed = await relayIfSatellite<T>(cmd, args as Record<string, unknown> | undefined);
       if (relayed.redirected) {
         if (relayed.error) throw new Error(relayed.error);

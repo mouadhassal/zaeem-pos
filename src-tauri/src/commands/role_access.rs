@@ -19,8 +19,12 @@ fn owner_only(role: Role) -> Result<(), String> {
 
 #[tauri::command]
 pub fn get_role_access_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<AccessCell>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_role_access_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn get_role_access_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<AccessCell>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     owner_only(actor.role)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     role_access::load_matrix(&conn, &actor.tenant_id)
@@ -28,9 +32,13 @@ pub fn get_role_access_v3(state: State<Db>, license: State<crate::license::cloud
 
 #[tauri::command]
 pub fn save_role_access_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, cells: Vec<AccessCell>) -> Result<(), String> {
+    save_role_access_v3_impl(&state, &license, session_token, cells)
+}
+
+pub(crate) fn save_role_access_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, cells: Vec<AccessCell>) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("save_role_access_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     owner_only(actor.role)?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -46,7 +54,11 @@ pub fn save_role_access_v3(state: State<Db>, license: State<crate::license::clou
 /// sidebar needs it on every screen, and it only reads the person's own answer.
 #[tauri::command]
 pub fn get_my_access_v3(state: State<Db>, session_token: String) -> Result<BTreeMap<String, bool>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    get_my_access_v3_impl(&state, session_token)
+}
+
+pub(crate) fn get_my_access_v3_impl(state: &Db, session_token: String) -> Result<BTreeMap<String, bool>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Ok(role_access::effective_map(&conn, &actor.tenant_id, actor.role, &actor.id))
 }
@@ -66,8 +78,12 @@ fn person_in_tenant(conn: &rusqlite::Connection, tenant_id: &str, staff_id: &str
 /// One person's exceptions on top of their role (owner only).
 #[tauri::command]
 pub fn get_staff_access_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, staff_id: String) -> Result<Vec<PersonCell>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_staff_access_v3_impl(&state, &license, session_token, staff_id)
+}
+
+pub(crate) fn get_staff_access_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, staff_id: String) -> Result<Vec<PersonCell>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     owner_only(actor.role)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     person_in_tenant(&conn, &actor.tenant_id, &staff_id)?;
@@ -76,9 +92,13 @@ pub fn get_staff_access_v3(state: State<Db>, license: State<crate::license::clou
 
 #[tauri::command]
 pub fn save_staff_access_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, staff_id: String, cells: Vec<PersonCell>) -> Result<(), String> {
+    save_staff_access_v3_impl(&state, &license, session_token, staff_id, cells)
+}
+
+pub(crate) fn save_staff_access_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, staff_id: String, cells: Vec<PersonCell>) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("save_staff_access_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     owner_only(actor.role)?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     person_in_tenant(&conn, &actor.tenant_id, &staff_id)?;
@@ -89,4 +109,42 @@ pub fn save_staff_access_v3(state: State<Db>, license: State<crate::license::clo
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "staff_access", &staff_id, serde_json::to_value(&before).ok().as_ref(), serde_json::to_value(&after).ok().as_ref()).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "get_role_access_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = get_role_access_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "save_role_access_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let cells: Vec<AccessCell> = lan_arg(args, "cells")?;
+            let r = save_role_access_v3_impl(db, license, session_token, cells)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_staff_access_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let staff_id: String = lan_arg(args, "staffId")?;
+            let r = get_staff_access_v3_impl(db, license, session_token, staff_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "save_staff_access_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let staff_id: String = lan_arg(args, "staffId")?;
+            let cells: Vec<PersonCell> = lan_arg(args, "cells")?;
+            let r = save_staff_access_v3_impl(db, license, session_token, staff_id, cells)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
 }

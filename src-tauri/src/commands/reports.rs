@@ -12,8 +12,12 @@ use super::orders::sync_enqueue_operational_cost;
 
 #[tauri::command]
 pub fn get_finance_revenue_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String) -> Result<crate::repo::RevenueSummaryRow, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_finance_revenue_v3_impl(&state, &license, session_token, start_iso, end_iso)
+}
+
+pub(crate) fn get_finance_revenue_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, start_iso: String, end_iso: String) -> Result<crate::repo::RevenueSummaryRow, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).finance_revenue_summary(&actor.scope(), &start_iso, &end_iso).map_err(|e| e.to_string())
@@ -28,8 +32,12 @@ pub fn get_finance_revenue_v3(state: State<Db>, license: State<crate::license::c
 /// branches, money" vs "MANAGER: own branch, operations" from the plan.
 #[tauri::command]
 pub fn get_dashboard_summary_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String, tz_offset_minutes: Option<i64>) -> Result<crate::repo::DashboardSummaryRow, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_dashboard_summary_v3_impl(&state, &license, session_token, start_iso, end_iso, tz_offset_minutes)
+}
+
+pub(crate) fn get_dashboard_summary_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, start_iso: String, end_iso: String, tz_offset_minutes: Option<i64>) -> Result<crate::repo::DashboardSummaryRow, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).dashboard_summary(&actor.scope(), &start_iso, &end_iso, tz_offset_minutes.unwrap_or(0)).map_err(|e| e.to_string())
@@ -38,8 +46,12 @@ pub fn get_dashboard_summary_v3(state: State<Db>, license: State<crate::license:
 /// Day-by-day net sales and both profit lines for the finance page's trend table.
 #[tauri::command]
 pub fn get_profit_trend_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String, tz_offset_minutes: Option<i64>) -> Result<Vec<crate::profit::DayProfit>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_profit_trend_v3_impl(&state, &license, session_token, start_iso, end_iso, tz_offset_minutes)
+}
+
+pub(crate) fn get_profit_trend_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, start_iso: String, end_iso: String, tz_offset_minutes: Option<i64>) -> Result<Vec<crate::profit::DayProfit>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     crate::profit::daily(&conn, &actor.scope(), &start_iso, &end_iso, tz_offset_minutes.unwrap_or(0)).map_err(|e| e.to_string())
@@ -47,8 +59,12 @@ pub fn get_profit_trend_v3(state: State<Db>, license: State<crate::license::clou
 
 #[tauri::command]
 pub fn get_tax_collected_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, since_iso: String) -> Result<i64, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_tax_collected_v3_impl(&state, &license, session_token, since_iso)
+}
+
+pub(crate) fn get_tax_collected_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, since_iso: String) -> Result<i64, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).tax_collected_since(&actor.scope(), &since_iso).map_err(|e| e.to_string())
@@ -58,8 +74,12 @@ pub fn get_tax_collected_v3(state: State<Db>, license: State<crate::license::clo
 /// a category (old names count as the new one) and a cost centre (`-` = none).
 #[tauri::command]
 pub fn list_operational_costs_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_date: Option<String>, end_date: Option<String>, category: Option<String>, cost_centre: Option<String>) -> Result<Vec<crate::finance::CostRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_operational_costs_v3_impl(&state, &license, session_token, start_date, end_date, category, cost_centre)
+}
+
+pub(crate) fn list_operational_costs_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, start_date: Option<String>, end_date: Option<String>, category: Option<String>, cost_centre: Option<String>) -> Result<Vec<crate::finance::CostRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let filter = crate::finance::CostFilter { from: start_date, to: end_date, category, cost_centre };
@@ -69,12 +89,17 @@ pub fn list_operational_costs_v3(state: State<Db>, license: State<crate::license
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn create_operational_cost_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category: String, amount_cents: i64, date: String, notes: Option<String>, payment_date: Option<String>, payee: Option<String>, payment_method: Option<String>, reference_no: Option<String>, cost_centre: Option<String>, accrual_period: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    create_operational_cost_v3_impl(&state, &license, session_token, category, amount_cents, date, notes, payment_date, payee, payment_method, reference_no, cost_centre, accrual_period)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_operational_cost_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, category: String, amount_cents: i64, date: String, notes: Option<String>, payment_date: Option<String>, payee: Option<String>, payment_method: Option<String>, reference_no: Option<String>, cost_centre: Option<String>, accrual_period: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     let mut fields = crate::finance::CostFields { category, amount_cents, date, notes, payment_date, payee, payment_method, reference_no, cost_centre, accrual_period, ..Default::default() };
     fields.normalise()?;
@@ -93,8 +118,13 @@ pub fn create_operational_cost_v3(state: State<Db>, license: State<crate::licens
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn update_operational_cost_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, cost_id: String, category: String, amount_cents: i64, date: String, notes: Option<String>, payment_date: Option<String>, payee: Option<String>, payment_method: Option<String>, reference_no: Option<String>, cost_centre: Option<String>, accrual_period: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    update_operational_cost_v3_impl(&state, &license, session_token, cost_id, category, amount_cents, date, notes, payment_date, payee, payment_method, reference_no, cost_centre, accrual_period)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_operational_cost_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, cost_id: String, category: String, amount_cents: i64, date: String, notes: Option<String>, payment_date: Option<String>, payee: Option<String>, payment_method: Option<String>, reference_no: Option<String>, cost_centre: Option<String>, accrual_period: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let mut fields = crate::finance::CostFields { category, amount_cents, date, notes, payment_date, payee, payment_method, reference_no, cost_centre, accrual_period, ..Default::default() };
     fields.normalise()?;
@@ -110,8 +140,12 @@ pub fn update_operational_cost_v3(state: State<Db>, license: State<crate::licens
 
 #[tauri::command]
 pub fn list_invoices_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::InvoiceRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_invoices_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_invoices_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<crate::repo::InvoiceRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_invoices(&actor.tenant_id).map_err(|e| e.to_string())
@@ -119,12 +153,16 @@ pub fn list_invoices_v3(state: State<Db>, license: State<crate::license::cloud::
 
 #[tauri::command]
 pub fn create_invoice_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, period_start: String, period_end: String, amount_cents: i64, due_date: String) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    create_invoice_v3_impl(&state, &license, session_token, period_start, period_end, amount_cents, due_date)
+}
+
+pub(crate) fn create_invoice_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, period_start: String, period_end: String, amount_cents: i64, due_date: String) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     if amount_cents <= 0 {
         return Err("invoice amount must be positive".to_string());
@@ -139,8 +177,12 @@ pub fn create_invoice_v3(state: State<Db>, license: State<crate::license::cloud:
 
 #[tauri::command]
 pub fn mark_invoice_paid_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, invoice_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    mark_invoice_paid_v3_impl(&state, &license, session_token, invoice_id)
+}
+
+pub(crate) fn mark_invoice_paid_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, invoice_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -157,20 +199,28 @@ pub fn mark_invoice_paid_v3(state: State<Db>, license: State<crate::license::clo
 /// Gifts ("on the house") in a period: what was given, its value, why, and by whom.
 #[tauri::command]
 pub fn gifts_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: Option<String>) -> Result<Vec<crate::repo::GiftRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    gifts_report_v3_impl(&state, &license, session_token, start_iso, end_iso)
+}
+
+pub(crate) fn gifts_report_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, start_iso: String, end_iso: Option<String>) -> Result<Vec<crate::repo::GiftRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).gifts_report(&actor.scope(), &start_iso, end_iso.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn get_sales_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, today_start_iso: String, range_end_iso: Option<String>) -> Result<crate::repo::SalesReportRow, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    get_sales_report_v3_impl(&state, &license, session_token, today_start_iso, range_end_iso)
+}
+
+pub(crate) fn get_sales_report_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, today_start_iso: String, range_end_iso: Option<String>) -> Result<crate::repo::SalesReportRow, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).sales_report(&actor.scope(), &today_start_iso, range_end_iso.as_deref()).map_err(|e| e.to_string())
 }
@@ -179,14 +229,18 @@ pub fn get_sales_report_v3(state: State<Db>, license: State<crate::license::clou
 /// the report printed as a long strip on the receipt printer.
 #[tauri::command]
 pub fn get_sales_strip_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String) -> Result<crate::sales_strip::SalesStrip, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    get_sales_strip_v3_impl(&state, &license, session_token, start_iso, end_iso)
+}
+
+pub(crate) fn get_sales_strip_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, start_iso: String, end_iso: String) -> Result<crate::sales_strip::SalesStrip, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
     // Seeing the reports and printing them on the receipt printer are two boxes in the owner's table.
     if !actor.access.allows(crate::role_access::Feature::ReportPrint, true) {
         return Err("طباعة التقرير غير مسموحة لدورك (حسب إعداد المالك)".to_string());
     }
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     crate::sales_strip::strip(&conn, &actor.scope(), &start_iso, &end_iso).map_err(|e| e.to_string())
 }
@@ -275,16 +329,18 @@ pub fn ask_help_v3(
 /// from the same numbers, no AI call, so it works offline and costs nothing.
 /// Tapping one sends its `question` to the assistant.
 #[tauri::command]
-pub fn assistant_insights_v3(
-    state: State<Db>,
+pub fn assistant_insights_v3(state: State<Db>,
     license: State<crate::license::cloud::CloudLicenseState>,
     session_token: String,
     tz_offset_minutes: Option<i64>,
-    periods: Option<Vec<crate::assistant::PeriodWindow>>,
-) -> Result<Vec<crate::assistant::Insight>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    periods: Option<Vec<crate::assistant::PeriodWindow>>,) -> Result<Vec<crate::assistant::Insight>, String> {
+    assistant_insights_v3_impl(&state, &license, session_token, tz_offset_minutes, periods)
+}
+
+pub(crate) fn assistant_insights_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, tz_offset_minutes: Option<i64>, periods: Option<Vec<crate::assistant::PeriodWindow>>) -> Result<Vec<crate::assistant::Insight>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
-    require_license_not_locked(&license)?;
+    require_license_not_locked(license)?;
     let ctx = crate::assistant::SnapshotContext {
         tz_offset_minutes: tz_offset_minutes.unwrap_or(0),
         now_local: String::new(),
@@ -301,10 +357,14 @@ pub fn assistant_insights_v3(
 /// every other report.
 #[tauri::command]
 pub fn detect_anomalies_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::anomaly::AnomalyFinding>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    detect_anomalies_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn detect_anomalies_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<crate::anomaly::AnomalyFinding>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     crate::anomaly::detect_anomalies(&conn, &actor.scope(), 30).map_err(|e| e.to_string())
 }
@@ -315,10 +375,14 @@ pub fn detect_anomalies_v3(state: State<Db>, license: State<crate::license::clou
 /// same Manager+ rank as every other report.
 #[tauri::command]
 pub fn forecast_demand_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<crate::forecast::DemandForecast, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    forecast_demand_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn forecast_demand_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<crate::forecast::DemandForecast, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     crate::forecast::forecast_demand(&conn, &actor.scope()).map_err(|e| e.to_string())
 }
@@ -389,11 +453,160 @@ pub fn send_diagnostics_report_v3(app: tauri::AppHandle, state: State<Db>, sessi
 /// module doc. Manager+, same rank as every other report; on-demand only.
 #[tauri::command]
 pub fn reconcile_orders_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<crate::reconcile::ReconciliationReport, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    reconcile_orders_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn reconcile_orders_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<crate::reconcile::ReconciliationReport, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     authorize(&actor, Permission::ViewReports).map_err(|e| e.to_string())?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     crate::reconcile::reconcile(&conn, &actor.scope()).map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "get_finance_revenue_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let start_iso: String = lan_arg(args, "startIso")?;
+            let end_iso: String = lan_arg(args, "endIso")?;
+            let r = get_finance_revenue_v3_impl(db, license, session_token, start_iso, end_iso)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_dashboard_summary_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let start_iso: String = lan_arg(args, "startIso")?;
+            let end_iso: String = lan_arg(args, "endIso")?;
+            let tz_offset_minutes: Option<i64> = lan_arg(args, "tzOffsetMinutes")?;
+            let r = get_dashboard_summary_v3_impl(db, license, session_token, start_iso, end_iso, tz_offset_minutes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_profit_trend_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let start_iso: String = lan_arg(args, "startIso")?;
+            let end_iso: String = lan_arg(args, "endIso")?;
+            let tz_offset_minutes: Option<i64> = lan_arg(args, "tzOffsetMinutes")?;
+            let r = get_profit_trend_v3_impl(db, license, session_token, start_iso, end_iso, tz_offset_minutes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_tax_collected_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let since_iso: String = lan_arg(args, "sinceIso")?;
+            let r = get_tax_collected_v3_impl(db, license, session_token, since_iso)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_operational_costs_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let start_date: Option<String> = lan_arg(args, "startDate")?;
+            let end_date: Option<String> = lan_arg(args, "endDate")?;
+            let category: Option<String> = lan_arg(args, "category")?;
+            let cost_centre: Option<String> = lan_arg(args, "costCentre")?;
+            let r = list_operational_costs_v3_impl(db, license, session_token, start_date, end_date, category, cost_centre)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "create_operational_cost_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let category: String = lan_arg(args, "category")?;
+            let amount_cents: i64 = lan_arg(args, "amountCents")?;
+            let date: String = lan_arg(args, "date")?;
+            let notes: Option<String> = lan_arg(args, "notes")?;
+            let payment_date: Option<String> = lan_arg(args, "paymentDate")?;
+            let payee: Option<String> = lan_arg(args, "payee")?;
+            let payment_method: Option<String> = lan_arg(args, "paymentMethod")?;
+            let reference_no: Option<String> = lan_arg(args, "referenceNo")?;
+            let cost_centre: Option<String> = lan_arg(args, "costCentre")?;
+            let accrual_period: Option<String> = lan_arg(args, "accrualPeriod")?;
+            let r = create_operational_cost_v3_impl(db, license, session_token, category, amount_cents, date, notes, payment_date, payee, payment_method, reference_no, cost_centre, accrual_period)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_operational_cost_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let cost_id: String = lan_arg(args, "costId")?;
+            let category: String = lan_arg(args, "category")?;
+            let amount_cents: i64 = lan_arg(args, "amountCents")?;
+            let date: String = lan_arg(args, "date")?;
+            let notes: Option<String> = lan_arg(args, "notes")?;
+            let payment_date: Option<String> = lan_arg(args, "paymentDate")?;
+            let payee: Option<String> = lan_arg(args, "payee")?;
+            let payment_method: Option<String> = lan_arg(args, "paymentMethod")?;
+            let reference_no: Option<String> = lan_arg(args, "referenceNo")?;
+            let cost_centre: Option<String> = lan_arg(args, "costCentre")?;
+            let accrual_period: Option<String> = lan_arg(args, "accrualPeriod")?;
+            let r = update_operational_cost_v3_impl(db, license, session_token, cost_id, category, amount_cents, date, notes, payment_date, payee, payment_method, reference_no, cost_centre, accrual_period)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_invoices_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_invoices_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "create_invoice_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let period_start: String = lan_arg(args, "periodStart")?;
+            let period_end: String = lan_arg(args, "periodEnd")?;
+            let amount_cents: i64 = lan_arg(args, "amountCents")?;
+            let due_date: String = lan_arg(args, "dueDate")?;
+            let r = create_invoice_v3_impl(db, license, session_token, period_start, period_end, amount_cents, due_date)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "mark_invoice_paid_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let invoice_id: String = lan_arg(args, "invoiceId")?;
+            let r = mark_invoice_paid_v3_impl(db, license, session_token, invoice_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "gifts_report_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let start_iso: String = lan_arg(args, "startIso")?;
+            let end_iso: Option<String> = lan_arg(args, "endIso")?;
+            let r = gifts_report_v3_impl(db, license, session_token, start_iso, end_iso)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_sales_report_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let today_start_iso: String = lan_arg(args, "todayStartIso")?;
+            let range_end_iso: Option<String> = lan_arg(args, "rangeEndIso")?;
+            let r = get_sales_report_v3_impl(db, license, session_token, today_start_iso, range_end_iso)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_sales_strip_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let start_iso: String = lan_arg(args, "startIso")?;
+            let end_iso: String = lan_arg(args, "endIso")?;
+            let r = get_sales_strip_v3_impl(db, license, session_token, start_iso, end_iso)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "assistant_insights_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let tz_offset_minutes: Option<i64> = lan_arg(args, "tzOffsetMinutes")?;
+            let periods: Option<Vec<crate::assistant::PeriodWindow>> = lan_arg(args, "periods")?;
+            let r = assistant_insights_v3_impl(db, license, session_token, tz_offset_minutes, periods)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "detect_anomalies_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = detect_anomalies_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "forecast_demand_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = forecast_demand_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "reconcile_orders_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = reconcile_orders_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
+}

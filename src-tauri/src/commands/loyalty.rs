@@ -11,9 +11,13 @@ use super::shared::*;
 
 #[tauri::command]
 pub fn list_loyalty_cards_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::LoyaltyCardRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    list_loyalty_cards_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_loyalty_cards_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<crate::repo::LoyaltyCardRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_loyalty_cards(&actor.tenant_id).map_err(|e| e.to_string())
@@ -24,9 +28,13 @@ pub fn list_loyalty_cards_v3(state: State<Db>, license: State<crate::license::cl
 /// so there is no separate hardware code path here at all.
 #[tauri::command]
 pub fn issue_loyalty_card_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, customer_id: String, card_number: String) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    issue_loyalty_card_v3_impl(&state, &license, session_token, customer_id, card_number)
+}
+
+pub(crate) fn issue_loyalty_card_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, customer_id: String, card_number: String) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     if card_number.trim().is_empty() {
         return Err("رقم البطاقة مطلوب".to_string());
@@ -43,9 +51,13 @@ pub fn issue_loyalty_card_v3(state: State<Db>, license: State<crate::license::cl
 
 #[tauri::command]
 pub fn list_loyalty_transactions_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, card_id: Option<String>) -> Result<Vec<crate::repo::LoyaltyTxRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    list_loyalty_transactions_v3_impl(&state, &license, session_token, card_id)
+}
+
+pub(crate) fn list_loyalty_transactions_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, card_id: Option<String>) -> Result<Vec<crate::repo::LoyaltyTxRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_loyalty_transactions(&actor.scope(), card_id.as_deref()).map_err(|e| e.to_string())
@@ -59,9 +71,13 @@ pub fn list_loyalty_transactions_v3(state: State<Db>, license: State<crate::lice
 
 #[tauri::command]
 pub fn list_loyalty_tiers_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::LoyaltyTierRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    list_loyalty_tiers_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_loyalty_tiers_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<crate::repo::LoyaltyTierRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_loyalty_tiers(&actor.tenant_id).map_err(|e| e.to_string())
@@ -69,9 +85,13 @@ pub fn list_loyalty_tiers_v3(state: State<Db>, license: State<crate::license::cl
 
 #[tauri::command]
 pub fn create_loyalty_tier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, min_points: i64, points_multiplier: f64, sort_order: i64) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    create_loyalty_tier_v3_impl(&state, &license, session_token, name, min_points, points_multiplier, sort_order)
+}
+
+pub(crate) fn create_loyalty_tier_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, name: String, min_points: i64, points_multiplier: f64, sort_order: i64) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     if min_points < 0 || points_multiplier <= 0.0 {
         return Err("الحد الأدنى للنقاط ومضاعف النقاط يجب أن يكونا موجبين".to_string());
@@ -87,9 +107,14 @@ pub fn create_loyalty_tier_v3(state: State<Db>, license: State<crate::license::c
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn update_loyalty_tier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, tier_id: String, name: String, min_points: i64, points_multiplier: f64, sort_order: i64) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    update_loyalty_tier_v3_impl(&state, &license, session_token, tier_id, name, min_points, points_multiplier, sort_order)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_loyalty_tier_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, tier_id: String, name: String, min_points: i64, points_multiplier: f64, sort_order: i64) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     if min_points < 0 || points_multiplier <= 0.0 {
         return Err("الحد الأدنى للنقاط ومضاعف النقاط يجب أن يكونا موجبين".to_string());
@@ -104,9 +129,13 @@ pub fn update_loyalty_tier_v3(state: State<Db>, license: State<crate::license::c
 
 #[tauri::command]
 pub fn delete_loyalty_tier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, tier_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    delete_loyalty_tier_v3_impl(&state, &license, session_token, tier_id)
+}
+
+pub(crate) fn delete_loyalty_tier_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, tier_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -133,9 +162,14 @@ pub(crate) fn list_loyalty_rewards_v3_impl(state: &Db, license: &crate::license:
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn create_loyalty_reward_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, points_cost: i64, reward_type: String, value_cents: Option<i64>, value_percent_bps: Option<i64>, linked_menu_item_id: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    create_loyalty_reward_v3_impl(&state, &license, session_token, name, points_cost, reward_type, value_cents, value_percent_bps, linked_menu_item_id)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_loyalty_reward_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, name: String, points_cost: i64, reward_type: String, value_cents: Option<i64>, value_percent_bps: Option<i64>, linked_menu_item_id: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     if points_cost <= 0 {
         return Err("تكلفة المكافأة بالنقاط يجب أن تكون موجبة".to_string());
@@ -153,9 +187,13 @@ pub fn create_loyalty_reward_v3(state: State<Db>, license: State<crate::license:
 
 #[tauri::command]
 pub fn set_loyalty_reward_active_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, reward_id: String, is_active: bool) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    set_loyalty_reward_active_v3_impl(&state, &license, session_token, reward_id, is_active)
+}
+
+pub(crate) fn set_loyalty_reward_active_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, reward_id: String, is_active: bool) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -167,9 +205,13 @@ pub fn set_loyalty_reward_active_v3(state: State<Db>, license: State<crate::lice
 
 #[tauri::command]
 pub fn delete_loyalty_reward_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, reward_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
-    require_plan_includes_management(&license)?;
+    delete_loyalty_reward_v3_impl(&state, &license, session_token, reward_id)
+}
+
+pub(crate) fn delete_loyalty_reward_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, reward_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
+    require_plan_includes_management(license)?;
     authorize(&actor, Permission::ManageLoyalty).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -212,3 +254,88 @@ pub(crate) fn redeem_loyalty_reward_v3_impl(
     Ok(reward)
 }
 
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "list_loyalty_cards_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_loyalty_cards_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "issue_loyalty_card_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let customer_id: String = lan_arg(args, "customerId")?;
+            let card_number: String = lan_arg(args, "cardNumber")?;
+            let r = issue_loyalty_card_v3_impl(db, license, session_token, customer_id, card_number)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_loyalty_transactions_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let card_id: Option<String> = lan_arg(args, "cardId")?;
+            let r = list_loyalty_transactions_v3_impl(db, license, session_token, card_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_loyalty_tiers_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_loyalty_tiers_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "create_loyalty_tier_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let name: String = lan_arg(args, "name")?;
+            let min_points: i64 = lan_arg(args, "minPoints")?;
+            let points_multiplier: f64 = lan_arg(args, "pointsMultiplier")?;
+            let sort_order: i64 = lan_arg(args, "sortOrder")?;
+            let r = create_loyalty_tier_v3_impl(db, license, session_token, name, min_points, points_multiplier, sort_order)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_loyalty_tier_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let tier_id: String = lan_arg(args, "tierId")?;
+            let name: String = lan_arg(args, "name")?;
+            let min_points: i64 = lan_arg(args, "minPoints")?;
+            let points_multiplier: f64 = lan_arg(args, "pointsMultiplier")?;
+            let sort_order: i64 = lan_arg(args, "sortOrder")?;
+            let r = update_loyalty_tier_v3_impl(db, license, session_token, tier_id, name, min_points, points_multiplier, sort_order)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_loyalty_tier_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let tier_id: String = lan_arg(args, "tierId")?;
+            let r = delete_loyalty_tier_v3_impl(db, license, session_token, tier_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "create_loyalty_reward_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let name: String = lan_arg(args, "name")?;
+            let points_cost: i64 = lan_arg(args, "pointsCost")?;
+            let reward_type: String = lan_arg(args, "rewardType")?;
+            let value_cents: Option<i64> = lan_arg(args, "valueCents")?;
+            let value_percent_bps: Option<i64> = lan_arg(args, "valuePercentBps")?;
+            let linked_menu_item_id: Option<String> = lan_arg(args, "linkedMenuItemId")?;
+            let r = create_loyalty_reward_v3_impl(db, license, session_token, name, points_cost, reward_type, value_cents, value_percent_bps, linked_menu_item_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "set_loyalty_reward_active_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let reward_id: String = lan_arg(args, "rewardId")?;
+            let is_active: bool = lan_arg(args, "isActive")?;
+            let r = set_loyalty_reward_active_v3_impl(db, license, session_token, reward_id, is_active)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_loyalty_reward_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let reward_id: String = lan_arg(args, "rewardId")?;
+            let r = delete_loyalty_reward_v3_impl(db, license, session_token, reward_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
+}

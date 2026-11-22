@@ -4,6 +4,7 @@ import { useState, lazy, Suspense, useEffect } from "react";
 import { landingView } from "./lib/businessSetup";
 import { useAuthStore } from "./stores/authStore";
 import { useAccessStore } from "./stores/accessStore";
+import { useBackOfficeStore } from "./stores/backOfficeStore";
 import { APP_NAVIGATE_EVENT } from "./lib/appNav";
 import LoginPage from "./components/LoginPage";
 import SetupWizard from "./components/SetupWizard";
@@ -15,7 +16,7 @@ import LicenseBanner from "./components/LicenseBanner";
 import { backOfficeLocked, type LicenseStatus } from "./lib/license";
 import { IconLock } from "@tabler/icons-react";
 import { usePermissions } from "./hooks/usePermissions";
-import { PAGE_FEATURE } from "./lib/permissions";
+import { PAGE_FEATURE, SATELLITE_BACK_OFFICE_PAGES } from "./lib/permissions";
 import { usePlanStore, LITE_PAGES } from "./stores/planStore";
 
 const DashboardPage = lazy(() => import("./app/dashboard/page"));
@@ -85,10 +86,13 @@ function PosLayout({ children }: { children: React.ReactNode }) {
     if (!userId) return;
     void useAccessStore.getState().load();
     void useBusinessStore.getState().load();
-    const t = setInterval(() => { void useAccessStore.getState().load(); void useBusinessStore.getState().load(); }, 30000);
+    // A second till asks the hub whether it may open the back office (cached for a minute).
+    void useBackOfficeStore.getState().load(true);
+    const t = setInterval(() => { void useAccessStore.getState().load(); void useBusinessStore.getState().load(); void useBackOfficeStore.getState().load(); }, 30000);
     return () => {
       clearInterval(t);
       useAccessStore.getState().reset();
+      useBackOfficeStore.getState().reset();
     };
   }, [userId]);
   useEffect(() => {
@@ -97,6 +101,12 @@ function PosLayout({ children }: { children: React.ReactNode }) {
     const item = navItems.find((n) => n.id === activeView);
     if (!item || !item.allowed) setActiveView("pos");
   }, [navItems, activeView]);
+
+  // A second till the hub stops allowing sends the person back to the till from a back-office page.
+  const backOfficeAccess = useBackOfficeStore((s) => s.access);
+  useEffect(() => {
+    if (backOfficeAccess?.isSatellite && !backOfficeAccess.allowed && SATELLITE_BACK_OFFICE_PAGES.has(activeView)) setActiveView("pos");
+  }, [backOfficeAccess, activeView]);
 
   // A page of a module that gets switched off while it is open sends the person back to the till.
   const modulesNow = useBusinessStore((s) => s.modules);

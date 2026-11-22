@@ -54,8 +54,12 @@ pub(crate) fn fingerprint_status_v3_impl(state: &Db, reader: &dyn FingerprintRea
 
 #[tauri::command]
 pub fn list_fingerprint_enrolments_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<attendance::EnrolmentRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_fingerprint_enrolments_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_fingerprint_enrolments_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<attendance::EnrolmentRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     attendance::list_enrolments(&conn, &actor.tenant_id, branch_filter(&actor.scope()).as_deref())
@@ -121,9 +125,13 @@ fn staff_home(
 
 #[tauri::command]
 pub fn delete_fingerprint_enrolment_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, enrolment_id: String) -> Result<(), String> {
+    delete_fingerprint_enrolment_v3_impl(&state, &license, session_token, enrolment_id)
+}
+
+pub(crate) fn delete_fingerprint_enrolment_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, enrolment_id: String) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("delete_fingerprint_enrolment_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -187,16 +195,18 @@ pub(crate) fn fingerprint_punch_v3_impl(
 }
 
 #[tauri::command]
-pub fn list_punches_v3(
-    state: State<Db>,
+pub fn list_punches_v3(state: State<Db>,
     license: State<crate::license::cloud::CloudLicenseState>,
     session_token: String,
     date_from: Option<String>,
     date_to: Option<String>,
-    user_id: Option<String>,
-) -> Result<Vec<attendance::PunchRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    user_id: Option<String>,) -> Result<Vec<attendance::PunchRow>, String> {
+    list_punches_v3_impl(&state, &license, session_token, date_from, date_to, user_id)
+}
+
+pub(crate) fn list_punches_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, date_from: Option<String>, date_to: Option<String>, user_id: Option<String>) -> Result<Vec<attendance::PunchRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     attendance::list_punches(&conn, &actor.tenant_id, branch_filter(&actor.scope()).as_deref(), date_from.as_deref(), date_to.as_deref(), user_id.as_deref())
@@ -204,23 +214,29 @@ pub fn list_punches_v3(
 
 #[tauri::command]
 pub fn get_attendance_settings_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<attendance::AttendanceSettings, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_attendance_settings_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn get_attendance_settings_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<attendance::AttendanceSettings, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     attendance::load_settings(&conn, &actor.tenant_id)
 }
 
 #[tauri::command]
-pub fn set_attendance_settings_v3(
-    state: State<Db>,
+pub fn set_attendance_settings_v3(state: State<Db>,
     license: State<crate::license::cloud::CloudLicenseState>,
     session_token: String,
     shift_start: String,
-    late_grace_minutes: i64,
-) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    late_grace_minutes: i64,) -> Result<(), String> {
+    set_attendance_settings_v3_impl(&state, &license, session_token, shift_start, late_grace_minutes)
+}
+
+pub(crate) fn set_attendance_settings_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, shift_start: String, late_grace_minutes: i64) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -228,4 +244,49 @@ pub fn set_attendance_settings_v3(
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "attendance_settings", &actor.tenant_id, None, Some(&serde_json::json!({ "shift_start": shift_start, "late_grace_minutes": late_grace_minutes }))).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "list_fingerprint_enrolments_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_fingerprint_enrolments_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_fingerprint_enrolment_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let enrolment_id: String = lan_arg(args, "enrolmentId")?;
+            let r = delete_fingerprint_enrolment_v3_impl(db, license, session_token, enrolment_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_punches_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let date_from: Option<String> = lan_arg(args, "dateFrom")?;
+            let date_to: Option<String> = lan_arg(args, "dateTo")?;
+            let user_id: Option<String> = lan_arg(args, "userId")?;
+            let r = list_punches_v3_impl(db, license, session_token, date_from, date_to, user_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_attendance_settings_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = get_attendance_settings_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "set_attendance_settings_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let shift_start: String = lan_arg(args, "shiftStart")?;
+            let late_grace_minutes: i64 = lan_arg(args, "lateGraceMinutes")?;
+            let r = set_attendance_settings_v3_impl(db, license, session_token, shift_start, late_grace_minutes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
 }

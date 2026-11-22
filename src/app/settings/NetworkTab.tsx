@@ -43,6 +43,16 @@ interface PairedTerminal {
   lastSeenAt: string | null;
 }
 
+/** A device that joined this hub, over the router ("lan") or the internet ("internet"). */
+interface RemoteDevice {
+  kind: "lan" | "internet";
+  id: string;
+  label: string;
+  deviceRole: string;
+  lastSeenAt: string | null;
+  backOffice: boolean;
+}
+
 function roleLabel(role: string): string {
   return role === "kitchen" ? "شاشة مطبخ (مجاني)" : "كاشير / نقطة بيع (بترخيص)";
 }
@@ -63,6 +73,7 @@ export default function NetworkTab({ token }: { token: string | null }) {
   const [status, setStatus] = useState<LanStatus | null>(null);
   const [pending, setPending] = useState<PendingPairing[]>([]);
   const [paired, setPaired] = useState<PairedTerminal[]>([]);
+  const [remote, setRemote] = useState<RemoteDevice[]>([]);
   const [discovered, setDiscovered] = useState<DiscoveredHub[]>([]);
   const [discovering, setDiscovering] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -81,12 +92,14 @@ export default function NetworkTab({ token }: { token: string | null }) {
       const s = await invoke<LanStatus>("get_lan_status_v3", { sessionToken: token });
       setStatus(s);
       if (s.mode === "hub") {
-        const [pendingRows, pairedRows] = await Promise.all([
+        const [pendingRows, pairedRows, remoteRows] = await Promise.all([
           invoke<PendingPairing[]>("list_pending_pairings_v3", { sessionToken: token }),
           invoke<PairedTerminal[]>("list_paired_terminals_v3", { sessionToken: token }),
+          invoke<RemoteDevice[]>("list_remote_devices_v3", { sessionToken: token }),
         ]);
         setPending(pendingRows);
         setPaired(pairedRows);
+        setRemote(remoteRows);
       }
     } catch (err) {
       setError(typeof err === "string" ? err : "حدث خطأ في تحميل حالة الشبكة");
@@ -280,6 +293,20 @@ export default function NetworkTab({ token }: { token: string | null }) {
       await refresh();
     } catch {
       setError("حدث خطأ في إلغاء ارتباط الجهاز");
+    }
+  };
+
+  // The owner's switch «يسمح بفتح الإدارة»: the hub keeps it and enforces it on every back-office command.
+  const setBackOffice = async (d: RemoteDevice, allowed: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("set_remote_device_back_office_v3", { sessionToken: token, kind: d.kind, id: d.id, allowed });
+      await refresh();
+    } catch (err) {
+      setError(typeof err === "string" ? err : "تعذر تغيير الإذن");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -616,6 +643,49 @@ export default function NetworkTab({ token }: { token: string | null }) {
                       <button onClick={() => revoke(t.id)} className="h-8 px-4 rounded-sm bg-white border-2 border-ink-200 text-danger text-xs font-bold hover:bg-danger-soft transition-colors">
                         إلغاء الارتباط
                       </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="bg-white rounded-md p-5 border border-ink-200 space-y-3" data-testid="remote-devices-card">
+            <div>
+              <p className="text-sm font-arabic text-ink-900 font-bold">فتح الإدارة من الأجهزة الأخرى</p>
+              <p className="text-xs font-arabic text-ink-500 mt-0.5">
+                الجهاز المسموح له يفتح التقارير والمخزون والقائمة والموظفين وغيرها من هذا الجهاز الرئيسي، وتبقى صلاحيات كل موظف كما هي. الافتراضي: ممنوع.
+              </p>
+            </div>
+            {remote.length === 0 ? (
+              <p className="text-sm text-ink-400 font-arabic">لا توجد أجهزة بعد</p>
+            ) : (
+              <div className="space-y-1.5">
+                {remote.map((d) => (
+                  <div key={`${d.kind}:${d.id}`} className="flex items-center justify-between gap-3 p-2.5 rounded-sm border border-ink-100">
+                    <div className="min-w-0">
+                      <span className="text-sm font-arabic text-ink-900">{d.label}</span>
+                      <span className="mr-2 text-[11px] font-arabic px-2 py-0.5 rounded-full bg-ink-100 text-ink-500">
+                        {d.kind === "internet" ? "عبر الإنترنت" : "عبر الراوتر"}
+                      </span>
+                      <p className="text-[11px] font-arabic text-ink-400 mt-0.5">
+                        {d.lastSeenAt ? `آخر ظهور: ${new Date(d.lastSeenAt).toLocaleString("ar-EG")}` : "لم يظهر بعد"}
+                      </p>
+                    </div>
+                    {d.deviceRole === "kitchen" ? (
+                      <span className="text-[11px] font-arabic text-ink-400 shrink-0">شاشة المطبخ لا تفتح الإدارة</span>
+                    ) : (
+                      <label className="flex items-center gap-2 shrink-0 cursor-pointer">
+                        <span className="text-xs font-arabic text-ink-700">يسمح بفتح الإدارة</span>
+                        <input
+                          type="checkbox"
+                          checked={d.backOffice}
+                          disabled={busy}
+                          onChange={(e) => setBackOffice(d, e.target.checked)}
+                          data-testid={`remote-back-office-${d.id}`}
+                          className="w-5 h-5"
+                        />
+                      </label>
                     )}
                   </div>
                 ))}

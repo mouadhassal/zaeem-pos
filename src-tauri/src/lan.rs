@@ -423,7 +423,7 @@ async fn pair_status(
 pub fn kitchen_role_may_call(command: &str) -> bool {
     matches!(
         command,
-        "login_pin_v3" | "logout_v3" | "list_kitchen_orders_v3" | "update_order_status_v3" | "__resolve_actor_v3"
+        "login_pin_v3" | "logout_v3" | "list_kitchen_orders_v3" | "update_order_status_v3" | "__resolve_actor_v3" | "get_my_access_v3"
             // KDS screen needs: `authStore.checkSession` probes the stored session with
             // `list_categories_v3` (a kitchen screen would otherwise be logged out on every
             // restart once that read is forwarded), the out-of-stock panel lists the menu and
@@ -462,7 +462,7 @@ pub fn reject_if_local_kitchen_satellite(command: &str) -> Result<(), String> {
 /// `paired_terminal` rows and returns its declared `device_role`. Any RPC
 /// call without a valid, approved token is rejected before it ever reaches
 /// real command logic.
-fn authorize_satellite(conn: &rusqlite::Connection, headers: &HeaderMap) -> Result<String, String> {
+fn authorize_satellite(conn: &rusqlite::Connection, headers: &HeaderMap) -> Result<RpcCaller, String> {
     let auth = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -470,21 +470,21 @@ fn authorize_satellite(conn: &rusqlite::Connection, headers: &HeaderMap) -> Resu
     let token = auth.strip_prefix("Bearer ").ok_or_else(|| "malformed Authorization header".to_string())?;
     let hash = sha256_hex(token);
     let now = chrono::Utc::now().to_rfc3339();
-    let device_role: Option<String> = conn
+    let found: Option<(String, String)> = conn
         .query_row(
-            "SELECT device_role FROM paired_terminal WHERE trust_token_hash = ?1 AND status = 'APPROVED'",
+            "SELECT id, device_role FROM paired_terminal WHERE trust_token_hash = ?1 AND status = 'APPROVED'",
             rusqlite::params![hash],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .ok();
-    let Some(device_role) = device_role else {
+    let Some((terminal_id, device_role)) = found else {
         return Err("terminal is not paired/approved".to_string());
     };
     let _ = conn.execute(
         "UPDATE paired_terminal SET last_seen_at = ?1 WHERE trust_token_hash = ?2",
         rusqlite::params![now, hash],
     );
-    Ok(device_role)
+    Ok(RpcCaller::Lan { terminal_id, role: device_role })
 }
 
 // ---------------------------------------------------------------------------
@@ -572,7 +572,7 @@ pub struct RpcOutcome {
 pub fn execute_rpc(
     db: &Db,
     license: &crate::license::cloud::CloudLicenseState,
-    device_role: &str,
+    caller: &RpcCaller,
     command: &str,
     args: Value,
 ) -> RpcOutcome {
@@ -581,6 +581,28 @@ pub fn execute_rpc(
         body: serde_json::json!({ "ok": false, "error": message }),
         mutated: false,
     };
+    let device_role = caller.role();
+    // The hub's own books on who is asking: an internet device is listed on its first message, and
+    // the back-office switch is read here, never trusted from the message.
+    let back_office_allowed = match db.0.lock() {
+        Ok(conn) => {
+            if let RpcCaller::Cloud { license_id: Some(id) } = caller {
+                note_cloud_terminal(&conn, id);
+            }
+            caller_may_open_back_office(&conn, caller)
+        }
+        Err(_) => false,
+    };
+    if command == BACK_OFFICE_ACCESS_PROBE {
+        return RpcOutcome {
+            status: StatusCode::OK,
+            body: serde_json::json!({ "ok": true, "data": { "allowed": back_office_allowed } }),
+            mutated: false,
+        };
+    }
+    if crate::commands::lan_rpc_office::is_back_office_command(command) && !back_office_allowed {
+        return fail(StatusCode::FORBIDDEN, BACK_OFFICE_REFUSED);
+    }
     if device_role == "kitchen" && !kitchen_role_may_call(command) {
         return fail(
             StatusCode::FORBIDDEN,
@@ -591,7 +613,7 @@ pub fn execute_rpc(
         Ok(value) => RpcOutcome {
             status: StatusCode::OK,
             body: serde_json::json!({ "ok": true, "data": value }),
-            mutated: crate::commands::lan_rpc::lan_rpc_mutates_orders(command),
+            mutated: crate::commands::lan_rpc::lan_rpc_mutates_orders(command) || crate::commands::lan_rpc::lan_rpc_mutates_menu(command),
         },
         Err(e) if e == "UNKNOWN_COMMAND" => fail(StatusCode::NOT_FOUND, &format!("'{command}' is not exposed over LAN RPC")),
         Err(e) => fail(StatusCode::BAD_REQUEST, &e),
@@ -613,18 +635,18 @@ async fn rpc_dispatch(
         Some(l) => l,
         None => return rpc_error(StatusCode::INTERNAL_SERVER_ERROR, "license state unavailable"),
     };
-    let device_role = {
+    let caller = {
         let conn = match db.0.lock() {
             Ok(c) => c,
             Err(e) => return rpc_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
         };
         match authorize_satellite(&conn, &headers) {
-            Ok(role) => role,
+            Ok(caller) => caller,
             Err(e) => return rpc_error(StatusCode::UNAUTHORIZED, &e),
         }
     };
 
-    let outcome = execute_rpc(&db, &license, &device_role, &command, args);
+    let outcome = execute_rpc(&db, &license, &caller, &command, args);
     if outcome.mutated {
         broadcast_change(&state, "orders_changed");
     }
@@ -633,6 +655,75 @@ async fn rpc_dispatch(
 
 fn rpc_error(status: StatusCode, message: &str) -> axum::response::Response {
     (status, Json(serde_json::json!({ "ok": false, "error": message }))).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Remote back office: which second tills may open the back office on this hub.
+// ---------------------------------------------------------------------------
+
+/// What a device is told when it asks for a back-office command it is not allowed to run.
+pub const BACK_OFFICE_REFUSED: &str = "هذا الجهاز غير مسموح له بفتح الإدارة. اسمح له من الجهاز الرئيسي > الشبكة المحلية";
+
+/// Not a business command: a satellite asks the hub "may I open the back office?" with this name.
+/// Answered by `execute_rpc` itself (it needs to know who is asking); never in `dispatch_lan_rpc`.
+pub const BACK_OFFICE_ACCESS_PROBE: &str = "__back_office_access_v3";
+
+/// Who is on the other end of a forwarded command, as the hub itself established it: a LAN device
+/// by its approved `paired_terminal` row, an internet device by the licence id the relay stamped
+/// on the message (`None` when an old relay did not say, which is treated as not allowed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RpcCaller {
+    Lan { terminal_id: String, role: String },
+    Cloud { license_id: Option<String> },
+}
+
+impl RpcCaller {
+    pub fn role(&self) -> &str {
+        match self {
+            RpcCaller::Lan { role, .. } => role,
+            RpcCaller::Cloud { .. } => CLOUD_RELAY_ROLE,
+        }
+    }
+}
+
+/// The owner's switch for this device. Kitchen-role devices never get the back office, whatever
+/// the switch says; a missing table, row or id reads as "not allowed".
+pub fn caller_may_open_back_office(conn: &rusqlite::Connection, caller: &RpcCaller) -> bool {
+    match caller {
+        RpcCaller::Lan { terminal_id, role } => {
+            role != "kitchen"
+                && conn
+                    .query_row(
+                        "SELECT back_office FROM paired_terminal WHERE id = ?1 AND status = 'APPROVED'",
+                        rusqlite::params![terminal_id],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .map(|v| v != 0)
+                    .unwrap_or(false)
+        }
+        RpcCaller::Cloud { license_id: Some(id) } => conn
+            .query_row("SELECT back_office FROM cloud_terminal WHERE license_id = ?1", rusqlite::params![id], |r| r.get::<_, i64>(0))
+            .map(|v| v != 0)
+            .unwrap_or(false),
+        RpcCaller::Cloud { license_id: None } => false,
+    }
+}
+
+/// An internet device shows up in the hub's list the first time it sends anything.
+pub fn note_cloud_terminal(conn: &rusqlite::Connection, license_id: &str) {
+    let now = chrono::Utc::now().to_rfc3339();
+    let short: String = license_id.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    let label = format!("جهاز عبر الإنترنت ({short})");
+    let _ = conn.execute(
+        "INSERT INTO cloud_terminal (license_id, label, first_seen, last_seen, back_office) VALUES (?1, ?2, ?3, ?3, 0)
+         ON CONFLICT(license_id) DO UPDATE SET last_seen = excluded.last_seen",
+        rusqlite::params![license_id, label, now],
+    );
+}
+
+/// The folder photos and receipts are kept in (the hub's own, for a photo a second till uploads).
+pub fn rpc_app_data_dir() -> Result<std::path::PathBuf, String> {
+    DB_DIR.get().cloned().ok_or_else(|| "app data folder unavailable".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -808,6 +899,157 @@ pub fn revoke_terminal_v3(state: State<Db>, session_token: String, terminal_id: 
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// One device that joined this hub, over the router (`lan`) or over the internet (`internet`),
+/// with the owner's switch for opening the back office from it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteDeviceV3 {
+    pub kind: String,
+    pub id: String,
+    pub label: String,
+    pub device_role: String,
+    pub last_seen_at: Option<String>,
+    pub back_office: bool,
+}
+
+/// Every approved LAN device and every internet device that ever sent this hub a message.
+pub fn list_remote_devices(conn: &rusqlite::Connection) -> Result<Vec<RemoteDeviceV3>, String> {
+    let mut out: Vec<RemoteDeviceV3> = Vec::new();
+    let mut stmt = conn
+        .prepare("SELECT id, device_name, device_role, last_seen_at, back_office FROM paired_terminal WHERE status = 'APPROVED' ORDER BY device_name ASC")
+        .map_err(|e| e.to_string())?;
+    let lan = stmt
+        .query_map([], |r| {
+            Ok(RemoteDeviceV3 {
+                kind: "lan".to_string(),
+                id: r.get(0)?,
+                label: r.get(1)?,
+                device_role: r.get(2)?,
+                last_seen_at: r.get(3)?,
+                back_office: r.get::<_, i64>(4)? != 0,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    out.extend(lan.filter_map(|r| r.ok()));
+    let mut stmt = conn
+        .prepare("SELECT license_id, label, last_seen, back_office FROM cloud_terminal ORDER BY last_seen DESC")
+        .map_err(|e| e.to_string())?;
+    let cloud = stmt
+        .query_map([], |r| {
+            Ok(RemoteDeviceV3 {
+                kind: "internet".to_string(),
+                id: r.get(0)?,
+                label: r.get(1)?,
+                device_role: CLOUD_RELAY_ROLE.to_string(),
+                last_seen_at: r.get(2)?,
+                back_office: r.get::<_, i64>(3)? != 0,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    out.extend(cloud.filter_map(|r| r.ok()));
+    Ok(out)
+}
+
+/// Settings > الشبكة المحلية: the joined devices and who may open the back office.
+#[tauri::command]
+pub fn list_remote_devices_v3(state: State<Db>, session_token: String) -> Result<Vec<RemoteDeviceV3>, String> {
+    let actor = crate::commands::shared::authenticate_actor(&state, &session_token)?;
+    crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    list_remote_devices(&conn)
+}
+
+/// The owner's switch «يسمح بفتح الإدارة» for one device. A kitchen screen can never have it.
+#[tauri::command]
+pub fn set_remote_device_back_office_v3(state: State<Db>, session_token: String, kind: String, id: String, allowed: bool) -> Result<(), String> {
+    set_remote_device_back_office_impl(&state, session_token, kind, id, allowed)
+}
+
+pub(crate) fn set_remote_device_back_office_impl(state: &Db, session_token: String, kind: String, id: String, allowed: bool) -> Result<(), String> {
+    let actor = crate::commands::shared::authenticate_actor(state, &session_token)?;
+    crate::security::authorize(&actor, crate::security::Permission::ManageSettings).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let (before, label): (i64, String) = match kind.as_str() {
+        "lan" => {
+            let (role, before, label): (String, i64, String) = tx
+                .query_row(
+                    "SELECT device_role, back_office, device_name FROM paired_terminal WHERE id = ?1 AND status = 'APPROVED'",
+                    rusqlite::params![id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .map_err(|_| "الجهاز غير موجود".to_string())?;
+            if allowed && role == "kitchen" {
+                return Err("شاشة المطبخ لا يمكن أن تفتح الإدارة".to_string());
+            }
+            tx.execute("UPDATE paired_terminal SET back_office = ?1 WHERE id = ?2", rusqlite::params![allowed as i64, id]).map_err(|e| e.to_string())?;
+            (before, label)
+        }
+        "internet" => {
+            let (before, label): (i64, String) = tx
+                .query_row("SELECT back_office, label FROM cloud_terminal WHERE license_id = ?1", rusqlite::params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(|_| "الجهاز غير موجود".to_string())?;
+            tx.execute("UPDATE cloud_terminal SET back_office = ?1 WHERE license_id = ?2", rusqlite::params![allowed as i64, id]).map_err(|e| e.to_string())?;
+            (before, label)
+        }
+        _ => return Err("نوع الجهاز غير معروف".to_string()),
+    };
+    crate::audit::append(
+        &tx,
+        &actor.device_id,
+        &actor.tenant_id,
+        actor.branch_id.as_deref(),
+        &actor.id,
+        crate::audit::Action::SettingsChanged,
+        "remote_device_back_office",
+        &id,
+        Some(&serde_json::json!({ "back_office": before != 0, "kind": kind, "label": label })),
+        Some(&serde_json::json!({ "back_office": allowed, "kind": kind, "label": label })),
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackOfficeAccessV3 {
+    /// This till is a second till of some hub (LAN or internet).
+    pub is_satellite: bool,
+    /// May open the back office. Always true on a hub or a standalone till.
+    pub allowed: bool,
+    /// Why the hub could not be asked (satellite only).
+    pub error: Option<String>,
+}
+
+/// "Am I allowed to open the back office?" A hub or standalone till says yes; a second till asks
+/// the hub, which looks the answer up by who is asking.
+#[tauri::command]
+pub async fn get_back_office_access_v3(app: AppHandle) -> Result<BackOfficeAccessV3, String> {
+    let dir = db_dir(&app)?;
+    let config = load_lan_config(&dir);
+    if config.mode != "satellite" {
+        return Ok(BackOfficeAccessV3 { is_satellite: false, allowed: true, error: None });
+    }
+    let device_token = current_device_token();
+    if crate::cloud_relay::plan_routes(&crate::cloud_relay::route_inputs(&config, device_token.is_some())).is_empty() {
+        return Ok(BackOfficeAccessV3 { is_satellite: true, allowed: false, error: None });
+    }
+    match crate::cloud_relay::relay(&config, device_token.as_deref(), BACK_OFFICE_ACCESS_PROBE, &serde_json::json!({})).await {
+        Ok(body) if body.get("ok").and_then(Value::as_bool) == Some(true) => Ok(BackOfficeAccessV3 {
+            is_satellite: true,
+            allowed: body.get("data").and_then(|d| d.get("allowed")).and_then(Value::as_bool).unwrap_or(false),
+            error: None,
+        }),
+        Ok(body) => Ok(BackOfficeAccessV3 {
+            is_satellite: true,
+            allowed: false,
+            error: Some(body.get("error").and_then(Value::as_str).unwrap_or("hub rejected request").to_string()),
+        }),
+        Err(e) => Ok(BackOfficeAccessV3 { is_satellite: true, allowed: false, error: Some(e) }),
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -15,8 +15,13 @@ use tauri::{Manager, State};
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn get_cost_report_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, group_by: String, start_date: Option<String>, end_date: Option<String>, category: Option<String>, cost_centre: Option<String>) -> Result<finance::CostReport, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_cost_report_v3_impl(&state, &license, session_token, group_by, start_date, end_date, category, cost_centre)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn get_cost_report_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, group_by: String, start_date: Option<String>, end_date: Option<String>, category: Option<String>, cost_centre: Option<String>) -> Result<finance::CostReport, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let filter = CostFilter { from: start_date, to: end_date, category, cost_centre };
@@ -25,8 +30,12 @@ pub fn get_cost_report_v3(state: State<Db>, license: State<crate::license::cloud
 
 #[tauri::command]
 pub fn get_finance_settings_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<finance::FinanceSettings, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_finance_settings_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn get_finance_settings_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<finance::FinanceSettings, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Ok(finance::load_settings(&conn))
@@ -36,8 +45,12 @@ pub fn get_finance_settings_v3(state: State<Db>, license: State<crate::license::
 /// expense categories they added to the built-in list.
 #[tauri::command]
 pub fn save_finance_settings_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, cost_basis: String, custom_categories: Vec<String>) -> Result<finance::FinanceSettings, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    save_finance_settings_v3_impl(&state, &license, session_token, cost_basis, custom_categories)
+}
+
+pub(crate) fn save_finance_settings_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, cost_basis: String, custom_categories: Vec<String>) -> Result<finance::FinanceSettings, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -60,8 +73,12 @@ fn today_local() -> String {
 /// Every rent contract with what has fallen due, what was paid and what is left, month by month.
 #[tauri::command]
 pub fn list_rent_contracts_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<finance::RentContract>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_rent_contracts_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_rent_contracts_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<finance::RentContract>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     finance::rent_contracts(&conn, &actor.scope(), &today_local())
@@ -71,12 +88,17 @@ pub fn list_rent_contracts_v3(state: State<Db>, license: State<crate::license::c
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn save_rent_contract_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, contract_id: Option<String>, label: String, period: String, amount_cents: i64, start_date: String, end_date: Option<String>, active: bool) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    save_rent_contract_v3_impl(&state, &license, session_token, contract_id, label, period, amount_cents, start_date, end_date, active)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn save_rent_contract_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, contract_id: Option<String>, label: String, period: String, amount_cents: i64, start_date: String, end_date: Option<String>, active: bool) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     let mut input = RentInput { label, period, amount_cents, start_date, end_date, active };
     input.validate(&today_local())?;
@@ -93,8 +115,13 @@ pub fn save_rent_contract_v3(state: State<Db>, license: State<crate::license::cl
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn record_rent_payment_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, contract_id: String, amount_cents: i64, date: Option<String>, accrual_period: Option<String>, payment_method: Option<String>, reference_no: Option<String>, notes: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    record_rent_payment_v3_impl(&state, &license, session_token, contract_id, amount_cents, date, accrual_period, payment_method, reference_no, notes)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn record_rent_payment_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, contract_id: String, amount_cents: i64, date: Option<String>, accrual_period: Option<String>, payment_method: Option<String>, reference_no: Option<String>, notes: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let fields = CostFields {
         amount_cents,
@@ -123,15 +150,19 @@ pub fn record_rent_payment_v3(state: State<Db>, license: State<crate::license::c
 /// (JPEG, PNG or WEBP, up to 3 MB), kept under the expense's id.
 #[tauri::command]
 pub fn upload_cost_attachment_v3(app: tauri::AppHandle, state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, cost_id: String, photo_bytes: Vec<u8>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let app_data_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    upload_cost_attachment_v3_impl(&app_data_dir, &state, &license, session_token, cost_id, photo_bytes)
+}
+
+pub(crate) fn upload_cost_attachment_v3_impl(app_data_dir: &std::path::Path, state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, cost_id: String, photo_bytes: Vec<u8>) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         finance::cost_owner(&conn, &actor.scope(), &cost_id)?;
     }
-    let app_data_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    let file_path = crate::photos::store_photo(&app_data_dir, &actor.tenant_id, &cost_id, &photo_bytes).map_err(|e| e.to_string())?;
+    let file_path = crate::photos::store_photo(app_data_dir, &actor.tenant_id, &cost_id, &photo_bytes).map_err(|e| e.to_string())?;
     let path_str = file_path.to_string_lossy().to_string();
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -144,8 +175,12 @@ pub fn upload_cost_attachment_v3(app: tauri::AppHandle, state: State<Db>, licens
 /// The receipt photo as a `data:` URI, or nothing when there is none (or the file is gone).
 #[tauri::command]
 pub fn get_cost_attachment_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, cost_id: String) -> Result<Option<String>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_cost_attachment_v3_impl(&state, &license, session_token, cost_id)
+}
+
+pub(crate) fn get_cost_attachment_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, cost_id: String) -> Result<Option<String>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let path = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -161,8 +196,12 @@ pub fn get_cost_attachment_v3(state: State<Db>, license: State<crate::license::c
 /// Sets what kind of cost of sales a menu category is (FOOD, BEVERAGE, SHISHA, OTHER; empty = FOOD).
 #[tauri::command]
 pub fn set_category_cost_class_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category_id: String, cost_class: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    set_category_cost_class_v3_impl(&state, &license, session_token, category_id, cost_class)
+}
+
+pub(crate) fn set_category_cost_class_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, category_id: String, cost_class: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -175,9 +214,106 @@ pub fn set_category_cost_class_v3(state: State<Db>, license: State<crate::licens
 /// Cost of the items sold in the range per cost class, and labour, each as a share of net sales.
 #[tauri::command]
 pub fn get_cost_of_sales_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_iso: String, end_iso: String, tz_offset_minutes: Option<i64>) -> Result<finance::CostOfSales, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_cost_of_sales_v3_impl(&state, &license, session_token, start_iso, end_iso, tz_offset_minutes)
+}
+
+pub(crate) fn get_cost_of_sales_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, start_iso: String, end_iso: String, tz_offset_minutes: Option<i64>) -> Result<finance::CostOfSales, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     finance::cost_of_sales(&conn, &actor.scope(), &start_iso, &end_iso, tz_offset_minutes.unwrap_or(0)).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "get_cost_report_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let group_by: String = lan_arg(args, "groupBy")?;
+            let start_date: Option<String> = lan_arg(args, "startDate")?;
+            let end_date: Option<String> = lan_arg(args, "endDate")?;
+            let category: Option<String> = lan_arg(args, "category")?;
+            let cost_centre: Option<String> = lan_arg(args, "costCentre")?;
+            let r = get_cost_report_v3_impl(db, license, session_token, group_by, start_date, end_date, category, cost_centre)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_finance_settings_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = get_finance_settings_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "save_finance_settings_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let cost_basis: String = lan_arg(args, "costBasis")?;
+            let custom_categories: Vec<String> = lan_arg(args, "customCategories")?;
+            let r = save_finance_settings_v3_impl(db, license, session_token, cost_basis, custom_categories)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_rent_contracts_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_rent_contracts_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "save_rent_contract_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let contract_id: Option<String> = lan_arg(args, "contractId")?;
+            let label: String = lan_arg(args, "label")?;
+            let period: String = lan_arg(args, "period")?;
+            let amount_cents: i64 = lan_arg(args, "amountCents")?;
+            let start_date: String = lan_arg(args, "startDate")?;
+            let end_date: Option<String> = lan_arg(args, "endDate")?;
+            let active: bool = lan_arg(args, "active")?;
+            let r = save_rent_contract_v3_impl(db, license, session_token, contract_id, label, period, amount_cents, start_date, end_date, active)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "record_rent_payment_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let contract_id: String = lan_arg(args, "contractId")?;
+            let amount_cents: i64 = lan_arg(args, "amountCents")?;
+            let date: Option<String> = lan_arg(args, "date")?;
+            let accrual_period: Option<String> = lan_arg(args, "accrualPeriod")?;
+            let payment_method: Option<String> = lan_arg(args, "paymentMethod")?;
+            let reference_no: Option<String> = lan_arg(args, "referenceNo")?;
+            let notes: Option<String> = lan_arg(args, "notes")?;
+            let r = record_rent_payment_v3_impl(db, license, session_token, contract_id, amount_cents, date, accrual_period, payment_method, reference_no, notes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "upload_cost_attachment_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let cost_id: String = lan_arg(args, "costId")?;
+            let photo_bytes: Vec<u8> = lan_arg(args, "photoBytes")?;
+            let r = upload_cost_attachment_v3_impl(&crate::lan::rpc_app_data_dir()?, db, license, session_token, cost_id, photo_bytes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_cost_attachment_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let cost_id: String = lan_arg(args, "costId")?;
+            let r = get_cost_attachment_v3_impl(db, license, session_token, cost_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "set_category_cost_class_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let category_id: String = lan_arg(args, "categoryId")?;
+            let cost_class: Option<String> = lan_arg(args, "costClass")?;
+            let r = set_category_cost_class_v3_impl(db, license, session_token, category_id, cost_class)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_cost_of_sales_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let start_iso: String = lan_arg(args, "startIso")?;
+            let end_iso: String = lan_arg(args, "endIso")?;
+            let tz_offset_minutes: Option<i64> = lan_arg(args, "tzOffsetMinutes")?;
+            let r = get_cost_of_sales_v3_impl(db, license, session_token, start_iso, end_iso, tz_offset_minutes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
 }

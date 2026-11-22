@@ -109,8 +109,12 @@ pub(crate) fn close_shift_v3_impl(state: &Db, session_token: String, shift_id: S
 /// close" for an abandoned shift.
 #[tauri::command]
 pub fn list_shifts_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, date_from: Option<String>, date_to: Option<String>, user_id: Option<String>) -> Result<Vec<crate::repo::ShiftAdminRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_shifts_v3_impl(&state, &license, session_token, date_from, date_to, user_id)
+}
+
+pub(crate) fn list_shifts_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, date_from: Option<String>, date_to: Option<String>, user_id: Option<String>) -> Result<Vec<crate::repo::ShiftAdminRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_shifts(&actor.scope(), date_from.as_deref(), date_to.as_deref(), user_id.as_deref()).map_err(|e| e.to_string())
@@ -118,8 +122,12 @@ pub fn list_shifts_v3(state: State<Db>, license: State<crate::license::cloud::Cl
 
 #[tauri::command]
 pub fn force_close_shift_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, shift_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    force_close_shift_v3_impl(&state, &license, session_token, shift_id)
+}
+
+pub(crate) fn force_close_shift_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, shift_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -131,8 +139,12 @@ pub fn force_close_shift_v3(state: State<Db>, license: State<crate::license::clo
 
 #[tauri::command]
 pub fn list_attendance_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, date_from: Option<String>, date_to: Option<String>, user_id: Option<String>) -> Result<Vec<crate::repo::AttendanceRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_attendance_v3_impl(&state, &license, session_token, date_from, date_to, user_id)
+}
+
+pub(crate) fn list_attendance_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, date_from: Option<String>, date_to: Option<String>, user_id: Option<String>) -> Result<Vec<crate::repo::AttendanceRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::UpdateStaff).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_attendance(&actor.scope(), date_from.as_deref(), date_to.as_deref(), user_id.as_deref()).map_err(|e| e.to_string())
@@ -180,3 +192,38 @@ pub(crate) fn clock_out_v3_impl(state: &Db, license: &crate::license::cloud::Clo
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "list_shifts_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let date_from: Option<String> = lan_arg(args, "dateFrom")?;
+            let date_to: Option<String> = lan_arg(args, "dateTo")?;
+            let user_id: Option<String> = lan_arg(args, "userId")?;
+            let r = list_shifts_v3_impl(db, license, session_token, date_from, date_to, user_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "force_close_shift_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let shift_id: String = lan_arg(args, "shiftId")?;
+            let r = force_close_shift_v3_impl(db, license, session_token, shift_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_attendance_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let date_from: Option<String> = lan_arg(args, "dateFrom")?;
+            let date_to: Option<String> = lan_arg(args, "dateTo")?;
+            let user_id: Option<String> = lan_arg(args, "userId")?;
+            let r = list_attendance_v3_impl(db, license, session_token, date_from, date_to, user_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
+}

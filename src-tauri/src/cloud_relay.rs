@@ -399,8 +399,11 @@ async fn handle_message(app: &AppHandle, token: &str, msg: Value) {
         Some(a) if a.is_object() => a.clone(),
         _ => json!({}),
     };
+    // The relay stamps the sender's licence on every message; an old relay does not (then the hub
+    // treats the sender as unknown: no back office).
+    let from_license = msg.get("from_license_id").and_then(Value::as_str).map(str::to_string);
     let run_app = app.clone();
-    let (mut response, changed) = tokio::task::spawn_blocking(move || run_cloud_command(&run_app, &command, args))
+    let (mut response, changed) = tokio::task::spawn_blocking(move || run_cloud_command(&run_app, from_license.as_deref(), &command, args))
         .await
         .unwrap_or_else(|_| (json!({ "ok": false, "error": "internal error while running the command" }), false));
     if serde_json::to_vec(&response).map(|b| b.len()).unwrap_or(0) > MAX_RESPONSE_BYTES {
@@ -423,22 +426,25 @@ async fn handle_message(app: &AppHandle, token: &str, msg: Value) {
 }
 
 /// Blocking: the whole Hub-side authorization + dispatch for a cloud message.
-fn run_cloud_command(app: &AppHandle, command: &str, args: Value) -> (Value, bool) {
+fn run_cloud_command(app: &AppHandle, from_license: Option<&str>, command: &str, args: Value) -> (Value, bool) {
     let (Some(db), Some(license)) = (app.try_state::<Db>(), app.try_state::<crate::license::cloud::CloudLicenseState>()) else {
         return (json!({ "ok": false, "error": "db unavailable" }), false);
     };
-    cloud_command_outcome(&db, &license, command, args)
+    cloud_command_outcome(&db, &license, from_license, command, args)
 }
 
 /// Split out so a test can run it without an `AppHandle`: a cloud message is
 /// trusted as role `lan::CLOUD_RELAY_ROLE` and takes the same path a LAN call does.
+/// `from_license` is who sent it (the relay's `from_license_id`); the back-office switch is per sender.
 pub fn cloud_command_outcome(
     db: &Db,
     license: &crate::license::cloud::CloudLicenseState,
+    from_license: Option<&str>,
     command: &str,
     args: Value,
 ) -> (Value, bool) {
-    let outcome = crate::lan::execute_rpc(db, license, crate::lan::CLOUD_RELAY_ROLE, command, args);
+    let caller = crate::lan::RpcCaller::Cloud { license_id: from_license.map(str::to_string) };
+    let outcome = crate::lan::execute_rpc(db, license, &caller, command, args);
     (outcome.body, outcome.mutated)
 }
 
@@ -637,20 +643,20 @@ mod tests {
         let (license, dir) = idle_license();
 
         // Not exposed over RPC at all -> same refusal as the LAN gives.
-        let (body, changed) = cloud_command_outcome(&db, &license, "drop_everything_v3", json!({}));
+        let (body, changed) = cloud_command_outcome(&db, &license, None, "drop_everything_v3", json!({}));
         assert_eq!(body["ok"], json!(false));
         assert!(body["error"].as_str().unwrap().contains("not exposed"));
         assert!(!changed);
 
         // A register-shaped command passes the role fence (it then fails on
         // its own missing arguments, not with the kitchen "forbidden" text).
-        let (body, _) = cloud_command_outcome(&db, &license, "create_full_order_v3", json!({}));
+        let (body, _) = cloud_command_outcome(&db, &license, None, "create_full_order_v3", json!({}));
         assert_eq!(body["ok"], json!(false));
         assert!(!body["error"].as_str().unwrap().contains("kitchen-screen-only"), "{body}");
         assert!(body["error"].as_str().unwrap().contains("sessionToken"), "{body}");
 
         // Whereas the same command from a kitchen-role LAN terminal is fenced off.
-        let kitchen = crate::lan::execute_rpc(&db, &license, "kitchen", "create_full_order_v3", json!({}));
+        let kitchen = crate::lan::execute_rpc(&db, &license, &crate::lan::RpcCaller::Lan { terminal_id: "k1".into(), role: "kitchen".into() }, "create_full_order_v3", json!({}));
         assert_eq!(kitchen.status, axum::http::StatusCode::FORBIDDEN);
         let _ = std::fs::remove_dir_all(dir);
     }

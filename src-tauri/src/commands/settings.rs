@@ -24,13 +24,17 @@ pub(crate) fn get_chain_config_v3_impl(state: &Db, session_token: String) -> Res
 
 #[tauri::command]
 pub fn update_chain_name_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, chain_name: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    update_chain_name_v3_impl(&state, &license, session_token, chain_name)
+}
+
+pub(crate) fn update_chain_name_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, chain_name: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let chain_name = chain_name.trim().to_string();
     if chain_name.is_empty() || chain_name.chars().count() > 60 {
         return Err("اسم النشاط مطلوب (حتى 60 حرفاً)".to_string());
     }
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    require_license_not_locked_or_initial_setup(&license, &conn)?;
+    require_license_not_locked_or_initial_setup(license, &conn)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     Repo::new(&tx).update_chain_name(&actor.tenant_id, &chain_name).map_err(|e| e.to_string())?;
@@ -41,9 +45,13 @@ pub fn update_chain_name_v3(state: State<Db>, license: State<crate::license::clo
 
 #[tauri::command]
 pub fn update_chain_currency_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, currency: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    update_chain_currency_v3_impl(&state, &license, session_token, currency)
+}
+
+pub(crate) fn update_chain_currency_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, currency: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    require_license_not_locked_or_initial_setup(&license, &conn)?;
+    require_license_not_locked_or_initial_setup(license, &conn)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     Repo::new(&tx).update_chain_currency(&actor.tenant_id, &currency).map_err(|e| e.to_string())?;
@@ -54,8 +62,12 @@ pub fn update_chain_currency_v3(state: State<Db>, license: State<crate::license:
 
 #[tauri::command]
 pub fn update_chain_tax_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, tax_rate_cents: i64, tax_mode: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    update_chain_tax_v3_impl(&state, &license, session_token, tax_rate_cents, tax_mode)
+}
+
+pub(crate) fn update_chain_tax_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, tax_rate_cents: i64, tax_mode: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     if tax_rate_cents < 0 {
         return Err("negative tax rate is not valid".to_string());
@@ -97,8 +109,12 @@ pub(crate) fn get_discount_caps_v3_impl(state: &Db, session_token: String) -> Re
 /// against.
 #[tauri::command]
 pub fn update_discount_caps_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, cashier_percent: i64, manager_percent: i64, owner_percent: i64) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    update_discount_caps_v3_impl(&state, &license, session_token, cashier_percent, manager_percent, owner_percent)
+}
+
+pub(crate) fn update_discount_caps_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, cashier_percent: i64, manager_percent: i64, owner_percent: i64) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     if !(0..=100).contains(&cashier_percent) || !(0..=100).contains(&manager_percent) || !(0..=100).contains(&owner_percent) {
         return Err("discount caps must be between 0 and 100 percent".to_string());
@@ -135,8 +151,12 @@ pub(crate) fn get_manager_thresholds_v3_impl(state: &Db, session_token: String) 
 /// prices instead of living with a number that was never right for them.
 #[tauri::command]
 pub fn update_manager_thresholds_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, void_threshold_cents: i64, shift_diff_threshold_cents: i64) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    update_manager_thresholds_v3_impl(&state, &license, session_token, void_threshold_cents, shift_diff_threshold_cents)
+}
+
+pub(crate) fn update_manager_thresholds_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, void_threshold_cents: i64, shift_diff_threshold_cents: i64) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     if void_threshold_cents < 0 || shift_diff_threshold_cents < 0 {
         return Err("thresholds must not be negative".to_string());
@@ -242,8 +262,12 @@ pub fn update_business_mode_v3(state: State<Db>, license: State<crate::license::
 
 #[tauri::command]
 pub fn get_legacy_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Option<crate::repo::LegacyBranchRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_legacy_branch_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn get_legacy_branch_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Option<crate::repo::LegacyBranchRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).get_legacy_branch(&actor.tenant_id).map_err(|e| e.to_string())
 }
@@ -251,9 +275,14 @@ pub fn get_legacy_branch_v3(state: State<Db>, license: State<crate::license::clo
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn save_legacy_branch_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, existing_id: Option<String>, name: String, address: Option<String>, phone: Option<String>, max_tables: i64, currency: String) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
+    save_legacy_branch_v3_impl(&state, &license, session_token, existing_id, name, address, phone, max_tables, currency)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn save_legacy_branch_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, existing_id: Option<String>, name: String, address: Option<String>, phone: Option<String>, max_tables: i64, currency: String) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    require_license_not_locked_or_initial_setup(&license, &conn)?;
+    require_license_not_locked_or_initial_setup(license, &conn)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let branch_id = Repo::new(&tx).upsert_legacy_branch(&actor.tenant_id, existing_id.as_deref(), &name, address.as_deref(), phone.as_deref(), max_tables, &currency).map_err(|e| e.to_string())?;
@@ -353,3 +382,66 @@ pub fn resolve_menu_price_v3(state: State<Db>, session_token: String, branch_id:
     Repo::new(&conn).resolve_menu_price(&branch_id, &item_id).map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "update_chain_name_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let chain_name: String = lan_arg(args, "chainName")?;
+            let r = update_chain_name_v3_impl(db, license, session_token, chain_name)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_chain_currency_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let currency: String = lan_arg(args, "currency")?;
+            let r = update_chain_currency_v3_impl(db, license, session_token, currency)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_chain_tax_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let tax_rate_cents: i64 = lan_arg(args, "taxRateCents")?;
+            let tax_mode: String = lan_arg(args, "taxMode")?;
+            let r = update_chain_tax_v3_impl(db, license, session_token, tax_rate_cents, tax_mode)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_discount_caps_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let cashier_percent: i64 = lan_arg(args, "cashierPercent")?;
+            let manager_percent: i64 = lan_arg(args, "managerPercent")?;
+            let owner_percent: i64 = lan_arg(args, "ownerPercent")?;
+            let r = update_discount_caps_v3_impl(db, license, session_token, cashier_percent, manager_percent, owner_percent)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_manager_thresholds_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let void_threshold_cents: i64 = lan_arg(args, "voidThresholdCents")?;
+            let shift_diff_threshold_cents: i64 = lan_arg(args, "shiftDiffThresholdCents")?;
+            let r = update_manager_thresholds_v3_impl(db, license, session_token, void_threshold_cents, shift_diff_threshold_cents)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_legacy_branch_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = get_legacy_branch_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "save_legacy_branch_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let existing_id: Option<String> = lan_arg(args, "existingId")?;
+            let name: String = lan_arg(args, "name")?;
+            let address: Option<String> = lan_arg(args, "address")?;
+            let phone: Option<String> = lan_arg(args, "phone")?;
+            let max_tables: i64 = lan_arg(args, "maxTables")?;
+            let currency: String = lan_arg(args, "currency")?;
+            let r = save_legacy_branch_v3_impl(db, license, session_token, existing_id, name, address, phone, max_tables, currency)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
+}

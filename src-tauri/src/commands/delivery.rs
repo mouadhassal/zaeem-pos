@@ -26,15 +26,17 @@ pub(crate) fn get_delivery_settings_v3_impl(state: &Db, session_token: String) -
 }
 
 #[tauri::command]
-pub fn update_delivery_settings_v3(
-    state: State<Db>,
+pub fn update_delivery_settings_v3(state: State<Db>,
     license: State<crate::license::cloud::CloudLicenseState>,
     session_token: String,
     pay_mode: String,
-    pay_value: i64,
-) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    pay_value: i64,) -> Result<(), String> {
+    update_delivery_settings_v3_impl(&state, &license, session_token, pay_mode, pay_value)
+}
+
+pub(crate) fn update_delivery_settings_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, pay_mode: String, pay_value: i64) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -57,14 +59,16 @@ pub(crate) fn list_delivery_drivers_v3_impl(state: &Db, session_token: String, i
 }
 
 #[tauri::command]
-pub fn save_delivery_driver_v3(
-    state: State<Db>,
+pub fn save_delivery_driver_v3(state: State<Db>,
     license: State<crate::license::cloud::CloudLicenseState>,
     session_token: String,
-    driver: DriverInput,
-) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    driver: DriverInput,) -> Result<String, String> {
+    save_delivery_driver_v3_impl(&state, &license, session_token, driver)
+}
+
+pub(crate) fn save_delivery_driver_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, driver: DriverInput) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -230,4 +234,31 @@ pub fn settle_driver_v3(
     note: Option<String>,
 ) -> Result<SettlementRecord, String> {
     settle_driver_v3_impl(&state, &license, session_token, driver_id, order_ids, note)
+}
+
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "update_delivery_settings_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let pay_mode: String = lan_arg(args, "payMode")?;
+            let pay_value: i64 = lan_arg(args, "payValue")?;
+            let r = update_delivery_settings_v3_impl(db, license, session_token, pay_mode, pay_value)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "save_delivery_driver_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let driver: DriverInput = lan_arg(args, "driver")?;
+            let r = save_delivery_driver_v3_impl(db, license, session_token, driver)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
 }

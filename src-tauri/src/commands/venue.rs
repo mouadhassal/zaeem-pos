@@ -114,11 +114,15 @@ pub(crate) fn set_order_platform_v3_impl(state: &Db, session_token: String, orde
 
 #[tauri::command]
 pub fn save_delivery_platform_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, platform: PlatformInput) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    save_delivery_platform_v3_impl(&state, &license, session_token, platform)
+}
+
+pub(crate) fn save_delivery_platform_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, platform: PlatformInput) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, &license, None)?;
+    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, license, None)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let id = venue::save_platform(&tx, &actor.scope(), &tenant_id, &branch_id, &platform)?;
     audit_settings(&tx, &actor, "delivery_platform", &id, serde_json::json!({ "name": platform.name.trim(), "commission_bp": platform.commission_bp, "active": platform.active }))?;
@@ -129,8 +133,12 @@ pub fn save_delivery_platform_v3(state: State<Db>, license: State<crate::license
 /// Every app's account for a period (local dates, YYYY-MM-DD, either end may be empty).
 #[tauri::command]
 pub fn platform_accounts_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, from: Option<String>, to: Option<String>) -> Result<Vec<PlatformAccount>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    platform_accounts_v3_impl(&state, &license, session_token, from, to)
+}
+
+pub(crate) fn platform_accounts_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, from: Option<String>, to: Option<String>) -> Result<Vec<PlatformAccount>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     venue::platform_accounts(&conn, &actor.scope(), from.as_deref(), to.as_deref())
@@ -139,18 +147,21 @@ pub fn platform_accounts_v3(state: State<Db>, license: State<crate::license::clo
 /// Records what an app paid out for a period.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn record_platform_settlement_v3(
-    state: State<Db>,
+pub fn record_platform_settlement_v3(state: State<Db>,
     license: State<crate::license::cloud::CloudLicenseState>,
     session_token: String,
     platform_id: String,
     amount_cents: i64,
     period_from: Option<String>,
     period_to: Option<String>,
-    note: Option<String>,
-) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    note: Option<String>,) -> Result<String, String> {
+    record_platform_settlement_v3_impl(&state, &license, session_token, platform_id, amount_cents, period_from, period_to, note)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn record_platform_settlement_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, platform_id: String, amount_cents: i64, period_from: Option<String>, period_to: Option<String>, note: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -162,8 +173,12 @@ pub fn record_platform_settlement_v3(
 
 #[tauri::command]
 pub fn list_platform_settlements_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, platform_id: String, limit: Option<i64>) -> Result<Vec<PlatformSettlement>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_platform_settlements_v3_impl(&state, &license, session_token, platform_id, limit)
+}
+
+pub(crate) fn list_platform_settlements_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, platform_id: String, limit: Option<i64>) -> Result<Vec<PlatformSettlement>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     venue::list_settlements(&conn, &actor.scope(), &platform_id, limit.unwrap_or(50))
@@ -186,11 +201,15 @@ pub(crate) fn list_receipt_templates_v3_impl(state: &Db, session_token: String) 
 
 #[tauri::command]
 pub fn save_receipt_template_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, template: TemplateInput) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    save_receipt_template_v3_impl(&state, &license, session_token, template)
+}
+
+pub(crate) fn save_receipt_template_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, template: TemplateInput) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, &license, None)?;
+    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, license, None)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let id = venue::save_template(&tx, &actor.scope(), &tenant_id, &branch_id, &template)?;
     audit_settings(&tx, &actor, "receipt_template", &id, serde_json::json!({ "name": template.name.trim(), "kind": template.kind }))?;
@@ -200,8 +219,12 @@ pub fn save_receipt_template_v3(state: State<Db>, license: State<crate::license:
 
 #[tauri::command]
 pub fn delete_receipt_template_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, template_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    delete_receipt_template_v3_impl(&state, &license, session_token, template_id)
+}
+
+pub(crate) fn delete_receipt_template_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, template_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePrinters).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -223,4 +246,60 @@ pub fn set_printer_template_v3(state: State<Db>, license: State<crate::license::
     audit_settings(&tx, &actor, "printer", &printer_id, serde_json::json!({ "template_id": template_id }))?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "save_delivery_platform_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let platform: PlatformInput = lan_arg(args, "platform")?;
+            let r = save_delivery_platform_v3_impl(db, license, session_token, platform)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "platform_accounts_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let from: Option<String> = lan_arg(args, "from")?;
+            let to: Option<String> = lan_arg(args, "to")?;
+            let r = platform_accounts_v3_impl(db, license, session_token, from, to)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "record_platform_settlement_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let platform_id: String = lan_arg(args, "platformId")?;
+            let amount_cents: i64 = lan_arg(args, "amountCents")?;
+            let period_from: Option<String> = lan_arg(args, "periodFrom")?;
+            let period_to: Option<String> = lan_arg(args, "periodTo")?;
+            let note: Option<String> = lan_arg(args, "note")?;
+            let r = record_platform_settlement_v3_impl(db, license, session_token, platform_id, amount_cents, period_from, period_to, note)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_platform_settlements_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let platform_id: String = lan_arg(args, "platformId")?;
+            let limit: Option<i64> = lan_arg(args, "limit")?;
+            let r = list_platform_settlements_v3_impl(db, license, session_token, platform_id, limit)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "save_receipt_template_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let template: TemplateInput = lan_arg(args, "template")?;
+            let r = save_receipt_template_v3_impl(db, license, session_token, template)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_receipt_template_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let template_id: String = lan_arg(args, "templateId")?;
+            let r = delete_receipt_template_v3_impl(db, license, session_token, template_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
 }

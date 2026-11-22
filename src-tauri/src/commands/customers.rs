@@ -18,8 +18,13 @@ use super::shared::*;
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn create_customer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>, birthday: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    create_customer_v3_impl(&state, &license, session_token, name, phone, email, address, notes, birthday)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_customer_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, name: String, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>, birthday: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
     // Loyalty card issuance needs to create a customer with just an email --
     // phone used to be mandatory here, blocking that. At least one of the
@@ -45,8 +50,12 @@ pub fn create_customer_v3(state: State<Db>, license: State<crate::license::cloud
 
 #[tauri::command]
 pub fn list_customers_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::CustomerRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_customers_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_customers_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<crate::repo::CustomerRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_customers(&actor.tenant_id).map_err(|e| e.to_string())
@@ -55,8 +64,13 @@ pub fn list_customers_v3(state: State<Db>, license: State<crate::license::cloud:
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn update_customer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, customer_id: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>, birthday: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    update_customer_v3_impl(&state, &license, session_token, customer_id, name, phone, email, address, notes, birthday)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_customer_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, customer_id: String, name: String, phone: String, email: Option<String>, address: Option<String>, notes: Option<String>, birthday: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -70,8 +84,12 @@ pub fn update_customer_v3(state: State<Db>, license: State<crate::license::cloud
 
 #[tauri::command]
 pub fn delete_customer_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, customer_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    delete_customer_v3_impl(&state, &license, session_token, customer_id)
+}
+
+pub(crate) fn delete_customer_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, customer_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -101,8 +119,12 @@ pub struct CustomerDetailV3 {
 
 #[tauri::command]
 pub fn get_customer_detail_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, phone: String) -> Result<CustomerDetailV3, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_customer_detail_v3_impl(&state, &license, session_token, phone)
+}
+
+pub(crate) fn get_customer_detail_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, phone: String) -> Result<CustomerDetailV3, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageCustomers).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let repo = Repo::new(&conn);
@@ -118,3 +140,57 @@ pub fn get_customer_detail_v3(state: State<Db>, license: State<crate::license::c
 }
 
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "create_customer_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let name: String = lan_arg(args, "name")?;
+            let phone: Option<String> = lan_arg(args, "phone")?;
+            let email: Option<String> = lan_arg(args, "email")?;
+            let address: Option<String> = lan_arg(args, "address")?;
+            let notes: Option<String> = lan_arg(args, "notes")?;
+            let birthday: Option<String> = lan_arg(args, "birthday")?;
+            let r = create_customer_v3_impl(db, license, session_token, name, phone, email, address, notes, birthday)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_customers_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_customers_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_customer_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let customer_id: String = lan_arg(args, "customerId")?;
+            let name: String = lan_arg(args, "name")?;
+            let phone: String = lan_arg(args, "phone")?;
+            let email: Option<String> = lan_arg(args, "email")?;
+            let address: Option<String> = lan_arg(args, "address")?;
+            let notes: Option<String> = lan_arg(args, "notes")?;
+            let birthday: Option<String> = lan_arg(args, "birthday")?;
+            let r = update_customer_v3_impl(db, license, session_token, customer_id, name, phone, email, address, notes, birthday)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_customer_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let customer_id: String = lan_arg(args, "customerId")?;
+            let r = delete_customer_v3_impl(db, license, session_token, customer_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_customer_detail_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let phone: String = lan_arg(args, "phone")?;
+            let r = get_customer_detail_v3_impl(db, license, session_token, phone)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
+}

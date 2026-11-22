@@ -79,11 +79,43 @@ pub fn lan_rpc_mutates_orders(command: &str) -> bool {
     )
 }
 
+/// True for a back-office write that changes the menu a till sells from: the other tills should
+/// re-fetch it (a harmless extra nudge when it is not needed).
+pub fn lan_rpc_mutates_menu(command: &str) -> bool {
+    matches!(
+        command,
+        "create_menu_item_v3"
+            | "update_menu_item_v3"
+            | "delete_menu_item_v3"
+            | "set_menu_item_active_v3"
+            | "set_menu_item_sold_by_v3"
+            | "upload_menu_item_photo_v3"
+            | "delete_menu_item_photo_v3"
+            | "create_category_v3"
+            | "update_category_v3"
+            | "delete_category_v3"
+            | "upload_category_photo_v3"
+            | "delete_category_photo_v3"
+            | "save_option_group_v3"
+            | "delete_option_group_v3"
+            | "create_combo_meal_v3"
+            | "update_combo_meal_v3"
+            | "delete_combo_meal_v3"
+            | "create_happy_hour_rule_v3"
+            | "update_happy_hour_rule_v3"
+            | "delete_happy_hour_rule_v3"
+            | "set_happy_hour_rule_active_v3"
+            | "update_chain_tax_v3"
+            | "update_chain_currency_v3"
+            | "update_chain_name_v3"
+    )
+}
+
 /// Parses `args[key]` into `T`, treating a missing key the same as JSON
 /// `null` (so an `Option<T>` field the frontend simply omits still
 /// deserializes correctly, matching how Tauri's own IPC argument binding
 /// already behaves for optional params).
-fn lan_arg<T: serde::de::DeserializeOwned>(args: &serde_json::Value, key: &str) -> Result<T, String> {
+pub(crate) fn lan_arg<T: serde::de::DeserializeOwned>(args: &serde_json::Value, key: &str) -> Result<T, String> {
     serde_json::from_value(args.get(key).cloned().unwrap_or(serde_json::Value::Null))
         .map_err(|e| format!("invalid or missing '{key}': {e}"))
 }
@@ -681,6 +713,13 @@ pub fn dispatch_lan_rpc(
             let r = get_chain_config_v3_impl(db, session_token)?;
             serde_json::to_value(r).map_err(|e| e.to_string())?
         }
+        // What the signed-in person may open, by the owner's table (kept on the hub): the sidebar of a
+        // second till needs the hub's answer, not its own empty copy.
+        "get_my_access_v3" => {
+            let session_token: String = lan_arg(&args, "sessionToken")?;
+            let r = super::role_access::get_my_access_v3_impl(db, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
         "get_receipt_config_v3" => {
             let session_token: String = lan_arg(&args, "sessionToken")?;
             let r = get_receipt_config_v3_impl(db, license, session_token)?;
@@ -706,7 +745,9 @@ pub fn dispatch_lan_rpc(
                 device_id: actor.device_id,
             }).map_err(|e| e.to_string())?
         }
-        _ => return Err("UNKNOWN_COMMAND".to_string()),
+        // Back-office commands a second till may run once the owner allowed that device
+        // (`execute_rpc` checks the device before it ever gets here).
+        _ => super::lan_rpc_office::dispatch_back_office_rpc(db, license, command, &args)?,
     };
     Ok(result)
 }

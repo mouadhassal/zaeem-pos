@@ -18,22 +18,30 @@ fn now_iso() -> String {
 
 #[tauri::command]
 pub fn list_product_stock_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, search: Option<String>, only_low: Option<bool>, include_untracked: Option<bool>) -> Result<Vec<StockRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_product_stock_v3_impl(&state, &license, session_token, search, only_low, include_untracked)
+}
+
+pub(crate) fn list_product_stock_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, search: Option<String>, only_low: Option<bool>, include_untracked: Option<bool>) -> Result<Vec<StockRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageIngredients).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, &license, None)?;
+    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, license, None)?;
     stockroom::list_stock(&conn, &tenant_id, &branch_id, search.as_deref(), only_low.unwrap_or(false), include_untracked.unwrap_or(false), 5000)
 }
 
 #[tauri::command]
 pub fn set_product_tracking_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, track: bool, min_quantity: f64, opening_quantity: Option<f64>) -> Result<(), String> {
+    set_product_tracking_v3_impl(&state, &license, session_token, item_id, track, min_quantity, opening_quantity)
+}
+
+pub(crate) fn set_product_tracking_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String, track: bool, min_quantity: f64, opening_quantity: Option<f64>) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("set_product_tracking_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageIngredients).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, &license, None)?;
+    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, license, None)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     stockroom::set_tracking(&tx, &tenant_id, &branch_id, &item_id, track, min_quantity, opening_quantity, &actor.id, &now_iso())?;
     audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InventoryAdjusted, "product_stock", &item_id, None, Some(&serde_json::json!({ "track": track, "min_quantity": min_quantity, "opening_quantity": opening_quantity }))).map_err(|e| e.to_string())?;
@@ -44,9 +52,13 @@ pub fn set_product_tracking_v3(state: State<Db>, license: State<crate::license::
 /// Adds or removes pieces (damage, theft, a found box) with a reason that is kept in the log.
 #[tauri::command]
 pub fn adjust_product_stock_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, change: f64, note: String) -> Result<f64, String> {
+    adjust_product_stock_v3_impl(&state, &license, session_token, item_id, change, note)
+}
+
+pub(crate) fn adjust_product_stock_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String, change: f64, note: String) -> Result<f64, String> {
     crate::lan::reject_if_local_kitchen_satellite("adjust_product_stock_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageIngredients).map_err(|e| e.to_string())?;
     if note.trim().is_empty() {
         return Err("اكتب سبب التعديل".to_string());
@@ -55,7 +67,7 @@ pub fn adjust_product_stock_v3(state: State<Db>, license: State<crate::license::
         return Err("الكمية صفر".to_string());
     }
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, &license, None)?;
+    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, license, None)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let item_ok: bool = tx.query_row("SELECT COUNT(*) > 0 FROM menu_items WHERE id = ?1 AND tenant_id = ?2", rusqlite::params![item_id, tenant_id], |r| r.get(0)).map_err(|e| e.to_string())?;
     if !item_ok {
@@ -71,12 +83,16 @@ pub fn adjust_product_stock_v3(state: State<Db>, license: State<crate::license::
 /// A shelf count: the quantity becomes what was counted; the difference is logged.
 #[tauri::command]
 pub fn count_product_stock_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, counted: f64, note: Option<String>) -> Result<f64, String> {
+    count_product_stock_v3_impl(&state, &license, session_token, item_id, counted, note)
+}
+
+pub(crate) fn count_product_stock_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String, counted: f64, note: Option<String>) -> Result<f64, String> {
     crate::lan::reject_if_local_kitchen_satellite("count_product_stock_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageIngredients).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, &license, None)?;
+    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, license, None)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let after = stockroom::count(&tx, &tenant_id, &branch_id, &item_id, counted, note.as_deref(), &actor.id, &now_iso())?;
     audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InventoryAdjusted, "product_stock", &item_id, None, Some(&serde_json::json!({ "counted": counted, "note": note }))).map_err(|e| e.to_string())?;
@@ -87,12 +103,16 @@ pub fn count_product_stock_v3(state: State<Db>, license: State<crate::license::c
 /// Goods arrive: scanned or picked products with the quantity received (and a new cost price if it changed).
 #[tauri::command]
 pub fn receive_products_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, lines: Vec<ReceiveLine>, note: Option<String>) -> Result<ReceiveOutcome, String> {
+    receive_products_v3_impl(&state, &license, session_token, lines, note)
+}
+
+pub(crate) fn receive_products_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, lines: Vec<ReceiveLine>, note: Option<String>) -> Result<ReceiveOutcome, String> {
     crate::lan::reject_if_local_kitchen_satellite("receive_products_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageIngredients).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, &license, None)?;
+    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, license, None)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let out = stockroom::receive(&tx, &tenant_id, &branch_id, &lines, note.as_deref().map(str::trim).filter(|n| !n.is_empty()), &actor.id, &now_iso())?;
     audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::InventoryAdjusted, "product_stock", &branch_id, None, Some(&serde_json::json!({ "received_lines": out.lines, "pieces": out.pieces, "note": note }))).map_err(|e| e.to_string())?;
@@ -102,23 +122,31 @@ pub fn receive_products_v3(state: State<Db>, license: State<crate::license::clou
 
 #[tauri::command]
 pub fn list_product_stock_log_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: Option<String>, limit: Option<i64>) -> Result<Vec<LogRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_product_stock_log_v3_impl(&state, &license, session_token, item_id, limit)
+}
+
+pub(crate) fn list_product_stock_log_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: Option<String>, limit: Option<i64>) -> Result<Vec<LogRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageIngredients).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, &license, None)?;
+    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, license, None)?;
     stockroom::list_log(&conn, &tenant_id, &branch_id, item_id.as_deref(), limit.unwrap_or(200).clamp(1, 1000) as usize)
 }
 
 /// Brings products in from a spreadsheet (already read into rows by the page).
 #[tauri::command]
 pub fn import_products_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, rows: Vec<ImportRow>) -> Result<ImportSummary, String> {
+    import_products_v3_impl(&state, &license, session_token, rows)
+}
+
+pub(crate) fn import_products_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, rows: Vec<ImportRow>) -> Result<ImportSummary, String> {
     crate::lan::reject_if_local_kitchen_satellite("import_products_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, &license, None)?;
+    let (tenant_id, branch_id) = resolve_operating_branch(&conn, &actor, license, None)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let summary = stockroom::import_products(&tx, &tenant_id, &branch_id, &rows, &actor.id, &now_iso())?;
     audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::MenuItemChanged, "menu_import", &branch_id, None, Some(&serde_json::json!({ "created": summary.created, "updated": summary.updated, "skipped": summary.skipped }))).map_err(|e| e.to_string())?;
@@ -128,8 +156,12 @@ pub fn import_products_v3(state: State<Db>, license: State<crate::license::cloud
 
 #[tauri::command]
 pub fn list_product_barcodes_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String) -> Result<Vec<ExtraBarcode>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_product_barcodes_v3_impl(&state, &license, session_token, item_id)
+}
+
+pub(crate) fn list_product_barcodes_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String) -> Result<Vec<ExtraBarcode>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     stockroom::list_extra_barcodes(&conn, &actor.tenant_id, &item_id)
@@ -137,9 +169,13 @@ pub fn list_product_barcodes_v3(state: State<Db>, license: State<crate::license:
 
 #[tauri::command]
 pub fn add_product_barcode_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, item_id: String, barcode: String, units: f64) -> Result<String, String> {
+    add_product_barcode_v3_impl(&state, &license, session_token, item_id, barcode, units)
+}
+
+pub(crate) fn add_product_barcode_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, item_id: String, barcode: String, units: f64) -> Result<String, String> {
     crate::lan::reject_if_local_kitchen_satellite("add_product_barcode_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     stockroom::add_extra_barcode(&conn, &actor.tenant_id, &item_id, &barcode, units)
@@ -147,9 +183,13 @@ pub fn add_product_barcode_v3(state: State<Db>, license: State<crate::license::c
 
 #[tauri::command]
 pub fn delete_product_barcode_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, barcode_id: String) -> Result<(), String> {
+    delete_product_barcode_v3_impl(&state, &license, session_token, barcode_id)
+}
+
+pub(crate) fn delete_product_barcode_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, barcode_id: String) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("delete_product_barcode_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     stockroom::delete_extra_barcode(&conn, &actor.tenant_id, &barcode_id)
@@ -158,8 +198,12 @@ pub fn delete_product_barcode_v3(state: State<Db>, license: State<crate::license
 /// A new barcode of ours (EAN-13, starts with 29) for a product that has none.
 #[tauri::command]
 pub fn generate_product_barcode_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    generate_product_barcode_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn generate_product_barcode_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageMenu).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     stockroom::generate_barcode(&conn, &actor.tenant_id)
@@ -167,8 +211,12 @@ pub fn generate_product_barcode_v3(state: State<Db>, license: State<crate::licen
 
 #[tauri::command]
 pub fn get_retail_settings_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<RetailSettings, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_retail_settings_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn get_retail_settings_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<RetailSettings, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     stockroom::load_settings(&conn, &actor.tenant_id)
@@ -176,9 +224,13 @@ pub fn get_retail_settings_v3(state: State<Db>, license: State<crate::license::c
 
 #[tauri::command]
 pub fn save_retail_settings_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, settings: RetailSettings) -> Result<(), String> {
+    save_retail_settings_v3_impl(&state, &license, session_token, settings)
+}
+
+pub(crate) fn save_retail_settings_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, settings: RetailSettings) -> Result<(), String> {
     crate::lan::reject_if_local_kitchen_satellite("save_retail_settings_v3")?;
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManageSettings).map_err(|e| e.to_string())?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -187,4 +239,107 @@ pub fn save_retail_settings_v3(state: State<Db>, license: State<crate::license::
     audit::append(&tx, &actor.device_id, &actor.tenant_id, actor.branch_id.as_deref(), &actor.id, audit::Action::SettingsChanged, "retail_settings", &actor.tenant_id, serde_json::to_value(&before).ok().as_ref(), serde_json::to_value(&settings).ok().as_ref()).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "list_product_stock_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let search: Option<String> = lan_arg(args, "search")?;
+            let only_low: Option<bool> = lan_arg(args, "onlyLow")?;
+            let include_untracked: Option<bool> = lan_arg(args, "includeUntracked")?;
+            let r = list_product_stock_v3_impl(db, license, session_token, search, only_low, include_untracked)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "set_product_tracking_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let item_id: String = lan_arg(args, "itemId")?;
+            let track: bool = lan_arg(args, "track")?;
+            let min_quantity: f64 = lan_arg(args, "minQuantity")?;
+            let opening_quantity: Option<f64> = lan_arg(args, "openingQuantity")?;
+            let r = set_product_tracking_v3_impl(db, license, session_token, item_id, track, min_quantity, opening_quantity)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "adjust_product_stock_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let item_id: String = lan_arg(args, "itemId")?;
+            let change: f64 = lan_arg(args, "change")?;
+            let note: String = lan_arg(args, "note")?;
+            let r = adjust_product_stock_v3_impl(db, license, session_token, item_id, change, note)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "count_product_stock_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let item_id: String = lan_arg(args, "itemId")?;
+            let counted: f64 = lan_arg(args, "counted")?;
+            let note: Option<String> = lan_arg(args, "note")?;
+            let r = count_product_stock_v3_impl(db, license, session_token, item_id, counted, note)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "receive_products_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let lines: Vec<ReceiveLine> = lan_arg(args, "lines")?;
+            let note: Option<String> = lan_arg(args, "note")?;
+            let r = receive_products_v3_impl(db, license, session_token, lines, note)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_product_stock_log_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let item_id: Option<String> = lan_arg(args, "itemId")?;
+            let limit: Option<i64> = lan_arg(args, "limit")?;
+            let r = list_product_stock_log_v3_impl(db, license, session_token, item_id, limit)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "import_products_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let rows: Vec<ImportRow> = lan_arg(args, "rows")?;
+            let r = import_products_v3_impl(db, license, session_token, rows)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_product_barcodes_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let item_id: String = lan_arg(args, "itemId")?;
+            let r = list_product_barcodes_v3_impl(db, license, session_token, item_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "add_product_barcode_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let item_id: String = lan_arg(args, "itemId")?;
+            let barcode: String = lan_arg(args, "barcode")?;
+            let units: f64 = lan_arg(args, "units")?;
+            let r = add_product_barcode_v3_impl(db, license, session_token, item_id, barcode, units)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_product_barcode_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let barcode_id: String = lan_arg(args, "barcodeId")?;
+            let r = delete_product_barcode_v3_impl(db, license, session_token, barcode_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "generate_product_barcode_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = generate_product_barcode_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "get_retail_settings_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = get_retail_settings_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "save_retail_settings_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let settings: RetailSettings = lan_arg(args, "settings")?;
+            let r = save_retail_settings_v3_impl(db, license, session_token, settings)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
 }

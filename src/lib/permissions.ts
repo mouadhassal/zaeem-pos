@@ -99,6 +99,27 @@ export const PAGE_FEATURE: Record<string, string> = {
   settings: "settings",
 };
 
+/**
+ * The pages that read and write the hub's back-office data. A second till shows them only when the
+ * hub allowed this device (Settings > الشبكة المحلية on the hub). Settings, the guide, the kitchen
+ * screen and the till's own pages are never in this set.
+ */
+export const SATELLITE_BACK_OFFICE_PAGES = new Set([
+  "dashboard", "customers", "menu", "inventory", "stockroom", "reports", "staff", "schedule", "branches", "finance", "payroll", "loyalty",
+]);
+
+/** What the hub said about this device (`null` = not asked yet, or not a second till: nothing changes). */
+export interface BackOfficeAccessView {
+  isSatellite: boolean;
+  allowed: boolean;
+}
+
+/** On a second till the hub has not allowed, the back-office pages are hidden, exactly as for a role without them. */
+export function applyBackOfficeAccess(nav: SidebarNavItem[], access: BackOfficeAccessView | null | undefined): SidebarNavItem[] {
+  if (!access || !access.isSatellite || access.allowed) return nav;
+  return nav.filter((n) => !SATELLITE_BACK_OFFICE_PAGES.has(n.id));
+}
+
 /** What the owner's choices do to a role's normal pages: close the ones taken away, open the ones given. */
 export function applyAccess(nav: SidebarNavItem[], features: Record<string, boolean> | null | undefined): SidebarNavItem[] {
   if (!features) return nav;

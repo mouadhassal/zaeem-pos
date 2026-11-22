@@ -1,8 +1,10 @@
 import { useMemo } from "react";
 import { useAuthStore } from "../stores/authStore";
 import { useAccessStore } from "../stores/accessStore";
+import { useBackOfficeStore } from "../stores/backOfficeStore";
 import {
   getNavForRole,
+  applyBackOfficeAccess,
   getMaxDiscountPercent,
   canVoidAnyOrder,
   canAccessInventory,
@@ -18,11 +20,12 @@ import {
 export function usePermissions() {
   const role = useAuthStore((s) => s.user?.role);
   const features = useAccessStore((s) => s.features);
+  const backOffice = useBackOfficeStore((s) => s.access);
 
   return useMemo(
     () => ({
       role,
-      navItems: getNavForRole(role, features),
+      navItems: applyBackOfficeAccess(getNavForRole(role, features), backOffice),
       /** What the owner's table says about the signed-in person, by feature key (null = not asked yet). */
       features,
       maxDiscountPercent: getMaxDiscountPercent(role),
@@ -36,6 +39,6 @@ export function usePermissions() {
       canManageMenu: canManageMenu(role),
       canForceCloseShift: canForceCloseShift(role),
     }),
-    [role, features]
+    [role, features, backOffice]
   );
 }

@@ -9,12 +9,16 @@ use super::orders::{sync_enqueue_ingredient, sync_enqueue_operational_cost, sync
 
 #[tauri::command]
 pub fn create_purchase_order_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, notes: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    create_purchase_order_v3_impl(&state, &license, session_token, supplier_id, notes)
+}
+
+pub(crate) fn create_purchase_order_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, supplier_id: String, notes: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -33,12 +37,16 @@ pub fn create_purchase_order_v3(state: State<Db>, license: State<crate::license:
 /// `NewOrderModal`'s quick-create path -- bare PO + `total_orders` bump.
 #[tauri::command]
 pub fn create_purchase_order_and_bump_supplier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, notes: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    create_purchase_order_and_bump_supplier_v3_impl(&state, &license, session_token, supplier_id, notes)
+}
+
+pub(crate) fn create_purchase_order_and_bump_supplier_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, supplier_id: String, notes: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -60,12 +68,16 @@ pub fn create_purchase_order_and_bump_supplier_v3(state: State<Db>, license: Sta
 /// between the Tauri boundary and the repo call.
 #[tauri::command]
 pub fn create_purchase_order_with_items_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, notes: Option<String>, items: Vec<(String, f64, i64)>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    create_purchase_order_with_items_v3_impl(&state, &license, session_token, supplier_id, notes, items)
+}
+
+pub(crate) fn create_purchase_order_with_items_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, supplier_id: String, notes: Option<String>, items: Vec<(String, f64, i64)>) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -94,12 +106,16 @@ pub struct PoLineInput {
 /// `create_purchase_order_with_items_v3` with a unit per line; receiving converts to stock units.
 #[tauri::command]
 pub fn create_purchase_order_with_units_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, notes: Option<String>, items: Vec<PoLineInput>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    create_purchase_order_with_units_v3_impl(&state, &license, session_token, supplier_id, notes, items)
+}
+
+pub(crate) fn create_purchase_order_with_units_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, supplier_id: String, notes: Option<String>, items: Vec<PoLineInput>) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     let lines: Vec<(String, f64, i64, Option<String>)> = items.into_iter().map(|l| (l.ingredient_id, l.quantity, l.unit_cost_cents, l.unit)).collect();
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -118,8 +134,12 @@ pub fn create_purchase_order_with_units_v3(state: State<Db>, license: State<crat
 
 #[tauri::command]
 pub fn list_purchase_orders_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::PurchaseOrderRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_purchase_orders_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_purchase_orders_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<crate::repo::PurchaseOrderRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_purchase_orders(&actor.scope()).map_err(|e| e.to_string())
@@ -127,12 +147,16 @@ pub fn list_purchase_orders_v3(state: State<Db>, license: State<crate::license::
 
 #[tauri::command]
 pub fn cancel_purchase_order_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, po_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    cancel_purchase_order_v3_impl(&state, &license, session_token, po_id)
+}
+
+pub(crate) fn cancel_purchase_order_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, po_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -149,8 +173,12 @@ pub fn cancel_purchase_order_v3(state: State<Db>, license: State<crate::license:
 
 #[tauri::command]
 pub fn list_purchase_order_items_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, po_id: String) -> Result<Vec<crate::repo::PurchaseOrderItemRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_purchase_order_items_v3_impl(&state, &license, session_token, po_id)
+}
+
+pub(crate) fn list_purchase_order_items_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, po_id: String) -> Result<Vec<crate::repo::PurchaseOrderItemRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_purchase_order_items(&po_id, &actor.scope()).map_err(|e| e.to_string())
@@ -168,12 +196,16 @@ pub fn list_purchase_order_items_v3(state: State<Db>, license: State<crate::lice
 /// handled by `Repo::receive_purchase_order`'s payment_status logic.
 #[tauri::command]
 pub fn receive_purchase_order_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, po_id: String, items: Vec<(String, String, f64)>, amount_paid_cents: Option<i64>, method: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    receive_purchase_order_v3_impl(&state, &license, session_token, po_id, items, amount_paid_cents, method)
+}
+
+pub(crate) fn receive_purchase_order_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, po_id: String, items: Vec<(String, String, f64)>, amount_paid_cents: Option<i64>, method: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let amount_paid_cents = amount_paid_cents.unwrap_or(0);
@@ -240,8 +272,12 @@ pub fn receive_purchase_order_v3(state: State<Db>, license: State<crate::license
 /// in their own tenant.
 #[tauri::command]
 pub fn record_supplier_payment_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, amount_cents: i64, method: Option<String>, notes: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    record_supplier_payment_v3_impl(&state, &license, session_token, supplier_id, amount_cents, method, notes)
+}
+
+pub(crate) fn record_supplier_payment_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, supplier_id: String, amount_cents: i64, method: Option<String>, notes: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     if amount_cents <= 0 {
         return Err("payment amount must be positive".to_string());
@@ -272,8 +308,12 @@ pub fn record_supplier_payment_v3(state: State<Db>, license: State<crate::licens
 
 #[tauri::command]
 pub fn list_supplier_payments_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String) -> Result<Vec<crate::repo::SupplierPaymentRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_supplier_payments_v3_impl(&state, &license, session_token, supplier_id)
+}
+
+pub(crate) fn list_supplier_payments_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, supplier_id: String) -> Result<Vec<crate::repo::SupplierPaymentRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_supplier_payments(&actor.scope(), &supplier_id).map_err(|e| e.to_string())
@@ -281,8 +321,12 @@ pub fn list_supplier_payments_v3(state: State<Db>, license: State<crate::license
 
 #[tauri::command]
 pub fn list_suppliers_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::SupplierRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_suppliers_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_suppliers_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<crate::repo::SupplierRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_suppliers(&actor.scope()).map_err(|e| e.to_string())
@@ -290,12 +334,16 @@ pub fn list_suppliers_v3(state: State<Db>, license: State<crate::license::cloud:
 
 #[tauri::command]
 pub fn create_supplier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, name: String, phone: Option<String>, email: Option<String>) -> Result<String, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    create_supplier_v3_impl(&state, &license, session_token, name, phone, email)
+}
+
+pub(crate) fn create_supplier_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, name: String, phone: Option<String>, email: Option<String>) -> Result<String, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -313,12 +361,16 @@ pub fn create_supplier_v3(state: State<Db>, license: State<crate::license::cloud
 
 #[tauri::command]
 pub fn update_supplier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, name: String, phone: Option<String>, email: Option<String>) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    update_supplier_v3_impl(&state, &license, session_token, supplier_id, name, phone, email)
+}
+
+pub(crate) fn update_supplier_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, supplier_id: String, name: String, phone: Option<String>, email: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -335,12 +387,16 @@ pub fn update_supplier_v3(state: State<Db>, license: State<crate::license::cloud
 
 #[tauri::command]
 pub fn delete_supplier_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String) -> Result<(), String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    delete_supplier_v3_impl(&state, &license, session_token, supplier_id)
+}
+
+pub(crate) fn delete_supplier_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, supplier_id: String) -> Result<(), String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -357,8 +413,12 @@ pub fn delete_supplier_v3(state: State<Db>, license: State<crate::license::cloud
 
 #[tauri::command]
 pub fn list_inventory_logs_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::InventoryLogRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_inventory_logs_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_inventory_logs_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<crate::repo::InventoryLogRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_inventory_logs(&actor.scope()).map_err(|e| e.to_string())
@@ -366,8 +426,12 @@ pub fn list_inventory_logs_v3(state: State<Db>, license: State<crate::license::c
 
 #[tauri::command]
 pub fn list_reorder_suggestions_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: Option<String>) -> Result<Vec<crate::repo::ReorderSuggestionRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_reorder_suggestions_v3_impl(&state, &license, session_token, supplier_id)
+}
+
+pub(crate) fn list_reorder_suggestions_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, supplier_id: Option<String>) -> Result<Vec<crate::repo::ReorderSuggestionRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_reorder_suggestions(&actor.scope(), supplier_id.as_deref()).map_err(|e| e.to_string())
@@ -375,8 +439,12 @@ pub fn list_reorder_suggestions_v3(state: State<Db>, license: State<crate::licen
 
 #[tauri::command]
 pub fn list_low_stock_ingredients_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::IngredientRow>, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    list_low_stock_ingredients_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn list_low_stock_ingredients_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<Vec<crate::repo::IngredientRow>, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Repo::new(&conn).list_low_stock_ingredients(&actor.scope()).map_err(|e| e.to_string())
@@ -449,4 +517,133 @@ pub(crate) fn list_active_printers_v3_impl(state: &Db, session_token: String) ->
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     Ok(Repo::new(&conn).list_printers(&actor.scope()).map_err(|e| e.to_string())?
         .into_iter().filter(|p| p.is_active == 1).collect())
+}
+
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "create_purchase_order_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let supplier_id: String = lan_arg(args, "supplierId")?;
+            let notes: Option<String> = lan_arg(args, "notes")?;
+            let r = create_purchase_order_v3_impl(db, license, session_token, supplier_id, notes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "create_purchase_order_and_bump_supplier_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let supplier_id: String = lan_arg(args, "supplierId")?;
+            let notes: Option<String> = lan_arg(args, "notes")?;
+            let r = create_purchase_order_and_bump_supplier_v3_impl(db, license, session_token, supplier_id, notes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "create_purchase_order_with_items_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let supplier_id: String = lan_arg(args, "supplierId")?;
+            let notes: Option<String> = lan_arg(args, "notes")?;
+            let items: Vec<(String, f64, i64)> = lan_arg(args, "items")?;
+            let r = create_purchase_order_with_items_v3_impl(db, license, session_token, supplier_id, notes, items)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "create_purchase_order_with_units_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let supplier_id: String = lan_arg(args, "supplierId")?;
+            let notes: Option<String> = lan_arg(args, "notes")?;
+            let items: Vec<PoLineInput> = lan_arg(args, "items")?;
+            let r = create_purchase_order_with_units_v3_impl(db, license, session_token, supplier_id, notes, items)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_purchase_orders_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_purchase_orders_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "cancel_purchase_order_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let po_id: String = lan_arg(args, "poId")?;
+            let r = cancel_purchase_order_v3_impl(db, license, session_token, po_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_purchase_order_items_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let po_id: String = lan_arg(args, "poId")?;
+            let r = list_purchase_order_items_v3_impl(db, license, session_token, po_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "receive_purchase_order_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let po_id: String = lan_arg(args, "poId")?;
+            let items: Vec<(String, String, f64)> = lan_arg(args, "items")?;
+            let amount_paid_cents: Option<i64> = lan_arg(args, "amountPaidCents")?;
+            let method: Option<String> = lan_arg(args, "method")?;
+            let r = receive_purchase_order_v3_impl(db, license, session_token, po_id, items, amount_paid_cents, method)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "record_supplier_payment_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let supplier_id: String = lan_arg(args, "supplierId")?;
+            let amount_cents: i64 = lan_arg(args, "amountCents")?;
+            let method: Option<String> = lan_arg(args, "method")?;
+            let notes: Option<String> = lan_arg(args, "notes")?;
+            let r = record_supplier_payment_v3_impl(db, license, session_token, supplier_id, amount_cents, method, notes)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_supplier_payments_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let supplier_id: String = lan_arg(args, "supplierId")?;
+            let r = list_supplier_payments_v3_impl(db, license, session_token, supplier_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_suppliers_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_suppliers_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "create_supplier_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let name: String = lan_arg(args, "name")?;
+            let phone: Option<String> = lan_arg(args, "phone")?;
+            let email: Option<String> = lan_arg(args, "email")?;
+            let r = create_supplier_v3_impl(db, license, session_token, name, phone, email)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "update_supplier_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let supplier_id: String = lan_arg(args, "supplierId")?;
+            let name: String = lan_arg(args, "name")?;
+            let phone: Option<String> = lan_arg(args, "phone")?;
+            let email: Option<String> = lan_arg(args, "email")?;
+            let r = update_supplier_v3_impl(db, license, session_token, supplier_id, name, phone, email)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "delete_supplier_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let supplier_id: String = lan_arg(args, "supplierId")?;
+            let r = delete_supplier_v3_impl(db, license, session_token, supplier_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_inventory_logs_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_inventory_logs_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_reorder_suggestions_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let supplier_id: Option<String> = lan_arg(args, "supplierId")?;
+            let r = list_reorder_suggestions_v3_impl(db, license, session_token, supplier_id)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "list_low_stock_ingredients_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = list_low_stock_ingredients_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
 }

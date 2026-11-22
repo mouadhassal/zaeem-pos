@@ -6849,6 +6849,7 @@ mod tests {
         migrate_v3::run_finance_ledger_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_inventory_units_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_areas_platforms_templates_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_remote_back_office_migration(&mut conn, &db_path).unwrap();
         db_path
     }
 

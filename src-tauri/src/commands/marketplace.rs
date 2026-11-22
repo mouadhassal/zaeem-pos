@@ -19,8 +19,12 @@ pub struct MarketplaceContext {
 
 #[tauri::command]
 pub fn get_marketplace_context_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<MarketplaceContext, String> {
-    authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    get_marketplace_context_v3_impl(&state, &license, session_token)
+}
+
+pub(crate) fn get_marketplace_context_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String) -> Result<MarketplaceContext, String> {
+    authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     Ok(MarketplaceContext {
         branch_id: license.licensed_branch().map(|(_, branch_id)| branch_id),
         receipts_enabled: license.device_token().is_some(),
@@ -44,12 +48,16 @@ pub async fn list_marketplace_receipts_v3(state: State<'_, Db>, license: State<'
 /// the order had already been received on this terminal (no double stock).
 #[tauri::command]
 pub fn receive_marketplace_order_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, order_id: String, lines: Vec<ReceiptLine>, note: Option<String>) -> Result<bool, String> {
-    let actor = authenticate_actor(&state, &session_token)?;
-    require_license_not_locked(&license)?;
+    receive_marketplace_order_v3_impl(&state, &license, session_token, order_id, lines, note)
+}
+
+pub(crate) fn receive_marketplace_order_v3_impl(state: &Db, license: &crate::license::cloud::CloudLicenseState, session_token: String, order_id: String, lines: Vec<ReceiptLine>, note: Option<String>) -> Result<bool, String> {
+    let actor = authenticate_actor(state, &session_token)?;
+    require_license_not_locked(license)?;
     authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
     let (tenant_id, branch_id) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        resolve_operating_branch(&conn, &actor, &license, None)?
+        resolve_operating_branch(&conn, &actor, license, None)?
     };
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -64,4 +72,31 @@ pub fn receive_marketplace_order_v3(state: State<Db>, license: State<crate::lice
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+// ---------------------------------------------------------------------------
+// Remote back office: the arms a second till's back-office commands take on the hub
+// (see `lan_rpc_office.rs`). Each arm calls the same `_impl` the local command wraps.
+// ---------------------------------------------------------------------------
+
+#[allow(unused_variables, clippy::let_unit_value)]
+pub(crate) fn dispatch_remote_office(db: &Db, license: &crate::license::cloud::CloudLicenseState, command: &str, args: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    use super::lan_rpc::lan_arg;
+    let value = match command {
+        "get_marketplace_context_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let r = get_marketplace_context_v3_impl(db, license, session_token)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        "receive_marketplace_order_v3" => {
+            let session_token: String = lan_arg(args, "sessionToken")?;
+            let order_id: String = lan_arg(args, "orderId")?;
+            let lines: Vec<ReceiptLine> = lan_arg(args, "lines")?;
+            let note: Option<String> = lan_arg(args, "note")?;
+            let r = receive_marketplace_order_v3_impl(db, license, session_token, order_id, lines, note)?;
+            serde_json::to_value(r).map_err(|e| e.to_string())?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
 }
