@@ -1,3 +1,4 @@
+import { useTerms } from "../../lib/terms";
 import { useBusinessStore } from "../../stores/businessStore";
 import { moduleOn } from "../../lib/businessModules";
 import { useEffect, useRef, useState, useMemo, type ComponentProps } from "react";
@@ -90,6 +91,7 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
   const combos = useComboStore((s) => s.combos);
   // The offers module (Settings > نوع النشاط والوحدات): off = no combos row and no happy hour.
   const offersOn = useBusinessStore((s) => moduleOn(s.modules, "offers"));
+  const tm = useTerms();
 
   // Item options ("without onion", "extra cheese"): tapping an item that has
   // option groups opens a picker first; items without any add straight away.
@@ -325,8 +327,8 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
                 </span>
               </div>
             )}
-            placeholder="ابحث عن صنف أو امسح الباركود..."
-            emptyMessage="لا توجد أصناف مطابقة"
+            placeholder={`ابحث عن ${tm.item} أو امسح الباركود...`}
+            emptyMessage={`لا توجد ${tm.items} مطابقة`}
           />
         </div>
       )}
@@ -362,18 +364,18 @@ export default function MenuGridContainer({ currencySymbol, onAddItem }: Props) 
         ) : isEmpty ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-center text-text-muted text-sm">
             {searchValue ? (
-              "ما في أصناف تطابق البحث"
+              `ما في ${tm.items} تطابق البحث`
             ) : (
               // A new install lands here first: say what to do, not just "empty".
               <>
-                <p className="text-base font-medium text-text">القائمة فارغة</p>
-                <p className="max-w-xs">أضف أصنافك من صفحة القائمة، أو صوّر قائمتك الورقية ودع الذكاء الاصطناعي يجهّزها.</p>
+                <p className="text-base font-medium text-text">{tm.menuEmptyTitle}</p>
+                <p className="max-w-xs">{tm.menuEmptyHint}</p>
                 <div className="flex gap-2">
                   <button type="button" onClick={() => navigateTo("menu")} className="h-10 px-4 rounded-[10px] bg-accent text-white text-sm font-medium active:scale-[0.98]">
-                    إضافة أصناف
+                    إضافة {tm.items}
                   </button>
                   <button type="button" onClick={() => navigateTo("ai-onboarding")} className="h-10 px-4 rounded-[10px] bg-surface-alt text-text text-sm font-medium active:scale-[0.98]">
-                    من صورة القائمة
+                    {tm.menuFromPhoto}
                   </button>
                 </div>
               </>

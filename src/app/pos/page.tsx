@@ -1,3 +1,4 @@
+import { useTerms } from "../../lib/terms";
 import { useBusinessStore } from "../../stores/businessStore";
 import { moduleOn } from "../../lib/businessModules";
 import { useAccessStore } from "../../stores/accessStore";
@@ -160,6 +161,7 @@ export default function POSPage() {
   // The owner's switches for this person (Settings > الصلاحيات): gifts, deleting sent items...
   const accessFeatures = useAccessStore((st) => st.features);
   const modules = useBusinessStore((st) => st.modules);
+  const tm = useTerms();
   const [showTransfer, setShowTransfer] = useState(false);
   const [showOnScreenReceipt, setShowOnScreenReceipt] = useState(false);
   const [showLoyaltyScan, setShowLoyaltyScan] = useState(false);
@@ -460,7 +462,7 @@ export default function POSPage() {
           setTimeout(() => setSuccessMsg(null), 2000);
         }
       } else {
-        setSuccessMsg("لم يتم العثور على صنف بهذا الباركود");
+        setSuccessMsg(`لم يتم العثور على ${tm.item} بهذا الباركود`);
         setTimeout(() => setSuccessMsg(null), 2500);
       }
     };
@@ -1498,7 +1500,7 @@ export default function POSPage() {
       await reloadOpenOrder(openOrderId);
       setEditLineId(null);
       setEditNeedsPin(false);
-      flash("تم تعديل الصنف ✓", 2500);
+      flash(`تم تعديل ${tm.theItem} ✓`, 2500);
     } catch (err) {
       const msg = realErrorText(err);
       if (msg.includes("رمز المدير")) setEditNeedsPin(true);
@@ -1612,7 +1614,7 @@ export default function POSPage() {
       <div className="w-[310px] shrink-0 h-full">
         <OrderPanel
           tableLabel={tableLabel}
-          emptyMessage={orderType === "DINE_IN" ? "ما في أصناف بعد. اختر طاولة لتبدأ." : "ما في أصناف بعد. أضف صنفاً لتبدأ."}
+          emptyMessage={orderType === "DINE_IN" ? `ما في ${tm.items} بعد. اختر ${tm.table} لتبدأ.` : `ما في ${tm.items} بعد. أضف ${tm.item} لتبدأ.`}
           lines={orderLines}
           subtotalCents={subtotalCents}
           discountCents={discountCents}

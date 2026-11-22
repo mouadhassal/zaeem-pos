@@ -1,6 +1,7 @@
 import { PAGE_MODULE, moduleOn } from "./lib/businessModules";
 import { useBusinessStore } from "./stores/businessStore";
 import { useState, lazy, Suspense, useEffect } from "react";
+import { landingView } from "./lib/businessSetup";
 import { useAuthStore } from "./stores/authStore";
 import { useAccessStore } from "./stores/accessStore";
 import { APP_NAVIGATE_EVENT } from "./lib/appNav";
@@ -72,11 +73,7 @@ function PosLayout({ children }: { children: React.ReactNode }) {
   const [settingsInitialTab, setSettingsInitialTab] = useState<"general" | "license">("general");
   const posLite = usePlanStore((s) => s.posLite);
   const [activeView, setActiveView] = useState(() => {
-    const role = useAuthStore.getState().user?.role;
-    // POS Lite has no dashboard: its owner starts at the till.
-    if (role === "OWNER") return usePlanStore.getState().posLite ? "pos" : "dashboard";
-    if (role === "KITCHEN") return "kds";
-    return "pos";
+    return landingView(useAuthStore.getState().user?.role, useBusinessStore.getState().businessType, usePlanStore.getState().posLite);
   });
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
   const { navItems } = usePermissions();
@@ -100,6 +97,13 @@ function PosLayout({ children }: { children: React.ReactNode }) {
     const item = navItems.find((n) => n.id === activeView);
     if (!item || !item.allowed) setActiveView("pos");
   }, [navItems, activeView]);
+
+  // A page of a module that gets switched off while it is open sends the person back to the till.
+  const modulesNow = useBusinessStore((s) => s.modules);
+  useEffect(() => {
+    const m = PAGE_MODULE[activeView];
+    if (m !== undefined && !moduleOn(modulesNow, m)) setActiveView("pos");
+  }, [modulesNow, activeView]);
 
   const handleNavigate = (id: string) => {
     if (id === "debug") {

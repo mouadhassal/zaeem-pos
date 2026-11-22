@@ -8,12 +8,6 @@ export interface ModeFlags {
   has_kitchen: boolean;
 }
 
-export const PRESETS: { id: BusinessPreset; label: string; hint: string }[] = [
-  { id: "restaurant", label: "مطعم / مقهى", hint: "طاولات، تذاكر مطبخ، إضافات على الأصناف" },
-  { id: "retail", label: "بقالة / متجر", hint: "باركود أولاً، دفع سريع، دفتر ديون — بدون طاولات أو شاشة مطبخ" },
-  { id: "supplier", label: "مورّد / جملة", hint: "مثل المتجر، ومخزونك مربوط بسوق WENZDES: طلبات عملائك تُخصم من الرف وما على الرف يظهر في السوق" },
-];
-
 /** A supplier is a shop (no tables, no kitchen) that is also linked to the marketplace; the flags are the shop's. */
 export function presetToMode(preset: BusinessPreset): ModeFlags {
   return preset === "restaurant" ? { has_tables: true, has_kitchen: true } : { has_tables: false, has_kitchen: false };
@@ -25,14 +19,7 @@ export function presetFromMode(mode: ModeFlags): BusinessPreset | "custom" {
   return "custom";
 }
 
-// Hides kitchen-only pages and swaps food-service labels for non-kitchen shops.
+// Hides the kitchen page when there is no kitchen. The labels (القائمة / المنتجات / ...) come from lib/terms.ts.
 export function navForMode(items: SidebarNavItem[], mode: ModeFlags): SidebarNavItem[] {
-  return items
-    .filter((n) => mode.has_kitchen || n.id !== "kds")
-    .map((n) => {
-      if (mode.has_kitchen) return n;
-      if (n.id === "menu") return { ...n, label: "المنتجات" };
-      if (n.id === "ai-onboarding") return { ...n, label: "إعداد المنتجات AI" };
-      return n;
-    });
+  return items.filter((n) => mode.has_kitchen || n.id !== "kds");
 }

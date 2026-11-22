@@ -1,3 +1,4 @@
+import { useTerms } from "../../lib/terms";
 import { useAccessStore } from "../../stores/accessStore";
 import { useEffect, useState } from "react";
 import { IconX } from "@tabler/icons-react";
@@ -29,6 +30,7 @@ const REASONS = ["الزبون غادر", "خطأ في الطلب", "العمي�
  * threshold and the person cancelling is not a manager.
  */
 export default function CancelOrderModal({ lineCount, totalCents, askReason, needsPin = false, error = null, onConfirm, onCancel }: Props) {
+  const tm = useTerms();
   const { fmt } = useCurrency();
   const role = useAuthStore((s) => s.user?.role);
   const [reason, setReason] = useState("");
@@ -77,7 +79,7 @@ export default function CancelOrderModal({ lineCount, totalCents, askReason, nee
         <div className="px-6 py-4 bg-danger-soft border-b border-danger-soft flex items-center justify-between">
           <div>
             <h2 className="font-arabic font-bold text-lg text-danger">إلغاء الطلب كاملاً</h2>
-            <p className="font-arabic text-sm text-danger mt-1">{lineCount} صنف · {fmt(totalCents)}</p>
+            <p className="font-arabic text-sm text-danger mt-1">{lineCount} {tm.item} · {fmt(totalCents)}</p>
           </div>
           <button type="button" onClick={onCancel} aria-label="إغلاق" className="w-8 h-8 rounded-lg hover:bg-white/40 flex items-center justify-center text-danger shrink-0">
             <IconX className="w-4 h-4" />

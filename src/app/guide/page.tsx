@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { IconSearch, IconChevronDown, IconAlertTriangle, IconBulb } from "@tabler/icons-react";
 import { useAuthStore } from "../../stores/authStore";
+import { useTerms } from "../../lib/terms";
 import { usePlanStore } from "../../stores/planStore";
 import { chaptersFor, guideRoleOf, searchChapters, type GuideChapter, type GuideTask } from "../../lib/guide";
 
@@ -78,13 +79,14 @@ export default function GuidePage() {
   const user = useAuthStore((s) => s.user);
   const posLite = usePlanStore((s) => s.posLite);
   const myRole = guideRoleOf(user?.role);
+  const terms = useTerms();
 
   const [allGuides, setAllGuides] = useState(false);
   const [query, setQuery] = useState("");
   const [chapterId, setChapterId] = useState<string | null>(null);
   const [openTasks, setOpenTasks] = useState<Set<string>>(new Set());
 
-  const visible = useMemo(() => chaptersFor(allGuides ? null : myRole, posLite), [allGuides, myRole, posLite]);
+  const visible = useMemo(() => chaptersFor(allGuides ? null : myRole, posLite, terms), [allGuides, myRole, posLite, terms]);
   const searching = query.trim().length > 0;
   const results = useMemo(() => searchChapters(visible, query), [visible, query]);
 

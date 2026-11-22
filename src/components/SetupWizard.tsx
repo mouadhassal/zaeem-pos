@@ -2,9 +2,13 @@ import { useState } from "react";
 import { useAuthStore } from "../stores/authStore";
 import { invoke } from "../lib/invoke";
 import { realErrorText } from "../lib/errors";
-import PresetPicker from "./ui/PresetPicker";
 import { BrandLockup } from "./BrandLogo";
-import { presetToMode } from "../lib/businessPreset";
+import { useBusinessStore } from "../stores/businessStore";
+import { usePrefsStore } from "../stores/prefsStore";
+import { useMenuGridStore } from "../stores/menuGridStore";
+import { setupPlan, applyPlan, TYPE_CARDS } from "../lib/businessSetup";
+import { TERMS } from "../lib/terms";
+import type { BusinessType } from "../lib/businessModules";
 import { IconAlertCircle as AlertCircle, IconEye as Eye, IconEyeOff as EyeOff, IconPhotoPlus as ImagePlus, IconX as X } from "@tabler/icons-react";
 
 const CURRENCIES = [
@@ -16,7 +20,12 @@ const CURRENCIES = [
 ];
 
 export default function SetupWizard() {
-  const [step, setStep] = useState<"account" | "branch" | "business">("account");
+  // The first question is the type of business: it decides the words, the modules and the till defaults.
+  const [step, setStep] = useState<"type" | "account" | "branch" | "business">("type");
+  const [bizType, setBizType] = useState<BusinessType | null>(null);
+  const t = TERMS[bizType ?? "restaurant"];
+  const plan = setupPlan(bizType ?? "restaurant");
+  const [tableCount, setTableCount] = useState(8);
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [pin, setPin] = useState("");
@@ -31,15 +40,20 @@ export default function SetupWizard() {
   const [currency, setCurrency] = useState("SYP");
   const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
 
-  // 2026-08-21: has_tables/has_kitchen already does real work (hides KDS
-  // nav, relabels menu->products, drops DINE_IN as an order type when
-  // off -- see Sidebar.tsx/settings/page.tsx) but used to live buried in
-  // Settings with zero prompt at signup, so a fresh non-restaurant tenant
-  // landed in a restaurant-shaped default with no nudge to say otherwise.
-  // Same defaults chain_config already seeds (both true) -- this step
-  // just asks the question up front instead of leaving it undiscovered.
-  const [hasTables, setHasTables] = useState(true);
+  // Only restaurants and cafes ask about the kitchen; the type already decided the rest.
   const [hasKitchen, setHasKitchen] = useState(true);
+
+  const writePlan = (seedTables: boolean) =>
+    applyPlan(
+      { ...plan, hasKitchen: plan.hasTables ? hasKitchen : false, seedTables: plan.hasTables ? Math.min(60, Math.max(1, tableCount || 8)) : 0 },
+      {
+        token: useAuthStore.getState().token,
+        seedTables,
+        saveProfile: (type, modules) => useBusinessStore.getState().save(type, modules),
+        setSupplierMode: (on) => usePrefsStore.getState().setPref("supplierMode", on),
+        setProductsPerRow: (n) => useMenuGridStore.getState().setProductsPerRow(n),
+      },
+    );
 
   async function handleAccountSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -54,7 +68,7 @@ export default function SetupWizard() {
   }
 
   async function handleBranchSubmit() {
-    if (!chainName.trim()) { setError("اسم المطعم أو المتجر مطلوب"); return; }
+    if (!chainName.trim()) { setError(`${t.placeName} مطلوب`); return; }
     if (!branchName.trim()) { setError("اسم الفرع مطلوب"); return; }
     setError("");
     setLoading(true);
@@ -86,25 +100,27 @@ export default function SetupWizard() {
     setError("");
     setLoading(true);
     try {
-      // A new restaurant used to open the POS with only the implicit
-      // counter table -- nothing to seat a customer at until the owner
-      // found Settings > Branch. Seed 8 numbered tables (renamable there).
-      // Must run BEFORE update_business_mode_v3, which ends the setup
-      // window that lets these back-office writes run pre-activation.
-      if (hasTables) {
-        const sessionToken = useAuthStore.getState().token;
-        const existing = await invoke<{ name: string }[]>("list_tables_v3", { sessionToken });
-        if (existing.length <= 1) {
-          for (let n = 1; n <= 8; n++) await invoke("create_table_v3", { sessionToken, name: String(n), branchId: null });
-        }
-      }
-      await invoke("update_business_mode_v3", { sessionToken: useAuthStore.getState().token, hasTables, hasKitchen });
+      // Tables (restaurant/cafe) are seeded and the type is saved BEFORE the last call, which ends the setup
+      // window that lets these back-office writes run pre-activation (see applyPlan).
+      await writePlan(true);
       localStorage.setItem("zaeem_setup_complete", "1");
       window.location.reload();
     } catch (err) {
       setError(`حدث خطأ في حفظ نوع النشاط: ${realErrorText(err)}`);
       setLoading(false);
     }
+  }
+
+  // "Set up later": the type chosen on the first screen is still kept.
+  async function handleSkip() {
+    setLoading(true);
+    try {
+      await writePlan(false);
+    } catch {
+      // The owner can pick the type again in Settings.
+    }
+    localStorage.setItem("zaeem_setup_complete", "1");
+    window.location.reload();
   }
 
   function handleLogoUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -116,6 +132,54 @@ export default function SetupWizard() {
       setLogoDataUrl(reader.result as string);
     };
     reader.readAsDataURL(file);
+  }
+
+  if (step === "type") {
+    return (
+      <div className="relative min-h-screen w-full overflow-hidden bg-ink-50" dir="rtl">
+        <div className="min-h-screen flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl">
+            <div className="text-center mb-8">
+              <h1 className="m-0 mb-3 flex justify-center">
+                <BrandLockup height={56} />
+              </h1>
+              <p className="text-ink-700 text-lg font-bold font-arabic">ما نوع نشاطك؟</p>
+              <p className="text-ink-400 text-sm font-arabic mt-1">نجهّز لك برنامجاً يناسب عملك: كلماته وشاشاته وأدواته</p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3" role="radiogroup" aria-label="نوع النشاط" data-testid="wizard-type-cards">
+              {TYPE_CARDS.map((c) => {
+                const active = bizType === c.id;
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => setBizType(c.id)}
+                    data-testid={`wizard-type-${c.id}`}
+                    className={`text-right p-6 rounded-md border-2 bg-white transition-colors ${active ? "border-saffron-600 bg-saffron-50" : "border-ink-200 hover:border-saffron-400"}`}
+                  >
+                    <span className={`block text-xl font-bold font-arabic ${active ? "text-saffron-700" : "text-ink-900"}`}>{c.label}</span>
+                    <span className="block text-sm font-arabic text-ink-500 mt-2 leading-6">{c.gets}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              type="button"
+              disabled={!bizType}
+              onClick={() => setStep("account")}
+              data-testid="wizard-type-next"
+              className={`mt-6 w-full h-11 rounded-sm font-bold text-white text-base transition-colors ${bizType ? "bg-saffron-600 hover:bg-saffron-700 active:bg-saffron-800" : "bg-ink-300 cursor-not-allowed text-ink-500"}`}
+            >
+              التالي — حساب المالك
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (step === "branch") {
@@ -140,12 +204,12 @@ export default function SetupWizard() {
 
               <div className="space-y-5">
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-ink-700">اسم المطعم أو المتجر</label>
+                  <label className="text-sm font-medium text-ink-700">{t.placeName}</label>
                   <input
                     type="text"
                     value={chainName}
                     onChange={(e) => setChainName(e.target.value)}
-                    placeholder="يُطبع أعلى كل إيصال — مثال: مطعم الشام"
+                    placeholder={`يُطبع أعلى كل إيصال — مثال: ${t.placeNameExample}`}
                     maxLength={60}
                     className="w-full h-11 px-4 rounded-sm border border-ink-300 text-ink-800 placeholder:text-ink-400 text-right outline-none focus:border-saffron-500 focus:ring-1 focus:ring-saffron-500/20 transition-colors"
                     dir="rtl"
@@ -223,7 +287,8 @@ export default function SetupWizard() {
                 </button>
 
                 <button
-                  onClick={() => { localStorage.setItem("zaeem_setup_complete", "1"); window.location.reload(); }}
+                  onClick={() => void handleSkip()}
+                  disabled={loading}
                   className="w-full h-9 text-sm text-ink-400 hover:text-ink-600 transition-colors font-arabic"
                 >
                   تخطي — الإعداد لاحقاً
@@ -257,41 +322,46 @@ export default function SetupWizard() {
               )}
 
               <div className="space-y-5">
-                <PresetPicker
-                  mode={{ has_tables: hasTables, has_kitchen: hasKitchen }}
-                  onPick={(p) => { const m = presetToMode(p); setHasTables(m.has_tables); setHasKitchen(m.has_kitchen); }}
-                />
-                <p className="text-xs text-ink-400 font-arabic">
-                  اختر نوع نشاطك أو عدّل الخيارات أدناه يدوياً. يمكنك تغيير هذا لاحقاً من الإعدادات.
+                <p className="text-sm font-arabic text-ink-700 leading-6" data-testid="wizard-business-summary">
+                  {TYPE_CARDS.find((c) => c.id === bizType)?.label}: {TYPE_CARDS.find((c) => c.id === bizType)?.gets}.
                 </p>
 
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-sm font-arabic text-ink-900 block">لدينا طاولات</span>
-                    <span className="text-xs font-arabic text-ink-400">إدارة الطاولات، الدمج، والتقسيم</span>
-                  </div>
-                  <button dir="ltr"
-                    type="button"
-                    onClick={() => setHasTables(!hasTables)}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${hasTables ? "bg-saffron-600" : "bg-ink-300"}`}
-                  >
-                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${hasTables ? "translate-x-6" : "translate-x-1"}`} />
-                  </button>
-                </div>
+                {plan.hasTables ? (
+                  <>
+                    <div className="flex items-center justify-between gap-4" data-testid="wizard-tables">
+                      <div>
+                        <span className="text-sm font-arabic text-ink-900 block">كم {t.table} عندك؟</span>
+                        <span className="text-xs font-arabic text-ink-400">تُنشأ مرقّمة ويمكنك تغيير أسمائها وعددها لاحقاً من الإعدادات</span>
+                      </div>
+                      <input
+                        type="number" min={1} max={60} value={tableCount}
+                        onChange={(e) => setTableCount(Number(e.target.value))}
+                        className="w-20 h-10 px-3 rounded-sm border border-ink-300 text-center outline-none focus:border-saffron-500"
+                        data-testid="wizard-table-count"
+                      />
+                    </div>
 
-                <div className="flex items-center justify-between pt-2 border-t border-ink-200">
-                  <div>
-                    <span className="text-sm font-arabic text-ink-900 block">لدينا مطبخ</span>
-                    <span className="text-xs font-arabic text-ink-400">طباعة تذاكر المطبخ وشاشة عرض المطبخ (KDS)</span>
-                  </div>
-                  <button dir="ltr"
-                    type="button"
-                    onClick={() => setHasKitchen(!hasKitchen)}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${hasKitchen ? "bg-saffron-600" : "bg-ink-300"}`}
-                  >
-                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${hasKitchen ? "translate-x-6" : "translate-x-1"}`} />
-                  </button>
-                </div>
+                    <div className="flex items-center justify-between pt-2 border-t border-ink-200">
+                      <div>
+                        <span className="text-sm font-arabic text-ink-900 block">لدينا مطبخ</span>
+                        <span className="text-xs font-arabic text-ink-400">طباعة تذاكر المطبخ وشاشة عرض المطبخ (KDS)</span>
+                      </div>
+                      <button dir="ltr"
+                        type="button"
+                        onClick={() => setHasKitchen(!hasKitchen)}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${hasKitchen ? "bg-saffron-600" : "bg-ink-300"}`}
+                      >
+                        <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${hasKitchen ? "translate-x-6" : "translate-x-1"}`} />
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-sm font-arabic text-ink-700 bg-saffron-50 border border-saffron-200 rounded-sm p-3 leading-6" data-testid="wizard-import-hint">
+                    {t.startHint}
+                  </p>
+                )}
+
+                <p className="text-xs text-ink-400 font-arabic">يمكنك تغيير نوع النشاط وأي وحدة لاحقاً من الإعدادات.</p>
 
                 <button
                   onClick={handleBusinessSubmit}

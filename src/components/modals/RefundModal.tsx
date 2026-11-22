@@ -1,3 +1,4 @@
+import { useTerms } from "../../lib/terms";
 import { useMemo, useState } from "react";
 import { IconMinus, IconPlus, IconX } from "@tabler/icons-react";
 import { formatMoney } from "../../lib/money";
@@ -28,6 +29,7 @@ const METHOD_NOTE: Record<string, string> = {
  * put back in stock.
  */
 export default function RefundModal({ order, isManager, onClose, onDone }: Props) {
+  const tm = useTerms();
   const lines = useMemo(() => refundableLines(order), [order]);
   const open = lines.filter((l) => !l.comped && l.quantity > l.refundedQuantity);
   const [mode, setMode] = useState<"ALL" | "ITEMS">("ALL");
@@ -77,14 +79,14 @@ export default function RefundModal({ order, isManager, onClose, onDone }: Props
             {(["ALL", "ITEMS"] as const).map((m) => (
               <button key={m} onClick={() => setMode(m)} data-testid={m === "ALL" ? "refund-mode-all" : "refund-mode-items"}
                 className={`h-10 rounded-sm text-sm font-bold font-arabic border-2 transition-colors ${mode === m ? "border-accent bg-accent-soft text-text" : "border-line bg-white text-text-3 hover:bg-surface-alt"}`}>
-                {m === "ALL" ? "الطلب كاملاً" : "أصناف محددة"}
+                {m === "ALL" ? "الطلب كاملاً" : `${tm.items} محددة`}
               </button>
             ))}
           </div>
 
           {mode === "ITEMS" && (
             <div className="space-y-1.5">
-              {open.length === 0 && <p className="text-sm text-text-muted font-arabic">لا توجد أصناف متبقية للاسترداد.</p>}
+              {open.length === 0 && <p className="text-sm text-text-muted font-arabic">لا توجد {tm.items} متبقية للاسترداد.</p>}
               {open.map((l) => {
                 const left = l.quantity - l.refundedQuantity;
                 const n = take[l.id] ?? 0;

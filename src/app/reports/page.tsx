@@ -1,3 +1,4 @@
+import { useTerms } from "../../lib/terms";
 import { useEffect, useState, useCallback } from "react";
 import { businessPeriodStart } from "../../lib/businessDay";
 import { invoke } from "../../lib/invoke";
@@ -202,6 +203,7 @@ const VARIANCE_FLAG_THRESHOLD_PCT = 0.05;
 const MARGIN_FLOOR_PCT = 40;
 
 export default function ReportsPage() {
+  const tm = useTerms();
   const { fmt } = useCurrency();
   const token = useAuthStore((s) => s.token);
   // Printing the report is its own box in the owner's table (Settings > الصلاحيات).
@@ -407,7 +409,7 @@ export default function ReportsPage() {
       setMargins(rows);
     } catch (e) {
       console.error("Margin report error:", e);
-      setMarginsError("تعذر حساب هامش الأصناف. حاول مرة أخرى.");
+      setMarginsError(`تعذر حساب ${tm.itemMargins}. حاول مرة أخرى.`);
     } finally {
       setMarginsLoading(false);
     }
@@ -466,9 +468,9 @@ export default function ReportsPage() {
             <div style="font-size:16px;font-weight:700">${fmt(Math.round(summary.avgTicket))}</div>
           </div>
         </div>
-        ${pdfTableHtml("أفضل الأصناف", ["الصنف", "الكمية"], summary.topItems.map((i) => [i.name, String(i.quantity)]))}
+        ${pdfTableHtml(tm.topItems, [tm.theItem, "الكمية"], summary.topItems.map((i) => [i.name, String(i.quantity)]))}
         ${pdfTableHtml("أداء الموظفين", ["الموظف", "الطلبات"], summary.staffPerformance.map((s) => [s.name, String(s.orderCount)]))}
-        ${pdfTableHtml("حالة المخزون", ["الصنف", "المخزون", "الحد الأدنى"], summary.inventoryStatus.map((inv) => [inv.name, String(inv.currentStock), String(inv.minStock)]))}
+        ${pdfTableHtml("حالة المخزون", [tm.theItem, "المخزون", "الحد الأدنى"], summary.inventoryStatus.map((inv) => [inv.name, String(inv.currentStock), String(inv.minStock)]))}
       `;
       await exportHtmlToPdf(`تقرير-المبيعات-${toLocalDateStr(new Date())}.pdf`, bodyHtml, token ?? "");
     } finally {
@@ -601,7 +603,7 @@ export default function ReportsPage() {
 
       <div className="grid grid-cols-2 gap-4">
         <div className="zc-card p-4 space-y-3">
-          <h2 className="font-bold text-ink-900 font-arabic">أفضل الأصناف</h2>
+          <h2 className="font-bold text-ink-900 font-arabic">{tm.topItems}</h2>
           {summary.topItems.map((item, i) => (
             <div key={i} className="flex justify-between text-sm">
               <span className="text-ink-900">{item.name}</span>
@@ -954,9 +956,9 @@ export default function ReportsPage() {
       <div className="zc-card p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="font-bold text-ink-900 font-arabic">هامش الأصناف</h2>
+            <h2 className="font-bold text-ink-900 font-arabic">{tm.itemMargins}</h2>
             <p className="text-xs text-ink-400 font-arabic mt-0.5">
-              السعر ناقص تكلفة المكونات لكل صنف، للفترة المحددة أعلاه — الأسوأ هامشًا أولًا
+              السعر ناقص تكلفة المكونات لكل {tm.item}، للفترة المحددة أعلاه — الأسوأ هامشًا أولًا
             </p>
           </div>
           <button

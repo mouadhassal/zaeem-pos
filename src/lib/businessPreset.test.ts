@@ -10,10 +10,9 @@ describe("business presets", () => {
     expect(presetFromMode({ has_tables: false, has_kitchen: true })).toBe("custom");
   });
 
-  it("retail hides KDS, keeps debt, relabels menu", () => {
+  it("retail hides KDS and keeps debt (the labels come from terms.ts)", () => {
     const items = navForMode(nav, presetToMode("retail"));
     expect(items.map((n) => n.id)).toEqual(["pos", "menu", "debt", "inventory"]);
-    expect(items.find((n) => n.id === "menu")?.label).toBe("المنتجات");
   });
 
   it("restaurant shows everything unchanged", () => {

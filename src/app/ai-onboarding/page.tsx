@@ -1,9 +1,9 @@
+import { useTerms } from "../../lib/terms";
 import { useState, useRef, useCallback, useEffect } from "react";
 import { invoke } from "../../lib/invoke";
 import { IconCamera as Camera, IconUpload as Upload, IconMicrophone as Mic, IconCheck as Check, IconX as X, IconChevronUp as ChevronUp, IconRotate as RotateCcw, IconPlus as Plus, IconTrash as Trash2, IconPhoto as ImageIcon } from "@tabler/icons-react";
 import { useAuthStore } from "../../stores/authStore";
 import { realErrorText } from "../../lib/errors";
-import { getBusinessMode } from "../../lib/orderService";
 import { formatMoney, parseMoneyInput } from "../../lib/money";
 
 interface DraftCategory {
@@ -53,6 +53,7 @@ function confidenceLabel(c: number): string {
 }
 
 export default function AiOnboardingPage() {
+  const tm = useTerms();
   const token = useAuthStore((s) => s.token);
   const [uploads, setUploads] = useState<UploadItem[]>([]);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
@@ -72,14 +73,6 @@ export default function AiOnboardingPage() {
   // would see a photo silently fail to appear with zero explanation.
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  // 2026-08-13: same hasKitchen-driven label swap Sidebar.tsx already
-  // does for its nav entry -- without this, a non-food tenant's first
-  // click during onboarding opened a screen titled "smart MENU setup"
-  // inviting them to drag in menu photos.
-  const [hasKitchen, setHasKitchen] = useState(true);
-  useEffect(() => {
-    getBusinessMode().then((m) => setHasKitchen(m.has_kitchen)).catch(() => {});
-  }, []);
   const audioInputRef = useRef<HTMLInputElement>(null);
 
   const refreshUploads = useCallback(async () => {
@@ -265,7 +258,7 @@ export default function AiOnboardingPage() {
       const result = await invoke<{ categories_created: number; items_created: number }>("apply_draft", {
         request: { session_token: token, draft: editedDraft },
       });
-      setApplyResult(`✅ تم إنشاء ${result.categories_created} تصنيف و ${result.items_created} صنف بنجاح`);
+      setApplyResult(`✅ تم إنشاء ${result.categories_created} تصنيف و ${result.items_created} ${tm.item} بنجاح`);
       setEditing(false);
       // Once applied, this upload has done its job -- the menu items are
       // real now, no reason for the photo to keep sitting in the review
@@ -319,7 +312,7 @@ export default function AiOnboardingPage() {
         <div className="w-9 h-9 rounded-md bg-saffron-50 flex items-center justify-center shrink-0">
           <Camera className="w-4 h-4 text-saffron-600" />
         </div>
-        <h1 className="text-xl font-bold text-ink-900">{hasKitchen ? "الإعداد الذكي للقائمة" : "الإعداد الذكي للمنتجات"}</h1>
+        <h1 className="text-xl font-bold text-ink-900">{tm.menuSetupAi}</h1>
         <span className="text-ink-400 text-xs">AI Onboarding</span>
       </header>
 
@@ -356,7 +349,7 @@ export default function AiOnboardingPage() {
           <button
             type="button"
             disabled
-            title="استخراج القائمة من التسجيل الصوتي غير مدعوم حالياً"
+            title="الاستخراج من التسجيل الصوتي غير مدعوم حالياً"
             className="h-9 px-4 rounded-lg border border-ink-200 text-ink-300 text-sm flex items-center gap-2 cursor-not-allowed"
           >
             <Mic className="w-4 h-4" />
@@ -478,7 +471,7 @@ export default function AiOnboardingPage() {
 
                 {typicalPrice >= 5000 && !applyResult && (
                   <div className="px-4 py-3 rounded-lg bg-warn-100 text-warn-700 text-sm font-arabic flex items-center justify-between gap-3">
-                    <span>الأسعار كبيرة — هل القائمة مطبوعة بالليرة القديمة؟ الأسعار منقولة كما هي بالصورة.</span>
+                    <span>الأسعار كبيرة — هل {tm.menu} مطبوعة بالليرة القديمة؟ الأسعار منقولة كما هي بالصورة.</span>
                     <button onClick={convertOldLira} className="shrink-0 h-8 px-3 rounded-md bg-white border border-warn-600 text-warn-700 text-xs font-bold">
                       نعم، حوّلها للجديدة (÷100)
                     </button>
@@ -531,14 +524,14 @@ export default function AiOnboardingPage() {
                         <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${confidenceColor(cat.confidence)}`}>
                           {confidenceLabel(cat.confidence)}
                         </span>
-                        <span className="text-ink-400 text-xs mr-auto">{items.length} صنف</span>
+                        <span className="text-ink-400 text-xs mr-auto">{items.length} {tm.item}</span>
                         {editing && (
                           <button
                             onClick={() => addItem(cat.name)}
                             className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-full text-saffron-700 bg-saffron-50 hover:bg-saffron-100 transition-colors"
-                            title="إضافة صنف فاتته الأداة"
+                            title={`إضافة ${tm.item} فاتته الأداة`}
                           >
-                            <Plus className="w-3 h-3" /> إضافة صنف
+                            <Plus className="w-3 h-3" /> {tm.addItem}
                           </button>
                         )}
                       </div>
@@ -693,9 +686,9 @@ export default function AiOnboardingPage() {
               >
                 <Upload className={`w-14 h-14 mx-auto ${dragActive ? "text-saffron-500" : "text-ink-300"}`} />
                 <div>
-                  <h2 className="text-lg font-bold font-arabic text-ink-700">{hasKitchen ? "اسحب صور القائمة هنا" : "اسحب صور المنتجات هنا"}</h2>
+                  <h2 className="text-lg font-bold font-arabic text-ink-700">{tm.menuDropPhotos}</h2>
                   <p className="text-sm font-arabic text-ink-400 mt-1 max-w-md mx-auto">
-                    أو اضغط للاختيار من جهازك. سيقوم الذكاء الاصطناعي باستخراج الأصناف والأسعار تلقائياً،
+                    أو اضغط للاختيار من جهازك. سيقوم الذكاء الاصطناعي باستخراج {tm.theItems} والأسعار تلقائياً،
                     ويمكنك مراجعتها وتصحيحها قبل تطبيقها على النظام.
                   </p>
                 </div>
@@ -710,7 +703,7 @@ export default function AiOnboardingPage() {
                   <button
                     type="button"
                     disabled
-                    title="استخراج القائمة من التسجيل الصوتي غير مدعوم حالياً"
+                    title="الاستخراج من التسجيل الصوتي غير مدعوم حالياً"
                     className="h-10 px-6 rounded-lg border border-ink-200 text-ink-300 text-sm flex items-center gap-2 cursor-not-allowed"
                   >
                     <Mic className="w-4 h-4" />

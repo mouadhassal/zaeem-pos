@@ -1,3 +1,4 @@
+import { TERMS, type Terms } from "./terms";
 // The numbers behind the dashboard / finance / reports profit cards. They all
 // come from the till's one profit module (src-tauri/src/profit.rs), so every
 // screen shows the same figures. Pure helpers only: no invoke, no DOM.
@@ -104,22 +105,26 @@ export interface ProfitExplainerItem {
   text: string;
 }
 
-export const PROFIT_EXPLAINER: ProfitExplainerItem[] = [
-  {
-    title: "ربح الهامش",
-    formula: "صافي المبيعات − تكلفة الأصناف المباعة",
-    text: "مثال: ساندويش كلفته 10 ويُباع بـ 20، ربحه 10 وهامشه 50%. يقيس ربح ما بعته فعلاً مهما كان وقت شراء المواد. يحتاج أن تُدخل «التكلفة» لكل صنف في القائمة.",
-  },
-  {
-    title: "الربح بالمصروفات",
-    formula: "صافي المبيعات − كل المصروفات المسجلة",
-    text: "يعتمد على ما سجّلته في المالية ← التكاليف (دجاج، زيت، سكر، إيجار، رواتب…). يتأثر بيوم الشراء: يوم تشتري فيه مخزوناً كبيراً يبدو الربح منخفضاً.",
-  },
-  {
-    title: "صافي الربح الفعلي",
-    formula: "ربح الهامش − المصروفات الجارية (إيجار، رواتب، فواتير)",
-    text: "لا تُحسب فيه مشتريات المواد لأن تكلفتها داخل الهامش أصلاً، فلا يُعدّ الدجاج مرتين. هو الأقرب لما يبقى لك فعلاً.",
-  },
-];
+export function profitExplainer(t: Terms): ProfitExplainerItem[] {
+  return [
+    {
+      title: "ربح الهامش",
+      formula: `صافي المبيعات − ${t.soldItemsCost}`,
+      text: `مثال: ${t.profitExample}، ربحه 10 وهامشه 50%. يقيس ربح ما بعته فعلاً مهما كان وقت شراء المواد. يحتاج أن تُدخل «التكلفة» لكل ${t.itemInMenu}.`,
+    },
+    {
+      title: "الربح بالمصروفات",
+      formula: "صافي المبيعات − كل المصروفات المسجلة",
+      text: "يعتمد على ما سجّلته في المالية ← التكاليف (دجاج، زيت، سكر، إيجار، رواتب…). يتأثر بيوم الشراء: يوم تشتري فيه مخزوناً كبيراً يبدو الربح منخفضاً.",
+    },
+    {
+      title: "صافي الربح الفعلي",
+      formula: "ربح الهامش − المصروفات الجارية (إيجار، رواتب، فواتير)",
+      text: "لا تُحسب فيه مشتريات المواد لأن تكلفتها داخل الهامش أصلاً، فلا يُعدّ الدجاج مرتين. هو الأقرب لما يبقى لك فعلاً.",
+    },
+  ];
+}
 
-export const REFUND_NOTE = "المرتجع ينقص المبيعات في يوم الإرجاع. أما تكلفة الطبق المُرجع فتبقى محسوبة لأنه صُنع.";
+export const PROFIT_EXPLAINER: ProfitExplainerItem[] = profitExplainer(TERMS.restaurant);
+
+export const REFUND_NOTE = "المرتجع ينقص المبيعات في يوم الإرجاع. أما تكلفة الصنف المُرجع فتبقى محسوبة لأنه بِيع.";

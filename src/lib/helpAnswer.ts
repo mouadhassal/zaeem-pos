@@ -4,6 +4,7 @@
  * when they do not cover the question), and the same excerpts are the answer when there is no internet.
  * No DOM, no invoke: unit-tested.
  */
+import { getTerms } from "./terms";
 import { chaptersFor, guideRoleOf, normalizeArabic, type GuideChapter, type GuideTask } from "./guide";
 
 export interface GuideMatch {
@@ -105,5 +106,5 @@ export function suggestionsFor(role: string | undefined | null): string[] {
 
 /** The chapters this person can see, so the help never explains a screen they do not have. */
 export function visibleChapters(role: string | undefined | null, posLite: boolean): GuideChapter[] {
-  return chaptersFor(guideRoleOf(role), posLite);
+  return chaptersFor(guideRoleOf(role), posLite, getTerms());
 }
