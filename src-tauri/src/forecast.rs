@@ -180,7 +180,7 @@ fn forecast_ingredients(conn: &Connection, scope: &Scope, items: &[ItemForecast]
     let (recipes_pred, recipes_binds) = tenant_only_predicate(scope, "r");
     let (ing_pred, ing_binds) = scope_predicate(scope, "i");
     let sql = format!(
-        "SELECT r.menu_item_id, i.id, i.name, i.unit, r.quantity_needed, i.current_stock \
+        "SELECT r.menu_item_id, i.id, i.name, i.unit, r.quantity_needed * r.stock_factor, i.current_stock \
          FROM recipes r \
          JOIN ingredients i ON i.id = r.ingredient_id \
          WHERE {recipes_pred} AND {ing_pred}"

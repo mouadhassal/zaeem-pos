@@ -16,6 +16,9 @@ import { useToast } from "../../hooks/useToast";
 import { reorderQuantity } from "../../lib/inventoryReorder";
 import { buildReceiptLines, initialEdit, type LineEdit, type PendingOrder, type PendingReceipts } from "../../lib/marketplaceReceipt";
 import { orderNo } from "../../lib/orderNumber";
+import { STANDARD_UNITS, stockValue, trimNum, unitLabel, type IngredientPack } from "../../lib/inventoryUnits";
+import UnitSelect from "../../components/inventory/UnitSelect";
+import { ProductionTab, StockMovementReport, UnitsTab, WasteTab } from "./StockExtras";
 
 const editSchema = z.object({
   name: z.string().min(1, "الاسم مطلوب"),
@@ -41,6 +44,19 @@ interface Ingredient {
   sync_version: number;
   last_modified: string;
   sync_status: string;
+  /** 1 = a base product made in-house (see the الإنتاج tab) */
+  is_produced?: number;
+}
+
+/** The unit names offered while typing an ingredient's unit (anything else typed is kept as written). */
+function UnitNameList() {
+  return (
+    <datalist id="inv-unit-names">
+      {STANDARD_UNITS.map((u) => (
+        <option key={u.code} value={u.name_ar} />
+      ))}
+    </datalist>
+  );
 }
 
 interface Supplier {
@@ -114,7 +130,7 @@ function StockBadge({ qty, min }: { qty: number; min: number }) {
   return (
     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-saffron-50 text-saffron-600 text-xs font-medium">
       <span className="w-1.5 h-1.5 rounded-full bg-saffron-600" />
-      {qty}
+      {trimNum(qty)}
     </span>
   );
 }
@@ -223,9 +239,12 @@ interface PurchaseOrderItem {
   quantity_received: number;
   unit_cost_cents: number;
   ingredient_name: string;
+  /** The pack/unit the line was written in (null = the ingredient's own unit). */
+  unit_label?: string | null;
+  unit_factor?: number;
 }
 
-type TabKey = "stock" | "suppliers" | "movements" | "alerts" | "purchases" | "marketplace";
+type TabKey = "stock" | "units" | "production" | "waste" | "suppliers" | "movements" | "alerts" | "purchases" | "marketplace";
 
 export default function InventoryPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("stock");
@@ -242,6 +261,9 @@ export default function InventoryPage() {
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: "stock", label: "المخزون" },
+    { key: "units", label: "الوحدات" },
+    { key: "production", label: "الإنتاج" },
+    { key: "waste", label: "الهدر" },
     { key: "suppliers", label: "الموردون" },
     { key: "movements", label: "حركات المخزون" },
     { key: "alerts", label: "تنبيهات" },
@@ -289,6 +311,9 @@ export default function InventoryPage() {
       <TabBar tabs={tabs} active={activeTab} onChange={setActiveTab} />
 
       {activeTab === "stock" && <StockTab refreshKey={refreshKey} onReceiveStock={() => setShowReceiveStock(true)} />}
+      {activeTab === "units" && <UnitsTab />}
+      {activeTab === "production" && <ProductionTab onChanged={() => setRefreshKey((k) => k + 1)} />}
+      {activeTab === "waste" && <WasteTab onChanged={() => setRefreshKey((k) => k + 1)} />}
       {activeTab === "suppliers" && <SuppliersTab />}
       {activeTab === "alerts" && <AlertsTab />}
       {activeTab === "movements" && <MovementsTab />}
@@ -531,12 +556,14 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
       </div>
 
       <div className="zc-card overflow-hidden">
-        <div className="grid grid-cols-7 gap-4 px-6 py-3 bg-white/80 border-b border-ink-200">
+        <div className="grid grid-cols-9 gap-4 px-6 py-3 bg-white/80 border-b border-ink-200">
           <div className="text-xs font-semibold text-ink-400">المادة</div>
           <div className="text-xs font-semibold text-ink-400">الوحدة</div>
           <div className="text-xs font-semibold text-ink-400 text-center">الكمية الحالية</div>
           <div className="text-xs font-semibold text-ink-400 text-center">الحد الأدنى</div>
           <div className="text-xs font-semibold text-ink-400 text-center">الكمية المطلوبة</div>
+          <div className="text-xs font-semibold text-ink-400 text-center">متوسط التكلفة</div>
+          <div className="text-xs font-semibold text-ink-400 text-center">القيمة</div>
           <div className="text-xs font-semibold text-ink-400 text-center">آخر تحديث</div>
           <div className="text-xs font-semibold text-ink-400 text-left">إجراءات</div>
         </div>
@@ -553,7 +580,7 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
             return (
               <div
                 key={ing.id}
-                className={`grid grid-cols-7 gap-4 px-6 py-4 items-center transition-colors ${
+                className={`grid grid-cols-9 gap-4 px-6 py-4 items-center transition-colors ${
                   i !== filtered.length - 1 ? "border-b border-ink-50" : ""
                 } hover:bg-ink-50`}
               >
@@ -561,10 +588,13 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
                   <div className="w-8 h-8 rounded-sm bg-white flex items-center justify-center">
                     <Package className="w-4 h-4 text-ink-500" />
                   </div>
-                  <span className="text-sm font-medium text-ink-900">{ing.name}</span>
+                  <span className="text-sm font-medium text-ink-900">
+                    {ing.name}
+                    {ing.is_produced ? <span className="mr-2 px-2 py-0.5 rounded-full bg-saffron-50 text-saffron-600 text-[10px] font-bold">منتَج</span> : null}
+                  </span>
                 </div>
 
-                <div className="text-sm text-ink-400">{ing.unit}</div>
+                <div className="text-sm text-ink-400">{unitLabel(ing.unit)}</div>
 
                 <div className="text-center">
                   <StockBadge qty={ing.current_stock} min={ing.min_stock} />
@@ -575,6 +605,10 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
                 <div className="text-center text-sm text-ink-400">
                   {required > 0 ? required : "—"}
                 </div>
+
+                <div className="text-center text-sm text-ink-400 font-mono">{ing.cost_cents_per_unit > 0 ? formatCurrency(ing.cost_cents_per_unit) : "—"}</div>
+
+                <div className="text-center text-sm text-ink-900 font-mono">{stockValue(ing.current_stock, ing.cost_cents_per_unit) > 0 ? formatCurrency(stockValue(ing.current_stock, ing.cost_cents_per_unit)) : "—"}</div>
 
                 <div className="text-center text-xs text-ink-500">
                   {formatDate(ing.last_modified)}
@@ -619,7 +653,17 @@ function StockTab({ refreshKey, onReceiveStock }: { refreshKey: number; onReceiv
             );
           })
         )}
+        {filtered.length > 0 && (
+          <div className="flex items-center justify-between px-6 py-3 bg-white/80 border-t border-ink-200">
+            <span className="text-sm font-bold text-ink-900 font-arabic">إجمالي قيمة المخزون</span>
+            <span className="text-base font-bold text-saffron-600 font-mono">
+              {formatCurrency(filtered.reduce((sum, i) => sum + stockValue(i.current_stock, i.cost_cents_per_unit), 0))}
+            </span>
+          </div>
+        )}
       </div>
+
+      <StockMovementReport refreshKey={refreshKey} />
 
       <AddStockModal
         target={addTarget}
@@ -855,7 +899,8 @@ function AddIngredientModal({
           {errors.name && <p className="text-danger text-xs mt-1">{errors.name}</p>}
         </div>
         <div>
-          <input type="text" value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="الوحدة (كجم, لتر, قطعة...)" className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
+          <input type="text" list="inv-unit-names" value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="الوحدة (كيلوغرام، لتر، حبة...)" className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
+          <UnitNameList />
           {errors.unit && <p className="text-danger text-xs mt-1">{errors.unit}</p>}
         </div>
         <div>
@@ -899,7 +944,7 @@ function EditIngredientModal({
   useEffect(() => {
     if (target) {
       setName(target.name);
-      setUnit(target.unit);
+      setUnit(unitLabel(target.unit));
       setCost(target.cost_cents_per_unit);
       setMinStock(target.min_stock);
       setErrors({});
@@ -964,11 +1009,13 @@ function EditIngredientModal({
         <div>
           <input
             type="text"
+            list="inv-unit-names"
             value={unit}
             onChange={(e) => setUnit(e.target.value)}
-            placeholder="الوحدة (كجم, لتر, قطعة...)"
+            placeholder="الوحدة (كيلوغرام، لتر، حبة...)"
             className="w-full h-10 px-4 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600"
           />
+          <UnitNameList />
           {errors.unit && (
             <p className="text-danger text-xs mt-1">{errors.unit}</p>
           )}
@@ -1678,7 +1725,8 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId, prefill }: { onClo
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [selectedSupplier, setSelectedSupplier] = useState(initialSupplierId ?? "");
-  const [items, setItems] = useState<{ ingredient_id: string; quantity_ordered: number; unit_cost_cents: number }[]>([]);
+  const [items, setItems] = useState<{ ingredient_id: string; quantity_ordered: number; unit_cost_cents: number; unit: string }[]>([]);
+  const [packs, setPacks] = useState<IngredientPack[]>([]);
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1687,7 +1735,7 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId, prefill }: { onClo
   const loadSuggestions = useCallback(async (supplierId: string | null) => {
     try {
       const rows = await invoke<ReorderSuggestion[]>("list_reorder_suggestions_v3", { sessionToken: token, supplierId });
-      setItems(rows.map((r) => ({ ingredient_id: r.ingredient_id, quantity_ordered: r.quantity, unit_cost_cents: r.unit_cost_cents })));
+      setItems(rows.map((r) => ({ ingredient_id: r.ingredient_id, quantity_ordered: r.quantity, unit_cost_cents: r.unit_cost_cents, unit: "" })));
       setPrefillEmpty(rows.length === 0);
     } catch (err) {
       setError(`تعذر تحميل المواد المنخفضة: ${realErrorText(err)}`);
@@ -1701,6 +1749,7 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId, prefill }: { onClo
         setSuppliers(s);
         const i = await invoke<Ingredient[]>("list_ingredients_v3", { sessionToken: token });
         setIngredients(i);
+        setPacks(await invoke<IngredientPack[]>("list_ingredient_units_v3", { sessionToken: token }).catch(() => []));
       } catch (err) {
         setError(`تعذر تحميل البيانات: ${realErrorText(err)}`);
       }
@@ -1713,7 +1762,7 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId, prefill }: { onClo
   }, [prefill, initialSupplierId, loadSuggestions]);
 
   const addItem = () => {
-    setItems((prev) => [...prev, { ingredient_id: "", quantity_ordered: 0, unit_cost_cents: 0 }]);
+    setItems((prev) => [...prev, { ingredient_id: "", quantity_ordered: 0, unit_cost_cents: 0, unit: "" }]);
   };
 
   const removeItem = (idx: number) => setItems((prev) => prev.filter((_, i) => i !== idx));
@@ -1737,11 +1786,11 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId, prefill }: { onClo
     setSaving(true);
     setError(null);
     try {
-      await invoke("create_purchase_order_with_items_v3", {
+      await invoke("create_purchase_order_with_units_v3", {
         sessionToken: token,
         supplierId: selectedSupplier,
         notes: notes || null,
-        items: items.map((item) => [item.ingredient_id, item.quantity_ordered, item.unit_cost_cents]),
+        items: items.map((item) => ({ ingredient_id: item.ingredient_id, quantity: item.quantity_ordered, unit_cost_cents: item.unit_cost_cents, unit: item.unit || null })),
       });
       toast.success("تم إنشاء طلبية الشراء ✓");
       onSaved();
@@ -1788,11 +1837,18 @@ function CreatePOModal({ onClose, onSaved, initialSupplierId, prefill }: { onClo
             </div>
             {items.map((item, idx) => (
               <div key={idx} className="flex gap-2 items-start">
-                <select value={item.ingredient_id} onChange={(e) => updateItem(idx, "ingredient_id", e.target.value)} className="flex-1 h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600">
+                <select value={item.ingredient_id} onChange={(e) => { updateItem(idx, "ingredient_id", e.target.value); updateItem(idx, "unit", ""); }} className="flex-1 h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600">
                   <option value="">اختر المادة</option>
                   {ingredients.map((ing) => <option key={ing.id} value={ing.id}>{ing.name}</option>)}
                 </select>
                 <input type="number" min="0" step="0.01" value={item.quantity_ordered || ""} onChange={(e) => updateItem(idx, "quantity_ordered", Number(e.target.value))} placeholder="الكمية" className="w-24 h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
+                {(() => {
+                  const ing = ingredients.find((x) => x.id === item.ingredient_id);
+                  if (!ing) return null;
+                  const ingPacks = packs.filter((p) => p.ingredient_id === ing.id);
+                  // The price on the line is per the unit chosen here (a carton, or a kg of an ingredient kept in g...).
+                  return <UnitSelect stockUnit={ing.unit} packs={ingPacks} value={item.unit} onChange={(v) => updateItem(idx, "unit", v)} />;
+                })()}
                 <input type="number" min="0" value={item.unit_cost_cents || ""} onChange={(e) => updateItem(idx, "unit_cost_cents", Number(e.target.value))} placeholder="سعر الوحدة" className="w-28 h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
                 <UsdHelper onConvert={(minor) => updateItem(idx, "unit_cost_cents", minor)} />
                 <button onClick={() => removeItem(idx)} className="h-10 px-3 rounded-sm text-danger hover:bg-danger-soft transition-colors"><IconX className="w-4 h-4" /></button>
@@ -1886,12 +1942,15 @@ function ReceivePOModal({ po, onClose, onSaved }: { po: PurchaseOrder; onClose: 
             <div key={item.id} className="bg-white rounded-sm border border-ink-200 p-3 space-y-2">
               <div className="flex justify-between">
                 <span className="font-bold text-ink-900">{item.ingredient_name}</span>
-                <span className="text-sm text-ink-500">الكمية المطلوبة: {item.quantity_ordered}</span>
+                <span className="text-sm text-ink-500">الكمية المطلوبة: {item.quantity_ordered}{item.unit_label ? ` ${item.unit_label}` : ""}</span>
               </div>
               <div className="flex items-center gap-2">
                 <label className="text-sm text-ink-500 font-arabic">الكمية المستلمة:</label>
                 <input type="number" min="0" max={item.quantity_ordered} step="0.01" value={item.quantity_received || ""} onChange={(e) => updateReceived(idx, Number(e.target.value))} className="w-24 h-10 px-3 rounded-sm border-2 border-ink-200 text-sm focus:outline-none focus:ring-2 focus:ring-saffron-600" />
-                <span className="text-xs text-ink-400">من أصل {item.quantity_ordered}</span>
+                <span className="text-xs text-ink-400">من أصل {item.quantity_ordered}{item.unit_label ? ` ${item.unit_label}` : ""}</span>
+                {item.unit_label && item.unit_factor && item.unit_factor !== 1 && item.quantity_received > 0 && (
+                  <span className="text-xs text-saffron-600 font-arabic">= {trimNum(item.quantity_received * item.unit_factor)} وحدة مخزون</span>
+                )}
               </div>
             </div>
           ))}
@@ -1992,8 +2051,8 @@ function PODetailModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void
               ) : items.map((item) => (
                 <tr key={item.id} className="border-b border-ink-200">
                   <td className="p-2 text-ink-900">{item.ingredient_name}</td>
-                  <td className="p-2 font-mono">{item.quantity_ordered}</td>
-                  <td className="p-2 font-mono">{item.quantity_received}</td>
+                  <td className="p-2 font-mono">{item.quantity_ordered}{item.unit_label ? ` ${item.unit_label}` : ""}</td>
+                  <td className="p-2 font-mono">{item.quantity_received}{item.unit_label ? ` ${item.unit_label}` : ""}</td>
                   <td className="p-2 font-mono">{formatCurrency(item.unit_cost_cents)}</td>
                   <td className="p-2 font-mono font-bold text-saffron-600">{formatCurrency(item.quantity_ordered * item.unit_cost_cents)}</td>
                 </tr>
@@ -2315,7 +2374,7 @@ function MarketplaceReceiptsTab({ onReceived }: { onReceived: () => void }) {
                 {e.ingredientId && (
                   <span className="flex items-center gap-1">
                     <input type="number" min="0" value={e.stockAdded} onChange={(ev) => setEdit(it.order_item_id, { stockAdded: ev.target.value })} title="الكمية المضافة للمخزون" className="w-24 h-9 px-2 rounded-sm border-2 border-ink-200" />
-                    <span className="text-xs text-ink-400">{ing?.unit ?? ""}</span>
+                    <span className="text-xs text-ink-400">{unitLabel(ing?.unit)}</span>
                   </span>
                 )}
               </div>
@@ -2466,7 +2525,7 @@ function AlertsTab() {
               </span>{" "}
               / الحد الأدنى:{" "}
               <span className="font-mono text-ink-900">{ing.min_stock}</span>{" "}
-              {ing.unit}
+              {unitLabel(ing.unit)}
             </p>
           </div>
           <button
