@@ -79,6 +79,7 @@ mod tests {
             include_str!("commands/payroll.rs"),
             include_str!("commands/stockroom.rs"),
             include_str!("commands/workforce.rs"),
+            include_str!("commands/finance.rs"),
         ].join("\n")
     }
 
@@ -132,6 +133,7 @@ mod tests {
         migrate_v3::run_role_access_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_workforce_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_no_bill_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_finance_ledger_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -7770,6 +7772,7 @@ mod tests {
         migrate_v3::run_refund_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_weighed_items_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_order_item_cost_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_finance_ledger_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("dashboard", &conn);
@@ -7897,6 +7900,7 @@ mod tests {
         migrate_v3::run_role_access_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_workforce_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_no_bill_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_finance_ledger_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("matrix", &conn);
@@ -8600,6 +8604,7 @@ mod tests {
             "list_debt_entries_v3", "record_debt_payment_v3",
             "get_finance_revenue_v3", "get_dashboard_summary_v3", "get_profit_trend_v3", "get_tax_collected_v3", "list_operational_costs_v3",
             "create_operational_cost_v3", "list_invoices_v3", "create_invoice_v3", "mark_invoice_paid_v3",
+            "get_cost_report_v3", "get_finance_settings_v3", "save_finance_settings_v3", "list_rent_contracts_v3", "save_rent_contract_v3", "record_rent_payment_v3", "upload_cost_attachment_v3", "get_cost_attachment_v3", "set_category_cost_class_v3", "get_cost_of_sales_v3", "update_operational_cost_v3",
             "update_chain_currency_v3", "update_chain_name_v3", "update_chain_tax_v3", "update_discount_caps_v3", "update_manager_thresholds_v3",
             "update_business_mode_v3",
             "get_legacy_branch_v3", "save_legacy_branch_v3", "set_printer_active_v3",

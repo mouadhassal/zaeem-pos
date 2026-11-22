@@ -27,7 +27,9 @@ export default function ProfitCards({ profit, fmt }: Props) {
           <p className="text-2xl font-bold text-saffron-600 font-mono">{fmt(profit.net_sales_cents)}</p>
           <p className="text-[11px] text-ink-400 font-arabic">
             المبيعات {fmt(profit.gross_sales_cents)}
+            {profit.discounts_cents > 0 ? ` − الخصومات ${fmt(profit.discounts_cents)}` : ""}
             {profit.refunds_cents > 0 ? ` − المرتجعات ${fmt(profit.refunds_cents)}` : ""}
+            {" · بدون ضريبة"}
           </p>
         </div>
         <div className="zc-card p-4 space-y-1" data-testid="profit-margin">
@@ -51,6 +53,12 @@ export default function ProfitCards({ profit, fmt }: Props) {
           </p>
         </div>
       </div>
+
+      {(profit.tax_cents > 0 || profit.tax_refunded_cents > 0) && (
+        <p className="text-sm font-arabic text-ink-500" data-testid="profit-tax">
+          الضريبة المحصلة {fmt(profit.tax_cents - profit.tax_refunded_cents)}: أمانة للدولة، ليست دخلاً ولا داخلة في أي ربح.
+        </p>
+      )}
 
       {profit.items_without_cost > 0 && (
         <div className="flex items-start gap-2 rounded-md border border-warn bg-warn-soft p-3 text-sm font-arabic text-ink-900" data-testid="profit-missing-cost">

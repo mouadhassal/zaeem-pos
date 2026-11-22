@@ -12,6 +12,7 @@ import Typeahead from "../../components/ui/Typeahead";
 import { useToast } from "../../hooks/useToast";
 import OptionsTab from "./OptionsTab";
 import { usePlanStore } from "../../stores/planStore";
+import { COST_CLASSES } from "../../lib/profit";
 
 interface Category {
   id: string;
@@ -20,6 +21,8 @@ interface Category {
   sort_order: number;
   image_path: string | null;
   is_active: number;
+  /** FOOD, BEVERAGE, SHISHA or OTHER; null counts as FOOD. */
+  cost_class?: string | null;
 }
 
 interface MenuItem {
@@ -116,6 +119,7 @@ interface CategoryForm {
   color: string;
   sort_order: string;
   image_path: string;
+  cost_class: string;
 }
 
 interface ComboForm {
@@ -148,6 +152,7 @@ const emptyCategoryForm: CategoryForm = {
   color: "#667085",
   sort_order: "0",
   image_path: "",
+  cost_class: "FOOD",
 };
 
 const emptyComboForm: ComboForm = {
@@ -609,6 +614,7 @@ export default function MenuPage() {
       color: cat.color ?? "#667085",
       sort_order: cat.sort_order.toString(),
       image_path: cat.image_path ?? "",
+      cost_class: cat.cost_class || "FOOD",
     });
     setCategoryErrors({});
     setCategoryPhotoError(null);
@@ -681,10 +687,18 @@ export default function MenuPage() {
         sortOrder: parseInt(categoryForm.sort_order, 10),
         imagePath: parsed.data.image_path || null,
       };
+      let savedCategoryId = editCategoryId;
       if (editCategoryId) {
         await invoke("update_category_v3", { ...args, categoryId: editCategoryId });
       } else {
-        await invoke("create_category_v3", args);
+        savedCategoryId = await invoke<string>("create_category_v3", args);
+      }
+      // The cost class only matters to the finance page (not on POS Lite); "FOOD" is what no choice means.
+      if (!posLite && savedCategoryId) {
+        const before = editCategoryId ? categories.find((c) => c.id === editCategoryId)?.cost_class || "FOOD" : "FOOD";
+        if (categoryForm.cost_class !== before) {
+          await invoke("set_category_cost_class_v3", { sessionToken: token, categoryId: savedCategoryId, costClass: categoryForm.cost_class });
+        }
       }
       setShowCategoryModal(false);
       toast.success(editCategoryId ? "تم تحديث التصنيف ✓" : "تمت إضافة التصنيف ✓");
@@ -1746,6 +1760,23 @@ export default function MenuPage() {
                   <p className="text-xs text-danger mt-1 font-arabic">{categoryErrors.color}</p>
                 )}
               </div>
+
+              {!posLite && (
+                <div>
+                  <label className="block text-sm font-arabic text-ink-900 mb-1">نوع التكلفة</label>
+                  <select
+                    value={categoryForm.cost_class}
+                    onChange={(e) => setCategoryForm((p) => ({ ...p, cost_class: e.target.value }))}
+                    className="w-full h-10 px-4 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-600"
+                    data-testid="category-cost-class"
+                  >
+                    {COST_CLASSES.map((c) => (
+                      <option key={c.value} value={c.value}>{c.label}</option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-ink-400 mt-1 font-arabic">تُحسب «تكلفة المواد» في المالية لكل نوع على حدة (مأكولات، مشروبات، أراجيل).</p>
+                </div>
+              )}
 
               <div>
                 <label className="block text-sm font-arabic text-ink-900 mb-1">ترتيب الفرز</label>

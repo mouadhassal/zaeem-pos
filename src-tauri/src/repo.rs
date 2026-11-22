@@ -699,6 +699,8 @@ pub struct CategoryRow {
     pub sort_order: i64,
     pub image_path: Option<String>,
     pub is_active: i64,
+    /// FOOD, BEVERAGE, SHISHA or OTHER; None reads as FOOD (see `finance::COST_CLASSES`).
+    pub cost_class: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -953,6 +955,8 @@ pub struct DashboardSummaryRow {
     pub profit: crate::profit::ProfitSummary,
 }
 
+/// The old plain row; the Finance page now reads `finance::CostRow`. Kept for the repo tests.
+#[allow(dead_code)]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct OperationalCostRow {
     pub id: String,
@@ -2565,6 +2569,7 @@ impl<'a> Repo<'a> {
         self.conn.query_row(&sql, params_refs.as_slice(), |r| r.get(0)).map_err(RepoError::from)
     }
 
+    #[allow(dead_code)]
     pub fn list_operational_costs(&self, scope: &Scope) -> Result<Vec<OperationalCostRow>, RepoError> {
         let (predicate, args) = Self::scope_predicate(scope);
         let sql = format!("SELECT id, category, amount_cents, notes, date FROM operational_costs WHERE {predicate} ORDER BY date DESC LIMIT 100");
@@ -2574,7 +2579,7 @@ impl<'a> Repo<'a> {
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, dead_code)]
     pub fn create_operational_cost(&self, tenant_id: &str, branch_id: &str, category: &str, amount_cents: i64, date: &str, notes: Option<&str>, actor_id: &str) -> Result<String, RepoError> {
         let id = uuid::Uuid::now_v7().to_string();
         self.conn.execute(
@@ -3836,10 +3841,10 @@ impl<'a> Repo<'a> {
     pub fn list_categories(&self, tenant_id: &str) -> Result<Vec<CategoryRow>, RepoError> {
         self.assert_scope_populated("categories", false)?;
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, color, sort_order, image_path, is_active FROM categories WHERE tenant_id = ?1 ORDER BY sort_order ASC",
+            "SELECT id, name, color, sort_order, image_path, is_active, cost_class FROM categories WHERE tenant_id = ?1 ORDER BY sort_order ASC",
         )?;
         let rows = stmt.query_map(params![tenant_id], |r| {
-            Ok(CategoryRow { id: r.get(0)?, name: r.get(1)?, color: r.get(2)?, sort_order: r.get(3)?, image_path: r.get(4)?, is_active: r.get(5)? })
+            Ok(CategoryRow { id: r.get(0)?, name: r.get(1)?, color: r.get(2)?, sort_order: r.get(3)?, image_path: r.get(4)?, is_active: r.get(5)?, cost_class: r.get(6)? })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
@@ -6581,6 +6586,7 @@ mod tests {
         migrate_v3::run_role_access_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_workforce_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_no_bill_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_finance_ledger_migration(&mut conn, &db_path).unwrap();
         db_path
     }
 

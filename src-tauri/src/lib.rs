@@ -39,6 +39,7 @@ mod plan_gate;
 mod weighing;
 mod attendance;
 mod profit;
+mod finance;
 mod sales_strip;
 mod payroll;
 mod stockroom;
@@ -131,6 +132,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_role_access_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_workforce_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_no_bill_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_finance_ledger_migration(conn, db_path).map_err(|e| e.to_string())?;
     business::refresh_cache(conn);
     Ok(())
 }
@@ -673,6 +675,17 @@ pub fn run() {
             commands::reports::get_tax_collected_v3,
             commands::reports::list_operational_costs_v3,
             commands::reports::create_operational_cost_v3,
+            commands::finance::get_cost_report_v3,
+            commands::finance::get_finance_settings_v3,
+            commands::finance::save_finance_settings_v3,
+            commands::finance::list_rent_contracts_v3,
+            commands::finance::save_rent_contract_v3,
+            commands::finance::record_rent_payment_v3,
+            commands::finance::upload_cost_attachment_v3,
+            commands::finance::get_cost_attachment_v3,
+            commands::finance::set_category_cost_class_v3,
+            commands::finance::get_cost_of_sales_v3,
+            commands::reports::update_operational_cost_v3,
             commands::reports::list_invoices_v3,
             commands::reports::create_invoice_v3,
             commands::reports::mark_invoice_paid_v3,

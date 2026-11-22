@@ -133,6 +133,7 @@ export const HUB_ONLY_WRITES = new Set([
   "delete_category_v3",
   "upload_category_photo_v3",
   "delete_category_photo_v3",
+  "set_category_cost_class_v3",
   "save_option_group_v3",
   "delete_option_group_v3",
   "create_combo_meal_v3",

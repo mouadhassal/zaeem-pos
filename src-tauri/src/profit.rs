@@ -5,8 +5,14 @@
 //! disagree again.
 //!
 //! * **Net sales** = what was sold (orders paid in the period, by `closed_at`)
-//!   minus what was refunded in the period (by the refund's own day). A refund
-//!   made today lowers today's sales; a closed past day never changes.
+//!   minus discounts, minus what was refunded in the period (by the refund's
+//!   own day), all EXCLUDING tax. Tax collected is the state's money: it has
+//!   its own line and is never income or profit. A refund made today lowers
+//!   today's sales; a closed past day never changes.
+//!
+//!   An order stores `total = subtotal + tax - discount + delivery_fee`, so
+//!   what the shop earned before tax is `total - tax`, and the sales before
+//!   discounts are `total - tax + discount` (items plus delivery fee).
 //! * **Margin profit** = net sales minus the cost price of what was sold. It
 //!   needs each item's cost price. A refunded dish still cost the food, so the
 //!   cost of a refunded line stays in.
@@ -21,6 +27,7 @@
 //! (minutes east of UTC).
 
 use crate::assistant::{modifier, qualify, scope_predicate};
+use crate::finance;
 use crate::repo::RepoError;
 use crate::security::Scope;
 use rusqlite::{params_from_iter, Connection};
@@ -38,9 +45,18 @@ pub struct DayProfit {
     /// Local calendar day, `YYYY-MM-DD`.
     pub date: String,
     pub order_count: i64,
+    /// Sales before discounts and before tax (items plus delivery fee).
     pub gross_sales_cents: i64,
+    /// Discounts given on those orders.
+    pub discounts_cents: i64,
+    /// Money refunded in the period, without the tax part (that is `tax_refunded_cents`).
     pub refunds_cents: i64,
+    /// `gross - discounts - refunds`, no tax in it.
     pub net_sales_cents: i64,
+    /// Tax (and service charge) collected on the orders paid in the period. Not income.
+    pub tax_cents: i64,
+    /// The tax part of the refunds made in the period.
+    pub tax_refunded_cents: i64,
     /// What the items sold cost us (their cost prices).
     pub cogs_cents: i64,
     pub margin_profit_cents: i64,
@@ -59,7 +75,7 @@ pub struct DayProfit {
 
 impl DayProfit {
     fn finish(&mut self) {
-        self.net_sales_cents = self.gross_sales_cents - self.refunds_cents;
+        self.net_sales_cents = self.gross_sales_cents - self.discounts_cents - self.refunds_cents;
         self.margin_profit_cents = self.net_sales_cents - self.cogs_cents;
         self.operating_expenses_cents = self.expenses_cents - self.food_purchases_cents;
         self.expense_profit_cents = self.net_sales_cents - self.expenses_cents;
@@ -69,7 +85,10 @@ impl DayProfit {
     fn add(&mut self, o: &DayProfit) {
         self.order_count += o.order_count;
         self.gross_sales_cents += o.gross_sales_cents;
+        self.discounts_cents += o.discounts_cents;
         self.refunds_cents += o.refunds_cents;
+        self.tax_cents += o.tax_cents;
+        self.tax_refunded_cents += o.tax_refunded_cents;
         self.cogs_cents += o.cogs_cents;
         self.expenses_cents += o.expenses_cents;
         self.food_purchases_cents += o.food_purchases_cents;
@@ -87,6 +106,12 @@ pub struct ProfitSummary {
     /// they make the margin look better than it is.
     pub items_without_cost: i64,
 }
+
+/// What one order line cost us: the cost recorded when it was sold, else the item's current cost
+/// price. Weighed lines: the kilo cost scaled by grams. Needs `order_items` and `menu_items` in the query.
+pub(crate) const LINE_COST_SQL: &str = "CASE WHEN order_items.weight_grams IS NOT NULL \
+    THEN COALESCE(order_items.unit_cost_cents, menu_items.cost_cents, 0) * order_items.weight_grams / 1000 \
+    ELSE COALESCE(order_items.unit_cost_cents, menu_items.cost_cents, 0) * order_items.quantity END";
 
 fn clamp_tz(m: i64) -> i64 {
     m.clamp(-14 * 60, 14 * 60)
@@ -119,35 +144,47 @@ pub fn daily(conn: &Connection, scope: &Scope, start_iso: &str, end_iso: &str, t
     let p_orders = qualify(pred, "orders");
     let mut days: BTreeMap<String, DayProfit> = BTreeMap::new();
 
-    // Sales: orders paid in the period, by the day they were paid.
+    // Sales: orders paid in the period, by the day they were paid. `total - tax` is what the shop
+    // earned before tax; adding the discount back gives the sales before discounts.
     {
         let mut stmt = conn.prepare(&format!(
-            "SELECT date(COALESCE(closed_at, created_at), '{off}'), COUNT(*), COALESCE(SUM(total_cents), 0) FROM orders \
+            "SELECT date(COALESCE(closed_at, created_at), '{off}'), COUNT(*), \
+                    COALESCE(SUM(total_cents - COALESCE(tax_cents, 0) + COALESCE(discount_cents, 0)), 0), \
+                    COALESCE(SUM(COALESCE(discount_cents, 0)), 0), COALESCE(SUM(COALESCE(tax_cents, 0)), 0) FROM orders \
              WHERE {pred} AND status = 'PAID' AND COALESCE(closed_at, created_at) >= ?{ia} AND COALESCE(closed_at, created_at) <= ?{ib} \
              GROUP BY 1"
         ))?;
-        let rows = stmt.query_map(params_from_iter(a.iter()), |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?;
+        let rows = stmt.query_map(params_from_iter(a.iter()), |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?)))?;
         let found = rows.collect::<Result<Vec<_>, _>>()?;
-        for (date, count, total) in found {
+        for (date, count, gross, discounts, tax) in found {
             if let Some(date) = date {
                 let d = day_mut(&mut days, date);
                 d.order_count += count;
-                d.gross_sales_cents += total;
+                d.gross_sales_cents += gross;
+                d.discounts_cents += discounts;
+                d.tax_cents += tax;
             }
         }
     }
 
-    // Refunds: on the day the money went back.
+    // Refunds: on the day the money went back. A refund hands back tax too, in the order's own
+    // proportion, so the tax part is split off: it lowers the tax owed, not the sales.
     {
+        let p_refunds = qualify(pred, "refunds");
         let mut stmt = conn.prepare(&format!(
-            "SELECT date(created_at, '{off}'), COALESCE(SUM(amount_cents), 0) FROM refunds \
-             WHERE {pred} AND created_at >= ?{ia} AND created_at <= ?{ib} GROUP BY 1"
+            "SELECT date(refunds.created_at, '{off}'), COALESCE(SUM(refunds.amount_cents), 0), \
+                    COALESCE(SUM(CASE WHEN COALESCE(orders.total_cents, 0) > 0 \
+                        THEN CAST(ROUND(refunds.amount_cents * 1.0 * COALESCE(orders.tax_cents, 0) / orders.total_cents) AS INTEGER) ELSE 0 END), 0) \
+             FROM refunds LEFT JOIN orders ON orders.id = refunds.order_id \
+             WHERE {p_refunds} AND refunds.created_at >= ?{ia} AND refunds.created_at <= ?{ib} GROUP BY 1"
         ))?;
-        let rows = stmt.query_map(params_from_iter(a.iter()), |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?)))?;
+        let rows = stmt.query_map(params_from_iter(a.iter()), |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?;
         let found = rows.collect::<Result<Vec<_>, _>>()?;
-        for (date, total) in found {
+        for (date, total, tax_part) in found {
             if let Some(date) = date {
-                day_mut(&mut days, date).refunds_cents += total;
+                let d = day_mut(&mut days, date);
+                d.refunds_cents += total - tax_part;
+                d.tax_refunded_cents += tax_part;
             }
         }
     }
@@ -158,9 +195,7 @@ pub fn daily(conn: &Connection, scope: &Scope, start_iso: &str, end_iso: &str, t
     {
         let mut stmt = conn.prepare(&format!(
             "SELECT date(COALESCE(orders.closed_at, orders.created_at), '{off}'), \
-                    COALESCE(SUM(CASE WHEN order_items.weight_grams IS NOT NULL \
-                        THEN COALESCE(order_items.unit_cost_cents, menu_items.cost_cents, 0) * order_items.weight_grams / 1000 \
-                        ELSE COALESCE(order_items.unit_cost_cents, menu_items.cost_cents, 0) * order_items.quantity END), 0) \
+                    COALESCE(SUM({LINE_COST_SQL}), 0) \
              FROM order_items \
              INNER JOIN orders ON orders.id = order_items.order_id \
              INNER JOIN menu_items ON menu_items.id = order_items.menu_item_id \
@@ -177,19 +212,24 @@ pub fn daily(conn: &Connection, scope: &Scope, start_iso: &str, end_iso: &str, t
         }
     }
 
-    // Expenses: entered with a calendar date, compared on the local days of the range.
+    // Expenses. Counted on the day they were entered, except a cost that names the month it belongs
+    // to (rent for October paid in November): by default that cost is spread over the days of its
+    // own month, so it lands in the right period whenever it was paid. The owner can switch to
+    // counting by the day the money went out (`finance::CostBasis`).
     {
         let (from_day, to_day) = (local_day(start_iso, tz_offset_minutes), local_day(end_iso, tz_offset_minutes));
         if let (Some(from_day), Some(to_day)) = (from_day, to_day) {
+            let basis = finance::cost_basis(conn);
+            let (accrued, day) = (basis.accrued_sql(), basis.day_sql());
             let mut ea = args.clone();
-            ea.push(from_day);
-            ea.push(to_day);
+            ea.push(from_day.clone());
+            ea.push(to_day.clone());
             let food = food_list_sql();
             let mut stmt = conn.prepare(&format!(
-                "SELECT substr(date, 1, 10), COALESCE(SUM(amount_cents), 0), \
+                "SELECT {day}, COALESCE(SUM(amount_cents), 0), \
                         COALESCE(SUM(CASE WHEN category IN ({food}) THEN amount_cents ELSE 0 END), 0), \
                         COALESCE(SUM(CASE WHEN category = '{SALARY_CATEGORY}' THEN amount_cents ELSE 0 END), 0) \
-                 FROM operational_costs WHERE {pred} AND substr(date, 1, 10) >= ?{ia} AND substr(date, 1, 10) <= ?{ib} GROUP BY 1"
+                 FROM operational_costs WHERE {pred} AND NOT ({accrued}) AND {day} >= ?{ia} AND {day} <= ?{ib} GROUP BY 1"
             ))?;
             let rows = stmt.query_map(params_from_iter(ea.iter()), |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)))?;
             let found = rows.collect::<Result<Vec<_>, _>>()?;
@@ -198,6 +238,33 @@ pub fn daily(conn: &Connection, scope: &Scope, start_iso: &str, end_iso: &str, t
                 d.expenses_cents += all;
                 d.food_purchases_cents += food;
                 d.salaries_cents += salaries;
+            }
+
+            if basis == finance::CostBasis::Accrual {
+                let mut ma = args.clone();
+                ma.push(from_day[..7].to_string());
+                ma.push(to_day[..7].to_string());
+                let mut stmt = conn.prepare(&format!(
+                    "SELECT category, amount_cents, accrual_period FROM operational_costs \
+                     WHERE {pred} AND ({accrued}) AND accrual_period >= ?{ia} AND accrual_period <= ?{ib}"
+                ))?;
+                let rows = stmt.query_map(params_from_iter(ma.iter()), |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))?;
+                let found = rows.collect::<Result<Vec<_>, _>>()?;
+                for (category, amount, month) in found {
+                    for (date, share) in finance::spread_month(amount, &month) {
+                        if date < from_day || date > to_day {
+                            continue;
+                        }
+                        let d = day_mut(&mut days, date);
+                        d.expenses_cents += share;
+                        if FOOD_PURCHASE_CATEGORIES.contains(&category.as_str()) {
+                            d.food_purchases_cents += share;
+                        }
+                        if category == SALARY_CATEGORY {
+                            d.salaries_cents += share;
+                        }
+                    }
+                }
             }
         }
     }

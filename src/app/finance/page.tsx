@@ -9,9 +9,12 @@ import { formatMoney, parseMoneyInput } from "../../lib/money";
 import { realErrorText } from "../../lib/errors";
 import { toLocalDateStr, parseLocalDateStr, formatArabicDate } from "../../lib/dateLocal";
 import ProfitCards from "../../components/ProfitCards";
-import { categoryHint, EXPENSE_CATEGORIES, tzOffsetMinutes, type DayProfit, type ProfitSummary } from "../../lib/profit";
+import { tzOffsetMinutes, type DayProfit, type ProfitSummary } from "../../lib/profit";
+import CostsTab, { type CostRecord } from "./CostsTab";
+import RentTab from "./RentTab";
+import CostOfSalesCard from "./CostOfSalesCard";
 
-type Tab = "pnl" | "revenue" | "costs" | "invoices" | "taxes";
+type Tab = "pnl" | "revenue" | "costs" | "rent" | "invoices" | "taxes";
 type DateRange = "today" | "week" | "month" | "custom";
 
 // Mirrors dashboard/page.tsx's own shape for `get_dashboard_summary_v3` --
@@ -46,14 +49,6 @@ interface RevenueRow {
   card: number;
   wallet: number;
   total: number;
-}
-
-interface CostRecord {
-  id: string;
-  category: string;
-  amount_cents: number;
-  notes: string | null;
-  date: string;
 }
 
 interface Invoice {
@@ -109,8 +104,6 @@ function rangeEnd(range: DateRange, customEnd?: string): Date {
   return now;
 }
 
-const CATEGORY_OPTIONS = EXPENSE_CATEGORIES;
-
 export default function FinancePage() {
   const token = useAuthStore((s) => s.token);
   const [tab, setTab] = useState<Tab>("pnl");
@@ -128,13 +121,8 @@ export default function FinancePage() {
   const [totalOrders, setTotalOrders] = useState(0);
   const [avgOrder, setAvgOrder] = useState(0);
 
+  // The expenses on screen in the costs tab (kept here for the PDF export).
   const [costs, setCosts] = useState<CostRecord[]>([]);
-  const [totalCosts, setTotalCosts] = useState(0);
-  const [showAddCost, setShowAddCost] = useState(false);
-  const [costCategory, setCostCategory] = useState<string>(CATEGORY_OPTIONS[0]);
-  const [costAmount, setCostAmount] = useState("");
-  const [costDate, setCostDate] = useState(toLocalDateStr(new Date()));
-  const [costNotes, setCostNotes] = useState("");
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [showAddInvoice, setShowAddInvoice] = useState(false);
@@ -147,7 +135,6 @@ export default function FinancePage() {
   const [invoiceDueDate, setInvoiceDueDate] = useState(() => {
     const d = new Date(); d.setMonth(d.getMonth() + 1); return toLocalDateStr(d);
   });
-  const [savingCost, setSavingCost] = useState(false);
   const [savingInvoice, setSavingInvoice] = useState(false);
 
   const [taxInfo, setTaxInfo] = useState<TaxInfo | null>(null);
@@ -188,10 +175,6 @@ export default function FinancePage() {
         wallet: revenue.wallet,
         total: revenue.total,
       }]);
-
-      const costRows = await invoke<CostRecord[]>("list_operational_costs_v3", { sessionToken: token });
-      setCosts(costRows);
-      setTotalCosts(costRows.reduce((acc, c) => acc + c.amount_cents, 0));
 
       const invoiceRows = await invoke<Invoice[]>("list_invoices_v3", { sessionToken: token });
       setInvoices(invoiceRows);
@@ -249,7 +232,7 @@ export default function FinancePage() {
   const [exportingPdf, setExportingPdf] = useState(false);
 
   const tabTitle = (t: Tab) =>
-    t === "pnl" ? "الأرباح والخسائر" : t === "revenue" ? "الإيرادات" : t === "costs" ? "التكاليف" : t === "invoices" ? "الفواتير" : "الضرائب";
+    t === "pnl" ? "الأرباح والخسائر" : t === "revenue" ? "الإيرادات" : t === "costs" ? "التكاليف" : t === "rent" ? "الإيجار" : t === "invoices" ? "الفواتير" : "الضرائب";
 
   const exportPdf = async () => {
     if (exportingPdf) return;
@@ -263,9 +246,11 @@ export default function FinancePage() {
             "ملخص الأرباح والخسائر",
             ["البيان", "القيمة"],
             [
-              ["المبيعات", formatMoney(t?.gross_sales_cents ?? 0)],
+              ["المبيعات (قبل الخصم، بدون ضريبة)", formatMoney(t?.gross_sales_cents ?? 0)],
+              ["الخصومات", formatMoney(t?.discounts_cents ?? 0)],
               ["المرتجعات", formatMoney(t?.refunds_cents ?? 0)],
-              ["صافي المبيعات", formatMoney(t?.net_sales_cents ?? 0)],
+              ["صافي المبيعات (بدون ضريبة)", formatMoney(t?.net_sales_cents ?? 0)],
+              ["الضريبة المحصلة (ليست دخلاً)", formatMoney((t?.tax_cents ?? 0) - (t?.tax_refunded_cents ?? 0))],
               ["تكلفة الأصناف المباعة", formatMoney(t?.cogs_cents ?? 0)],
               ["ربح الهامش", formatMoney(t?.margin_profit_cents ?? 0)],
               ["كل المصروفات", formatMoney(t?.expenses_cents ?? 0)],
@@ -288,8 +273,8 @@ export default function FinancePage() {
       } else if (tab === "costs") {
         tableHtml = pdfTableHtml(
           "التكاليف",
-          ["التاريخ", "البند", "التكلفة", "الملاحظات"],
-          costs.map((c) => [c.date, c.category, formatMoney(c.amount_cents), c.notes ?? ""])
+          ["التاريخ", "البند", "المستفيد", "مركز التكلفة", "التكلفة", "الملاحظات"],
+          costs.map((c) => [c.date.slice(0, 10), c.category_label, c.payee ?? "", c.cost_centre ?? "", formatMoney(c.amount_cents), c.notes ?? ""])
         );
       } else if (tab === "invoices") {
         tableHtml = pdfTableHtml(
@@ -316,28 +301,6 @@ export default function FinancePage() {
       await exportHtmlToPdf(`تقرير-${tab}-${toLocalDateStr(new Date())}.pdf`, bodyHtml, token ?? "");
     } finally {
       setExportingPdf(false);
-    }
-  };
-
-  const handleAddCost = async () => {
-    if (savingCost) return;
-    const amount = parseMoneyInput(costAmount);
-    if (amount <= 0) {
-      setMessage("يرجى إدخال مبلغ صحيح");
-      return;
-    }
-    setSavingCost(true);
-    try {
-      await invoke("create_operational_cost_v3", { sessionToken: token, category: costCategory, amountCents: amount, date: costDate, notes: costNotes || null });
-      setShowAddCost(false);
-      setCostAmount("");
-      setCostNotes("");
-      setMessage("تم إضافة التكلفة بنجاح");
-      fetchAll();
-    } catch (err) {
-      setMessage(`حدث خطأ في إضافة التكلفة: ${realErrorText(err)}`);
-    } finally {
-      setSavingCost(false);
     }
   };
 
@@ -405,7 +368,7 @@ export default function FinancePage() {
       </div>
 
       <div className="flex gap-2 border-b border-ink-200 pb-2">
-        {(["pnl", "revenue", "costs", "invoices", "taxes"] as Tab[]).map((t) => (
+        {(["pnl", "revenue", "costs", "rent", "invoices", "taxes"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -415,7 +378,7 @@ export default function FinancePage() {
                 : "text-ink-500 hover:text-saffron-600 hover:bg-white"
             }`}
           >
-            {t === "pnl" ? "الأرباح والخسائر" : t === "revenue" ? "الإيرادات" : t === "costs" ? "التكاليف" : t === "invoices" ? "الفواتير" : "الضرائب"}
+            {tabTitle(t)}
           </button>
         ))}
       </div>
@@ -453,6 +416,8 @@ export default function FinancePage() {
               )}
 
               <ProfitCards profit={pnlSummary.profit} fmt={formatMoney} />
+
+              <CostOfSalesCard token={token} startIso={rangeStart(dateRange, customStart).toISOString()} endIso={rangeEnd(dateRange, customEnd).toISOString()} />
 
               {pnlSummary.branches.length > 1 && (
                 <div className="zc-card overflow-x-auto">
@@ -615,58 +580,9 @@ export default function FinancePage() {
         </div>
       )}
 
-      {tab === "costs" && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="bg-white rounded-md p-4 border border-ink-200 flex-1 max-w-xs">
-              <p className="text-ink-400 text-sm font-arabic">إجمالي التكاليف</p>
-              <p className="text-2xl font-bold text-danger-600 font-mono">
-                {formatMoney(totalCosts)}
-              </p>
-            </div>
-            <button
-              onClick={() => setShowAddCost(true)}
-              className="h-10 px-4 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors"
-            >
-              + إضافة تكلفة
-            </button>
-          </div>
+      {tab === "costs" && <CostsTab token={token} onRows={setCosts} notify={setMessage} />}
 
-          <div className="zc-card overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-ink-200 bg-surface-alt text-ink-400 font-arabic">
-                  <th className="text-right p-3 font-medium">التاريخ</th>
-                  <th className="text-right p-3 font-medium">البند</th>
-                  <th className="text-right p-3 font-medium">التكلفة</th>
-                  <th className="text-right p-3 font-medium">الملاحظات</th>
-                </tr>
-              </thead>
-              <tbody>
-                {costs.map((c) => (
-                  <tr key={c.id} className="border-b border-ink-200 hover:bg-saffron-50">
-                    <td className="p-3 font-arabic text-ink-900">{c.date.slice(0, 10)}</td>
-                    <td className="p-3">
-                      <span className="inline-block px-3 py-1 rounded-full text-xs font-arabic bg-white text-ink-900">
-                        {c.category}
-                      </span>
-                    </td>
-                    <td className="p-3 font-mono text-danger-600 font-bold">{formatMoney(c.amount_cents)}</td>
-                    <td className="p-3 text-ink-400 text-sm">{c.notes || "-"}</td>
-                  </tr>
-                ))}
-                {costs.length === 0 && (
-                  <tr>
-                    <td colSpan={4} className="p-6 text-center text-ink-500 font-arabic">
-                      لا توجد تكاليف مسجلة
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+      {tab === "rent" && <RentTab token={token} notify={setMessage} onChanged={fetchAll} />}
 
       {tab === "invoices" && (
         <div className="space-y-4">
@@ -822,76 +738,6 @@ export default function FinancePage() {
               {showInvoiceDetail.status === "PENDING" && (
                 <button onClick={() => { handlePayInvoice(showInvoiceDetail); setShowInvoiceDetail(null); }} className="flex-1 h-10 rounded-sm bg-saffron-600 text-white text-sm font-bold hover:bg-saffron-700 transition-colors inline-flex items-center justify-center gap-1.5"><IconCreditCard className="w-4 h-4" /> دفع الفاتورة</button>
               )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showAddCost && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-md shadow-xl w-full max-w-lg mx-4 p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold font-arabic text-ink-900">إضافة تكلفة</h2>
-              <button onClick={() => setShowAddCost(false)} className="w-8 h-8 rounded-lg hover:bg-ink-100 flex items-center justify-center text-ink-500 shrink-0"><IconX className="w-4 h-4" /></button>
-            </div>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-sm font-arabic text-ink-900 mb-1">البند</label>
-                <select
-                  value={costCategory}
-                  onChange={(e) => setCostCategory(e.target.value)}
-                  className="w-full h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500"
-                >
-                  {CATEGORY_OPTIONS.map((cat) => (
-                    <option key={cat} value={cat}>{cat}</option>
-                  ))}
-                </select>
-                <p className="mt-1 text-[11px] text-ink-400 font-arabic" data-testid="cost-category-hint">{categoryHint(costCategory)}</p>
-              </div>
-              <div>
-                <label className="block text-sm font-arabic text-ink-900 mb-1">المبلغ</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={costAmount}
-                  onChange={(e) => setCostAmount(e.target.value)}
-                  className="w-full h-10 px-4 rounded-sm bg-white border border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-500"
-                  dir="ltr"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-arabic text-ink-900 mb-1">التاريخ</label>
-                <DatePicker
-                  value={costDate}
-                  onChange={(v) => setCostDate(v)}
-                  className="w-full h-10 px-4 pl-10 rounded-sm bg-white border border-ink-200 text-ink-900 text-sm outline-none focus:border-saffron-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-arabic text-ink-900 mb-1">ملاحظات</label>
-                <textarea
-                  value={costNotes}
-                  onChange={(e) => setCostNotes(e.target.value)}
-                  rows={3}
-                  className="w-full px-4 py-2 rounded-sm bg-white border border-ink-200 text-ink-900 font-arabic text-sm outline-none focus:border-saffron-500 resize-none"
-                />
-              </div>
-            </div>
-            <div className="flex gap-3 justify-end pt-2">
-              <button
-                onClick={() => setShowAddCost(false)}
-                className="h-10 px-6 rounded-sm bg-white text-ink-900 font-arabic text-sm hover:bg-ink-200 transition-colors"
-              >
-                إلغاء
-              </button>
-              <button
-                onClick={handleAddCost}
-                disabled={savingCost}
-                className="h-10 px-6 rounded-sm bg-saffron-600 text-white font-arabic text-sm hover:bg-saffron-700 transition-colors disabled:opacity-40"
-              >
-                {savingCost ? "جاري..." : "إضافة"}
-              </button>
             </div>
           </div>
         </div>

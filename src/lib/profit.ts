@@ -8,9 +8,16 @@ export { tzOffsetMinutes } from "./assistant";
 export interface DayProfit {
   date?: string;
   order_count: number;
+  /** Sales before discounts, without tax. */
   gross_sales_cents: number;
+  discounts_cents: number;
+  /** Refunds without their tax part. */
   refunds_cents: number;
+  /** Sales - discounts - refunds, no tax in it. */
   net_sales_cents: number;
+  /** Tax collected on the sales. Not income. */
+  tax_cents: number;
+  tax_refunded_cents: number;
   cogs_cents: number;
   margin_profit_cents: number;
   expenses_cents: number;
@@ -35,21 +42,61 @@ export function formatMarginPercent(bp: number): string {
   return `${Number.isInteger(pct) ? pct : pct.toFixed(1)}%`;
 }
 
-/** Expense categories the owner picks from. The first one is buying food; it is not counted twice in the net profit. */
-export const EXPENSE_CATEGORIES = ["مشتريات مواد", "إيجار", "رواتب", "كهرباء", "مياه", "إنترنت", "صيانة", "مستلزمات", "تسويق", "أخرى"] as const;
+/** Expense categories the owner picks from (the same list as finance.rs). The first one is buying food; it is not counted twice in the net profit. */
+export const EXPENSE_CATEGORIES = [
+  "مشتريات مواد", "إيجار", "رواتب", "كهرباء", "مياه", "محروقات", "غاز", "ضرائب ورسوم", "تأمينات اجتماعية", "ضيافة",
+  "هاتف واتصالات", "تغليف", "خدمات عامة", "مستلزمات", "صيانة وإصلاح", "دعاية وتسويق", "مستلزمات مكتبية", "أجور توصيل",
+  "وجبات موظفين", "نثريات",
+] as const;
+
+/** Names stored before the list changed, and the new name each one counts as (never rewritten in the data). */
+const LEGACY_CATEGORIES: Record<string, string> = {
+  "إنترنت": "هاتف واتصالات",
+  "صيانة": "صيانة وإصلاح",
+  "تسويق": "دعاية وتسويق",
+  "أخرى": "نثريات",
+  "مشتريات من الموردين": "مشتريات مواد",
+};
+
+/** The name a stored category is shown and grouped under. */
+export function canonicalCategory(stored: string): string {
+  const t = stored.trim();
+  return LEGACY_CATEGORIES[t] ?? t;
+}
 
 /** What a category means for the profit lines, shown under the category picker. */
 export function categoryHint(category: string): string {
-  if (category === "مشتريات مواد" || category === "مشتريات من الموردين") {
+  const c = canonicalCategory(category);
+  if (c === "مشتريات مواد") {
     return "شراء مواد للبيع (دجاج، زيت، سكر…). تدخل في «الربح بالمصروفات» فقط، ولا تُحسب مرتين في «صافي الربح الفعلي» لأن تكلفة ما بعته محسوبة في الهامش.";
   }
-  if (category === "رواتب") {
+  if (c === "رواتب") {
     return "تدخل في «الربح بالمصروفات» وفي «صافي الربح الفعلي». الأفضل أن تُسجَّل من «الرواتب» تلقائياً عند صرف الراتب.";
+  }
+  if (c === "إيجار") {
+    return "الأفضل تسجيله من تبويب «الإيجار» ليظهر المستحق والمدفوع والباقي. يُحسب على شهر استحقاقه.";
   }
   return "مصروف جارٍ: يدخل في «الربح بالمصروفات» وفي «صافي الربح الفعلي».";
 }
 
-export const PROFIT_EXPLAINER_INTRO = "كل أنواع الربح تبدأ من «صافي المبيعات»: ما بعته ناقص ما أرجعته للزبائن.";
+/** Cost classes a menu category can have (cost of sales is split by them). No class reads as FOOD. */
+export const COST_CLASSES = [
+  { value: "FOOD", label: "مأكولات" },
+  { value: "BEVERAGE", label: "مشروبات" },
+  { value: "SHISHA", label: "أراجيل" },
+  { value: "OTHER", label: "أخرى" },
+] as const;
+
+export function costClassLabel(value: string | null | undefined): string {
+  return COST_CLASSES.find((c) => c.value === (value || "FOOD"))?.label ?? "مأكولات";
+}
+
+/** 3000 -> "30%", 3333 -> "33.3%" (basis points). */
+export function formatBp(bp: number): string {
+  return formatMarginPercent(bp);
+}
+
+export const PROFIT_EXPLAINER_INTRO = "كل أنواع الربح تبدأ من «صافي المبيعات»: ما بعته ناقص الخصومات وما أرجعته للزبائن، بدون الضريبة (الضريبة أمانة للدولة وليست دخلاً).";
 
 export interface ProfitExplainerItem {
   title: string;

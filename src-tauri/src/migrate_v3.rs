@@ -3189,6 +3189,46 @@ pub fn run_no_bill_migration(conn: &mut Connection, _db_path: &Path) -> Result<(
     Ok(())
 }
 
+pub const MIGRATION_AR_VERSION: i64 = 50;
+
+/// Migration AR (2026-11-22): finance ledger. `operational_costs` learns who was paid, how, the
+/// receipt, the cost centre and the accrual month; `rent_contracts` holds the rent agreements;
+/// `categories.cost_class` says which kind of cost of sales a menu category belongs to
+/// (FOOD, BEVERAGE, SHISHA, OTHER; NULL reads as FOOD). Additive only.
+pub fn run_finance_ledger_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AR_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    if table_exists(&tx, "operational_costs")? {
+        for (col, ty) in [
+            ("payment_date", "TEXT"),
+            ("payee", "TEXT"),
+            ("payment_method", "TEXT"),
+            ("reference_no", "TEXT"),
+            ("cost_centre", "TEXT"),
+            ("attachment_path", "TEXT"),
+            ("accrual_period", "TEXT"),
+        ] {
+            add_column_if_missing(&tx, "operational_costs", col, ty)?;
+        }
+    }
+    if table_exists(&tx, "categories")? {
+        add_column_if_missing(&tx, "categories", "cost_class", "TEXT")?;
+    }
+    tx.execute_batch(crate::finance::RENT_SCHEMA_SQL)?;
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AR_VERSION, "0050_finance_ledger", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

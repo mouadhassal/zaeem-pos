@@ -33,3 +33,4 @@ pub mod supplier_link;
 pub mod order_history;
 pub mod role_access;
 pub mod workforce;
+pub mod finance;

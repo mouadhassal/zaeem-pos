@@ -54,17 +54,21 @@ pub fn get_tax_collected_v3(state: State<Db>, license: State<crate::license::clo
     Repo::new(&conn).tax_collected_since(&actor.scope(), &since_iso).map_err(|e| e.to_string())
 }
 
+/// The expenses, newest first. Every filter is optional: `start_date`/`end_date` (`YYYY-MM-DD`),
+/// a category (old names count as the new one) and a cost centre (`-` = none).
 #[tauri::command]
-pub fn list_operational_costs_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::OperationalCostRow>, String> {
+pub fn list_operational_costs_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, start_date: Option<String>, end_date: Option<String>, category: Option<String>, cost_centre: Option<String>) -> Result<Vec<crate::finance::CostRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    Repo::new(&conn).list_operational_costs(&actor.scope()).map_err(|e| e.to_string())
+    let filter = crate::finance::CostFilter { from: start_date, to: end_date, category, cost_centre };
+    crate::finance::list_costs(&conn, &actor.scope(), &filter, 500).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn create_operational_cost_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category: String, amount_cents: i64, date: String, notes: Option<String>) -> Result<String, String> {
+#[allow(clippy::too_many_arguments)]
+pub fn create_operational_cost_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, category: String, amount_cents: i64, date: String, notes: Option<String>, payment_date: Option<String>, payee: Option<String>, payment_method: Option<String>, reference_no: Option<String>, cost_centre: Option<String>, accrual_period: Option<String>) -> Result<String, String> {
     let actor = authenticate_actor(&state, &session_token)?;
     require_license_not_locked(&license)?;
     authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
@@ -72,18 +76,36 @@ pub fn create_operational_cost_v3(state: State<Db>, license: State<crate::licens
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         resolve_operating_branch(&conn, &actor, &license, None)?
     };
-    if amount_cents <= 0 {
-        return Err("cost amount must be positive".to_string());
-    }
+    let mut fields = crate::finance::CostFields { category, amount_cents, date, notes, payment_date, payee, payment_method, reference_no, cost_centre, accrual_period, ..Default::default() };
+    fields.normalise()?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let cost_id = Repo::new(&tx).create_operational_cost(&tenant_id, &branch_id, &category, amount_cents, &date, notes.as_deref(), &actor.id).map_err(|e| e.to_string())?;
-    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::OperationalCostRecorded, "operational_cost", &cost_id, None, Some(&serde_json::json!({ "category": category, "amount_cents": amount_cents }))).map_err(|e| e.to_string())?;
+    let cost_id = crate::finance::insert_cost(&tx, &tenant_id, &branch_id, &actor.id, &fields).map_err(|e| e.to_string())?;
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::OperationalCostRecorded, "operational_cost", &cost_id, None, Some(&serde_json::json!({ "category": fields.category, "amount_cents": amount_cents }))).map_err(|e| e.to_string())?;
     // T2.0 plan §0 flag #4: operational_costs' first-ever sync wire-up.
     let license_status = license.cached_status();
     sync_enqueue_operational_cost(&tx, &tenant_id, &branch_id, &cost_id, &actor.device_id, &license_status)?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(cost_id)
+}
+
+/// Edits an expense the owner typed (or a rent payment). Salary and supplier-payment rows are refused.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn update_operational_cost_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, cost_id: String, category: String, amount_cents: i64, date: String, notes: Option<String>, payment_date: Option<String>, payee: Option<String>, payment_method: Option<String>, reference_no: Option<String>, cost_centre: Option<String>, accrual_period: Option<String>) -> Result<(), String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManageFinance).map_err(|e| e.to_string())?;
+    let mut fields = crate::finance::CostFields { category, amount_cents, date, notes, payment_date, payee, payment_method, reference_no, cost_centre, accrual_period, ..Default::default() };
+    fields.normalise()?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let (tenant_id, branch_id) = crate::finance::update_cost(&tx, &actor.scope(), &cost_id, &fields)?;
+    audit::append(&tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id, audit::Action::OperationalCostRecorded, "operational_cost", &cost_id, None, Some(&serde_json::json!({ "category": fields.category, "amount_cents": amount_cents, "action": "updated" }))).map_err(|e| e.to_string())?;
+    let license_status = license.cached_status();
+    sync_enqueue_operational_cost(&tx, &tenant_id, &branch_id, &cost_id, &actor.device_id, &license_status)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
