@@ -1442,6 +1442,9 @@ try {
     await clickId("rules-next");
     await clickId("overtime-rule-PER_HOUR");
     await clickId("rules-next");
+    // holidays and attendance approval (0.10.1): keep the defaults
+    await byId("rules-holidays");
+    await clickId("rules-next");
     // the owner decides what managers may do: prepare only, for now
     await byId("rules-managers");
     await clickId("manager-access-PREPARE");
