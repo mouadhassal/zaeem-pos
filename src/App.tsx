@@ -1,6 +1,6 @@
 import { PAGE_MODULE, moduleOn } from "./lib/businessModules";
 import { useBusinessStore } from "./stores/businessStore";
-import { useState, lazy, Suspense, useEffect, useRef } from "react";
+import { useState, lazy, Suspense, useEffect } from "react";
 import { landingView } from "./lib/businessSetup";
 import { useAuthStore } from "./stores/authStore";
 import { useAccessStore } from "./stores/accessStore";
@@ -73,17 +73,8 @@ function PosLayout({ children }: { children: React.ReactNode }) {
   const [settingsInitialTab, setSettingsInitialTab] = useState<"general" | "license">("general");
   const posLite = usePlanStore((s) => s.posLite);
   const [activeView, setActiveView] = useState(() => {
-    // Where a person starts follows the type of business (landingView); the type is still loading here, so an owner who
-    // chose one is moved from the dashboard to the till once it arrives (below).
     return landingView(useAuthStore.getState().user?.role, useBusinessStore.getState().businessType, usePlanStore.getState().posLite);
   });
-  const navigated = useRef(false);
-  const businessType = useBusinessStore((s) => s.businessType);
-  useEffect(() => {
-    if (navigated.current || !businessType) return;
-    const next = landingView(useAuthStore.getState().user?.role, businessType, usePlanStore.getState().posLite);
-    setActiveView((cur) => (cur === "dashboard" ? next : cur));
-  }, [businessType]);
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
   const { navItems } = usePermissions();
 
@@ -115,7 +106,6 @@ function PosLayout({ children }: { children: React.ReactNode }) {
   }, [modulesNow, activeView]);
 
   const handleNavigate = (id: string) => {
-    navigated.current = true;
     if (id === "debug") {
       if (import.meta.env.DEV) {
         setActiveView("debug");

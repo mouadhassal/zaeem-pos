@@ -94,10 +94,10 @@ describe("what a switch of type changes", () => {
 });
 
 describe("landing page", () => {
-  it("follows the type; the kitchen role keeps its screen", () => {
+  it("owner on the dashboard, kitchen on its screen, everyone else at the till", () => {
     expect(landingView("KITCHEN", "restaurant", false)).toBe("kds");
     expect(landingView("CASHIER", null, false)).toBe("pos");
-    for (const t of TYPES) expect(landingView("OWNER", t, false)).toBe("pos");
+    for (const t of TYPES) expect(landingView("OWNER", t, false)).toBe("dashboard");
     expect(landingView("OWNER", null, false)).toBe("dashboard");
     expect(landingView("OWNER", null, true)).toBe("pos");
   });

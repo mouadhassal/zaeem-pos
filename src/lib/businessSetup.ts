@@ -117,6 +117,8 @@ export async function applyPlan(
  */
 export function landingView(role: string | undefined, businessType: string | null, posLite: boolean): string {
   if (role === "KITCHEN") return "kds";
-  if (role === "OWNER" && !posLite && !businessType) return "dashboard";
+  // The owner keeps starting on the dashboard whatever the type (POS Lite has none); everyone else starts at the till.
+  void businessType;
+  if (role === "OWNER" && !posLite) return "dashboard";
   return "pos";
 }
