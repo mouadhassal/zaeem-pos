@@ -629,6 +629,8 @@ pub struct IngredientRow {
     // having a field the TS type claims exists), so inventory's "آخر
     // تحديث" column showed "Invalid Date" for every single ingredient.
     pub last_modified: String,
+    /// 1 = a base product made in-house from other ingredients (sauce, dough), see `inventory_ops`.
+    pub is_produced: i64,
 }
 
 /// One row of a menu item's BOM/recipe -- `id` is the `recipes.id` (needed
@@ -641,6 +643,8 @@ pub struct RecipeIngredientRow {
     pub ingredient_name: String,
     pub unit: String,
     pub quantity_needed: f64,
+    /// The unit the recipe is written in when it is not the ingredient's own (150 g for an ingredient kept in kg).
+    pub recipe_unit: Option<String>,
 }
 
 /// One physical count -- `record_stock_count`'s own write, listed back for
@@ -1143,6 +1147,10 @@ pub struct PurchaseOrderItemRow {
     pub quantity_received: f64,
     pub unit_cost_cents: i64,
     pub ingredient_name: String,
+    /// The pack/unit the line was entered in (None = the ingredient's own unit). Quantities and `unit_cost_cents` are per this unit.
+    pub unit_label: Option<String>,
+    /// How many stock units one of the line's units holds.
+    pub unit_factor: f64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1467,7 +1475,7 @@ impl<'a> Repo<'a> {
     /// fails, the whole payment fails" rule as loyalty accrual above.
     fn deplete_recipe_stock(&self, tenant_id: &str, branch_id: &str, order_id: &str, actor_id: &str, now: &str) -> Result<(), RepoError> {
         let mut stmt = self.conn.prepare(
-            "SELECT r.ingredient_id, SUM(CASE WHEN oi.weight_grams IS NOT NULL THEN oi.weight_grams / 1000.0 ELSE oi.quantity END * r.quantity_needed) \
+            "SELECT r.ingredient_id, SUM(CASE WHEN oi.weight_grams IS NOT NULL THEN oi.weight_grams / 1000.0 ELSE oi.quantity END * r.quantity_needed * r.stock_factor) \
              FROM order_items oi JOIN recipes r ON r.menu_item_id = oi.menu_item_id \
              WHERE oi.order_id = ?1 AND oi.voided = 0 \
              GROUP BY r.ingredient_id",
@@ -1478,18 +1486,20 @@ impl<'a> Repo<'a> {
         drop(stmt);
 
         for (ingredient_id, total_needed) in needed {
+            // Stock is kept to 3 decimals; the log carries the same rounded amount and its value at the current average cost.
+            let total_needed = crate::inventory_ops::round3(total_needed);
             if total_needed <= 0.0 {
                 continue;
             }
             let change_amount = -total_needed;
             let log_id = uuid::Uuid::now_v7().to_string();
             self.conn.execute(
-                "UPDATE ingredients SET current_stock = current_stock + ?1, last_modified = ?2 WHERE id = ?3",
+                "UPDATE ingredients SET current_stock = ROUND(current_stock + ?1, 3), last_modified = ?2 WHERE id = ?3",
                 params![change_amount, now, ingredient_id],
             )?;
             self.conn.execute(
-                "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'بيع', ?6, ?7, ?7, 'pending')",
+                "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status, value_cents) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'بيع', ?6, ?7, ?7, 'pending', CAST(ROUND(?5 * (SELECT cost_cents_per_unit FROM ingredients WHERE id = ?4)) AS INTEGER))",
                 params![log_id, tenant_id, branch_id, ingredient_id, change_amount, actor_id, now],
             )?;
         }
@@ -3297,10 +3307,20 @@ impl<'a> Repo<'a> {
     /// client.
     #[allow(clippy::too_many_arguments)]
     pub fn create_purchase_order_with_items(&self, scope: &Scope, tenant_id: &str, branch_id: &str, supplier_id: &str, created_by: &str, notes: Option<&str>, items: &[(String, f64, i64)]) -> Result<String, RepoError> {
+        let with_units: Vec<(String, f64, i64, Option<String>)> = items.iter().map(|(i, q, c)| (i.clone(), *q, *c, None)).collect();
+        self.create_purchase_order_with_unit_items(scope, tenant_id, branch_id, supplier_id, created_by, notes, &with_units)
+    }
+
+    /// Same as `create_purchase_order_with_items`, each line may also name the unit it is written in
+    /// (a pack such as a carton, or a standard unit of the same kind as the ingredient's). Quantity and
+    /// unit cost are per that unit; receiving converts to stock units.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_purchase_order_with_unit_items(&self, scope: &Scope, tenant_id: &str, branch_id: &str, supplier_id: &str, created_by: &str, notes: Option<&str>, items: &[(String, f64, i64, Option<String>)]) -> Result<String, RepoError> {
         self.assert_scope_populated("purchase_orders", true)?;
         self.assert_scope_populated("purchase_order_items", true)?;
         self.assert_row_in_scope("suppliers", supplier_id, scope)?;
-        for (ingredient_id, quantity_ordered, unit_cost_cents) in items {
+        let mut resolved_units: Vec<(Option<String>, f64)> = Vec::with_capacity(items.len());
+        for (ingredient_id, quantity_ordered, unit_cost_cents, unit) in items {
             self.assert_row_in_scope("ingredients", ingredient_id, scope)?;
             // 2026-09-13: server-side mirror of inventory/page.tsx's
             // client-side `qty > 0`/`unit_cost >= 0` check -- that check is
@@ -3316,20 +3336,22 @@ impl<'a> Repo<'a> {
                     unit_cost_cents: *unit_cost_cents,
                 });
             }
+            let stock_unit: String = self.conn.query_row("SELECT unit FROM ingredients WHERE id = ?1", params![ingredient_id], |r| r.get(0))?;
+            resolved_units.push(crate::inventory_ops::resolve_po_unit(self.conn, ingredient_id, &stock_unit, unit.as_deref()).map_err(RepoError::Stock)?);
         }
-        let total_cents: i64 = items.iter().map(|(_, qty, unit_cost)| (*qty * *unit_cost as f64).round() as i64).sum();
+        let total_cents: i64 = items.iter().map(|(_, qty, unit_cost, _)| (*qty * *unit_cost as f64).round() as i64).sum();
         let po_id = uuid::Uuid::now_v7().to_string();
         self.conn.execute(
             "INSERT INTO purchase_orders (id, tenant_id, branch_id, supplier_id, status, total_cents, created_by, notes, created_at, last_modified, sync_status) \
              VALUES (?1, ?2, ?3, ?4, 'PENDING', ?5, ?6, ?7, datetime('now'), datetime('now'), 'pending')",
             params![po_id, tenant_id, branch_id, supplier_id, total_cents, created_by, notes],
         )?;
-        for (ingredient_id, quantity_ordered, unit_cost_cents) in items {
+        for ((ingredient_id, quantity_ordered, unit_cost_cents, _), (unit_label, unit_factor)) in items.iter().zip(resolved_units.iter()) {
             let item_id = uuid::Uuid::now_v7().to_string();
             self.conn.execute(
-                "INSERT INTO purchase_order_items (id, tenant_id, branch_id, purchase_order_id, ingredient_id, quantity_ordered, quantity_received, unit_cost_cents, last_modified, sync_status) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, datetime('now'), 'pending')",
-                params![item_id, tenant_id, branch_id, po_id, ingredient_id, quantity_ordered, unit_cost_cents],
+                "INSERT INTO purchase_order_items (id, tenant_id, branch_id, purchase_order_id, ingredient_id, quantity_ordered, quantity_received, unit_cost_cents, unit_label, unit_factor, last_modified, sync_status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, datetime('now'), 'pending')",
+                params![item_id, tenant_id, branch_id, po_id, ingredient_id, quantity_ordered, unit_cost_cents, unit_label, unit_factor],
             )?;
         }
         self.conn.execute(
@@ -3405,7 +3427,7 @@ impl<'a> Repo<'a> {
         let mut stmt = self.conn.prepare(
             "SELECT purchase_order_items.id, purchase_order_items.purchase_order_id, purchase_order_items.ingredient_id, \
                     purchase_order_items.quantity_ordered, purchase_order_items.quantity_received, purchase_order_items.unit_cost_cents, \
-                    ingredients.name \
+                    ingredients.name, purchase_order_items.unit_label, purchase_order_items.unit_factor \
              FROM purchase_order_items INNER JOIN ingredients ON ingredients.id = purchase_order_items.ingredient_id \
              WHERE purchase_order_items.purchase_order_id = ?1",
         )?;
@@ -3413,6 +3435,7 @@ impl<'a> Repo<'a> {
             Ok(PurchaseOrderItemRow {
                 id: r.get(0)?, purchase_order_id: r.get(1)?, ingredient_id: r.get(2)?,
                 quantity_ordered: r.get(3)?, quantity_received: r.get(4)?, unit_cost_cents: r.get(5)?, ingredient_name: r.get(6)?,
+                unit_label: r.get(7)?, unit_factor: r.get(8)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
@@ -3458,10 +3481,10 @@ impl<'a> Repo<'a> {
             // from the row itself (server-side, authoritative) instead of
             // trusting the client's copy closes that gap; a mismatched
             // client_ingredient_id is simply ignored rather than acted on.
-            let (real_ingredient_id, quantity_ordered): (String, f64) = self.conn.query_row(
-                "SELECT ingredient_id, quantity_ordered FROM purchase_order_items WHERE id = ?1 AND purchase_order_id = ?2",
+            let (real_ingredient_id, quantity_ordered, unit_cost_cents, unit_factor): (String, f64, i64, f64) = self.conn.query_row(
+                "SELECT ingredient_id, quantity_ordered, unit_cost_cents, unit_factor FROM purchase_order_items WHERE id = ?1 AND purchase_order_id = ?2",
                 params![item_id, po_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             ).optional()?.ok_or_else(|| RepoError::PurchaseOrderItemOutOfScope { item_id: item_id.to_string() })?;
             let _ = client_ingredient_id; // superseded by real_ingredient_id above, kept only for the tuple's existing shape
 
@@ -3489,15 +3512,24 @@ impl<'a> Repo<'a> {
                 "UPDATE purchase_order_items SET quantity_received = ?1, last_modified = ?2 WHERE id = ?3 AND purchase_order_id = ?4",
                 params![quantity_received, now, item_id, po_id],
             )?;
+            // The line may be in a pack (a carton): stock goes up in stock units, the cost per stock unit is
+            // the line's cost divided by the pack size, and the ingredient's average cost is re-weighted.
+            let factor = if unit_factor > 0.0 { unit_factor } else { 1.0 };
+            let stock_qty = crate::inventory_ops::round3(*quantity_received * factor);
+            let (old_stock, old_cost): (f64, i64) = self.conn.query_row(
+                "SELECT current_stock, cost_cents_per_unit FROM ingredients WHERE id = ?1", params![real_ingredient_id], |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let new_cost = crate::inventory_ops::weighted_average_cost(old_stock, old_cost, stock_qty, unit_cost_cents as f64 / factor);
             self.conn.execute(
-                "UPDATE ingredients SET current_stock = current_stock + ?1, last_modified = ?2 WHERE id = ?3",
-                params![quantity_received, now, real_ingredient_id],
+                "UPDATE ingredients SET current_stock = ROUND(current_stock + ?1, 3), cost_cents_per_unit = ?2, last_modified = ?3 WHERE id = ?4",
+                params![stock_qty, new_cost, now, real_ingredient_id],
             )?;
             let log_id = uuid::Uuid::now_v7().to_string();
+            let line_value = (*quantity_received * unit_cost_cents as f64).round() as i64;
             self.conn.execute(
-                "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'استلام طلبية شراء', ?6, ?7, ?7, 'pending')",
-                params![log_id, tenant_id, branch_id, real_ingredient_id, quantity_received, actor_id, now],
+                "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status, value_cents) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'استلام طلبية شراء', ?6, ?7, ?7, 'pending', ?8)",
+                params![log_id, tenant_id, branch_id, real_ingredient_id, stock_qty, actor_id, now, line_value],
             )?;
         }
 
@@ -3685,13 +3717,13 @@ impl<'a> Repo<'a> {
         self.assert_scope_populated("ingredients", true)?;
         let (predicate, args) = Self::scope_predicate(scope);
         let sql = format!(
-            "SELECT id, name, unit, cost_cents_per_unit, current_stock, min_stock, is_active, last_modified FROM ingredients \
+            "SELECT id, name, unit, cost_cents_per_unit, current_stock, min_stock, is_active, last_modified, is_produced FROM ingredients \
              WHERE {predicate} AND is_active = 1 AND current_stock < min_stock ORDER BY current_stock ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(params_refs.as_slice(), |r| {
-            Ok(IngredientRow { id: r.get(0)?, name: r.get(1)?, unit: r.get(2)?, cost_cents_per_unit: r.get(3)?, current_stock: r.get(4)?, min_stock: r.get(5)?, is_active: r.get(6)?, last_modified: r.get(7)? })
+            Ok(IngredientRow { id: r.get(0)?, name: r.get(1)?, unit: r.get(2)?, cost_cents_per_unit: r.get(3)?, current_stock: r.get(4)?, min_stock: r.get(5)?, is_active: r.get(6)?, last_modified: r.get(7)?, is_produced: r.get(8)? })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
@@ -3707,7 +3739,7 @@ impl<'a> Repo<'a> {
         let predicate = predicate.replace("tenant_id", "i.tenant_id").replace("branch_id", "i.branch_id");
         let sp = format!("?{}", args.len() + 1);
         let last_cost = format!(
-            "(SELECT poi.unit_cost_cents FROM purchase_order_items poi JOIN purchase_orders po ON po.id = poi.purchase_order_id               WHERE poi.ingredient_id = i.id AND po.supplier_id = {sp} ORDER BY po.created_at DESC LIMIT 1)"
+            "(SELECT CAST(ROUND(poi.unit_cost_cents / poi.unit_factor) AS INTEGER) FROM purchase_order_items poi JOIN purchase_orders po ON po.id = poi.purchase_order_id               WHERE poi.ingredient_id = i.id AND po.supplier_id = {sp} ORDER BY po.created_at DESC LIMIT 1)"
         );
         let supplier_filter = if supplier_id.is_some() { format!(" AND {last_cost} IS NOT NULL") } else { String::new() };
         let sql = format!(
@@ -4160,12 +4192,12 @@ impl<'a> Repo<'a> {
         self.assert_scope_populated("ingredients", true)?;
         let (predicate, args) = Self::scope_predicate(scope);
         let sql = format!(
-            "SELECT id, name, unit, cost_cents_per_unit, current_stock, min_stock, is_active, last_modified FROM ingredients WHERE {predicate} AND is_active = 1 ORDER BY name ASC"
+            "SELECT id, name, unit, cost_cents_per_unit, current_stock, min_stock, is_active, last_modified, is_produced FROM ingredients WHERE {predicate} AND is_active = 1 ORDER BY name ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(params_refs.as_slice(), |r| {
-            Ok(IngredientRow { id: r.get(0)?, name: r.get(1)?, unit: r.get(2)?, cost_cents_per_unit: r.get(3)?, current_stock: r.get(4)?, min_stock: r.get(5)?, is_active: r.get(6)?, last_modified: r.get(7)? })
+            Ok(IngredientRow { id: r.get(0)?, name: r.get(1)?, unit: r.get(2)?, cost_cents_per_unit: r.get(3)?, current_stock: r.get(4)?, min_stock: r.get(5)?, is_active: r.get(6)?, last_modified: r.get(7)?, is_produced: r.get(8)? })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
     }
@@ -4216,12 +4248,12 @@ impl<'a> Repo<'a> {
         let log_id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
-            "UPDATE ingredients SET current_stock = current_stock + ?1, last_modified = ?2 WHERE id = ?3",
+            "UPDATE ingredients SET current_stock = ROUND(current_stock + ?1, 3), last_modified = ?2 WHERE id = ?3",
             params![change_amount, now, ingredient_id],
         )?;
         self.conn.execute(
-            "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, 'pending')",
+            "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status, value_cents) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, 'pending', CAST(ROUND(?5 * (SELECT cost_cents_per_unit FROM ingredients WHERE id = ?4)) AS INTEGER))",
             params![log_id, tenant_id, branch_id, ingredient_id, change_amount, reason, actor_id, now],
         )?;
         Ok(log_id)
@@ -4246,13 +4278,13 @@ impl<'a> Repo<'a> {
     pub fn list_recipe_ingredients(&self, scope: &Scope, menu_item_id: &str) -> Result<Vec<RecipeIngredientRow>, RepoError> {
         self.assert_row_in_scope("menu_items", menu_item_id, scope)?;
         let mut stmt = self.conn.prepare(
-            "SELECT r.id, r.ingredient_id, i.name, i.unit, r.quantity_needed \
+            "SELECT r.id, r.ingredient_id, i.name, i.unit, r.quantity_needed, r.unit \
              FROM recipes r JOIN ingredients i ON i.id = r.ingredient_id \
              WHERE r.menu_item_id = ?1 ORDER BY i.name ASC",
         )?;
         let rows = stmt.query_map(params![menu_item_id], |r| {
             Ok(RecipeIngredientRow {
-                id: r.get(0)?, ingredient_id: r.get(1)?, ingredient_name: r.get(2)?, unit: r.get(3)?, quantity_needed: r.get(4)?,
+                id: r.get(0)?, ingredient_id: r.get(1)?, ingredient_name: r.get(2)?, unit: r.get(3)?, quantity_needed: r.get(4)?, recipe_unit: r.get(5)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(RepoError::from)
@@ -4371,8 +4403,8 @@ impl<'a> Repo<'a> {
         )?;
         let log_id = uuid::Uuid::now_v7().to_string();
         self.conn.execute(
-            "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status) \
-             VALUES (?1, ?2, ?3, ?4, ?5, 'physical_count', ?6, ?7, ?7, 'pending')",
+            "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status, value_cents) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'physical_count', ?6, ?7, ?7, 'pending', CAST(ROUND(?5 * (SELECT cost_cents_per_unit FROM ingredients WHERE id = ?4)) AS INTEGER))",
             params![log_id, tenant_id, branch_id, ingredient_id, change_amount, actor_id, now],
         )?;
         Ok(id)
@@ -4464,13 +4496,21 @@ impl<'a> Repo<'a> {
             )?;
 
             let theoretical_usage: f64 = self.conn.query_row(
-                "SELECT COALESCE(SUM(recipes.quantity_needed * CASE WHEN order_items.weight_grams IS NOT NULL THEN order_items.weight_grams / 1000.0 ELSE order_items.quantity END), 0) \
+                "SELECT COALESCE(SUM(recipes.quantity_needed * recipes.stock_factor * CASE WHEN order_items.weight_grams IS NOT NULL THEN order_items.weight_grams / 1000.0 ELSE order_items.quantity END), 0) \
                  FROM order_items \
                  INNER JOIN recipes ON recipes.menu_item_id = order_items.menu_item_id AND recipes.ingredient_id = ?1 \
                  INNER JOIN orders ON orders.id = order_items.order_id \
                  WHERE order_items.voided = 0 AND orders.status = 'PAID' \
                  AND orders.closed_at >= ?2 AND orders.closed_at < ?3",
                 params![ingredient_id, range_start_iso, range_end_iso], |r| r.get(0),
+            )?;
+
+            // Stock that left for a production batch or was written off as waste is explained too (it is logged).
+            let theoretical_usage = theoretical_usage + self.conn.query_row(
+                "SELECT COALESCE(SUM(-change_amount), 0) FROM inventory_logs \
+                 WHERE ingredient_id = ?1 AND change_amount < 0 AND reason IN ('PRODUCTION', 'WASTE') \
+                 AND created_at >= ?2 AND created_at < ?3",
+                params![ingredient_id, range_start_iso, range_end_iso], |r| r.get::<_, f64>(0),
             )?;
 
             let actual_usage = opening_stock + purchases - closing_stock;
@@ -5829,24 +5869,24 @@ impl<'a> Repo<'a> {
             "SELECT tenant_id, branch_id, status FROM orders WHERE id = ?1", params![order_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
         if order_status == "PAID" {
-            let mut stmt = self.conn.prepare("SELECT ingredient_id, quantity_needed FROM recipes WHERE menu_item_id = ?1")?;
+            let mut stmt = self.conn.prepare("SELECT ingredient_id, quantity_needed * stock_factor FROM recipes WHERE menu_item_id = ?1")?;
             let recipe_rows: Vec<(String, f64)> = stmt
                 .query_map(params![menu_item_id], |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect::<Result<Vec<_>, _>>()?;
             drop(stmt);
             for (ingredient_id, qty_needed) in recipe_rows {
-                let restore = qty_needed * weight_grams.map_or(quantity as f64, |g| g as f64 / 1000.0);
+                let restore = crate::inventory_ops::round3(qty_needed * weight_grams.map_or(quantity as f64, |g| g as f64 / 1000.0));
                 if restore <= 0.0 {
                     continue;
                 }
                 self.conn.execute(
-                    "UPDATE ingredients SET current_stock = current_stock + ?1, last_modified = ?2 WHERE id = ?3",
+                    "UPDATE ingredients SET current_stock = ROUND(current_stock + ?1, 3), last_modified = ?2 WHERE id = ?3",
                     params![restore, now, ingredient_id],
                 )?;
                 let log_id = uuid::Uuid::now_v7().to_string();
                 self.conn.execute(
-                    "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, 'إلغاء صنف بعد الدفع', ?6, ?7, ?7, 'pending')",
+                    "INSERT INTO inventory_logs (id, tenant_id, branch_id, ingredient_id, change_amount, reason, user_id, created_at, last_modified, sync_status, value_cents) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'إلغاء صنف بعد الدفع', ?6, ?7, ?7, 'pending', CAST(ROUND(?5 * (SELECT cost_cents_per_unit FROM ingredients WHERE id = ?4)) AS INTEGER))",
                     params![log_id, order_tenant_id, order_branch_id, ingredient_id, restore, actor_id, now],
                 )?;
             }
@@ -6587,6 +6627,7 @@ mod tests {
         migrate_v3::run_workforce_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_no_bill_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_finance_ledger_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_inventory_units_migration(&mut conn, &db_path).unwrap();
         db_path
     }
 
@@ -6842,5 +6883,255 @@ mod tests {
         println!("[cogs] compute_cogs_variance matches the hand-calculated -2.0 bun variance exactly");
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    // -----------------------------------------------------------------
+    // 2026-11-22 inventory units / weighted average cost / production / waste.
+    // -----------------------------------------------------------------
+
+    struct InvFixture {
+        db_path: PathBuf,
+        /// menu items are tenant-level (no branch column), so recipe calls use this
+        tscope: Scope,
+        tenant_id: String,
+        branch_id: String,
+        actor_id: String,
+        scope: Scope,
+    }
+
+    fn inv_fixture(tag: &str) -> (InvFixture, Connection) {
+        let db_path = fresh_migrated_db(tag);
+        let mut conn = Connection::open(&db_path).unwrap();
+        // receiving a purchase writes the supplier ledger
+        migrate_v3::run_supplier_ledger_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_item_kind_migration(&mut conn, &db_path).unwrap();
+        let (tenant_id, branch_id): (String, String) =
+            conn.query_row("SELECT tenant_id, id FROM branch LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let repo = Repo::new(&conn);
+        let actor_id = repo.create_staff(&tenant_id, None, None, "OWNER", 100, "Owner", Some("$2b$dummy"), None).unwrap();
+        let scope = Scope::Branch { tenant_id: tenant_id.clone(), branch_id: branch_id.clone() };
+        let tscope = Scope::Tenant { tenant_id: tenant_id.clone() };
+        (InvFixture { db_path, tscope, tenant_id, branch_id, actor_id, scope }, conn)
+    }
+
+    fn stock_of(conn: &Connection, id: &str) -> f64 {
+        conn.query_row("SELECT current_stock FROM ingredients WHERE id = ?1", params![id], |r| r.get(0)).unwrap()
+    }
+
+    fn cost_of(conn: &Connection, id: &str) -> i64 {
+        conn.query_row("SELECT cost_cents_per_unit FROM ingredients WHERE id = ?1", params![id], |r| r.get(0)).unwrap()
+    }
+
+    /// Orders `lines` from a new supplier and receives them in full, returns nothing: the stock and cost are read back by the caller.
+    fn buy(conn: &Connection, f: &InvFixture, lines: &[(&str, f64, i64, Option<&str>)]) {
+        let repo = Repo::new(conn);
+        let supplier = repo.create_supplier(&f.tenant_id, &f.branch_id, "مورد", None, None).unwrap();
+        let items: Vec<(String, f64, i64, Option<String>)> = lines.iter().map(|(i, q, c, u)| (i.to_string(), *q, *c, u.map(str::to_string))).collect();
+        let po = repo.create_purchase_order_with_unit_items(&f.scope, &f.tenant_id, &f.branch_id, &supplier, &f.actor_id, None, &items).unwrap();
+        let po_items = repo.list_purchase_order_items(&po, &f.scope).unwrap();
+        let received: Vec<(String, String, f64)> = po_items.iter().map(|i| (i.id.clone(), i.ingredient_id.clone(), i.quantity_ordered)).collect();
+        repo.receive_purchase_order(&f.tenant_id, &f.branch_id, &po, &f.actor_id, &f.scope, &received, 0, None).unwrap();
+    }
+
+    fn sell(conn: &Connection, f: &InvFixture, item_id: &str, qty: i64, price: i64) {
+        let repo = Repo::new(conn);
+        let table_id = repo.create_table(&f.tenant_id, &f.branch_id, &format!("T{}", uuid::Uuid::now_v7())).unwrap();
+        let order_id = repo.create_full_order(&f.scope, &f.tenant_id, &f.branch_id, FullOrderInput {
+            table_id, user_id: f.actor_id.clone(), order_type: "DINE_IN".to_string(),
+            subtotal_cents: price * qty, tax_cents: 0, total_cents: price * qty, discount_cents: 0,
+            discount_reason: None, customer_name: None, customer_phone: None, delivery_address: None,
+            delivery_fee_cents: 0, shift_id: None,
+            items: vec![OrderItemInput { menu_item_id: item_id.to_string(), name: None, quantity: qty, unit_price_cents: price, notes: None, combo_id: None, modifiers: vec![], comped: false, comp_reason: None, comp_by: None, weight: None }],
+        }).unwrap();
+        repo.finalize_order_with_payment(&f.tenant_id, &f.branch_id, &order_id, "CASH", price * qty, 0, None, &f.actor_id, None, None).unwrap();
+    }
+
+    #[test]
+    fn migration_maps_free_text_units_and_keeps_unknown_ones() {
+        let db_path = fresh_migrated_db("inv_unit_map");
+        let mut conn = Connection::open(&db_path).unwrap();
+        let (tenant_id, branch_id): (String, String) =
+            conn.query_row("SELECT tenant_id, id FROM branch LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let repo = Repo::new(&conn);
+        let pairs = [("كغ", "kg"), ("غرام", "g"), ("لتر", "l"), ("مل", "ml"), ("حبة", "piece"), ("علبة", "علبة")];
+        let ids: Vec<String> = pairs.iter().map(|(u, _)| repo.create_ingredient(&tenant_id, &branch_id, "x", u, 1, 0.0).unwrap()).collect();
+        // Pretend the 0051 migration has not run yet and run it again over these old rows.
+        conn.execute("DELETE FROM schema_migrations WHERE version = 51", []).unwrap();
+        migrate_v3::run_inventory_units_migration(&mut conn, &db_path).unwrap();
+        for (id, (_, want)) in ids.iter().zip(pairs.iter()) {
+            let unit: String = conn.query_row("SELECT unit FROM ingredients WHERE id = ?1", params![id], |r| r.get(0)).unwrap();
+            assert_eq!(&unit, want);
+        }
+        let units = crate::inventory_ops::list_units(&conn).unwrap();
+        assert_eq!(units.len(), 5);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    /// Receive (in cartons, twice, at different prices) -> produce a sauce -> sell -> stock and cost are right at every step.
+    #[test]
+    fn receive_produce_sell_chain_keeps_stock_cost_and_value_right() {
+        use crate::inventory_ops as ops;
+        let (f, conn) = inv_fixture("inv_chain");
+        let repo = Repo::new(&conn);
+        let tomato = repo.create_ingredient(&f.tenant_id, &f.branch_id, "بندورة", "kg", 0, 5.0).unwrap();
+        let oil = repo.create_ingredient(&f.tenant_id, &f.branch_id, "زيت", "l", 0, 1.0).unwrap();
+        let sauce = repo.create_ingredient(&f.tenant_id, &f.branch_id, "صلصة", "kg", 0, 1.0).unwrap();
+
+        // A pack: one carton of tomatoes = 10 kg.
+        ops::save_pack(&conn, &f.scope, &tomato, None, "كرتونة", 10.0).unwrap();
+        // The pack name can't be a standard unit and can't be refused twice.
+        assert!(ops::save_pack(&conn, &f.scope, &tomato, None, "كغ", 10.0).is_err());
+        assert!(ops::save_pack(&conn, &f.scope, &tomato, None, "كرتونة", 12.0).is_err());
+
+        // 1) receive 2 cartons at 5000 per carton (= 500 / kg) into an empty shelf -> cost is the new cost.
+        buy(&conn, &f, &[(&tomato, 2.0, 5000, Some("كرتونة")), (&oil, 5.0, 1000, None)]);
+        assert_eq!(stock_of(&conn, &tomato), 20.0);
+        assert_eq!(cost_of(&conn, &tomato), 500);
+        assert_eq!(stock_of(&conn, &oil), 5.0);
+        assert_eq!(cost_of(&conn, &oil), 1000);
+        // 2) one more carton at 8000 (= 800 / kg): (20 x 500 + 10 x 800) / 30 = 600
+        buy(&conn, &f, &[(&tomato, 1.0, 8000, Some("كرتونة"))]);
+        assert_eq!(stock_of(&conn, &tomato), 30.0);
+        assert_eq!(cost_of(&conn, &tomato), 600);
+        // the purchase log carries the money paid, in carton terms
+        let value: i64 = conn.query_row("SELECT value_cents FROM inventory_logs WHERE ingredient_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1", params![tomato], |r| r.get(0)).unwrap();
+        assert_eq!(value, 8000);
+
+        // A purchase unit of another kind is refused at order time.
+        let supplier = repo.create_supplier(&f.tenant_id, &f.branch_id, "مورد 2", None, None).unwrap();
+        assert!(repo.create_purchase_order_with_unit_items(&f.scope, &f.tenant_id, &f.branch_id, &supplier, &f.actor_id, None, &[(tomato.clone(), 1.0, 10, Some("l".to_string()))]).is_err());
+
+        // 3) batch recipe: 10 kg of sauce = 8000 g tomato + 500 ml oil (ingredients are kept in kg and l)
+        ops::save_batch_recipe(&conn, &f.scope, &sauce, 10.0, &[
+            ops::BatchLineInput { component_id: tomato.clone(), quantity: 8000.0, unit: Some("g".to_string()) },
+            ops::BatchLineInput { component_id: oil.clone(), quantity: 500.0, unit: Some("مل".to_string()) },
+        ]).unwrap();
+        assert!(ops::save_batch_recipe(&conn, &f.scope, &sauce, 10.0, &[ops::BatchLineInput { component_id: oil.clone(), quantity: 1.0, unit: Some("kg".to_string()) }]).is_err(), "a mass unit for an oil kept in litres is refused");
+        // that failed save changed nothing
+        let recipes = ops::list_batch_recipes(&conn, &f.scope).unwrap();
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].lines.len(), 2);
+        // one batch: 8 kg x 600 + 0.5 l x 1000 = 5300
+        assert_eq!(recipes[0].batch_cost_cents, 5300);
+
+        // 4) produce 2 batches, 18 kg came out instead of 20
+        let out = ops::produce(&conn, &f.scope, &f.actor_id, &sauce, 2.0, Some(18.0), Some("اختبار"), "2026-11-22T10:00:00+00:00").unwrap();
+        assert_eq!(out.expected_qty, 20.0);
+        assert_eq!(out.actual_qty, 18.0);
+        assert_eq!(out.cost_cents, 10600);
+        assert!(out.negative_components.is_empty());
+        assert_eq!(stock_of(&conn, &tomato), 14.0);
+        assert_eq!(stock_of(&conn, &oil), 4.0);
+        assert_eq!(stock_of(&conn, &sauce), 18.0);
+        // 10600 / 18 = 588.9 -> 589 (the sauce shelf was empty)
+        assert_eq!(cost_of(&conn, &sauce), 589);
+        let runs = ops::list_production_runs(&conn, &f.scope, Some(&sauce), 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!((runs[0].expected_qty, runs[0].actual_qty, runs[0].yield_pct), (20.0, 18.0, 90.0));
+        let prod_logs: i64 = conn.query_row("SELECT COUNT(*) FROM inventory_logs WHERE reason = 'PRODUCTION'", [], |r| r.get(0)).unwrap();
+        assert_eq!(prod_logs, 3, "one PRODUCTION log per component plus one for the output");
+
+        // 5) sell: a burger uses 50 g of sauce (the recipe is in g, the sauce in kg)
+        let category_id = repo.create_category(&f.tenant_id, "Category", None, 0, None).unwrap();
+        let item_id = repo.create_menu_item(&f.tenant_id, "Burger", &category_id, 5000, 2000, None, None).unwrap();
+        let recipe_id = repo.add_recipe_ingredient(&f.tscope, &item_id, &sauce, 50.0).unwrap();
+        assert!(ops::set_recipe_unit(&conn, &f.scope, &recipe_id, Some("l")).is_err(), "a volume unit for sauce kept in kg is refused");
+        ops::set_recipe_unit(&conn, &f.scope, &recipe_id, Some("g")).unwrap();
+        sell(&conn, &f, &item_id, 3, 5000);
+        // 3 x 50 g = 0.15 kg
+        assert_eq!(stock_of(&conn, &sauce), 17.85);
+        let sale_value: i64 = conn.query_row("SELECT value_cents FROM inventory_logs WHERE ingredient_id = ?1 AND reason = 'بيع'", params![sauce], |r| r.get(0)).unwrap();
+        assert_eq!(sale_value, -88, "0.15 kg x 589 = 88.35");
+        let listed = repo.list_recipe_ingredients(&f.tscope, &item_id).unwrap();
+        assert_eq!(listed[0].recipe_unit.as_deref(), Some("g"));
+
+        // 6) waste: 500 g of sauce spoiled
+        let w = ops::record_waste(&conn, &f.scope, &f.actor_id, &sauce, 500.0, Some("g"), "تالف", Some("نسيان خارج الثلاجة"), "2026-11-22T12:00:00+00:00").unwrap();
+        assert_eq!(w.quantity, 0.5);
+        assert_eq!(w.value_cents, 295);
+        assert_eq!(stock_of(&conn, &sauce), 17.35);
+        assert!(!w.below_zero);
+        assert!(ops::record_waste(&conn, &f.scope, &f.actor_id, &sauce, 1.0, None, "غير موجود", None, "2026-11-22T12:00:00+00:00").is_err());
+        assert!(ops::record_waste(&conn, &f.scope, &f.actor_id, &sauce, 1.0, Some("l"), "تالف", None, "2026-11-22T12:00:00+00:00").is_err());
+
+        // 7) the report
+        let report = ops::stock_report(&conn, &f.scope, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").unwrap();
+        let row = |id: &str| report.rows.iter().find(|r| r.ingredient_id == id).unwrap();
+        let s = row(&sauce);
+        assert_eq!((s.on_hand, s.avg_cost_cents, s.produced, s.used_sales, s.wasted), (17.35, 589, 18.0, 0.15, 0.5));
+        assert_eq!(s.value_cents, (17.35f64 * 589.0).round() as i64);
+        assert_eq!(s.wasted_value_cents, 295);
+        let t = row(&tomato);
+        assert_eq!((t.received, t.used_production, t.on_hand), (30.0, 16.0, 14.0));
+        assert_eq!(report.waste_value_cents, 295);
+        assert_eq!(report.total_value_cents, report.rows.iter().map(|r| r.value_cents).sum::<i64>());
+        // a range that holds nothing
+        let empty = ops::stock_report(&conn, &f.scope, "1999-01-01T00:00:00Z", "1999-02-01T00:00:00Z").unwrap();
+        assert_eq!(empty.waste_value_cents, 0);
+        assert!(empty.rows.iter().all(|r| r.received == 0.0 && r.wasted == 0.0));
+        let waste_rows = ops::list_waste(&conn, &f.scope, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").unwrap();
+        assert_eq!(waste_rows.len(), 1);
+        assert_eq!((waste_rows[0].reason.as_str(), waste_rows[0].quantity, waste_rows[0].value_cents), ("تالف", 0.5, 295));
+
+        let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+    }
+
+    #[test]
+    fn production_goes_ahead_below_zero_and_warns_and_reaverages_with_old_stock() {
+        use crate::inventory_ops as ops;
+        let (f, conn) = inv_fixture("inv_negative");
+        let repo = Repo::new(&conn);
+        let flour = repo.create_ingredient(&f.tenant_id, &f.branch_id, "طحين", "kg", 100, 0.0).unwrap();
+        let dough = repo.create_ingredient(&f.tenant_id, &f.branch_id, "عجين", "kg", 0, 0.0).unwrap();
+        conn.execute("UPDATE ingredients SET current_stock = 1.0 WHERE id = ?1", params![flour]).unwrap();
+        ops::save_batch_recipe(&conn, &f.scope, &dough, 3.0, &[ops::BatchLineInput { component_id: flour.clone(), quantity: 2.0, unit: None }]).unwrap();
+        // 1 kg of flour on the shelf, one batch needs 2: it goes through, flour is -1 and the answer says so
+        let out = ops::produce(&conn, &f.scope, &f.actor_id, &dough, 1.0, None, None, "2026-11-22T10:00:00+00:00").unwrap();
+        assert_eq!(out.negative_components.len(), 1);
+        assert_eq!(out.negative_components[0].stock_after, -1.0);
+        assert_eq!(stock_of(&conn, &flour), -1.0);
+        assert_eq!(stock_of(&conn, &dough), 3.0);
+        assert_eq!(cost_of(&conn, &dough), 67); // 200 / 3
+        // another batch with dough already on the shelf: (3 x 67 + 3 x 67) / 6 stays 67; change the flour price to see the mix
+        conn.execute("UPDATE ingredients SET cost_cents_per_unit = 400 WHERE id = ?1", params![flour]).unwrap();
+        ops::produce(&conn, &f.scope, &f.actor_id, &dough, 1.0, None, None, "2026-11-22T11:00:00+00:00").unwrap();
+        // new batch 800 / 3 = 266.67 per kg; (3 x 67 + 3 x 266.67) / 6 = 166.8 -> 167
+        assert_eq!(cost_of(&conn, &dough), 167);
+        assert_eq!(stock_of(&conn, &dough), 6.0);
+        // not a produced ingredient / bad numbers
+        assert!(ops::produce(&conn, &f.scope, &f.actor_id, &flour, 1.0, None, None, "2026-11-22T11:00:00+00:00").is_err());
+        assert!(ops::produce(&conn, &f.scope, &f.actor_id, &dough, 0.0, None, None, "2026-11-22T11:00:00+00:00").is_err());
+        assert!(ops::produce(&conn, &f.scope, &f.actor_id, &dough, 1.0, Some(0.0), None, "2026-11-22T11:00:00+00:00").is_err());
+        // removing the recipe makes it a plain ingredient again
+        ops::save_batch_recipe(&conn, &f.scope, &dough, 0.0, &[]).unwrap();
+        assert!(ops::produce(&conn, &f.scope, &f.actor_id, &dough, 1.0, None, None, "2026-11-22T11:00:00+00:00").is_err());
+        let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
+    }
+
+    #[test]
+    fn receiving_into_negative_stock_takes_the_new_cost_and_other_branches_are_out_of_scope() {
+        use crate::inventory_ops as ops;
+        let (f, conn) = inv_fixture("inv_scope");
+        let repo = Repo::new(&conn);
+        let rice = repo.create_ingredient(&f.tenant_id, &f.branch_id, "رز", "kg", 100, 0.0).unwrap();
+        conn.execute("UPDATE ingredients SET current_stock = -4.0 WHERE id = ?1", params![rice]).unwrap();
+        buy(&conn, &f, &[(&rice, 10.0, 300, None)]);
+        assert_eq!(stock_of(&conn, &rice), 6.0);
+        assert_eq!(cost_of(&conn, &rice), 300, "a negative old balance carries no value to average with");
+        let other = Scope::Branch { tenant_id: f.tenant_id.clone(), branch_id: "another-branch".to_string() };
+        assert!(ops::record_waste(&conn, &other, &f.actor_id, &rice, 1.0, None, "تالف", None, "2026-11-22T12:00:00+00:00").is_err());
+        assert!(ops::save_pack(&conn, &other, &rice, None, "كيس", 25.0).is_err());
+        // changing the unit of an ingredient used by a recipe in an incompatible unit is refused
+        let category_id = repo.create_category(&f.tenant_id, "C", None, 0, None).unwrap();
+        let item_id = repo.create_menu_item(&f.tenant_id, "طبق", &category_id, 100, 10, None, None).unwrap();
+        let recipe_id = repo.add_recipe_ingredient(&f.tscope, &item_id, &rice, 100.0).unwrap();
+        ops::set_recipe_unit(&conn, &f.scope, &recipe_id, Some("g")).unwrap();
+        conn.execute("UPDATE ingredients SET unit = 'l' WHERE id = ?1", params![rice]).unwrap();
+        assert!(ops::after_ingredient_unit_change(&conn, &f.scope, &rice).is_err());
+        conn.execute("UPDATE ingredients SET unit = 'g' WHERE id = ?1", params![rice]).unwrap();
+        ops::after_ingredient_unit_change(&conn, &f.scope, &rice).unwrap();
+        let factor: f64 = conn.query_row("SELECT stock_factor FROM recipes WHERE id = ?1", params![recipe_id], |r| r.get(0)).unwrap();
+        assert_eq!(factor, 1.0);
+        let _ = fs::remove_dir_all(f.db_path.parent().unwrap());
     }
 }

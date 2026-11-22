@@ -46,6 +46,7 @@ mod stockroom;
 mod ops_settings;
 mod role_access;
 mod supplier_link;
+mod inventory_ops;
 
 // Only the debug-build staff seeding (seed_default_staff) hashes PINs here.
 #[cfg(debug_assertions)]
@@ -133,6 +134,7 @@ fn init_db(conn: &mut Connection, db_path: &std::path::Path) -> Result<(), Strin
     migrate_v3::run_workforce_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_no_bill_migration(conn, db_path).map_err(|e| e.to_string())?;
     migrate_v3::run_finance_ledger_migration(conn, db_path).map_err(|e| e.to_string())?;
+    migrate_v3::run_inventory_units_migration(conn, db_path).map_err(|e| e.to_string())?;
     business::refresh_cache(conn);
     Ok(())
 }
@@ -759,6 +761,18 @@ pub fn run() {
             commands::suppliers::record_supplier_payment_v3,
             commands::suppliers::list_supplier_payments_v3,
             commands::suppliers::list_inventory_logs_v3,
+            commands::inventory::list_units_v3,
+            commands::inventory::list_ingredient_units_v3,
+            commands::inventory::save_ingredient_unit_v3,
+            commands::inventory::delete_ingredient_unit_v3,
+            commands::inventory::list_batch_recipes_v3,
+            commands::inventory::save_batch_recipe_v3,
+            commands::inventory::produce_batch_v3,
+            commands::inventory::list_production_runs_v3,
+            commands::inventory::record_waste_v3,
+            commands::inventory::list_waste_v3,
+            commands::inventory::get_stock_report_v3,
+            commands::suppliers::create_purchase_order_with_units_v3,
             commands::suppliers::list_low_stock_ingredients_v3,
             commands::suppliers::list_reorder_suggestions_v3,
             commands::marketplace::get_marketplace_context_v3,

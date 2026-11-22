@@ -3229,6 +3229,55 @@ pub fn run_finance_ledger_migration(conn: &mut Connection, _db_path: &Path) -> R
     Ok(())
 }
 
+pub const MIGRATION_AS_VERSION: i64 = 51;
+
+/// Migration AS (2026-11-22): units of measure, packs, weighted average cost, production of base
+/// products and waste for restaurant ingredients. Adds the `units` table (seeded), per-ingredient
+/// packs, batch recipes + production runs, `recipes.unit`/`stock_factor` (a recipe may say 150 g for
+/// an ingredient stocked in kg), `purchase_order_items.unit_label`/`unit_factor` (a line entered in a
+/// carton), `ingredients.is_produced`/`batch_yield` and `inventory_logs.value_cents`/`note`. Existing
+/// free-text ingredient units that are obviously a standard unit are rewritten to its code; anything
+/// else is left exactly as it was. Additive: every new column defaults to the old behaviour.
+pub fn run_inventory_units_migration(conn: &mut Connection, _db_path: &Path) -> Result<(), V3Error> {
+    let already: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM schema_migrations WHERE version = ?1", params![MIGRATION_AS_VERSION], |row| row.get(0))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    tx.execute_batch(crate::inventory_ops::SCHEMA_SQL)?;
+    add_column_if_missing(&tx, "ingredients", "is_produced", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(&tx, "ingredients", "batch_yield", "REAL NOT NULL DEFAULT 0")?;
+    add_column_if_missing(&tx, "recipes", "unit", "TEXT")?;
+    add_column_if_missing(&tx, "recipes", "stock_factor", "REAL NOT NULL DEFAULT 1")?;
+    add_column_if_missing(&tx, "purchase_order_items", "unit_label", "TEXT")?;
+    add_column_if_missing(&tx, "purchase_order_items", "unit_factor", "REAL NOT NULL DEFAULT 1")?;
+    add_column_if_missing(&tx, "inventory_logs", "value_cents", "INTEGER")?;
+    add_column_if_missing(&tx, "inventory_logs", "note", "TEXT")?;
+
+    let old_units: Vec<(String, String)> = {
+        let mut stmt = tx.prepare("SELECT id, unit FROM ingredients")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for (id, unit) in old_units {
+        if let Some(code) = crate::inventory_ops::canonical_code(&unit) {
+            if code != unit {
+                tx.execute("UPDATE ingredients SET unit = ?1 WHERE id = ?2", params![code, id])?;
+            }
+        }
+    }
+
+    let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    tx.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+        params![MIGRATION_AS_VERSION, "0051_inventory_units_production", applied_at, "n/a-programmatic"],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

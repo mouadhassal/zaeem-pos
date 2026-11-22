@@ -134,6 +134,7 @@ mod tests {
         migrate_v3::run_workforce_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_no_bill_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_finance_ledger_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_inventory_units_migration(&mut conn, &db_path).unwrap();
 
         // The single tenant/branch T1.1 seeded during EXPAND.
         let (tenant_id, branch_id): (String, String) =
@@ -937,6 +938,7 @@ mod tests {
             migrate_v3::run_backup_settings_migration(&mut conn, &db_path).unwrap();
             migrate_v3::run_debtor_credit_limit_migration(&mut conn, &db_path).unwrap();
             migrate_v3::run_menu_item_barcode_tenant_unique_migration(&mut conn, &db_path).unwrap();
+            migrate_v3::run_inventory_units_migration(&mut conn, &db_path).unwrap();
 
             let fx = seed_two_tenant_two_branch("recipe_scope", &conn);
             let repo = Repo::new(&conn);
@@ -7901,6 +7903,7 @@ mod tests {
         migrate_v3::run_workforce_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_no_bill_migration(&mut conn, &db_path).unwrap();
         migrate_v3::run_finance_ledger_migration(&mut conn, &db_path).unwrap();
+        migrate_v3::run_inventory_units_migration(&mut conn, &db_path).unwrap();
         security::ensure_security_schema(&conn).unwrap();
 
         let fx = seed_two_tenant_two_branch("matrix", &conn);
@@ -8598,6 +8601,7 @@ mod tests {
             "record_stock_count_v3", "list_stock_counts_v3",
             "get_cogs_variance_report_v3", "get_menu_margin_report_v3",
             "list_inventory_logs_v3", "list_low_stock_ingredients_v3", "list_reorder_suggestions_v3",
+            "list_units_v3", "list_ingredient_units_v3", "save_ingredient_unit_v3", "delete_ingredient_unit_v3", "list_batch_recipes_v3", "save_batch_recipe_v3", "produce_batch_v3", "list_production_runs_v3", "record_waste_v3", "list_waste_v3", "get_stock_report_v3", "create_purchase_order_with_units_v3",
             "get_marketplace_context_v3", "receive_marketplace_order_v3",
             "list_recipe_ingredients_v3", "add_recipe_ingredient_v3", "update_recipe_ingredient_v3", "delete_recipe_ingredient_v3",
             "create_debtor_v3", "update_debtor_v3", "deactivate_debtor_v3",

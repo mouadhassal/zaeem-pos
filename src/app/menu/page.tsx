@@ -13,6 +13,8 @@ import { useToast } from "../../hooks/useToast";
 import OptionsTab from "./OptionsTab";
 import { usePlanStore } from "../../stores/planStore";
 import { COST_CLASSES } from "../../lib/profit";
+import { unitLabel, type IngredientPack } from "../../lib/inventoryUnits";
+import UnitSelect from "../../components/inventory/UnitSelect";
 
 interface Category {
   id: string;
@@ -91,6 +93,8 @@ interface RecipeIngredient {
   ingredient_name: string;
   unit: string;
   quantity_needed: number;
+  /** The unit the recipe line is written in when it is not the ingredient's own (null = the ingredient's unit). */
+  recipe_unit?: string | null;
 }
 
 interface HappyHourRule {
@@ -275,6 +279,8 @@ export default function MenuPage() {
   const [recipeIngredientQuery, setRecipeIngredientQuery] = useState("");
   const [selectedIngredient, setSelectedIngredient] = useState<IngredientOption | null>(null);
   const [recipeQuantity, setRecipeQuantity] = useState("");
+  const [recipeUnit, setRecipeUnit] = useState("");
+  const [allPacks, setAllPacks] = useState<IngredientPack[]>([]);
   const [savingRecipeRow, setSavingRecipeRow] = useState(false);
   const [removingRecipeRowId, setRemovingRecipeRowId] = useState<string | null>(null);
   const [recipeError, setRecipeError] = useState<string | null>(null);
@@ -381,6 +387,9 @@ export default function MenuPage() {
     invoke<IngredientOption[]>("list_ingredients_v3", { sessionToken: token })
       .then(setAllIngredients)
       .catch(() => setAllIngredients([]));
+    invoke<IngredientPack[]>("list_ingredient_units_v3", { sessionToken: token })
+      .then(setAllPacks)
+      .catch(() => setAllPacks([]));
   };
 
   const fetchRecipeIngredients = (itemId: string) => {
@@ -395,6 +404,7 @@ export default function MenuPage() {
     setRecipeIngredientQuery("");
     setSelectedIngredient(null);
     setRecipeQuantity("");
+    setRecipeUnit("");
     setRecipeError(null);
   };
 
@@ -456,10 +466,12 @@ export default function MenuPage() {
         menuItemId: editItemId,
         ingredientId: selectedIngredient.id,
         quantityNeeded: qty,
+        unit: recipeUnit || null,
       });
       setSelectedIngredient(null);
       setRecipeIngredientQuery("");
       setRecipeQuantity("");
+      setRecipeUnit("");
       fetchRecipeIngredients(editItemId);
     } catch (e) {
       setRecipeError(realErrorText(e));
@@ -1555,7 +1567,7 @@ export default function MenuPage() {
                             <span className="text-sm font-arabic text-ink-900">
                               {r.ingredient_name}
                               <span className="text-ink-400 font-mono text-xs mx-1.5" dir="ltr">
-                                {r.quantity_needed} {r.unit}
+                                {r.quantity_needed} {unitLabel(r.recipe_unit ?? r.unit)}
                               </span>
                             </span>
                             <button
@@ -1587,12 +1599,13 @@ export default function MenuPage() {
                           getKey={(item) => item.id}
                           onSelect={(item) => {
                             setSelectedIngredient(item);
+                            setRecipeUnit("");
                             setRecipeIngredientQuery(item.name);
                           }}
                           renderItem={(item) => (
                             <div className="flex items-center justify-between gap-3">
                               <span className="text-ink-900">{item.name}</span>
-                              <span className="text-ink-400 text-xs">{item.unit}</span>
+                              <span className="text-ink-400 text-xs">{unitLabel(item.unit)}</span>
                             </div>
                           )}
                           placeholder="ابحث عن مكوّن..."
@@ -1608,6 +1621,15 @@ export default function MenuPage() {
                         placeholder="الكمية"
                         className="w-24 h-10 px-3 rounded-sm bg-white border-2 border-ink-200 text-ink-900 font-mono text-sm outline-none focus:border-saffron-600"
                       />
+                      {selectedIngredient && (
+                        <UnitSelect
+                          stockUnit={selectedIngredient.unit}
+                          packs={allPacks.filter((p) => p.ingredient_id === selectedIngredient.id)}
+                          value={recipeUnit}
+                          onChange={setRecipeUnit}
+                          className="h-10 px-2 rounded-sm bg-white border-2 border-ink-200 text-ink-900 text-sm font-arabic outline-none focus:border-saffron-600"
+                        />
+                      )}
                       <button
                         type="button"
                         onClick={addRecipeRow}

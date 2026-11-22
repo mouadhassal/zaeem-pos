@@ -81,6 +81,41 @@ pub fn create_purchase_order_with_items_v3(state: State<Db>, license: State<crat
     Ok(po_id)
 }
 
+/// One purchase line written in a unit: ingredient, quantity, unit cost per that unit, and the unit.
+/// `unit` is a pack of the ingredient (carton) or a standard unit of the same kind; None = its stock unit.
+#[derive(serde::Deserialize)]
+pub struct PoLineInput {
+    pub ingredient_id: String,
+    pub quantity: f64,
+    pub unit_cost_cents: i64,
+    pub unit: Option<String>,
+}
+
+/// `create_purchase_order_with_items_v3` with a unit per line; receiving converts to stock units.
+#[tauri::command]
+pub fn create_purchase_order_with_units_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String, supplier_id: String, notes: Option<String>, items: Vec<PoLineInput>) -> Result<String, String> {
+    let actor = authenticate_actor(&state, &session_token)?;
+    require_license_not_locked(&license)?;
+    authorize(&actor, Permission::ManagePurchaseOrders).map_err(|e| e.to_string())?;
+    let (tenant_id, branch_id) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        resolve_operating_branch(&conn, &actor, &license, None)?
+    };
+    let lines: Vec<(String, f64, i64, Option<String>)> = items.into_iter().map(|l| (l.ingredient_id, l.quantity, l.unit_cost_cents, l.unit)).collect();
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let po_id = Repo::new(&tx)
+        .create_purchase_order_with_unit_items(&actor.scope(), &tenant_id, &branch_id, &supplier_id, &actor.id, notes.as_deref(), &lines)
+        .map_err(|e| e.to_string())?;
+    audit::append(
+        &tx, &actor.device_id, &tenant_id, Some(&branch_id), &actor.id,
+        audit::Action::PurchaseOrderChanged, "purchase_order", &po_id,
+        None, Some(&serde_json::json!({ "supplier_id": supplier_id, "item_count": lines.len() })),
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(po_id)
+}
+
 #[tauri::command]
 pub fn list_purchase_orders_v3(state: State<Db>, license: State<crate::license::cloud::CloudLicenseState>, session_token: String) -> Result<Vec<crate::repo::PurchaseOrderRow>, String> {
     let actor = authenticate_actor(&state, &session_token)?;
